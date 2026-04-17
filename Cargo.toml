@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/picus-r1cs",
+    "crates/picus-smt",
+    "crates/picus-analysis",
+    "crates/picus-cli",
+]
+
+[workspace.package]
+version = "1.1.0"
+authors = ["Yanju Chen <chyanju@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/chyanju/Picus"
+edition = "2024"
+
+[workspace.dependencies]
+num-bigint = "0.4"
+num-traits = "0.2"
+num-integer = "0.1"
+byteorder = "1.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex = "1"
+tempfile = "3"
+clap = { version = "4", features = ["derive"] }
+petgraph = "0.8"
+csv = "1"
+thiserror = "2"
+log = "0.4"
+env_logger = "0.11"

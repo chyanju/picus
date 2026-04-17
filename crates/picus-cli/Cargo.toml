@@ -1,0 +1,21 @@
+[package]
+name = "picus-cli"
+description = "Command-line interface for Picus ZK circuit analyzer"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "picus"
+path = "src/main.rs"
+
+[dependencies]
+picus-r1cs = { path = "../picus-r1cs" }
+picus-smt = { path = "../picus-smt" }
+picus-analysis = { path = "../picus-analysis" }
+num-bigint = { workspace = true }
+clap = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
