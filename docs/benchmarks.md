@@ -40,7 +40,7 @@ picus check --r1cs /tmp/AND@gates.r1cs --solver z3
 
 > Use `--O0` (no optimization) to preserve the original constraint structure.
 
-## Expected Results (circomlib-cff5ab6, weak uniqueness)
+## Expected Results (circomlib-cff5ab6)
 
 Circuits that Picus identifies as **unsafe** (under-constrained outputs):
 
@@ -51,6 +51,9 @@ Circuits that Picus identifies as **unsafe** (under-constrained outputs):
 | Edwards2Montgomery | unsafe |
 | Montgomery2Edwards | unsafe |
 | MontgomeryAdd | unsafe |
+| MontgomeryDouble | unsafe |
 | Decoder | unsafe |
 
-All other circomlib circuits with definitive results are **safe**. Some large circuits (Pedersen, EscalarMul, Sign, CompConstant) may time out with default settings — increase `--timeout` or use cvc5 for better finite-field performance.
+All 112 solvable benchmarks from the PLDI 2023 paper (cvc5-bcp column, < 100s) have been verified to produce identical results with Picus v1.1.2 using cvc5 1.3.3.
+
+> **Note**: cvc5 requires the GPL build (with CoCoA) for QF_FF finite field support. The non-GPL builds will report "not configured with --cocoa".

@@ -11,7 +11,7 @@
 
 ---
 
-Picus implements the **QED²** algorithm to verify that R1CS constraints in a ZK circuit uniquely determine all signals given the public inputs. If they don't, Picus finds a concrete counter-example — two distinct valid witnesses sharing the same inputs.
+Picus implements the **QED²** algorithm to verify that R1CS constraints in a ZK circuit uniquely determine all output signals given the public inputs. If they don't, Picus finds a concrete counter-example — two distinct valid witnesses sharing the same inputs.
 
 > Looking for the original PLDI 2023 research artifact? See the [artifact branch](https://github.com/chyanju/Picus/tree/pldi23-research-artifact).
 
@@ -32,8 +32,7 @@ An SMT solver must be on your `PATH` — either [cvc5](https://cvc5.github.io/) 
 ### `picus check` — verify circuit uniqueness
 
 ```bash
-picus check --r1cs circuit.r1cs --solver cvc5          # strong uniqueness
-picus check --r1cs circuit.r1cs --solver z3 --weak     # weak (outputs only)
+picus check --r1cs circuit.r1cs --solver cvc5
 picus check --r1cs circuit.r1cs --nosolve              # propagation only
 ```
 
@@ -43,7 +42,6 @@ picus check --r1cs circuit.r1cs --nosolve              # propagation only
 | `--solver <z3\|cvc4\|cvc5>` | `cvc5` | SMT backend |
 | `--timeout <ms>` | `5000` | Per-query solver timeout |
 | `--selector <first\|counter>` | `counter` | Signal selection heuristic |
-| `--weak` | off | Only check output signals |
 | `--noprop` | off | Skip propagation lemmas |
 | `--nosolve` | off | Skip solver calls |
 | `--map` | off | Resolve signal names from `.sym` |
@@ -63,6 +61,7 @@ picus info --r1cs circuit.r1cs --constraints    # print all constraints
 | [Architecture](docs/architecture.md) | Crate structure, data flow pipeline, algorithm overview |
 | [Propagation Lemmas](docs/propagation-lemmas.md) | L0–L4 deduction rules and their implementation |
 | [Benchmarks](docs/benchmarks.md) | Test suite from 23 real-world projects, expected results |
+| [Changelog](CHANGELOG.md) | Version history and release notes |
 
 ## Citation
 

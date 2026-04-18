@@ -34,7 +34,7 @@ impl ConstraintGraph {
         let mut edge_to_constraints: HashMap<BTreeSet<usize>, HashSet<usize>> = HashMap::new();
 
         // For each constraint, add edges between all pairs of involved signals
-        for (cnst_idx, cmd) in cnsts.vs.iter().enumerate() {
+        for (cnst_idx, cmd) in cnsts.commands.iter().enumerate() {
             if let RCmd::Assert(expr) = cmd {
                 let vars: HashSet<usize> = expr
                     .get_variables(true)

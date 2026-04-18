@@ -52,10 +52,6 @@ enum Commands {
         #[arg(long)]
         smt: bool,
 
-        /// Check weak safety (outputs only) instead of strong (all signals)
-        #[arg(long)]
-        weak: bool,
-
         /// Map signal IDs to Circom variable names via .sym file
         #[arg(long)]
         map: bool,
@@ -87,7 +83,6 @@ fn main() {
             noprop,
             nosolve,
             smt,
-            weak,
             map,
         } => cmd_check(
             r1cs,
@@ -98,7 +93,6 @@ fn main() {
             noprop,
             nosolve,
             smt,
-            weak,
             map,
         ),
         Commands::Info { r1cs, constraints } => cmd_info(r1cs, constraints),
@@ -115,7 +109,6 @@ fn cmd_check(
     noprop: bool,
     nosolve: bool,
     smt: bool,
-    weak: bool,
     map: bool,
 ) {
     let solver: SolverKind = solver_str.parse().unwrap_or_else(|e| {
@@ -156,19 +149,17 @@ fn cmd_check(
         timeout_ms: timeout,
         enable_propagation: !noprop,
         enable_solving: !nosolve,
-        weak,
         show_smt: smt,
     };
 
-    let mode = if weak { "weak" } else { "strong" };
     let result = picus_analysis::dpvl::run_dpvl(&r1cs, &config, preconditions.as_ref());
 
     match result {
         DpvlResult::Safe => {
-            println!("{} uniqueness: safe", mode);
+            println!("uniqueness: safe");
         }
         DpvlResult::Unsafe(model) => {
-            println!("{} uniqueness: unsafe", mode);
+            println!("uniqueness: unsafe");
             if !model.is_empty() {
                 println!("counter-example:");
                 let sym_map = if map {
@@ -189,7 +180,7 @@ fn cmd_check(
                     let display = sym_map
                         .as_ref()
                         .and_then(|s| {
-                            parse_var_index(var).and_then(|idx| s.signal_names.get(&idx).cloned())
+                            picus_r1cs::parse_var_index(var).and_then(|idx| s.signal_names.get(&idx).cloned())
                         })
                         .unwrap_or_else(|| var.clone());
                     println!("  {} = {}", display, val);
@@ -197,7 +188,7 @@ fn cmd_check(
             }
         }
         DpvlResult::Unknown => {
-            println!("{} uniqueness: unknown", mode);
+            println!("uniqueness: unknown");
         }
     }
 }
@@ -234,13 +225,5 @@ fn cmd_info(r1cs_path: PathBuf, show_constraints: bool) {
         for i in 0..r1cs.header.m_constraints as usize {
             println!("[{}] {}", i, r1cs.constraint_to_string(i));
         }
-    }
-}
-
-fn parse_var_index(name: &str) -> Option<usize> {
-    if (name.starts_with('x') || name.starts_with('y')) && name.len() > 1 {
-        name[1..].parse().ok()
-    } else {
-        None
     }
 }

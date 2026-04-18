@@ -8,7 +8,7 @@ use crate::SolverKind;
 /// Interpret an RCmds AST into an SMT-LIB2 string.
 pub fn interpret_r1cs(cmds: &RCmds, solver: SolverKind) -> String {
     let mut out = String::new();
-    for cmd in &cmds.vs {
+    for cmd in &cmds.commands {
         let s = interpret_cmd(cmd, solver);
         if !s.is_empty() {
             out.push_str(&s);

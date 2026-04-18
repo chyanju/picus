@@ -1,45 +1,25 @@
 //! L2: Basis2 lemma — binary decomposition detection.
-//!
-//! If z = 2^0*x_0 + 2^1*x_1 + ... + 2^n*x_n, all x_i ∈ {0,1}, and z is known,
-//! then all x_i are known.
 
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
-use picus_r1cs::bn128_prime;
 use picus_r1cs::grammar::*;
-use std::collections::{BTreeSet, HashSet};
+use picus_r1cs::{bn128_prime, parse_var_index};
+use std::collections::HashSet;
 
-use super::binary01::{self, RangeValue};
+use super::binary01::RangeValue;
 
-/// Precompute valid power-of-2 coefficient sets: {{1}, {1,2}, {1,2,4}, ..., {1,2,...,2^252}}.
-fn basis2_sequences() -> HashSet<BTreeSet<BigUint>> {
-    let mut seqs = HashSet::new();
-    let mut current = BTreeSet::new();
-    let mut power = BigUint::one();
-    let p = bn128_prime();
-
-    for _ in 0..253 {
-        current.insert(power.clone());
-        seqs.insert(current.clone());
-        power = (&power * 2u32) % &p;
-    }
-    seqs
-}
-
-/// Apply the basis2 lemma.
+/// Apply the basis2 lemma. Mutates `ks` and `us` in place.
 pub fn apply_lemma(
-    mut ks: HashSet<usize>,
-    mut us: HashSet<usize>,
+    ks: &mut HashSet<usize>,
+    us: &mut HashSet<usize>,
     cnsts: &RCmds,
     range_vec: &[RangeValue],
-) -> (HashSet<usize>, HashSet<usize>) {
+) {
     let p = bn128_prime();
-    let _seqs = basis2_sequences();
 
-    for cmd in &cnsts.vs {
+    for cmd in &cnsts.commands {
         if let RCmd::Assert(expr) = cmd
-            && let Some((target_sig, bit_sigs, _)) = match_basis2_pattern(expr, &p) {
-                // Check all bit signals are binary
+            && let Some((target_sig, bit_sigs, _)) = match_basis2_pattern(expr, p) {
                 let all_binary = bit_sigs
                     .iter()
                     .all(|&s| s < range_vec.len() && range_vec[s].is_binary());
@@ -48,43 +28,32 @@ pub fn apply_lemma(
                     continue;
                 }
 
-                // Check coefficient set matches a basis2 sequence
-                // (simplified: we check in the match function)
-
-                // If target signal is known, all bit signals become known
                 if ks.contains(&target_sig) {
                     for &s in &bit_sigs {
-                        if us.contains(&s) {
+                        if us.remove(&s) {
                             ks.insert(s);
-                            us.remove(&s);
                         }
                     }
                 }
             }
     }
-
-    (ks, us)
 }
 
-/// Match pattern: 0 = x_target + c1*x1 + c2*x2 + ... where coefficients are powers of 2.
-/// Returns (target_signal, bit_signals, coefficients).
 fn match_basis2_pattern(
     expr: &RExpr,
-    p: &BigUint,
+    _p: &BigUint,
 ) -> Option<(usize, Vec<usize>, Vec<BigUint>)> {
-    // Match: Eq(lhs, rhs) where one side is 0
     if let RExpr::Eq(lhs, rhs) = expr {
-        let (_zero_side, sum_side) = if is_zero_like(lhs) {
-            (lhs, rhs)
-        } else if is_zero_like(rhs) {
-            (rhs, lhs)
+        let (_, sum_side) = if lhs.is_zero() {
+            (lhs.as_ref(), rhs.as_ref())
+        } else if rhs.is_zero() {
+            (rhs.as_ref(), lhs.as_ref())
         } else {
             return None;
         };
 
-        let inner = strip_mod(sum_side);
+        let inner = sum_side.strip_mod();
 
-        // inner should be Add([Var(x_target), Mul([Int(c1), Var(x1)]), ...])
         if let RExpr::Add(terms) = inner {
             let mut target_sig = None;
             let mut bit_sigs = Vec::new();
@@ -93,19 +62,19 @@ fn match_basis2_pattern(
             for term in terms {
                 match term {
                     RExpr::Var(name) => {
-                        if let Some(id) = binary01::parse_var_index(name) {
+                        if let Some(id) = parse_var_index(name) {
                             target_sig = Some(id);
                         }
                     }
                     RExpr::Mul(mul_args) => {
                         if let Some((coeff, sig)) = extract_coeff_var(mul_args) {
                             bit_sigs.push(sig);
-                            // Check if coefficient or p-coefficient is a power of 2
-                            let neg_coeff = p - &coeff;
-                            coeffs.push(coeff.min(neg_coeff));
+                            coeffs.push(coeff);
+                        } else {
+                            return None;
                         }
                     }
-                    RExpr::Int(v) if v.is_zero() => {} // skip leading zero
+                    RExpr::Int(v) if v.is_zero() => {}
                     _ => return None,
                 }
             }
@@ -120,38 +89,71 @@ fn match_basis2_pattern(
 }
 
 fn extract_coeff_var(args: &[RExpr]) -> Option<(BigUint, usize)> {
-    if args.len() == 2
-        && let (RExpr::Int(coeff), RExpr::Var(name)) = (&args[0], &args[1])
-            && let Some(id) = binary01::parse_var_index(name) {
-                return Some((coeff.clone(), id));
-            }
+    if args.len() != 2 {
+        return None;
+    }
+    // Try (Int(coeff), Var(signal))
+    if let (RExpr::Int(coeff), RExpr::Var(name)) = (&args[0], &args[1])
+        && let Some(id) = parse_var_index(name) {
+            return Some((coeff.clone(), id));
+        }
+    // Try (Var(named_const), Var(signal)) — after subp optimization,
+    // numeric constants like p-1 become Var("ps1")
+    if let (RExpr::Var(const_name), RExpr::Var(sig_name)) = (&args[0], &args[1]) {
+        if let (Some(coeff), Some(id)) = (resolve_named_constant(const_name), parse_var_index(sig_name)) {
+            return Some((coeff, id));
+        }
+        // Try reverse: signal first, constant second
+        if let (Some(id), Some(coeff)) = (parse_var_index(const_name), resolve_named_constant(sig_name)) {
+            return Some((coeff, id));
+        }
+    }
     None
 }
 
+/// Resolve named constants introduced by the subp optimizer.
+fn resolve_named_constant(name: &str) -> Option<BigUint> {
+    let p = bn128_prime();
+    match name {
+        "p" => Some(p.clone()),
+        "ps1" => Some(p - BigUint::one()),
+        "ps2" => Some(p - BigUint::from(2u32)),
+        "ps3" => Some(p - BigUint::from(3u32)),
+        "ps4" => Some(p - BigUint::from(4u32)),
+        "ps5" => Some(p - BigUint::from(5u32)),
+        "zero" => Some(BigUint::zero()),
+        "one" => Some(BigUint::one()),
+        _ => None,
+    }
+}
+
 fn is_power_of_2_sequence(coeffs: &[BigUint]) -> bool {
-    let sorted: BTreeSet<BigUint> = coeffs.iter().cloned().collect();
-    let mut expected = BigUint::one();
-    for c in &sorted {
-        if c != &expected {
-            return false;
-        }
-        expected *= 2u32;
-    }
-    true
+    // Check if the coefficient set equals {2^0, 2^1, ..., 2^(n-1)}
+    // after field normalization (each coeff or its negation is a power of 2).
+    use std::collections::HashSet;
+    let p = bn128_prime();
+    let expected: HashSet<BigUint> = (0..coeffs.len())
+        .map(|k| BigUint::from(1u32) << k)
+        .collect();
+
+    let actual: HashSet<BigUint> = coeffs
+        .iter()
+        .map(|c| {
+            let neg = p - c;
+            // Take whichever IS a power of 2
+            if is_power_of_2(c) {
+                c.clone()
+            } else if is_power_of_2(&neg) {
+                neg
+            } else {
+                c.clone() // neither — will fail the check
+            }
+        })
+        .collect();
+
+    actual == expected
 }
 
-fn is_zero_like(expr: &RExpr) -> bool {
-    match strip_mod(expr) {
-        RExpr::Int(v) => v.is_zero(),
-        RExpr::Add(vs) if vs.len() == 1 => is_zero_like(&vs[0]),
-        _ => false,
-    }
-}
-
-fn strip_mod(expr: &RExpr) -> &RExpr {
-    if let RExpr::Mod(inner, _) = expr {
-        inner.as_ref()
-    } else {
-        expr
-    }
+fn is_power_of_2(n: &BigUint) -> bool {
+    !n.is_zero() && (n & (n - BigUint::one())).is_zero()
 }

@@ -56,6 +56,11 @@ pub fn solve(
     let tmp_path = tmp.into_temp_path();
     let path_str = tmp_path.to_str().unwrap().to_string();
 
+    // If PICUS_DUMP_SMT is set, copy to that path for debugging
+    if let Ok(dump_path) = std::env::var("PICUS_DUMP_SMT") {
+        let _ = std::fs::write(&dump_path, smt_str);
+    }
+
     *LAST_SMT_PATH.lock().unwrap() = Some(PathBuf::from(&path_str));
 
     // z3 uses -T:seconds; cvc5/cvc4 use --tlimit=ms
@@ -190,10 +195,10 @@ fn parse_model(output: &str) -> HashMap<String, BigUint> {
 
         let val = if let Some(stripped) = val_str.strip_prefix('-') {
             let abs_val: BigUint = stripped.parse().unwrap_or_default();
-            if abs_val > p {
+            if &abs_val > p {
                 abs_val
             } else {
-                &p - &abs_val
+                p - &abs_val
             }
         } else {
             val_str.parse().unwrap_or_default()

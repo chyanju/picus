@@ -194,7 +194,7 @@ fn parse_constraint_section(
     let mut pos = 0;
 
     while pos < data.len() {
-        let (new_pos, constraint) = parse_single_constraint(&data[pos..], fs, &p)?;
+        let (new_pos, constraint) = parse_single_constraint(&data[pos..], fs, p)?;
         constraints.push(constraint);
         pos += new_pos;
     }
@@ -241,9 +241,8 @@ fn parse_constraint_block(
     let mut factors = Vec::with_capacity(nnz as usize);
 
     for _ in 0..nnz {
-        let wid = (&data[pos..pos + 4])
-            .read_u32::<LittleEndian>()
-            .unwrap();
+        let mut wid_buf = &data[pos..pos + 4];
+        let wid = wid_buf.read_u32::<LittleEndian>()?;
         pos += 4;
 
         let factor_bytes = &data[pos..pos + fs];

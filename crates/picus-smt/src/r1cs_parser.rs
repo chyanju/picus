@@ -137,9 +137,9 @@ fn parse_r1cs_z3(r1cs: &R1csFile, xlist_in: &[String]) -> ParsedR1cs {
 fn expand_r1cs_z3(cnsts: &RCmds) -> RCmds {
     let p = bn128_prime();
     let expanded: Vec<RCmd> = cnsts
-        .vs
+        .commands
         .iter()
-        .map(|cmd| expand_cmd_z3(cmd, &p))
+        .map(|cmd| expand_cmd_z3(cmd, p))
         .collect();
     RCmds::new(expanded)
 }
@@ -306,7 +306,7 @@ fn parse_r1cs_cvc5(r1cs: &R1csFile, xlist_in: &[String]) -> ParsedR1cs {
 
 fn expand_r1cs_cvc5(cnsts: &RCmds) -> RCmds {
     let expanded: Vec<RCmd> = cnsts
-        .vs
+        .commands
         .iter()
         .map(expand_cmd_cvc5)
         .collect();

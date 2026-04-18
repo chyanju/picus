@@ -37,21 +37,21 @@ Translates R1CS constraints into SMT-LIB queries and manages solver interaction.
 
 - **`r1cs_parser.rs`** — Converts binary R1CS constraints into the AST in standard form (A·B = C) and then into expanded form (cross-product of terms). Two variants: z3/cvc4 (QF_NIA with `mod p`) and cvc5 (QF_FF finite field).
 - **`optimizer.rs`** — Three AST-to-AST transformation passes:
-  - **Phase 0 (ab0):** A·B=0 → A=0 ∨ B=0
+  - **Phase 0 (ab0):** A·B=0 → A=0 ∨ B=0 (z3/cvc4 only; disabled for cvc5 due to a solver bug with `or` in QF_FF)
   - **Normalize (simple):** strip `*1`, `+0`, replace `x0` with `1`
   - **Phase 1 (subp):** substitute field-prime-related constants (`p`, `p-1`, ..., `p-5`)
 - **`interpreter.rs`** — Serializes AST to SMT-LIB2 strings. Three backends: z3 (`rem` for mod, integer arithmetic), cvc4 (`mod`), cvc5 (`ff.add`/`ff.mul`, `#f<v>m<p>` literals).
-- **`solver.rs`** — Writes SMT-LIB to a temp file, spawns the solver as a subprocess with timeout, reads stdout/stderr in separate threads (avoids pipe deadlock), parses `sat`/`unsat`/`unknown` results and extracts models.
+- **`solver.rs`** — Writes SMT-LIB to a temp file, spawns the solver as a subprocess with timeout, reads stdout/stderr in separate threads (avoids pipe deadlock), parses `sat`/`unsat`/`unknown` results and extracts models. Set `PICUS_DUMP_SMT=<path>` to save the last SMT query for debugging.
 
 ### `picus-analysis`
 
 Core verification algorithms.
 
-- **`dpvl.rs`** — The DPVL (Decide & Propagate Verification Loop) main loop:
+- **`dpvl.rs`** — The DPVL (Decide & Propagate Verification Loop). Uses a `DpvlContext` struct to hold all state:
   1. Parse original + alternative (two-copy) constraint systems
-  2. Run optimization pipeline on both copies
-  3. Iterate: propagate → check → select → solve → repeat
-- **`propagation/`** — Six lemmas that cheaply deduce signal uniqueness without the solver. See [Propagation Lemmas](./propagation-lemmas.md).
+  2. Run optimization pipeline on both copies; pre-serialize SMT prefix
+  3. Loop (non-recursive): propagate → check → select → solve → repeat
+- **`propagation/`** — Six lemmas that cheaply deduce signal uniqueness without the solver. Lemmas handle both numeric (`Int`) and named (`Var("ps1")`) constants from the SubP optimizer. See [Propagation Lemmas](./propagation-lemmas.md).
 - **`selector.rs`** — Signal selection heuristics: `first` (trivial) and `counter` (frequency-weighted with negative feedback on timeouts).
 - **`constraint_graph.rs`** — Builds an undirected graph (via `petgraph`) where nodes are signals and edges connect signals that share a constraint. Used for scoped counterexample generation.
 - **`cex.rs`** — Counterexample generation (stub for scope-by-scope compositional solving).

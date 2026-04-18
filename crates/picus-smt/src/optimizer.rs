@@ -17,7 +17,10 @@ use crate::SolverKind;
 pub fn optimize_p0(cnsts: &RCmds, solver: SolverKind) -> RCmds {
     match solver {
         SolverKind::Z3 | SolverKind::Cvc4 => ab0_optimize_z3(cnsts),
-        SolverKind::Cvc5 => ab0_optimize_cvc5(cnsts),
+        // Skip AB0 for cvc5: cvc5 1.2.0 has a bug where `or` disjunctions in QF_FF
+        // can produce spurious SAT results with inconsistent models.
+        // The solver handles nonlinear A*B=0 constraints natively.
+        SolverKind::Cvc5 => cnsts.clone(),
     }
 }
 
@@ -41,7 +44,7 @@ pub fn optimize_p1(cnsts: &RCmds, decls: &RCmds, solver: SolverKind, include_p_d
 // ========================= Simple optimizer (normalize) =========================
 
 fn simple_optimize_z3(cmds: &RCmds) -> RCmds {
-    RCmds::new(cmds.vs.iter().map(simple_opt_cmd_z3).collect())
+    RCmds::new(cmds.commands.iter().map(simple_opt_cmd_z3).collect())
 }
 
 fn simple_opt_cmd_z3(cmd: &RCmd) -> RCmd {
@@ -157,7 +160,7 @@ fn simple_opt_expr_z3(expr: &RExpr) -> RExpr {
 }
 
 fn simple_optimize_cvc5(cmds: &RCmds) -> RCmds {
-    RCmds::new(cmds.vs.iter().map(simple_opt_cmd_cvc5).collect())
+    RCmds::new(cmds.commands.iter().map(simple_opt_cmd_cvc5).collect())
 }
 
 fn simple_opt_cmd_cvc5(cmd: &RCmd) -> RCmd {
@@ -239,7 +242,7 @@ fn simple_opt_expr_cvc5(expr: &RExpr) -> RExpr {
 
 fn ab0_optimize_z3(cmds: &RCmds) -> RCmds {
     let p = bn128_prime();
-    RCmds::new(cmds.vs.iter().map(|c| ab0_opt_cmd_z3(c, &p)).collect())
+    RCmds::new(cmds.commands.iter().map(|c| ab0_opt_cmd_z3(c, p)).collect())
 }
 
 fn ab0_opt_cmd_z3(cmd: &RCmd, p: &BigUint) -> RCmd {
@@ -303,10 +306,14 @@ fn is_zero_rhs_z3(expr: &RExpr) -> bool {
     false
 }
 
+// NOTE: cvc5 AB0 disabled due to cvc5 1.2.0 bug with `or` in QF_FF.
+// These functions are retained for when the bug is fixed in future cvc5 versions.
+#[allow(dead_code)]
 fn ab0_optimize_cvc5(cmds: &RCmds) -> RCmds {
-    RCmds::new(cmds.vs.iter().map(ab0_opt_cmd_cvc5).collect())
+    RCmds::new(cmds.commands.iter().map(ab0_opt_cmd_cvc5).collect())
 }
 
+#[allow(dead_code)]
 fn ab0_opt_cmd_cvc5(cmd: &RCmd) -> RCmd {
     match cmd {
         RCmd::Assert(RExpr::Eq(lhs, rhs)) => {
@@ -341,6 +348,7 @@ fn ab0_opt_cmd_cvc5(cmd: &RCmd) -> RCmd {
     }
 }
 
+#[allow(dead_code)]
 fn match_ab0_cvc5(lhs: &RExpr, rhs: &RExpr) -> Option<Vec<RExpr>> {
     if let RExpr::Mul(vs) = lhs
         && is_zero_rhs_cvc5(rhs) {
@@ -349,6 +357,7 @@ fn match_ab0_cvc5(lhs: &RExpr, rhs: &RExpr) -> Option<Vec<RExpr>> {
     None
 }
 
+#[allow(dead_code)]
 fn is_zero_rhs_cvc5(expr: &RExpr) -> bool {
     match expr {
         RExpr::Add(vs) if vs.len() == 1 => is_zero_int(&vs[0]),
@@ -364,11 +373,11 @@ fn subp_optimize_z3(cnsts: &RCmds, decls: &RCmds, include_p_defs: bool) -> (RCmd
 
     let constants = [
         ("p", p.clone()),
-        ("ps1", &p - BigUint::from(1u32)),
-        ("ps2", &p - BigUint::from(2u32)),
-        ("ps3", &p - BigUint::from(3u32)),
-        ("ps4", &p - BigUint::from(4u32)),
-        ("ps5", &p - BigUint::from(5u32)),
+        ("ps1", p - BigUint::from(1u32)),
+        ("ps2", p - BigUint::from(2u32)),
+        ("ps3", p - BigUint::from(3u32)),
+        ("ps4", p - BigUint::from(4u32)),
+        ("ps5", p - BigUint::from(5u32)),
         ("zero", BigUint::zero()),
         ("one", BigUint::one()),
     ];
@@ -392,7 +401,7 @@ fn subp_optimize_z3(cnsts: &RCmds, decls: &RCmds, include_p_defs: bool) -> (RCmd
     let subst_map: Vec<(BigUint, &str)> = constants.iter().map(|(n, v)| (v.clone(), *n)).collect();
     let new_cnsts = RCmds::new(
         cnsts
-            .vs
+            .commands
             .iter()
             .map(|c| subp_cmd(&subst_map, c))
             .collect(),
@@ -400,7 +409,7 @@ fn subp_optimize_z3(cnsts: &RCmds, decls: &RCmds, include_p_defs: bool) -> (RCmd
 
     // Merge extra decls with existing decls
     let mut all_decls = extra_decls;
-    all_decls.extend(decls.vs.iter().cloned());
+    all_decls.extend(decls.commands.iter().cloned());
     (new_cnsts, RCmds::new(all_decls))
 }
 
@@ -408,11 +417,11 @@ fn subp_optimize_cvc5(cnsts: &RCmds, decls: &RCmds, include_p_defs: bool) -> (RC
     let p = bn128_prime();
 
     let constants: Vec<(&str, BigUint)> = vec![
-        ("ps1", &p - BigUint::from(1u32)),
-        ("ps2", &p - BigUint::from(2u32)),
-        ("ps3", &p - BigUint::from(3u32)),
-        ("ps4", &p - BigUint::from(4u32)),
-        ("ps5", &p - BigUint::from(5u32)),
+        ("ps1", p - BigUint::from(1u32)),
+        ("ps2", p - BigUint::from(2u32)),
+        ("ps3", p - BigUint::from(3u32)),
+        ("ps4", p - BigUint::from(4u32)),
+        ("ps5", p - BigUint::from(5u32)),
         ("zero", BigUint::zero()),
         ("one", BigUint::one()),
     ];
@@ -439,14 +448,14 @@ fn subp_optimize_cvc5(cnsts: &RCmds, decls: &RCmds, include_p_defs: bool) -> (RC
 
     let new_cnsts = RCmds::new(
         cnsts
-            .vs
+            .commands
             .iter()
             .map(|c| subp_cmd(&subst_map, c))
             .collect(),
     );
 
     let mut all_decls = extra_decls;
-    all_decls.extend(decls.vs.iter().cloned());
+    all_decls.extend(decls.commands.iter().cloned());
     (new_cnsts, RCmds::new(all_decls))
 }
 

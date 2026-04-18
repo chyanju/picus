@@ -1,22 +1,19 @@
-//! L1: Binary01 lemma — detects x*(x-1)=0 patterns to infer x ∈ {0,1}.
+//! L1: Binary01 lemma — detects x*(x-1)=0 patterns.
 
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
-use picus_r1cs::bn128_prime;
 use picus_r1cs::grammar::*;
+use picus_r1cs::{bn128_prime, parse_var_index};
 use std::collections::HashSet;
 
-/// Per-signal range: either unconstrained (Bottom) or a finite set of values.
+/// Per-signal range: unconstrained (Bottom) or a finite set of values.
 #[derive(Debug, Clone)]
 pub enum RangeValue {
-    /// Unconstrained — full field.
     Bottom,
-    /// Constrained to a finite set of values.
     Values(HashSet<BigUint>),
 }
 
 impl RangeValue {
-    /// Intersect with a new set of values.
     pub fn intersect(&mut self, new_vals: HashSet<BigUint>) {
         match self {
             RangeValue::Bottom => *self = RangeValue::Values(new_vals),
@@ -26,121 +23,122 @@ impl RangeValue {
         }
     }
 
-    /// Check if this range is a singleton.
+    #[must_use]
     pub fn is_singleton(&self) -> bool {
         matches!(self, RangeValue::Values(v) if v.len() == 1)
     }
 
-    /// Check if this range contains a value.
-    pub fn contains(&self, val: &BigUint) -> bool {
-        match self {
-            RangeValue::Bottom => true,
-            RangeValue::Values(v) => v.contains(val),
-        }
-    }
-
-    /// Check if range is a subset of {0, 1}.
+    #[must_use]
     pub fn is_binary(&self) -> bool {
         match self {
             RangeValue::Bottom => false,
-            RangeValue::Values(v) => {
-                v.iter()
-                    .all(|x| x.is_zero() || x == &BigUint::one())
-            }
+            RangeValue::Values(v) => v.iter().all(|x| x.is_zero() || x == &BigUint::one()),
         }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        matches!(self, RangeValue::Values(v) if v.is_empty())
     }
 }
 
-/// Apply the binary01 lemma: detect x*(x-1)=0 patterns and update range_vec.
-///
-/// After detection, any signal with singleton range is moved to known set.
+/// Apply the binary01 lemma. Mutates `ks`, `us`, and `range_vec` in place.
 pub fn apply_lemma(
-    mut ks: HashSet<usize>,
-    mut us: HashSet<usize>,
+    ks: &mut HashSet<usize>,
+    us: &mut HashSet<usize>,
     cnsts: &RCmds,
     range_vec: &mut [RangeValue],
-) -> (HashSet<usize>, HashSet<usize>) {
+) {
     let p = bn128_prime();
-    let p_minus_1 = &p - BigUint::one();
+    let p_minus_1 = p - BigUint::one();
     let binary_set: HashSet<BigUint> = [BigUint::zero(), BigUint::one()].into_iter().collect();
 
-    for cmd in &cnsts.vs {
+    for cmd in &cnsts.commands {
         if let RCmd::Assert(expr) = cmd
-            && let Some(signal_id) = match_binary01_pattern(expr, &p, &p_minus_1) {
-                // Override range with {0, 1}
-                if signal_id < range_vec.len() {
+            && let Some(signal_id) = match_binary01_pattern(expr, &p_minus_1)
+                && signal_id < range_vec.len() {
                     range_vec[signal_id].intersect(binary_set.clone());
                 }
-            }
     }
 
-    // Check for singletons: signals whose range collapsed to one value
     for (sig, range) in range_vec.iter().enumerate() {
-        if range.is_singleton() && us.contains(&sig) {
+        if range.is_singleton() && us.remove(&sig) {
             ks.insert(sig);
-            us.remove(&sig);
         }
     }
-
-    (ks, us)
 }
 
-/// Try to match various forms of x*(x-1)=0 patterns.
-/// Returns the signal index if matched.
-fn match_binary01_pattern(expr: &RExpr, p: &BigUint, p_minus_1: &BigUint) -> Option<usize> {
-    // Pattern 1 (after ab0): Or([Eq(0, x), Eq(0, x-1)]) → x ∈ {0, 1}
-    // Pattern 2: Eq(Mod(Add(Mul(x, x), Mul(p-1, x)), p), Mod(Int(0), p))
-    // Pattern 3: Eq(Add(Mul(x, x), Mul(p-1, x)), Int(0)) [cvc5]
-    // And many commutative variants...
-
+fn match_binary01_pattern(expr: &RExpr, p_minus_1: &BigUint) -> Option<usize> {
     match expr {
-        // Or pattern (from ab0 optimization)
+        // Pattern A: Or([eq_zero_expr, eq_zero_expr]) — from AB0 optimization
+        // After AB0, x*(x-1)=0 becomes or(A=0, B=0) where:
+        //   - One branch contains just `x` (i.e., Eq(0, x))
+        //   - The other branch contains a linear expression with `x`
+        //     (e.g., Eq(0, ps1 + x) which means x = -(p-1) = 1)
+        // Both branches have the same signal, proving x ∈ {0, 1}.
         RExpr::Or(vs) if vs.len() == 2 => {
-            let sig0 = match_eq_zero_var(&vs[0]);
-            let sig1 = match_eq_zero_var(&vs[1]);
-            if let (Some(s0), Some(s1)) = (sig0, sig1)
-                && s0 == s1 {
-                    return Some(s0);
+            let sigs0 = extract_signals_from_eq_zero(&vs[0]);
+            let sigs1 = extract_signals_from_eq_zero(&vs[1]);
+
+            for &s0 in &sigs0 {
+                for &s1 in &sigs1 {
+                    if s0 == s1 {
+                        return Some(s0);
+                    }
                 }
-            // Try matching eq(0, x-k) form for detecting binary constraint
+            }
             None
         }
 
-        // x^2 + (p-1)*x = 0 in mod form (z3)
-        RExpr::Eq(lhs, rhs) => {
-            // Check both directions
-            try_match_quadratic(lhs, rhs, p, p_minus_1)
-                .or_else(|| try_match_quadratic(rhs, lhs, p, p_minus_1))
-        }
+        // Pattern B: Eq(quadratic_in_x, 0) — direct x^2 + (p-1)*x = 0
+        RExpr::Eq(lhs, rhs) => try_match_quadratic(lhs, rhs, p_minus_1)
+            .or_else(|| try_match_quadratic(rhs, lhs, p_minus_1)),
 
         _ => None,
     }
 }
 
-/// Try matching x² + (p-1)*x = 0 (mod p) or in finite field.
-fn try_match_quadratic(
-    lhs: &RExpr,
-    rhs: &RExpr,
-    _p: &BigUint,
-    p_minus_1: &BigUint,
-) -> Option<usize> {
-    // Match: Add([Mul([x, x]), Mul([p-1, x])]) = 0
-    let inner_lhs = strip_mod(lhs);
-    let inner_rhs = strip_mod(rhs);
+/// Extract all signal indices from an `Eq(0, expr)` or `Eq(expr, 0)` expression.
+fn extract_signals_from_eq_zero(expr: &RExpr) -> Vec<usize> {
+    if let RExpr::Eq(lhs, rhs) = expr {
+        let inner = if lhs.is_zero() {
+            rhs.as_ref()
+        } else if rhs.is_zero() {
+            lhs.as_ref()
+        } else {
+            return vec![];
+        };
+        // Collect all signal indices from the non-zero side
+        return collect_signal_indices(inner);
+    }
+    vec![]
+}
 
-    // rhs should be 0
-    if !is_zero_expr(inner_rhs) {
+/// Recursively collect all signal indices from an expression.
+fn collect_signal_indices(expr: &RExpr) -> Vec<usize> {
+    match expr {
+        RExpr::Var(name) => parse_var_index(name).into_iter().collect(),
+        RExpr::Add(vs) | RExpr::Mul(vs) | RExpr::Sub(vs) => {
+            vs.iter().flat_map(collect_signal_indices).collect()
+        }
+        RExpr::Mod(inner, _) | RExpr::Neg(inner) => collect_signal_indices(inner),
+        _ => vec![],
+    }
+}
+
+fn try_match_quadratic(lhs: &RExpr, rhs: &RExpr, p_minus_1: &BigUint) -> Option<usize> {
+    let inner_lhs = lhs.strip_mod();
+    let inner_rhs = rhs.strip_mod();
+
+    if !inner_rhs.is_zero() {
         return None;
     }
 
-    // lhs should be Add([Mul([x, x]), Mul([p-1, x])])
     if let RExpr::Add(terms) = inner_lhs
         && terms.len() == 2 {
-            // Try both orderings
             return try_extract_binary_signal(&terms[0], &terms[1], p_minus_1)
                 .or_else(|| try_extract_binary_signal(&terms[1], &terms[0], p_minus_1));
         }
-
     None
 }
 
@@ -149,9 +147,7 @@ fn try_extract_binary_signal(
     term_lin: &RExpr,
     p_minus_1: &BigUint,
 ) -> Option<usize> {
-    // term_sq = Mul([Var(x), Var(x)]) or Mul([Int(1), Var(x), Var(x)])
     let sq_var = extract_squared_var(term_sq)?;
-    // term_lin = Mul([Int(p-1), Var(x)]) or Mul([Var(ps1), Var(x)])
     let (coeff, lin_var) = extract_linear_term(term_lin)?;
     if sq_var == lin_var && (coeff == *p_minus_1 || coeff == BigUint::one()) {
         return Some(sq_var);
@@ -161,10 +157,7 @@ fn try_extract_binary_signal(
 
 fn extract_squared_var(expr: &RExpr) -> Option<usize> {
     if let RExpr::Mul(vs) = expr {
-        let vars: Vec<usize> = vs
-            .iter()
-            .filter_map(extract_signal_id)
-            .collect();
+        let vars: Vec<usize> = vs.iter().filter_map(extract_signal_id).collect();
         if vars.len() == 2 && vars[0] == vars[1] {
             return Some(vars[0]);
         }
@@ -178,13 +171,15 @@ fn extract_linear_term(expr: &RExpr) -> Option<(BigUint, usize)> {
         let mut var_id = None;
         for v in vs {
             match v {
-                RExpr::Int(n) => coeff = n.clone(),
+                RExpr::Int(n) => {
+                    coeff = n.clone();
+                }
                 RExpr::Var(name) => {
                     if let Some(id) = parse_var_index(name) {
                         var_id = Some(id);
-                    } else {
-                        // Named constant like "ps1" — treat as coefficient placeholder
-                        // We'll handle this by returning the name-based match
+                    } else if let Some(c) = resolve_named_constant(name) {
+                        // Named constant like "ps1" = p-1
+                        coeff = c;
                     }
                 }
                 _ => {}
@@ -197,45 +192,25 @@ fn extract_linear_term(expr: &RExpr) -> Option<(BigUint, usize)> {
     None
 }
 
-fn match_eq_zero_var(expr: &RExpr) -> Option<usize> {
-    if let RExpr::Eq(lhs, rhs) = expr {
-        if is_zero_expr(lhs) {
-            return extract_signal_id(rhs);
-        }
-        if is_zero_expr(rhs) {
-            return extract_signal_id(lhs);
-        }
-    }
-    None
-}
-
-fn strip_mod(expr: &RExpr) -> &RExpr {
-    if let RExpr::Mod(inner, _) = expr {
-        inner.as_ref()
-    } else {
-        expr
-    }
-}
-
-fn is_zero_expr(expr: &RExpr) -> bool {
-    match strip_mod(expr) {
-        RExpr::Int(v) => v.is_zero(),
-        RExpr::Add(vs) if vs.len() == 1 => is_zero_expr(&vs[0]),
-        _ => false,
+/// Resolve named constants introduced by the subp optimizer.
+fn resolve_named_constant(name: &str) -> Option<BigUint> {
+    let p = bn128_prime();
+    match name {
+        "p" => Some(p.clone()),
+        "ps1" => Some(p - BigUint::one()),
+        "ps2" => Some(p - BigUint::from(2u32)),
+        "ps3" => Some(p - BigUint::from(3u32)),
+        "ps4" => Some(p - BigUint::from(4u32)),
+        "ps5" => Some(p - BigUint::from(5u32)),
+        "zero" => Some(BigUint::zero()),
+        "one" => Some(BigUint::one()),
+        _ => None,
     }
 }
 
 pub fn extract_signal_id(expr: &RExpr) -> Option<usize> {
     if let RExpr::Var(name) = expr {
         parse_var_index(name)
-    } else {
-        None
-    }
-}
-
-pub fn parse_var_index(name: &str) -> Option<usize> {
-    if (name.starts_with('x') || name.starts_with('y')) && name.len() > 1 {
-        name[1..].parse().ok()
     } else {
         None
     }
