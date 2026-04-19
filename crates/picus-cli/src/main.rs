@@ -1,8 +1,7 @@
 use clap::{Parser, Subcommand};
-use picus_analysis::dpvl::{DpvlConfig, DpvlResult};
+use picus_analysis::dpvl::{DpvlConfig, DpvlResult, LemmaSet};
 use picus_analysis::selector::SelectorKind;
-use picus_r1cs::precondition;
-use picus_smt::SolverKind;
+use picus_smt::{SolverKind, Theory};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -24,9 +23,13 @@ enum Commands {
         #[arg(long)]
         r1cs: PathBuf,
 
-        /// Solver backend
-        #[arg(long, default_value = "cvc5", value_parser = ["z3", "cvc4", "cvc5"])]
+        /// Solver backend: cvc5, z3, or none (propagation only)
+        #[arg(long, default_value = "cvc5", value_parser = ["z3", "cvc5", "none"])]
         solver: String,
+
+        /// SMT theory
+        #[arg(long, default_value = "ff", value_parser = ["ff", "nia"])]
+        theory: String,
 
         /// Per-query solver timeout in milliseconds
         #[arg(long, default_value = "5000")]
@@ -36,25 +39,14 @@ enum Commands {
         #[arg(long, default_value = "counter", value_parser = ["first", "counter"])]
         selector: String,
 
-        /// Path to precondition JSON file
-        #[arg(long)]
-        precondition: Option<PathBuf>,
+        /// Propagation lemmas to enable (comma-separated).
+        /// Values: all, none, linear, binary01, basis2, aboz, bim
+        #[arg(long, default_value = "all")]
+        lemmas: String,
 
-        /// Disable propagation lemmas (solver-only mode)
-        #[arg(long)]
-        noprop: bool,
-
-        /// Disable solver phase (propagation-only mode)
-        #[arg(long)]
-        nosolve: bool,
-
-        /// Print SMT file paths for debugging
-        #[arg(long)]
-        smt: bool,
-
-        /// Map signal IDs to Circom variable names via .sym file
-        #[arg(long)]
-        map: bool,
+        /// Dump SMT queries to a directory for debugging
+        #[arg(long, name = "dump-smt")]
+        dump_smt: Option<PathBuf>,
     },
 
     /// Print R1CS circuit information
@@ -77,24 +69,12 @@ fn main() {
         Commands::Check {
             r1cs,
             solver,
+            theory,
             timeout,
             selector,
-            precondition: precond_path,
-            noprop,
-            nosolve,
-            smt,
-            map,
-        } => cmd_check(
-            r1cs,
-            &solver,
-            timeout,
-            &selector,
-            precond_path,
-            noprop,
-            nosolve,
-            smt,
-            map,
-        ),
+            lemmas,
+            dump_smt,
+        } => cmd_check(r1cs, &solver, &theory, timeout, &selector, &lemmas, dump_smt),
         Commands::Info { r1cs, constraints } => cmd_info(r1cs, constraints),
     }
 }
@@ -103,20 +83,33 @@ fn main() {
 fn cmd_check(
     r1cs_path: PathBuf,
     solver_str: &str,
+    theory_str: &str,
     timeout: u64,
     selector_str: &str,
-    precond_path: Option<PathBuf>,
-    noprop: bool,
-    nosolve: bool,
-    smt: bool,
-    map: bool,
+    lemmas_str: &str,
+    dump_smt: Option<PathBuf>,
 ) {
     let solver: SolverKind = solver_str.parse().unwrap_or_else(|e| {
         eprintln!("error: {}", e);
         std::process::exit(1);
     });
 
+    let theory: Theory = theory_str.parse().unwrap_or_else(|e| {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    });
+
+    if let Err(e) = picus_smt::validate_combination(solver, theory) {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    }
+
     let selector: SelectorKind = selector_str.parse().unwrap_or_else(|e| {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    });
+
+    let lemmas = LemmaSet::parse(lemmas_str).unwrap_or_else(|e| {
         eprintln!("error: {}", e);
         std::process::exit(1);
     });
@@ -136,23 +129,23 @@ fn cmd_check(
         r1cs.header.n_prv_in
     );
 
-    let preconditions = precond_path.as_ref().map(|path| {
-        precondition::read_precondition(path).unwrap_or_else(|e| {
-            eprintln!("error: failed to read precondition file: {}", e);
-            std::process::exit(1);
-        })
-    });
+    if let Some(ref dir) = dump_smt {
+        let _ = std::fs::create_dir_all(dir);
+    }
 
     let config = DpvlConfig {
         solver,
+        theory,
         selector,
         timeout_ms: timeout,
-        enable_propagation: !noprop,
-        enable_solving: !nosolve,
-        show_smt: smt,
+        lemmas,
+        dump_smt,
     };
 
-    let result = picus_analysis::dpvl::run_dpvl(&r1cs, &config, preconditions.as_ref());
+    let result = picus_analysis::dpvl::run_dpvl(&r1cs, &config).unwrap_or_else(|e| {
+        eprintln!("error: {}", e);
+        std::process::exit(1);
+    });
 
     match result {
         DpvlResult::Safe => {
@@ -161,29 +154,36 @@ fn cmd_check(
         DpvlResult::Unsafe(model) => {
             println!("uniqueness: unsafe");
             if !model.is_empty() {
-                println!("counter-example:");
-                let sym_map = if map {
-                    let sym_path = r1cs_path.with_extension("sym");
-                    if sym_path.exists() {
-                        picus_r1cs::sym::parse_sym_file(&sym_path, r1cs.header.n_wires as usize)
-                            .ok()
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
+                // Filter out named constants (ps1-ps5, p, zero, one) — only show circuit signals
+                let constants: std::collections::HashSet<&str> =
+                    ["p", "ps1", "ps2", "ps3", "ps4", "ps5", "zero", "one"].into_iter().collect();
 
-                let mut entries: Vec<_> = model.iter().collect();
-                entries.sort_by_key(|(k, _)| k.to_string());
-                for (var, val) in entries {
-                    let display = sym_map
-                        .as_ref()
-                        .and_then(|s| {
-                            picus_r1cs::parse_var_index(var).and_then(|idx| s.signal_names.get(&idx).cloned())
-                        })
-                        .unwrap_or_else(|| var.clone());
-                    println!("  {} = {}", display, val);
+                // Separate x (original) and y (alternative) signals
+                let mut x_vals: Vec<(&String, &num_bigint::BigUint)> = Vec::new();
+                let mut y_vals: Vec<(&String, &num_bigint::BigUint)> = Vec::new();
+
+                for (var, val) in &model {
+                    if constants.contains(var.as_str()) {
+                        continue;
+                    }
+                    if var.starts_with('y') {
+                        y_vals.push((var, val));
+                    } else {
+                        x_vals.push((var, val));
+                    }
+                }
+
+                x_vals.sort_by_key(|(k, _)| picus_r1cs::parse_var_index(k).unwrap_or(usize::MAX));
+                y_vals.sort_by_key(|(k, _)| picus_r1cs::parse_var_index(k).unwrap_or(usize::MAX));
+
+                println!("counter-example (two distinct witnesses for the same inputs):");
+                println!("  witness 1 (original):");
+                for (var, val) in &x_vals {
+                    println!("    {} = {}", var, val);
+                }
+                println!("  witness 2 (alternative):");
+                for (var, val) in &y_vals {
+                    println!("    {} = {}", var, val);
                 }
             }
         }
@@ -211,14 +211,6 @@ fn cmd_info(r1cs_path: PathBuf, show_constraints: bool) {
     println!("labels: {}", r1cs.header.n_labels);
     println!("inputs (0-based): {:?}", r1cs.inputs);
     println!("outputs (0-based): {:?}", r1cs.outputs);
-
-    // Print signal names from .sym if available
-    let sym_path = r1cs_path.with_extension("sym");
-    if sym_path.exists()
-        && let Ok(sym) = picus_r1cs::sym::parse_sym_file(&sym_path, r1cs.header.n_wires as usize)
-        {
-            println!("symbol map: {} signals", sym.signal_names.len());
-        }
 
     if show_constraints {
         println!();

@@ -33,7 +33,8 @@ pub fn parse_r1cs(
     solver: SolverKind,
 ) -> ParsedR1cs {
     match solver {
-        SolverKind::Z3 | SolverKind::Cvc4 => parse_r1cs_z3(r1cs, xlist_in),
+        SolverKind::Z3 => parse_r1cs_z3(r1cs, xlist_in),
+        SolverKind::None => unreachable!("SolverKind::None should not reach parser"),
         SolverKind::Cvc5 => parse_r1cs_cvc5(r1cs, xlist_in),
     }
 }
@@ -41,12 +42,13 @@ pub fn parse_r1cs(
 /// Expand standard-form constraints into sum-of-products form.
 pub fn expand_r1cs(cnsts: &RCmds, solver: SolverKind) -> RCmds {
     match solver {
-        SolverKind::Z3 | SolverKind::Cvc4 => expand_r1cs_z3(cnsts),
+        SolverKind::Z3 => expand_r1cs_z3(cnsts),
+        SolverKind::None => unreachable!("SolverKind::None should not reach expand"),
         SolverKind::Cvc5 => expand_r1cs_cvc5(cnsts),
     }
 }
 
-// ========================= Z3 / CVC4 parser =========================
+// ========================= Z3 parser (QF_NIA) =========================
 
 fn parse_r1cs_z3(r1cs: &R1csFile, xlist_in: &[String]) -> ParsedR1cs {
     let p = bn128_prime();
@@ -75,7 +77,7 @@ fn parse_r1cs_z3(r1cs: &R1csFile, xlist_in: &[String]) -> ParsedR1cs {
         }
     }
 
-    // Range constraints (0 <= x < p) for z3/cvc4
+    // Range constraints (0 <= x < p) for z3
     decls.push(RCmd::Comment("======== range constraints ========".into()));
     for x in &xlist {
         if !xlist_in.is_empty() && x.starts_with('x') {

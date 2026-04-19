@@ -15,53 +15,78 @@ Picus implements the **QED²** algorithm to verify that R1CS constraints in a ZK
 
 > Looking for the original PLDI 2023 research artifact? See the [artifact branch](https://github.com/chyanju/Picus/tree/pldi23-research-artifact).
 
-## Quick Start
+## Prerequisites
+
+### cvc5 (required)
+
+Picus requires cvc5 with finite field theory support (CoCoA). Picus has been tested with cvc5 1.3.3.
+
+**Option A — Pre-built binaries:** Download the **GPL shared library build** (`*-shared-gpl.zip`) from the [cvc5 GitHub Releases](https://github.com/cvc5/cvc5/releases) page and install the headers and libraries to a system-searchable path (e.g., `/usr/local/`).
+
+**Option B — Build from source:** Follow the [cvc5 installation guide](https://cvc5.github.io/docs/cvc5-1.3.2/installation/installation.html). When configuring, enable CoCoA and GPL licensing:
+```bash
+./configure.sh --auto-download --cocoa --gpl
+```
+See the [CoCoA section](https://cvc5.github.io/docs/cvc5-1.3.2/installation/installation.html#cocoa-optional-computer-algebra-library) of the guide for details. CoCoA is covered by GPLv3 — using it makes the resulting cvc5 build GPL-licensed.
+
+> **Note:** The non-GPL builds of cvc5 do not include CoCoA and cannot solve finite field (QF_FF) problems.
+
+z3 is bundled automatically during compilation — no separate installation needed.
+
+## Installation
 
 ```bash
-# Install (requires Rust 1.85+)
+# Option 1: Install to PATH
 cargo install --path crates/picus-cli
 
-# Check a circuit
-picus check --r1cs circuit.r1cs --solver cvc5
-```
+# Option 2: Build and run locally
+cargo build --release
+./target/release/picus check --r1cs circuit.r1cs
 
-An SMT solver must be on your `PATH` — either [cvc5](https://cvc5.github.io/) (recommended, native finite-field support) or [z3](https://github.com/Z3Prover/z3) 4.10+.
+# Option 3: Build and run in one step
+cargo run --release -p picus-cli -- check --r1cs circuit.r1cs
+```
 
 ## Usage
 
 ### `picus check` — verify circuit uniqueness
 
 ```bash
-picus check --r1cs circuit.r1cs --solver cvc5
-picus check --r1cs circuit.r1cs --nosolve              # propagation only
+picus check --r1cs circuit.r1cs                              # default: cvc5 + ff
+picus check --r1cs circuit.r1cs --solver z3 --theory nia     # z3 with integer arithmetic
+picus check --r1cs circuit.r1cs --solver none                # propagation only
+picus check --r1cs circuit.r1cs --lemmas linear,binary01     # select specific lemmas
+picus check --r1cs circuit.r1cs --dump-smt /tmp/smt/         # dump SMT queries
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--r1cs <path>` | *required* | R1CS binary file |
-| `--solver <z3\|cvc4\|cvc5>` | `cvc5` | SMT backend |
+| `--solver <cvc5\|z3\|none>` | `cvc5` | Solver backend (`none` = propagation only) |
+| `--theory <ff\|nia>` | `ff` | Theory: `ff` (finite field) or `nia` (integer mod) |
 | `--timeout <ms>` | `5000` | Per-query solver timeout |
 | `--selector <first\|counter>` | `counter` | Signal selection heuristic |
-| `--noprop` | off | Skip propagation lemmas |
-| `--nosolve` | off | Skip solver calls |
-| `--map` | off | Resolve signal names from `.sym` |
-| `--precondition <path>` | — | JSON precondition file |
+| `--lemmas <list>` | `all` | Lemmas: `all`, `none`, or comma-separated names (`linear`, `binary01`, `basis2`, `aboz`, `bim`) |
+| `--dump-smt <dir>` | — | Dump SMT-LIB queries to directory |
+
+> **Note**: `z3 + ff` is not supported (z3 has no finite field theory). Picus will reject this combination.
 
 ### `picus info` — inspect R1CS metadata
 
 ```bash
 picus info --r1cs circuit.r1cs
-picus info --r1cs circuit.r1cs --constraints    # print all constraints
+picus info --r1cs circuit.r1cs --constraints
 ```
 
 ## Documentation
 
 | | |
 |---|---|
-| [Architecture](docs/architecture.md) | Crate structure, data flow pipeline, algorithm overview |
-| [Propagation Lemmas](docs/propagation-lemmas.md) | L0–L4 deduction rules and their implementation |
-| [Benchmarks](docs/benchmarks.md) | Test suite from 23 real-world projects, expected results |
-| [Changelog](CHANGELOG.md) | Version history and release notes |
+| [Architecture](docs/architecture.md) | Crate structure, data flow, solver backends |
+| [Propagation Lemmas](docs/propagation-lemmas.md) | Deduction rules and their implementation |
+| [Benchmarks](docs/benchmarks.md) | Test suite from 23 real-world projects |
+| [Future Work](docs/TODO.md) | Planned features and removed components |
+| [Changelog](CHANGELOG.md) | Version history |
 
 ## Citation
 

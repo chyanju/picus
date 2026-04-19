@@ -13,6 +13,4 @@ picus-smt = { path = "../picus-smt" }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
 num-integer = { workspace = true }
-petgraph = { workspace = true }
-thiserror = { workspace = true }
 log = { workspace = true }

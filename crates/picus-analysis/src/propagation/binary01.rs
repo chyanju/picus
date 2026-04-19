@@ -1,4 +1,4 @@
-//! L1: Binary01 lemma — detects x*(x-1)=0 patterns.
+//! Binary01 propagation lemma — detects x*(x-1)=0 patterns.
 
 use num_bigint::BigUint;
 use num_traits::{One, Zero};

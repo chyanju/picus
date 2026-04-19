@@ -1,4 +1,4 @@
-//! L0: Linear lemma — constraint dependency propagation.
+//! Linear propagation lemma — constraint dependency propagation.
 
 use picus_r1cs::grammar::*;
 use std::collections::{HashMap, HashSet};

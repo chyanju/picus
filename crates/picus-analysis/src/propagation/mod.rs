@@ -3,6 +3,5 @@ pub mod binary01;
 pub mod basis2;
 pub mod aboz;
 pub mod bim;
-pub mod baby;
 
 pub use binary01::RangeValue;

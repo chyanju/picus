@@ -1,4 +1,4 @@
-//! L4: Big Integer Multiply lemma — linear algebra over constraints.
+//! Big Integer Multiply (BIM) propagation lemma — linear algebra over constraints.
 #![allow(clippy::needless_range_loop)]
 
 use num_bigint::{BigInt, BigUint};
@@ -152,5 +152,5 @@ fn mod_inverse(a: &BigUint, p: &BigUint) -> Option<BigUint> {
     let gcd = a_int.extended_gcd(&p_int);
     if gcd.gcd != BigInt::one() { return None; }
     let inv = ((gcd.x % &p_int) + &p_int) % &p_int;
-    Some(inv.to_biguint().unwrap())
+    Some(inv.to_biguint().expect("modular reduction should be non-negative"))
 }

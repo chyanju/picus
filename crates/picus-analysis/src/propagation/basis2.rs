@@ -1,4 +1,4 @@
-//! L2: Basis2 lemma — binary decomposition detection.
+//! Basis2 propagation lemma — binary decomposition detection.
 
 use num_bigint::BigUint;
 use num_traits::{One, Zero};

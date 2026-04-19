@@ -1,6 +1,5 @@
 pub mod grammar;
 pub mod parser;
-pub mod precondition;
 pub mod sym;
 
 use num_bigint::BigUint;

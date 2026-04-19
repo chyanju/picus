@@ -9,11 +9,6 @@ edition.workspace = true
 
 [dependencies]
 num-bigint = { workspace = true }
-num-traits = { workspace = true }
-num-integer = { workspace = true }
 byteorder = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 csv = { workspace = true }
 thiserror = { workspace = true }
-log = { workspace = true }

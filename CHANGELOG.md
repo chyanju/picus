@@ -4,6 +4,52 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-04-18
+
+### Changed
+- **CLI: `--solver none`** replaces `--nosolve`. Setting `--solver none` runs propagation only without invoking any SMT solver.
+- **CLI: `--lemmas`** replaces `--noprop`. Accepts comma-separated lemma names (`linear`, `binary01`, `basis2`, `aboz`, `bim`) or `all`/`none`. Default: `all`.
+- **`run_dpvl` returns `Result`**: The library function no longer calls `process::exit`; errors are propagated to the caller.
+
+### Fixed
+- **Stable Rust compilation**: Replaced nightly-only `is_multiple_of()` API with `% 8 != 0`.
+- **cvc5 NIA `dump_smt`**: Fixed missing constraint serialization in the CVC5 NIA backend's SMT dump output.
+- **Unwrap safety**: Replaced bare `.unwrap()` calls with `.expect()` in z3 model extraction and BigInt conversion.
+
+### Removed
+- **CVC4 support** (removed in v1.2.0, cleanup completed).
+- **`--map` and `--precondition` CLI flags** and their backing code (`precondition.rs`, `serde`/`serde_json` dependencies).
+- **BabyJubJub lemma stub** (`baby.rs`), **constraint graph** (`constraint_graph.rs`), **CEX stub** (`cex.rs`), and `petgraph` dependency. See [Future Work](docs/TODO.md) for plans.
+- **Short lemma aliases** (`l0`–`l4`): Only full names are accepted in `--lemmas`.
+
+### Added
+- `docs/TODO.md` documenting removed components and planned features.
+
+## [1.2.0] - 2026-04-18
+
+### Changed
+- **Native solver API integration**: Replaced subprocess-based solver invocation with direct Rust API calls to z3 and cvc5. No more SMT-LIB string generation → temp file → subprocess → stdout parsing. Solvers are now linked as libraries.
+- **New CLI options**: `--solver <cvc5|z3>` and `--theory <ff|nia>` replace the old single `--solver` flag. Default: `--solver cvc5 --theory ff`.
+- **`--dump-smt <dir>`**: Replaces the old `--smt` flag. Dumps each solver query as an SMT-LIB file to the specified directory for debugging.
+- **Solver-agnostic IR**: Introduced `UniquenessQuery` intermediate representation that decouples constraint encoding from solver-specific APIs.
+- **Three solver backends**: `Z3NiaBackend` (QF_NIA), `Cvc5FfBackend` (QF_FF), `Cvc5NiaBackend` (QF_NIA). Each implements `SolverBackend` trait with `solve()` and `dump_smt()`.
+
+### Removed
+- **CVC4 support**: Fully removed. CVC4 is end-of-life; use cvc5 instead.
+- **Subprocess solver invocation**: `interpreter.rs` and `solver.rs` (SMT-LIB text generation + process spawning) have been removed. All solving now goes through Rust API bindings.
+
+### Added
+- `picus_smt::backends` module with `SolverBackend` trait.
+- `picus_smt::query` module with `UniquenessQuery` IR and `build_query()` builder.
+- `picus_smt::create_backend()` factory function.
+- `picus_smt::validate_combination()` for checking solver+theory compatibility.
+- z3 solver is bundled via `vendored` feature (compiled from source automatically).
+- cvc5 links against system-installed `libcvc5.so` (GPL build with CoCoA required).
+
+### Prerequisites
+- **cvc5 GPL** shared library must be installed system-wide. See README for instructions.
+- z3 is bundled automatically during `cargo build`.
+
 ## [1.1.2] - 2026-04-18
 
 ### Fixed

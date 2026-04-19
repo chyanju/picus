@@ -2,13 +2,13 @@
 
 use num_bigint::BigUint;
 use picus_r1cs::grammar::*;
-use picus_r1cs::precondition::Preconditions;
-use picus_smt::interpreter::interpret_r1cs;
+use picus_smt::backends::{SolverBackend, SolverResult};
 use picus_smt::optimizer;
+use picus_smt::query::{self};
 use picus_smt::r1cs_parser;
-use picus_smt::solver::{self, SolverResult};
-use picus_smt::SolverKind;
+use picus_smt::{SolverKind, Theory};
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use crate::propagation::binary01::RangeValue;
 use crate::propagation::{aboz, basis2, binary01, bim, linear};
@@ -22,121 +22,109 @@ pub enum DpvlResult {
     Unknown,
 }
 
+/// Set of enabled propagation lemmas.
+#[derive(Debug, Clone)]
+pub struct LemmaSet {
+    pub linear: bool,
+    pub binary01: bool,
+    pub basis2: bool,
+    pub aboz: bool,
+    pub bim: bool,
+}
+
+impl LemmaSet {
+    /// All lemmas enabled.
+    pub fn all() -> Self {
+        Self { linear: true, binary01: true, basis2: true, aboz: true, bim: true }
+    }
+
+    /// No lemmas enabled (solver-only mode, though this is unusual).
+    pub fn none() -> Self {
+        Self { linear: false, binary01: false, basis2: false, aboz: false, bim: false }
+    }
+
+    /// Parse from comma-separated string: "all", "none", or "linear,binary01,basis2".
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let s = s.trim().to_lowercase();
+        if s == "all" {
+            return Ok(Self::all());
+        }
+        if s == "none" {
+            return Ok(Self::none());
+        }
+        let mut set = Self::none();
+        for name in s.split(',') {
+            match name.trim() {
+                "linear" => set.linear = true,
+                "binary01" => set.binary01 = true,
+                "basis2" => set.basis2 = true,
+                "aboz" => set.aboz = true,
+                "bim" => set.bim = true,
+                other => return Err(format!(
+                    "unknown lemma: '{}'. Valid: linear, binary01, basis2, aboz, bim, all, none.",
+                    other
+                )),
+            }
+        }
+        Ok(set)
+    }
+
+    /// Check if any lemma is enabled.
+    pub fn any_enabled(&self) -> bool {
+        self.linear || self.binary01 || self.basis2 || self.aboz || self.bim
+    }
+}
+
 /// Configuration for the DPVL algorithm.
 pub struct DpvlConfig {
     pub solver: SolverKind,
+    pub theory: Theory,
     pub selector: SelectorKind,
     pub timeout_ms: u64,
-    pub enable_propagation: bool,
-    pub enable_solving: bool,
-    pub show_smt: bool,
+    pub lemmas: LemmaSet,
+    pub dump_smt: Option<PathBuf>,
 }
 
-/// Internal context holding all DPVL state — eliminates the 12-parameter functions.
+/// Internal context holding all DPVL state.
 struct DpvlContext {
     target_set: HashSet<usize>,
-    xlist: Vec<String>,
-    alt_xlist: Vec<String>,
+    r1cs: picus_r1cs::grammar::R1csFile,
     rcdmap: linear::RcdMap,
-    /// Optimized constraints (after subp) — used by propagation lemmas.
     p1cnsts: RCmds,
     range_vec: Vec<RangeValue>,
     selector: SelectorState,
-    /// Pre-serialized SMT prefix (defs + constraints + alt + preconditions).
-    partial_smt: String,
-    solver: SolverKind,
+    backend: Option<Box<dyn SolverBackend>>,
     timeout_ms: u64,
-    show_smt: bool,
-    enable_propagation: bool,
-    enable_solving: bool,
+    dump_smt: Option<PathBuf>,
+    lemmas: LemmaSet,
 }
 
 /// Run the DPVL algorithm on an R1CS file.
 pub fn run_dpvl(
     r1cs: &picus_r1cs::grammar::R1csFile,
     config: &DpvlConfig,
-    preconditions: Option<&Preconditions>,
-) -> DpvlResult {
+) -> Result<DpvlResult, String> {
     let nwires = r1cs.n_wires() as usize;
     let input_set: HashSet<usize> = r1cs.inputs.iter().copied().collect();
     let output_set: HashSet<usize> = r1cs.outputs.iter().copied().collect();
-
-    // Check uniqueness of output signals (weak uniqueness per QED² paper).
     let target_set = output_set;
 
-    // Parse original + alternative constraints
-    let parsed = r1cs_parser::parse_r1cs(r1cs, &[], config.solver);
-    let xlist = parsed.xlist.clone();
+    // --- Propagation pipeline (still uses RCmds AST) ---
+    let ast_solver = SolverKind::Z3;
 
-    let alt_xlist: Vec<String> = (0..nwires)
-        .map(|i| {
-            if input_set.contains(&i) {
-                format!("x{}", i)
-            } else {
-                format!("y{}", i)
-            }
-        })
-        .collect();
+    let parsed = r1cs_parser::parse_r1cs(r1cs, &[], ast_solver);
 
-    let alt_parsed = r1cs_parser::parse_r1cs(r1cs, &alt_xlist, config.solver);
+    let p0cnsts = optimizer::optimize_p0(&parsed.cnsts, ast_solver);
+    let expcnsts = r1cs_parser::expand_r1cs(&p0cnsts, ast_solver);
+    let nrmcnsts = optimizer::normalize(&expcnsts, ast_solver);
+    let (p1cnsts, _) = optimizer::optimize_p1(&nrmcnsts, &parsed.decls, ast_solver, true);
 
-    // Optimization pipeline: original
-    let p0cnsts = optimizer::optimize_p0(&parsed.cnsts, config.solver);
-    let expcnsts = r1cs_parser::expand_r1cs(&p0cnsts, config.solver);
-    let nrmcnsts = optimizer::normalize(&expcnsts, config.solver);
-    let (p1cnsts, p1decls) = optimizer::optimize_p1(&nrmcnsts, &parsed.decls, config.solver, true);
-
-    // For rcdmap
-    let sdm_exp = r1cs_parser::expand_r1cs(&parsed.cnsts, config.solver);
-    let sdmcnsts = optimizer::normalize(&sdm_exp, config.solver);
-
-    // Alternative pipeline
-    let alt_p0 = optimizer::optimize_p0(&alt_parsed.cnsts, config.solver);
-    let alt_exp = r1cs_parser::expand_r1cs(&alt_p0, config.solver);
-    let alt_nrm = optimizer::normalize(&alt_exp, config.solver);
-    let (alt_p1cnsts, alt_p1decls) =
-        optimizer::optimize_p1(&alt_nrm, &alt_parsed.decls, config.solver, false);
+    let sdm_exp = r1cs_parser::expand_r1cs(&parsed.cnsts, ast_solver);
+    let sdmcnsts = optimizer::normalize(&sdm_exp, ast_solver);
 
     // Known/unknown sets
     let mut ks: HashSet<usize> = input_set;
     let mut us: HashSet<usize> = (0..nwires).filter(|i| !ks.contains(i)).collect();
-
-    if let Some(pre) = preconditions {
-        for &sig in &pre.unique_set {
-            ks.insert(sig);
-            us.remove(&sig);
-        }
-    }
-
-    // Build partial commands and pre-serialize to SMT string
-    let mut partial_cmds = Vec::new();
-    partial_cmds.extend(p1decls.commands);
-    partial_cmds.extend(p1cnsts.commands.iter().cloned());
-    partial_cmds.extend(alt_p1decls.commands);
-    partial_cmds.extend(alt_p1cnsts.commands);
-
-    // Explicitly assert x0 = 1 for both copies.
-    // The simple optimizer replaces Var("x0") with Int(1) everywhere,
-    // which turns the original "assert (= 1 x0)" into a tautology.
-    // We must re-assert it so the declared x0 variable is constrained.
-    partial_cmds.push(RCmd::Assert(RExpr::Eq(
-        Box::new(RExpr::Var(xlist[0].clone())),
-        Box::new(RExpr::Int(BigUint::from(1u32))),
-    )));
-    partial_cmds.push(RCmd::Assert(RExpr::Eq(
-        Box::new(RExpr::Var(alt_xlist[0].clone())),
-        Box::new(RExpr::Int(BigUint::from(1u32))),
-    )));
-
-    if let Some(pre) = preconditions {
-        for (_tag, cmd) in &pre.commands {
-            partial_cmds.push(cmd.clone());
-        }
-    }
-
-    let partial_rcmds = RCmds::new(partial_cmds);
-    let opts_str = interpret_r1cs(&parsed.opts, config.solver);
-    let partial_smt = format!("{}{}", opts_str, interpret_r1cs(&partial_rcmds, config.solver));
 
     // Initialize range vector
     let mut range_vec: Vec<RangeValue> = (0..nwires).map(|_| RangeValue::Bottom).collect();
@@ -144,44 +132,40 @@ pub fn run_dpvl(
 
     let rcdmap = linear::compute_rcdmap(&sdmcnsts);
 
+    // Create solver backend
+    let backend = picus_smt::create_backend(config.solver, config.theory)?;
+
     let mut ctx = DpvlContext {
         target_set,
-        xlist,
-        alt_xlist,
+        r1cs: r1cs.clone(),
         rcdmap,
         p1cnsts,
         range_vec,
         selector: SelectorState::new(config.selector),
-        partial_smt,
-        solver: config.solver,
+        backend,
         timeout_ms: config.timeout_ms,
-        show_smt: config.show_smt,
-        enable_propagation: config.enable_propagation,
-        enable_solving: config.enable_solving,
+        dump_smt: config.dump_smt.clone(),
+        lemmas: config.lemmas.clone(),
     };
 
-    ctx.iterate(&mut ks, &mut us)
+    Ok(ctx.iterate(&mut ks, &mut us))
 }
 
 impl DpvlContext {
-    /// Main DPVL iteration loop (non-recursive).
     fn iterate(&mut self, ks: &mut HashSet<usize>, us: &mut HashSet<usize>) -> DpvlResult {
         loop {
-            // Propagate
-            if self.enable_propagation {
+            if self.lemmas.any_enabled() {
                 self.propagate(ks, us);
             }
 
-            // Check if all targets are known
             if self.target_set.iter().all(|t| ks.contains(t)) {
                 return DpvlResult::Safe;
             }
 
-            if !self.enable_solving {
+            if self.backend.is_none() {
                 return DpvlResult::Unknown;
             }
 
-            // Select and solve
             let us_before = us.len();
             let mut uspool: HashSet<usize> = us.clone();
             let mut made_progress = false;
@@ -206,7 +190,7 @@ impl DpvlContext {
                         ks.insert(sid);
                         us.remove(&sid);
                         made_progress = true;
-                        break; // Re-propagate
+                        break;
                     }
                     SolveResult::Sat(model) => {
                         self.selector.feedback(sid, SolverFeedback::Sat);
@@ -223,7 +207,7 @@ impl DpvlContext {
 
             if !made_progress {
                 if us.len() < us_before {
-                    continue; // Made some progress, try again
+                    continue;
                 }
                 return if self.target_set.iter().all(|t| ks.contains(t)) {
                     DpvlResult::Safe
@@ -231,7 +215,6 @@ impl DpvlContext {
                     DpvlResult::Unknown
                 };
             }
-            // made_progress = true → loop back to propagate
         }
     }
 
@@ -239,11 +222,21 @@ impl DpvlContext {
         loop {
             let ks_size = ks.len();
 
-            linear::apply_lemma(&self.rcdmap, ks, us);
-            binary01::apply_lemma(ks, us, &self.p1cnsts, &mut self.range_vec);
-            basis2::apply_lemma(ks, us, &self.p1cnsts, &self.range_vec);
-            aboz::apply_lemma(ks, us, &self.p1cnsts, &self.range_vec);
-            bim::apply_lemma(ks, us, &self.p1cnsts, &self.range_vec);
+            if self.lemmas.linear {
+                linear::apply_lemma(&self.rcdmap, ks, us);
+            }
+            if self.lemmas.binary01 {
+                binary01::apply_lemma(ks, us, &self.p1cnsts, &mut self.range_vec);
+            }
+            if self.lemmas.basis2 {
+                basis2::apply_lemma(ks, us, &self.p1cnsts, &self.range_vec);
+            }
+            if self.lemmas.aboz {
+                aboz::apply_lemma(ks, us, &self.p1cnsts, &self.range_vec);
+            }
+            if self.lemmas.bim {
+                bim::apply_lemma(ks, us, &self.p1cnsts, &self.range_vec);
+            }
 
             if ks.len() == ks_size {
                 break;
@@ -252,45 +245,30 @@ impl DpvlContext {
         }
     }
 
-    /// Build and dispatch one SMT query for signal `sid`.
-    fn solve(&self, ks: &HashSet<usize>, sid: usize) -> SolveResult {
-        // Build per-query commands: known equalities + query assertion + solve
-        let mut query_cmds = Vec::new();
+    fn solve(&mut self, ks: &HashSet<usize>, sid: usize) -> SolveResult {
+        let backend = match self.backend.as_mut() {
+            Some(b) => b,
+            None => return SolveResult::Skip,
+        };
 
-        for &j in ks {
-            if j < self.xlist.len()
-                && j < self.alt_xlist.len()
-                && self.xlist[j] != self.alt_xlist[j]
-            {
-                query_cmds.push(RCmd::Assert(RExpr::Eq(
-                    Box::new(RExpr::Var(self.xlist[j].clone())),
-                    Box::new(RExpr::Var(self.alt_xlist[j].clone())),
-                )));
+        let query_ir = query::build_query(&self.r1cs, ks, sid);
+
+        // Optionally dump SMT
+        if let Some(ref dir) = self.dump_smt {
+            let smt_str = backend.dump_smt(&query_ir);
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis();
+            let path = dir.join(format!("picus-{}-sig{}.smt2", ts, sid));
+            if let Err(e) = std::fs::write(&path, &smt_str) {
+                log::warn!("Failed to dump SMT: {}", e);
+            } else {
+                log::info!("SMT dumped to {}", path.display());
             }
         }
 
-        if sid < self.xlist.len()
-            && sid < self.alt_xlist.len()
-            && self.xlist[sid] != self.alt_xlist[sid]
-        {
-            query_cmds.push(RCmd::Assert(RExpr::Neq(
-                Box::new(RExpr::Var(self.xlist[sid].clone())),
-                Box::new(RExpr::Var(self.alt_xlist[sid].clone())),
-            )));
-        }
-
-        query_cmds.push(RCmd::Solve);
-
-        let query_smt = interpret_r1cs(&RCmds::new(query_cmds), self.solver);
-        let smt_str = format!("{}{}", self.partial_smt, query_smt);
-
-        log::debug!("SMT query length: {} bytes for signal {}", smt_str.len(), sid);
-
-        if self.show_smt {
-            log::info!("SMT file: {:?}", picus_smt::solver::last_smt_path());
-        }
-
-        match solver::solve(&smt_str, self.solver, self.timeout_ms) {
+        match backend.solve(&query_ir, self.timeout_ms) {
             Ok(SolverResult::Unsat) => SolveResult::Verified,
             Ok(SolverResult::Sat(model)) => {
                 if self.target_set.contains(&sid) {
@@ -299,9 +277,7 @@ impl DpvlContext {
                     SolveResult::Skip
                 }
             }
-            Ok(SolverResult::Timeout) | Ok(SolverResult::Unknown) | Ok(SolverResult::Error(_)) => {
-                SolveResult::Skip
-            }
+            Ok(SolverResult::Unknown) => SolveResult::Skip,
             Err(e) => {
                 log::warn!("Solver error: {}", e);
                 SolveResult::Skip

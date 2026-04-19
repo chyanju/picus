@@ -1,4 +1,4 @@
-//! L3: All-But-One-Zero lemma — sliding window 3-constraint match.
+//! All-But-One-Zero (ABOZ) propagation lemma — sliding window 3-constraint match.
 
 use picus_r1cs::grammar::*;
 use picus_r1cs::parse_var_index;

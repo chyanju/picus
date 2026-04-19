@@ -256,8 +256,9 @@ fn parse_constraint_block(
     Ok((ConstraintBlock { nnz, wire_ids, factors }, pos))
 }
 
+#[allow(clippy::manual_is_multiple_of)]
 fn parse_w2l_section(data: &[u8]) -> Result<W2lSection, R1csParseError> {
-    if !data.len().is_multiple_of(8) {
+    if data.len() % 8 != 0 {
         return Err(R1csParseError::BadW2lSize(data.len()));
     }
     let n = data.len() / 8;
