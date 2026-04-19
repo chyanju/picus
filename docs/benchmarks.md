@@ -54,6 +54,6 @@ Circuits that Picus identifies as **unsafe** (under-constrained outputs):
 | MontgomeryDouble | unsafe |
 | Decoder | unsafe |
 
-All 112 solvable benchmarks from the PLDI 2023 paper (cvc5-bcp column, < 100s) have been verified to produce identical results with Picus v1.3.0 using cvc5 1.3.3.
+All 112 solvable benchmarks from the PLDI 2023 paper (cvc5-bcp column, < 100s) have been verified to produce identical results with Picus v1.4.0.
 
 > **Note**: cvc5 requires the GPL build (with CoCoA) for QF_FF finite field support. The non-GPL builds will report "not configured with --cocoa".

@@ -82,7 +82,8 @@ impl SelectorState {
 
 /// Feedback from a solver call.
 pub enum SolverFeedback {
+    /// Signal was verified as unique (UNSAT).
     Verified,
-    Sat,
+    /// Signal was skipped (SAT for non-target, timeout, or error).
     Skip,
 }

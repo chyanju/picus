@@ -4,14 +4,13 @@ use picus_r1cs::grammar::*;
 use picus_r1cs::parse_var_index;
 use std::collections::HashSet;
 
-use super::binary01::RangeValue;
 
 /// Apply the ABOZ lemma. Mutates `ks` and `us` in place.
 pub fn apply_lemma(
     ks: &mut HashSet<usize>,
     us: &mut HashSet<usize>,
     cnsts: &RCmds,
-    _range_vec: &[RangeValue],
+
 ) {
     let asserts: Vec<&RExpr> = cnsts
         .commands

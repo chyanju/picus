@@ -1,6 +1,6 @@
 # Architecture
 
-Picus is organized as a Cargo workspace with four crates. Data flows top-to-bottom through the pipeline; each layer depends only on the one below it.
+Picus is organized as a Cargo workspace with six crates. Data flows top-to-bottom through the pipeline; each layer depends only on the one below it.
 
 ```
 ┌─────────────┐
@@ -18,6 +18,11 @@ Picus is organized as a Cargo workspace with four crates. Data flows top-to-bott
 ┌──────▼──────┐
 │  picus-r1cs │   Binary R1CS parser, AST types, .sym parser
 └─────────────┘
+
+┌──────────────┐   ┌────────────┐
+│  cvc5-ff-sys │   │  cvc5-ff   │   Local fork of cvc5 Rust bindings
+│  (C FFI)     │◄──│  (safe API)│   Auto-compiles cvc5 with CoCoA from source
+└──────────────┘   └────────────┘
 ```
 
 ## Crates

@@ -26,8 +26,8 @@ impl SolverBackend for Cvc5FfBackend {
         query: &UniquenessQuery,
         timeout_ms: u64,
     ) -> Result<SolverResult, SolverError> {
-        let tm = cvc5::TermManager::new();
-        let mut solver = cvc5::Solver::new(&tm);
+        let tm = cvc5_ff::TermManager::new();
+        let mut solver = cvc5_ff::Solver::new(&tm);
         solver.set_logic("QF_FF");
         solver.set_option("produce-models", "true");
         solver.set_option("tlimit", &timeout_ms.to_string());
@@ -35,7 +35,7 @@ impl SolverBackend for Cvc5FfBackend {
         let p_str = query.prime.to_string();
         let ff = tm.mk_ff_sort(&p_str, 10);
 
-        let mut vars: HashMap<String, cvc5::Term> = HashMap::new();
+        let mut vars: HashMap<String, cvc5_ff::Term> = HashMap::new();
 
         // Declare all variables
         for i in 0..query.n_wires {
@@ -55,14 +55,14 @@ impl SolverBackend for Cvc5FfBackend {
         for (name, val) in &query.constants {
             let c = tm.mk_const(ff.clone(), name);
             let val_term = tm.mk_ff_elem(&val.to_string(), ff.clone(), 10);
-            solver.assert_formula(tm.mk_term(cvc5::Kind::Equal, &[c.clone(), val_term]));
+            solver.assert_formula(tm.mk_term(cvc5_ff::Kind::Equal, &[c.clone(), val_term]));
             vars.insert(name.clone(), c);
         }
 
         // x0 = 1
         let one = tm.mk_ff_elem("1", ff.clone(), 10);
         if let Some(x0) = vars.get("x0") {
-            solver.assert_formula(tm.mk_term(cvc5::Kind::Equal, &[x0.clone(), one]));
+            solver.assert_formula(tm.mk_term(cvc5_ff::Kind::Equal, &[x0.clone(), one]));
         }
 
         // Constraints
@@ -82,7 +82,7 @@ impl SolverBackend for Cvc5FfBackend {
             let xname = orig_var(j);
             let yname = format!("y{}", j);
             if let (Some(x), Some(y)) = (vars.get(&xname), vars.get(&yname)) {
-                solver.assert_formula(tm.mk_term(cvc5::Kind::Equal, &[x.clone(), y.clone()]));
+                solver.assert_formula(tm.mk_term(cvc5_ff::Kind::Equal, &[x.clone(), y.clone()]));
             }
         }
 
@@ -91,8 +91,8 @@ impl SolverBackend for Cvc5FfBackend {
         let xname = orig_var(sid);
         let yname = format!("y{}", sid);
         if let (Some(x), Some(y)) = (vars.get(&xname), vars.get(&yname)) {
-            let eq = tm.mk_term(cvc5::Kind::Equal, &[x.clone(), y.clone()]);
-            solver.assert_formula(tm.mk_term(cvc5::Kind::Not, &[eq]));
+            let eq = tm.mk_term(cvc5_ff::Kind::Equal, &[x.clone(), y.clone()]);
+            solver.assert_formula(tm.mk_term(cvc5_ff::Kind::Not, &[eq]));
         }
 
         let result = solver.check_sat();
@@ -159,16 +159,16 @@ impl SolverBackend for Cvc5FfBackend {
 }
 
 fn build_constraint_ff<'a>(
-    tm: &'a cvc5::TermManager,
-    vars: &HashMap<String, cvc5::Term<'a>>,
+    tm: &'a cvc5_ff::TermManager,
+    vars: &HashMap<String, cvc5_ff::Term<'a>>,
     constraint: &IRConstraint,
-    ff: cvc5::Sort<'a>,
-) -> Option<cvc5::Term<'a>> {
+    ff: cvc5_ff::Sort<'a>,
+) -> Option<cvc5_ff::Term<'a>> {
     match constraint {
         IRConstraint::Linear(terms) => {
             let zero = tm.mk_ff_elem("0", ff.clone(), 10);
             let sum = build_ff_linear_sum(tm, vars, terms, ff)?;
-            Some(tm.mk_term(cvc5::Kind::Equal, &[sum, zero]))
+            Some(tm.mk_term(cvc5_ff::Kind::Equal, &[sum, zero]))
         }
         IRConstraint::NonLinear { lhs_terms, rhs_terms } => {
             let zero = tm.mk_ff_elem("0", ff.clone(), 10);
@@ -177,7 +177,7 @@ fn build_constraint_ff<'a>(
                 let c = tm.mk_ff_elem(&term.coeff.to_string(), ff.clone(), 10);
                 let va = vars.get(&term.var_a)?.clone();
                 let vb = vars.get(&term.var_b)?.clone();
-                lhs_parts.push(tm.mk_term(cvc5::Kind::FiniteFieldMult, &[c, va, vb]));
+                lhs_parts.push(tm.mk_term(cvc5_ff::Kind::FiniteFieldMult, &[c, va, vb]));
             }
             let lhs = ff_add_terms(tm, &lhs_parts, ff.clone());
 
@@ -187,57 +187,57 @@ fn build_constraint_ff<'a>(
                 build_ff_linear_sum(tm, vars, rhs_terms, ff)?
             };
 
-            Some(tm.mk_term(cvc5::Kind::Equal, &[lhs, rhs]))
+            Some(tm.mk_term(cvc5_ff::Kind::Equal, &[lhs, rhs]))
         }
         IRConstraint::Or(subs) => {
-            let terms: Vec<cvc5::Term> = subs
+            let terms: Vec<cvc5_ff::Term> = subs
                 .iter()
                 .filter_map(|c| build_constraint_ff(tm, vars, c, ff.clone()))
                 .collect();
             match terms.len() {
                 0 => None,
                 1 => Some(terms.into_iter().next().unwrap()),
-                _ => Some(tm.mk_term(cvc5::Kind::Or, &terms)),
+                _ => Some(tm.mk_term(cvc5_ff::Kind::Or, &terms)),
             }
         }
         IRConstraint::VarEq(var, val) => {
             let v = vars.get(var)?.clone();
             let val_term = tm.mk_ff_elem(&val.to_string(), ff, 10);
-            Some(tm.mk_term(cvc5::Kind::Equal, &[v, val_term]))
+            Some(tm.mk_term(cvc5_ff::Kind::Equal, &[v, val_term]))
         }
         IRConstraint::VarNeq(var_a, var_b) => {
             let a = vars.get(var_a)?.clone();
             let b = vars.get(var_b)?.clone();
-            let eq = tm.mk_term(cvc5::Kind::Equal, &[a, b]);
-            Some(tm.mk_term(cvc5::Kind::Not, &[eq]))
+            let eq = tm.mk_term(cvc5_ff::Kind::Equal, &[a, b]);
+            Some(tm.mk_term(cvc5_ff::Kind::Not, &[eq]))
         }
     }
 }
 
 fn build_ff_linear_sum<'a>(
-    tm: &'a cvc5::TermManager,
-    vars: &HashMap<String, cvc5::Term<'a>>,
+    tm: &'a cvc5_ff::TermManager,
+    vars: &HashMap<String, cvc5_ff::Term<'a>>,
     terms: &[IRTerm],
-    ff: cvc5::Sort<'a>,
-) -> Option<cvc5::Term<'a>> {
+    ff: cvc5_ff::Sort<'a>,
+) -> Option<cvc5_ff::Term<'a>> {
     let mut parts = Vec::new();
     for term in terms {
         let c = tm.mk_ff_elem(&term.coeff.to_string(), ff.clone(), 10);
         let v = vars.get(&term.var)?.clone();
-        parts.push(tm.mk_term(cvc5::Kind::FiniteFieldMult, &[c, v]));
+        parts.push(tm.mk_term(cvc5_ff::Kind::FiniteFieldMult, &[c, v]));
     }
     Some(ff_add_terms(tm, &parts, ff))
 }
 
 fn ff_add_terms<'a>(
-    tm: &'a cvc5::TermManager,
-    parts: &[cvc5::Term<'a>],
-    ff: cvc5::Sort<'a>,
-) -> cvc5::Term<'a> {
+    tm: &'a cvc5_ff::TermManager,
+    parts: &[cvc5_ff::Term<'a>],
+    ff: cvc5_ff::Sort<'a>,
+) -> cvc5_ff::Term<'a> {
     match parts.len() {
         0 => tm.mk_ff_elem("0", ff, 10),
         1 => parts[0].clone(),
-        _ => tm.mk_term(cvc5::Kind::FiniteFieldAdd, parts),
+        _ => tm.mk_term(cvc5_ff::Kind::FiniteFieldAdd, parts),
     }
 }
 

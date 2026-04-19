@@ -177,7 +177,7 @@ fn extract_linear_term(expr: &RExpr) -> Option<(BigUint, usize)> {
                 RExpr::Var(name) => {
                     if let Some(id) = parse_var_index(name) {
                         var_id = Some(id);
-                    } else if let Some(c) = resolve_named_constant(name) {
+                    } else if let Some(c) = super::resolve_named_constant(name) {
                         // Named constant like "ps1" = p-1
                         coeff = c;
                     }
@@ -193,20 +193,6 @@ fn extract_linear_term(expr: &RExpr) -> Option<(BigUint, usize)> {
 }
 
 /// Resolve named constants introduced by the subp optimizer.
-fn resolve_named_constant(name: &str) -> Option<BigUint> {
-    let p = bn128_prime();
-    match name {
-        "p" => Some(p.clone()),
-        "ps1" => Some(p - BigUint::one()),
-        "ps2" => Some(p - BigUint::from(2u32)),
-        "ps3" => Some(p - BigUint::from(3u32)),
-        "ps4" => Some(p - BigUint::from(4u32)),
-        "ps5" => Some(p - BigUint::from(5u32)),
-        "zero" => Some(BigUint::zero()),
-        "one" => Some(BigUint::one()),
-        _ => None,
-    }
-}
 
 pub fn extract_signal_id(expr: &RExpr) -> Option<usize> {
     if let RExpr::Var(name) = expr {

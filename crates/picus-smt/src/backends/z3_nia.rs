@@ -140,10 +140,10 @@ impl SolverBackend for Z3NiaBackend {
         lines.push("(assert (= x0 1))".to_string());
 
         for c in &query.orig_constraints {
-            lines.push(format!("(assert {})", constraint_to_smtlib_nia(c, p)));
+            lines.push(format!("(assert {})", super::constraint_to_smtlib_nia(c, p, "rem")));
         }
         for c in &query.alt_constraints {
-            lines.push(format!("(assert {})", constraint_to_smtlib_nia(c, p)));
+            lines.push(format!("(assert {})", super::constraint_to_smtlib_nia(c, p, "rem")));
         }
 
         for &j in &query.known_signals {
@@ -224,25 +224,3 @@ fn build_constraint_z3(
     }
 }
 
-fn constraint_to_smtlib_nia(c: &IRConstraint, p: &BigUint) -> String {
-    match c {
-        IRConstraint::Linear(terms) => {
-            let inner: Vec<String> = terms.iter().map(|t| format!("(* {} {})", t.coeff, t.var)).collect();
-            let sum = if inner.len() == 1 { inner[0].clone() } else { format!("(+ {})", inner.join(" ")) };
-            format!("(= (rem {} {}) 0)", sum, p)
-        }
-        IRConstraint::NonLinear { lhs_terms, rhs_terms } => {
-            let lhs: Vec<String> = lhs_terms.iter().map(|t| format!("(* {} {} {})", t.coeff, t.var_a, t.var_b)).collect();
-            let rhs: Vec<String> = rhs_terms.iter().map(|t| format!("(* {} {})", t.coeff, t.var)).collect();
-            let lhs_str = if lhs.len() == 1 { lhs[0].clone() } else { format!("(+ {})", lhs.join(" ")) };
-            let rhs_str = if rhs.is_empty() { "0".into() } else if rhs.len() == 1 { rhs[0].clone() } else { format!("(+ {})", rhs.join(" ")) };
-            format!("(= (rem {} {}) (rem {} {}))", lhs_str, p, rhs_str, p)
-        }
-        IRConstraint::Or(subs) => {
-            let inner: Vec<String> = subs.iter().map(|s| constraint_to_smtlib_nia(s, p)).collect();
-            format!("(or {})", inner.join(" "))
-        }
-        IRConstraint::VarEq(var, val) => format!("(= {} {})", var, val),
-        IRConstraint::VarNeq(a, b) => format!("(not (= {} {}))", a, b),
-    }
-}

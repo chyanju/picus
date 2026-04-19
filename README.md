@@ -17,21 +17,13 @@ Picus implements the **QED²** algorithm to verify that R1CS constraints in a ZK
 
 ## Prerequisites
 
-### cvc5 (required)
+Both z3 and cvc5 (with finite field support) are automatically compiled from source during `cargo build`. No manual solver installation is required.
 
-Picus requires cvc5 with finite field theory support (CoCoA). Picus has been tested with cvc5 1.3.3.
+**Build dependencies:** cmake, python3, C++ compiler (gcc or clang), make, bison.
 
-**Option A — Pre-built binaries:** Download the **GPL shared library build** (`*-shared-gpl.zip`) from the [cvc5 GitHub Releases](https://github.com/cvc5/cvc5/releases) page and install the headers and libraries to a system-searchable path (e.g., `/usr/local/`).
+> First build takes ~15-20 minutes (z3 + cvc5 compilation). Subsequent builds are incremental.
 
-**Option B — Build from source:** Follow the [cvc5 installation guide](https://cvc5.github.io/docs/cvc5-1.3.2/installation/installation.html). When configuring, enable CoCoA and GPL licensing:
-```bash
-./configure.sh --auto-download --cocoa --gpl
-```
-See the [CoCoA section](https://cvc5.github.io/docs/cvc5-1.3.2/installation/installation.html#cocoa-optional-computer-algebra-library) of the guide for details. CoCoA is covered by GPLv3 — using it makes the resulting cvc5 build GPL-licensed.
-
-> **Note:** The non-GPL builds of cvc5 do not include CoCoA and cannot solve finite field (QF_FF) problems.
-
-z3 is bundled automatically during compilation — no separate installation needed.
+> **Note on licensing:** cvc5 is compiled with CoCoA (GPLv3) for finite field support. Picus source code is MIT-licensed. The compiled binary is a combined work under GPLv3 when distributed. See cvc5's [COPYING](https://github.com/cvc5/cvc5/blob/main/COPYING) for details.
 
 ## Installation
 

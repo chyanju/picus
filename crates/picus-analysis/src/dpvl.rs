@@ -193,7 +193,6 @@ impl DpvlContext {
                         break;
                     }
                     SolveResult::Sat(model) => {
-                        self.selector.feedback(sid, SolverFeedback::Sat);
                         if self.target_set.contains(&sid) {
                             return DpvlResult::Unsafe(model);
                         }
@@ -232,10 +231,10 @@ impl DpvlContext {
                 basis2::apply_lemma(ks, us, &self.p1cnsts, &self.range_vec);
             }
             if self.lemmas.aboz {
-                aboz::apply_lemma(ks, us, &self.p1cnsts, &self.range_vec);
+                aboz::apply_lemma(ks, us, &self.p1cnsts);
             }
             if self.lemmas.bim {
-                bim::apply_lemma(ks, us, &self.p1cnsts, &self.range_vec);
+                bim::apply_lemma(ks, us, &self.p1cnsts);
             }
 
             if ks.len() == ks_size {
@@ -258,7 +257,7 @@ impl DpvlContext {
             let smt_str = backend.dump_smt(&query_ir);
             let ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_millis();
             let path = dir.join(format!("picus-{}-sig{}.smt2", ts, sid));
             if let Err(e) = std::fs::write(&path, &smt_str) {

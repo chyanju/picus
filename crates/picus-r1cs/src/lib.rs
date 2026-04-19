@@ -1,6 +1,5 @@
 pub mod grammar;
 pub mod parser;
-pub mod sym;
 
 use num_bigint::BigUint;
 use std::sync::LazyLock;

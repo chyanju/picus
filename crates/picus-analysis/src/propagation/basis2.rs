@@ -100,11 +100,11 @@ fn extract_coeff_var(args: &[RExpr]) -> Option<(BigUint, usize)> {
     // Try (Var(named_const), Var(signal)) — after subp optimization,
     // numeric constants like p-1 become Var("ps1")
     if let (RExpr::Var(const_name), RExpr::Var(sig_name)) = (&args[0], &args[1]) {
-        if let (Some(coeff), Some(id)) = (resolve_named_constant(const_name), parse_var_index(sig_name)) {
+        if let (Some(coeff), Some(id)) = (super::resolve_named_constant(const_name), parse_var_index(sig_name)) {
             return Some((coeff, id));
         }
         // Try reverse: signal first, constant second
-        if let (Some(id), Some(coeff)) = (parse_var_index(const_name), resolve_named_constant(sig_name)) {
+        if let (Some(id), Some(coeff)) = (parse_var_index(const_name), super::resolve_named_constant(sig_name)) {
             return Some((coeff, id));
         }
     }
@@ -112,20 +112,6 @@ fn extract_coeff_var(args: &[RExpr]) -> Option<(BigUint, usize)> {
 }
 
 /// Resolve named constants introduced by the subp optimizer.
-fn resolve_named_constant(name: &str) -> Option<BigUint> {
-    let p = bn128_prime();
-    match name {
-        "p" => Some(p.clone()),
-        "ps1" => Some(p - BigUint::one()),
-        "ps2" => Some(p - BigUint::from(2u32)),
-        "ps3" => Some(p - BigUint::from(3u32)),
-        "ps4" => Some(p - BigUint::from(4u32)),
-        "ps5" => Some(p - BigUint::from(5u32)),
-        "zero" => Some(BigUint::zero()),
-        "one" => Some(BigUint::one()),
-        _ => None,
-    }
-}
 
 fn is_power_of_2_sequence(coeffs: &[BigUint]) -> bool {
     // Check if the coefficient set equals {2^0, 2^1, ..., 2^(n-1)}

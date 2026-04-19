@@ -4,9 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.3.0] - 2026-04-18
+## [1.4.0] - 2026-04-19
+
+### Fixed
+- **R1CS parser bounds check**: Wire IDs exceeding `n_wires` in malformed R1CS files are now caught gracefully instead of panicking with an index-out-of-bounds error.
+- **Timestamp safety**: SMT dump timestamp uses `unwrap_or_default()` to avoid panic on systems with misconfigured clocks.
+- **cvc5-ff doc examples**: Fixed import paths from `cvc5::` / `cvc5_sys::` to `cvc5_ff::` / `cvc5_ff_sys::`.
+- **Double solver feedback**: Removed duplicate `SolverFeedback::Sat` call on non-target SAT results. `SolverFeedback` enum simplified to `Verified` and `Skip`.
 
 ### Changed
+- **Shared utilities**: `resolve_named_constant` extracted to `propagation/mod.rs` (was duplicated in binary01 and basis2). `constraint_to_smtlib_nia` extracted to `backends/mod.rs` (was duplicated in z3_nia and cvc5_nia).
+- **`RExpr::Mod` display**: Now shows the modulus (`(expr mod p)` instead of just `expr`).
+
+### Removed
+- **`sym.rs` and `csv` dependency**: The `.sym` symbol map parser had no callers in the workspace. Removed along with the `csv` crate dependency.
+- **Unused `range_vec` parameter**: Removed from ABOZ and BIM lemma signatures (was `_range_vec`, never used).
+- **`SolverFeedback::Sat` variant**: Was never meaningfully handled; merged into `Skip` behavior.
+
+## [1.3.0] - 2026-04-19
+
+### Changed
+- **Zero-config cvc5 compilation**: cvc5 (with CoCoA/finite field support) is now automatically compiled from source during `cargo build`, just like z3. Users no longer need to manually install cvc5. The `cvc5-ff-sys` and `cvc5-ff` local crates handle source download, configuration (`--cocoa --gpl --auto-download`), and static linking.
 - **CLI: `--solver none`** replaces `--nosolve`. Setting `--solver none` runs propagation only without invoking any SMT solver.
 - **CLI: `--lemmas`** replaces `--noprop`. Accepts comma-separated lemma names (`linear`, `binary01`, `basis2`, `aboz`, `bim`) or `all`/`none`. Default: `all`.
 - **`run_dpvl` returns `Result`**: The library function no longer calls `process::exit`; errors are propagated to the caller.

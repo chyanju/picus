@@ -381,12 +381,17 @@ fn block_to_terms(block: &ConstraintBlock, xlist: &[String]) -> Vec<RExpr> {
         .wire_ids
         .iter()
         .zip(block.factors.iter())
-        .map(|(&wid, factor)| {
-            let var_name = &xlist[wid as usize];
-            RExpr::Mul(vec![
+        .filter_map(|(&wid, factor)| {
+            let idx = wid as usize;
+            if idx >= xlist.len() {
+                log::warn!("wire ID {} out of bounds (n_wires={}), skipping", wid, xlist.len());
+                return None;
+            }
+            let var_name = &xlist[idx];
+            Some(RExpr::Mul(vec![
                 RExpr::Int(factor.clone()),
                 RExpr::Var(var_name.clone()),
-            ])
+            ]))
         })
         .collect()
 }

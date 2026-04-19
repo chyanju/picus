@@ -3,6 +3,9 @@
 **/*.rs.bk
 *.pdb
 
+# Auto-cloned solver source (built by cvc5-ff-sys during cargo build)
+crates/cvc5-ff-sys/cvc5/
+
 # Benchmark compiled outputs
 benchmarks/**/*.json
 benchmarks/**/*.sym

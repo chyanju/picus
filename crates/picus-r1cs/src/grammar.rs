@@ -92,7 +92,7 @@ impl fmt::Display for RExpr {
             RExpr::Sub(vs) => fmt_join(f, vs, " - ", false),
             RExpr::Mul(vs) => fmt_join(f, vs, " * ", false),
             RExpr::Neg(v) => write!(f, "(-{})", v),
-            RExpr::Mod(v, _) => write!(f, "{}", v),
+            RExpr::Mod(v, m) => write!(f, "({} mod {})", v, m),
         }
     }
 }

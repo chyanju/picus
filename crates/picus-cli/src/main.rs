@@ -159,8 +159,8 @@ fn cmd_check(
                     ["p", "ps1", "ps2", "ps3", "ps4", "ps5", "zero", "one"].into_iter().collect();
 
                 // Separate x (original) and y (alternative) signals
-                let mut x_vals: Vec<(&String, &num_bigint::BigUint)> = Vec::new();
-                let mut y_vals: Vec<(&String, &num_bigint::BigUint)> = Vec::new();
+                let mut x_vals: Vec<_> = Vec::new();
+                let mut y_vals: Vec<_> = Vec::new();
 
                 for (var, val) in &model {
                     if constants.contains(var.as_str()) {

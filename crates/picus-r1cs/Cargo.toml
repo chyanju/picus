@@ -10,5 +10,4 @@ edition.workspace = true
 [dependencies]
 num-bigint = { workspace = true }
 byteorder = { workspace = true }
-csv = { workspace = true }
 thiserror = { workspace = true }
