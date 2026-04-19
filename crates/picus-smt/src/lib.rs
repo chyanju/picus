@@ -50,7 +50,7 @@ pub fn validate_combination(solver: SolverKind, theory: Theory) -> Result<(), St
         (SolverKind::Z3, Theory::Ff) => {
             Err("z3 does not support finite field theory (QF_FF). Use --theory nia, or switch to --solver cvc5.".into())
         }
-        (SolverKind::None, _) => Ok(()), // no solver = propagation only, theory is ignored
+        (SolverKind::None, _) => Ok(()),
         _ => Ok(()),
     }
 }
@@ -67,6 +67,6 @@ pub fn create_backend(
         (SolverKind::Cvc5, Theory::Ff) => Ok(Some(Box::new(backends::cvc5_ff::Cvc5FfBackend::new()))),
         (SolverKind::Cvc5, Theory::Nia) => Ok(Some(Box::new(backends::cvc5_nia::Cvc5NiaBackend::new()))),
         (SolverKind::None, _) => Ok(None),
-        (SolverKind::Z3, Theory::Ff) => unreachable!(),
+        _ => unreachable!(),
     }
 }

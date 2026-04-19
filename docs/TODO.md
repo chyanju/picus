@@ -18,6 +18,7 @@ JSON-based precondition files that could seed the known-set with assumed-unique 
 
 ## Planned Features
 
+- **Yices2 backend**: Yices2 v2.7.0 added finite field support (QF_FFA) via MCSat. However, as of v2.7.0, the solver hangs on negated equality atoms (`not (= x y)`), which are required for all uniqueness queries. Additionally, the pre-built binaries do not export the FF C API symbols (`yices_ff_type`, etc.), requiring users to build from source for API access. Revisit when a future Yices2 release fixes the negated equality issue.
 - **Incremental solving**: Use z3/cvc5 push/pop to avoid re-asserting the full constraint set for each query.
 - **cvc5 static compilation**: Bundle cvc5 via the `static` feature in `cvc5-sys` to eliminate the system-installed `libcvc5.so` requirement.
 - **Plonkish/AIR constraint formats**: Extend beyond R1CS to support Halo2 (Plonkish) and STARK (AIR) arithmetizations.

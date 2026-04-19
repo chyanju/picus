@@ -13,11 +13,8 @@ use crate::query::UniquenessQuery;
 /// Result from a solver invocation.
 #[derive(Debug, Clone)]
 pub enum SolverResult {
-    /// UNSAT — the signal is uniquely determined.
     Unsat,
-    /// SAT — found two distinct witnesses. Model maps variable names to values.
     Sat(HashMap<String, BigUint>),
-    /// Solver timed out or returned unknown.
     Unknown,
 }
 
@@ -31,13 +28,11 @@ pub enum SolverError {
 
 /// Trait for solver backends.
 pub trait SolverBackend {
-    /// Solve a uniqueness query.
     fn solve(
         &mut self,
         query: &UniquenessQuery,
         timeout_ms: u64,
     ) -> Result<SolverResult, SolverError>;
 
-    /// Dump the query as an SMT-LIB string for debugging.
     fn dump_smt(&self, query: &UniquenessQuery) -> String;
 }
