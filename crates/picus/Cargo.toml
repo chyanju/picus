@@ -1,0 +1,15 @@
+[package]
+name = "picus"
+description = "Automated detection of under-constrained signals in ZK circuits"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+
+[dependencies]
+picus-r1cs = { path = "../picus-r1cs" }
+picus-smt = { path = "../picus-smt" }
+picus-analysis = { path = "../picus-analysis" }
+num-bigint = { workspace = true }
+thiserror = { workspace = true }

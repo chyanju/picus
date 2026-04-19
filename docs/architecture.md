@@ -1,10 +1,14 @@
 # Architecture
 
-Picus is organized as a Cargo workspace with six crates. Data flows top-to-bottom through the pipeline; each layer depends only on the one below it.
+Picus is organized as a Cargo workspace with seven crates. Data flows top-to-bottom through the pipeline; each layer depends only on the one below it.
 
 ```
 ┌─────────────┐
 │  picus-cli  │   CLI entry point (clap subcommands)
+└──────┬──────┘
+       │
+┌──────▼──────┐
+│    picus    │   Public library API (facade crate)
 └──────┬──────┘
        │
 ┌──────▼──────┐
@@ -61,6 +65,19 @@ Core verification algorithms.
   5. Repeat
 - **`propagation/`** — Five propagation lemmas. See [Propagation Lemmas](./propagation-lemmas.md).
 - **`selector.rs`** — Signal selection heuristics: `first` (trivial) and `counter` (frequency-weighted with negative feedback on timeouts).
+
+### `picus`
+
+Public library API (facade crate). Re-exports key types from the internal crates and provides high-level functions:
+
+- **`check_circuit(path, config)`** — Read an R1CS file and run the full analysis pipeline.
+- **`check_r1cs_bytes(data, config)`** — Analyze from raw bytes.
+- **`check_r1cs(r1cs, config)`** — Analyze a pre-parsed `R1csFile`.
+- **`Config`** — Analysis configuration with sensible defaults (cvc5 + QF_FF + all lemmas).
+- **`CheckResult`** — Structured result: `Safe`, `Unsafe { witness_1, witness_2 }`, or `Unknown`.
+- **`PicusError`** — Error type covering parse, solver, config, and I/O errors.
+
+This is the entry point for programmatic use from other Rust projects.
 
 ### `picus-cli`
 

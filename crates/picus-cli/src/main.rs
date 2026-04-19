@@ -1,9 +1,10 @@
 use anstream::println as aprintln;
 use clap::{Parser, Subcommand, ValueEnum};
 use owo_colors::OwoColorize;
-use picus_analysis::dpvl::{DpvlConfig, DpvlResult, LemmaSet};
-use picus_analysis::selector::SelectorKind;
-use picus_smt::{SolverKind, Theory};
+use picus::{
+    check_r1cs, read_r1cs_file, BigUint, CheckResult, Config, LemmaSet,
+    SelectorKind, SolverKind, Theory,
+};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -113,7 +114,7 @@ struct CheckOutput {
     config: ConfigInfo,
     result: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    counter_example: Option<CounterExample>,
+    counter_example: Option<CounterExampleJson>,
 }
 
 #[derive(Serialize)]
@@ -135,7 +136,7 @@ struct ConfigInfo {
 }
 
 #[derive(Serialize)]
-struct CounterExample {
+struct CounterExampleJson {
     witness_1: HashMap<String, String>,
     witness_2: HashMap<String, String>,
 }
@@ -186,6 +187,11 @@ fn print_field_pair(l1: &str, v1: &str, l2: &str, v2: &str) {
     );
 }
 
+fn exit_error(msg: &str) -> ! {
+    aprintln!("{} {}", "error:".red().bold(), msg);
+    std::process::exit(1);
+}
+
 // ============================================================
 // check command
 // ============================================================
@@ -201,53 +207,30 @@ fn cmd_check(
     dump_smt: Option<PathBuf>,
     format: OutputFormat,
 ) {
-    let solver: SolverKind = solver_str.parse().unwrap_or_else(|e| {
-        aprintln!("{} {}", "error:".red().bold(), e);
-        std::process::exit(1);
-    });
+    let solver: SolverKind = solver_str.parse().unwrap_or_else(|e: String| exit_error(&e));
+    let theory: Theory = theory_str.parse().unwrap_or_else(|e: String| exit_error(&e));
 
-    let theory: Theory = theory_str.parse().unwrap_or_else(|e| {
-        aprintln!("{} {}", "error:".red().bold(), e);
-        std::process::exit(1);
-    });
-
-    if let Err(e) = picus_smt::validate_combination(solver, theory) {
-        aprintln!("{} {}", "error:".red().bold(), e);
-        std::process::exit(1);
+    if let Err(e) = picus::picus_smt::validate_combination(solver, theory) {
+        exit_error(&e);
     }
 
-    let selector: SelectorKind = selector_str.parse().unwrap_or_else(|e| {
-        aprintln!("{} {}", "error:".red().bold(), e);
-        std::process::exit(1);
+    let selector: SelectorKind = selector_str.parse().unwrap_or_else(|e: String| exit_error(&e));
+    let lemmas = LemmaSet::parse(lemmas_str).unwrap_or_else(|e: String| exit_error(&e));
+
+    let r1cs = read_r1cs_file(&r1cs_path).unwrap_or_else(|e| {
+        exit_error(&format!("failed to read R1CS file: {}", e));
     });
 
-    let lemmas = LemmaSet::parse(lemmas_str).unwrap_or_else(|e| {
-        aprintln!("{} {}", "error:".red().bold(), e);
-        std::process::exit(1);
-    });
-
-    let r1cs = picus_r1cs::parser::read_r1cs_file(&r1cs_path).unwrap_or_else(|e| {
-        aprintln!("{} failed to read R1CS file: {}", "error:".red().bold(), e);
-        std::process::exit(1);
-    });
-
-    if let Some(ref dir) = dump_smt {
-        let _ = std::fs::create_dir_all(dir);
-    }
-
-    let config = DpvlConfig {
+    let config = Config {
         solver,
         theory,
-        selector,
         timeout_ms: timeout,
         lemmas,
+        selector,
         dump_smt,
     };
 
-    let result = picus_analysis::dpvl::run_dpvl(&r1cs, &config).unwrap_or_else(|e| {
-        aprintln!("{} {}", "error:".red().bold(), e);
-        std::process::exit(1);
-    });
+    let result = check_r1cs(&r1cs, config).unwrap_or_else(|e| exit_error(&e.to_string()));
 
     let solver_display = match (solver, theory) {
         (SolverKind::Cvc5, Theory::Ff) => "cvc5 (QF_FF)",
@@ -283,23 +266,28 @@ fn cmd_check(
             print_section("Result");
 
             match &result {
-                DpvlResult::Safe => {
+                CheckResult::Safe => {
                     aprintln!("  {} {}", "✓".green().bold(), "uniqueness: safe".green().bold());
                 }
-                DpvlResult::Unsafe(model) => {
+                CheckResult::Unsafe { witness_1, witness_2 } => {
                     aprintln!("  {} {}", "✗".red().bold(), "uniqueness: unsafe".red().bold());
-                    print_counter_example_human(model);
+                    print_counter_example_human(witness_1, witness_2);
                 }
-                DpvlResult::Unknown => {
+                CheckResult::Unknown => {
                     aprintln!("  {} {}", "?".yellow().bold(), "uniqueness: unknown".yellow().bold());
                 }
             }
         }
         OutputFormat::Json => {
             let (result_str, cex) = match &result {
-                DpvlResult::Safe => ("safe".to_string(), None),
-                DpvlResult::Unsafe(model) => ("unsafe".to_string(), Some(build_counter_example(model))),
-                DpvlResult::Unknown => ("unknown".to_string(), None),
+                CheckResult::Safe => ("safe".to_string(), None),
+                CheckResult::Unsafe { witness_1, witness_2 } => {
+                    ("unsafe".to_string(), Some(CounterExampleJson {
+                        witness_1: witness_1.iter().map(|(k, v)| (k.clone(), v.to_string())).collect(),
+                        witness_2: witness_2.iter().map(|(k, v)| (k.clone(), v.to_string())).collect(),
+                    }))
+                }
+                CheckResult::Unknown => ("unknown".to_string(), None),
             };
 
             let output = CheckOutput {
@@ -321,37 +309,20 @@ fn cmd_check(
                 counter_example: cex,
             };
 
-            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            println!("{}", serde_json::to_string_pretty(&output).expect("JSON serialization failed"));
         }
     }
 }
 
-fn print_counter_example_human(model: &HashMap<String, num_bigint::BigUint>) {
-    if model.is_empty() {
-        return;
-    }
+fn print_counter_example_human(
+    witness_1: &HashMap<String, BigUint>,
+    witness_2: &HashMap<String, BigUint>,
+) {
+    let mut x_vals: Vec<_> = witness_1.iter().collect();
+    let mut y_vals: Vec<_> = witness_2.iter().collect();
 
-    let constants: std::collections::HashSet<&str> =
-        ["p", "ps1", "ps2", "ps3", "ps4", "ps5", "zero", "one"]
-            .into_iter()
-            .collect();
-
-    let mut x_vals: Vec<_> = Vec::new();
-    let mut y_vals: Vec<_> = Vec::new();
-
-    for (var, val) in model {
-        if constants.contains(var.as_str()) {
-            continue;
-        }
-        if var.starts_with('y') {
-            y_vals.push((var, val));
-        } else {
-            x_vals.push((var, val));
-        }
-    }
-
-    x_vals.sort_by_key(|(k, _)| picus_r1cs::parse_var_index(k).unwrap_or(usize::MAX));
-    y_vals.sort_by_key(|(k, _)| picus_r1cs::parse_var_index(k).unwrap_or(usize::MAX));
+    x_vals.sort_by_key(|(k, _)| picus::picus_r1cs::parse_var_index(k).unwrap_or(usize::MAX));
+    y_vals.sort_by_key(|(k, _)| picus::picus_r1cs::parse_var_index(k).unwrap_or(usize::MAX));
 
     aprintln!();
     aprintln!("  {}:", "Counter-example".dimmed());
@@ -365,40 +336,14 @@ fn print_counter_example_human(model: &HashMap<String, num_bigint::BigUint>) {
     }
 }
 
-fn build_counter_example(model: &HashMap<String, num_bigint::BigUint>) -> CounterExample {
-    let constants: std::collections::HashSet<&str> =
-        ["p", "ps1", "ps2", "ps3", "ps4", "ps5", "zero", "one"]
-            .into_iter()
-            .collect();
-
-    let mut w1 = HashMap::new();
-    let mut w2 = HashMap::new();
-
-    for (var, val) in model {
-        if constants.contains(var.as_str()) {
-            continue;
-        }
-        if var.starts_with('y') {
-            w2.insert(var.clone(), val.to_string());
-        } else {
-            w1.insert(var.clone(), val.to_string());
-        }
-    }
-
-    CounterExample {
-        witness_1: w1,
-        witness_2: w2,
-    }
-}
 
 // ============================================================
 // info command
 // ============================================================
 
 fn cmd_info(r1cs_path: PathBuf, show_constraints: bool, format: OutputFormat) {
-    let r1cs = picus_r1cs::parser::read_r1cs_file(&r1cs_path).unwrap_or_else(|e| {
-        aprintln!("{} failed to read R1CS file: {}", "error:".red().bold(), e);
-        std::process::exit(1);
+    let r1cs = read_r1cs_file(&r1cs_path).unwrap_or_else(|e| {
+        exit_error(&format!("failed to read R1CS file: {}", e));
     });
 
     match format {
@@ -445,7 +390,7 @@ fn cmd_info(r1cs_path: PathBuf, show_constraints: bool, format: OutputFormat) {
                 outputs: r1cs.outputs.clone(),
             };
 
-            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            println!("{}", serde_json::to_string_pretty(&output).expect("JSON serialization failed"));
         }
     }
 }

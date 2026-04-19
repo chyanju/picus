@@ -11,7 +11,9 @@
 
 ---
 
-Picus implements the **QED²** algorithm to verify that R1CS constraints in a ZK circuit uniquely determine all output signals given the public inputs. If they don't, Picus finds a concrete counter-example — two distinct valid witnesses sharing the same inputs.
+Picus is a security analysis tool for detecting under-constrained signals in zero-knowledge proof circuits. Given an R1CS constraint system, it verifies that all output signals are uniquely determined by the public inputs — or produces a concrete counter-example showing two distinct valid witnesses.
+
+The techniques underlying Picus are described in the PLDI 2023 paper *"Automated Detection of Under-Constrained Circuits in Zero-Knowledge Proofs"* (see [Citation](#citation)).
 
 > Looking for the original PLDI 2023 research artifact? See the [artifact branch](https://github.com/chyanju/Picus/tree/pldi23-research-artifact).
 
@@ -52,6 +54,33 @@ cargo run --release -p picus-cli -- check --r1cs circuit.r1cs
 docker build -t picus .
 docker run --rm -v $(pwd):/data picus check --r1cs /data/circuit.r1cs
 ```
+
+## Use as a Rust Library
+
+Picus can also be used as a library crate in other Rust projects:
+
+```toml
+[dependencies]
+picus = { git = "https://github.com/chyanju/Picus" }
+```
+
+```rust
+use picus::{check_circuit, Config, CheckResult};
+
+let result = check_circuit("circuit.r1cs", Config::default()).unwrap();
+match result {
+    CheckResult::Safe => println!("safe"),
+    CheckResult::Unsafe { witness_1, witness_2 } => {
+        // witness_1/witness_2: HashMap<String, BigUint>
+        for (signal, value) in &witness_1 {
+            println!("{} = {}", signal, value);
+        }
+    }
+    CheckResult::Unknown => println!("unknown"),
+}
+```
+
+See `crates/picus/src/lib.rs` for the full API, including `check_r1cs_bytes()`, `check_r1cs()`, and re-exported types.
 
 ## Usage
 

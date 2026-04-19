@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] - 2026-04-19
+
+### Added
+- **`picus` library crate**: Public API for programmatic use from other Rust projects. Provides `check_circuit()`, `check_r1cs_bytes()`, `check_r1cs()` with structured `CheckResult` type (using `BigUint` values, not strings). Re-exports key types (`SolverKind`, `Theory`, `LemmaSet`, `BigUint`, `R1csFile`).
+- **`Config::dump_smt`** field: SMT query dumping is now supported through the library API, not just the CLI.
+
+### Changed
+- **README intro rewritten**: Picus is presented as a security analysis tool, with the PLDI 2023 paper referenced as a description of the underlying techniques (not the other way around).
+- **CLI simplified**: `picus-cli` now depends solely on the `picus` facade crate. The `dump_smt` code path no longer bypasses the public API.
+
+### Fixed
+- Removed duplicated `split_model` logic between `picus` lib and `picus-cli`.
+- Added `log::warn` for silently dropped constraints in solver backends.
+- Fixed `cvc5-ff-sys` doc comment referencing `cvc5` instead of `cvc5-ff`.
+- Architecture documentation updated to include the `picus` facade crate (seven crates total).
+
 ## [1.5.1] - 2026-04-19
 
 ### Changed

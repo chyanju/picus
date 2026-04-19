@@ -6,11 +6,12 @@ members = [
     "crates/picus-r1cs",
     "crates/picus-smt",
     "crates/picus-analysis",
+    "crates/picus",
     "crates/picus-cli",
 ]
 
 [workspace.package]
-version = "1.5.1"
+version = "1.6.0"
 authors = ["Yanju Chen <chyanju@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/chyanju/Picus"

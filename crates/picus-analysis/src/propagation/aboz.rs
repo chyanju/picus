@@ -41,7 +41,7 @@ pub fn apply_lemma(
 
 fn match_aboz_triple(c0: &RExpr, c1: &RExpr, c2: &RExpr) -> Option<(usize, usize, usize, usize)> {
     let (x0_candidates, y0_candidates) = match_or_zero_pair(c0)?;
-    let (_x1_candidates, y1_candidates) = match_or_zero_pair(c1)?;
+    let (_, y1_candidates) = match_or_zero_pair(c1)?;
     let sum_sigs = match_linear_sum(c2)?;
 
     for &x in &x0_candidates {
