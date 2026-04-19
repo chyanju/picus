@@ -23,6 +23,16 @@ Both z3 and cvc5 (with finite field support) are automatically compiled from sou
 
 > First build takes ~15-20 minutes (z3 + cvc5 compilation). Subsequent builds are incremental.
 
+> **Faster builds with pre-installed solvers:** If you already have solver libraries installed, you can skip compilation:
+> ```bash
+> # Skip cvc5 compilation (requires cvc5 GPL build with CoCoA)
+> CVC5_LIB_DIR=/path/to/cvc5/lib cargo build --release
+>
+> # Skip z3 compilation
+> Z3_LIBRARY_PATH_OVERRIDE=/path/to/z3/lib cargo build --release
+> ```
+> For `CVC5_LIB_DIR`, headers should be at `../include/` relative to the lib directory (or set `CVC5_INCLUDE_DIR` separately).
+
 > **Note on licensing:** cvc5 is compiled with CoCoA (GPLv3) for finite field support. Picus source code is MIT-licensed. The compiled binary is a combined work under GPLv3 when distributed. See cvc5's [COPYING](https://github.com/cvc5/cvc5/blob/main/COPYING) for details.
 
 ## Installation
@@ -51,7 +61,7 @@ docker run --rm -v $(pwd):/data picus check --r1cs /data/circuit.r1cs
 picus check --r1cs circuit.r1cs                              # default: cvc5 + ff
 picus check --r1cs circuit.r1cs --solver z3 --theory nia     # z3 with integer arithmetic
 picus check --r1cs circuit.r1cs --solver none                # propagation only
-picus check --r1cs circuit.r1cs --lemmas linear,binary01     # select specific lemmas
+picus check --r1cs circuit.r1cs --lemmas all-bim             # all lemmas except bim
 picus check --r1cs circuit.r1cs --format json                # JSON output
 picus check --r1cs circuit.r1cs --dump-smt /tmp/smt/         # dump SMT queries
 ```
@@ -63,7 +73,7 @@ picus check --r1cs circuit.r1cs --dump-smt /tmp/smt/         # dump SMT queries
 | `--theory <ff\|nia>` | `ff` | Theory: `ff` (finite field) or `nia` (integer mod) |
 | `--timeout <ms>` | `5000` | Per-query solver timeout |
 | `--selector <first\|counter>` | `counter` | Signal selection heuristic |
-| `--lemmas <list>` | `all` | Lemmas: `all`, `none`, or comma-separated names |
+| `--lemmas <spec>` | `all` | Lemmas: `all`, `none`, `all-X,Y` (exclude), `none+X,Y` (include). Names: `linear`, `binary01`, `basis2`, `aboz`, `bim` |
 | `--format <human\|json>` | `human` | Output format |
 | `--dump-smt <dir>` | — | Dump SMT-LIB queries to directory |
 

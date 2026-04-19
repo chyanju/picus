@@ -111,7 +111,6 @@ fn extract_coeff_var(args: &[RExpr]) -> Option<(BigUint, usize)> {
     None
 }
 
-/// Resolve named constants introduced by the subp optimizer.
 
 fn is_power_of_2_sequence(coeffs: &[BigUint]) -> bool {
     // Check if the coefficient set equals {2^0, 2^1, ..., 2^(n-1)}

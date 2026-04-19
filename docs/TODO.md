@@ -2,6 +2,20 @@
 
 Items removed during cleanup are available in git history. This file tracks planned features and removed components for reference.
 
+## Known Limitations
+
+### AB0 optimization disabled for cvc5 QF_FF
+
+**What is AB0?** An SMT constraint rewrite that transforms `A*B = 0` into `or(A = 0, B = 0)`. This is mathematically sound (finite fields are integral domains), and it helps the solver by splitting nonlinear constraints into simpler disjunctions.
+
+**Why is it disabled?** cvc5 versions 1.2.0 through 1.3.3 have a bug in the QF_FF solver where `or` disjunctions can produce spurious SAT results — the returned model violates one or more assertions. This was discovered on the Multiplexer circuit: cvc5 reported `unsafe` with a model that did not satisfy the constraints, while z3 correctly reported `safe`.
+
+**Impact:** Disabling AB0 for cvc5 means certain circuits that rely on the `A*B=0` splitting for efficient solving may time out. Specifically, the `BitElementMulAny` circuit (solved by the original Racket version in ~93s with AB0 enabled) now times out at 120s. This affects 2 out of 163 benchmarks.
+
+**Why users can't control this:** AB0 is not a propagation lemma — it's an internal constraint optimization pass applied during SMT query construction. It is not exposed through the `--lemmas` CLI flag (which controls propagation lemmas only). The AB0 code for cvc5 is retained in the source (`optimizer.rs`, marked `#[allow(dead_code)]`) and can be re-enabled when a future cvc5 release fixes the `or` bug in QF_FF.
+
+**Tracking:** The cvc5 team should be notified of this issue. Once fixed, re-enable AB0 for cvc5 by changing `optimizer.rs:optimize_p0()` to call `ab0_optimize_cvc5()` instead of returning `cnsts.clone()`.
+
 ## Removed Components
 
 ### BabyJubJub propagation lemma (`baby.rs`)

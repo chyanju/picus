@@ -43,30 +43,63 @@ impl LemmaSet {
         Self { linear: false, binary01: false, basis2: false, aboz: false, bim: false }
     }
 
-    /// Parse from comma-separated string: "all", "none", or "linear,binary01,basis2".
+    /// Parse lemma specification string.
+    ///
+    /// Formats:
+    /// - `all` — enable all lemmas
+    /// - `none` — disable all lemmas
+    /// - `all-linear,bim` — all except linear and bim
+    /// - `none+linear,basis2` — none except linear and basis2
+    /// - `linear,binary01,basis2` — explicit list (legacy, same as `none+...`)
     pub fn parse(s: &str) -> Result<Self, String> {
         let s = s.trim().to_lowercase();
+
         if s == "all" {
             return Ok(Self::all());
         }
         if s == "none" {
             return Ok(Self::none());
         }
+
+        // all-X,Y,Z — start from all, exclude listed
+        if let Some(rest) = s.strip_prefix("all-") {
+            let mut set = Self::all();
+            for name in rest.split(',') {
+                Self::set_lemma(&mut set, name.trim(), false)?;
+            }
+            return Ok(set);
+        }
+
+        // none+X,Y,Z — start from none, include listed
+        if let Some(rest) = s.strip_prefix("none+") {
+            let mut set = Self::none();
+            for name in rest.split(',') {
+                Self::set_lemma(&mut set, name.trim(), true)?;
+            }
+            return Ok(set);
+        }
+
+        // Bare comma-separated list — same as none+...
         let mut set = Self::none();
         for name in s.split(',') {
-            match name.trim() {
-                "linear" => set.linear = true,
-                "binary01" => set.binary01 = true,
-                "basis2" => set.basis2 = true,
-                "aboz" => set.aboz = true,
-                "bim" => set.bim = true,
-                other => return Err(format!(
-                    "unknown lemma: '{}'. Valid: linear, binary01, basis2, aboz, bim, all, none.",
-                    other
-                )),
-            }
+            Self::set_lemma(&mut set, name.trim(), true)?;
         }
         Ok(set)
+    }
+
+    fn set_lemma(set: &mut Self, name: &str, value: bool) -> Result<(), String> {
+        match name {
+            "linear" => set.linear = value,
+            "binary01" => set.binary01 = value,
+            "basis2" => set.basis2 = value,
+            "aboz" => set.aboz = value,
+            "bim" => set.bim = value,
+            other => return Err(format!(
+                "unknown lemma: '{}'. Valid: linear, binary01, basis2, aboz, bim.",
+                other
+            )),
+        }
+        Ok(())
     }
 
     /// Check if any lemma is enabled.

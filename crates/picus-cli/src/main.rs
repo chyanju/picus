@@ -49,8 +49,9 @@ enum Commands {
         #[arg(long, default_value = "counter", value_parser = ["first", "counter"])]
         selector: String,
 
-        /// Propagation lemmas to enable (comma-separated).
-        /// Values: all, none, linear, binary01, basis2, aboz, bim
+        /// Propagation lemmas to enable.
+        /// Formats: all, none, all-X,Y (exclude), none+X,Y (include).
+        /// Names: linear, binary01, basis2, aboz, bim
         #[arg(long, default_value = "all")]
         lemmas: String,
 

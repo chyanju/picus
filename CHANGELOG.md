@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.1] - 2026-04-19
+
+### Changed
+- **`--lemmas` syntax**: Added `all-X,Y` (exclude) and `none+X,Y` (include) formats for more natural lemma selection. Bare comma-separated lists remain supported as a shorthand for `none+...`.
+
+### Fixed
+- Removed stale `.sym parser` reference from `docs/architecture.md` (module was deleted in v1.4.0).
+- Removed orphaned doc comments in `binary01.rs` and `basis2.rs` left over from `resolve_named_constant` refactor.
+- Updated benchmark verification version reference in `docs/benchmarks.md`.
+
 ## [1.5.0] - 2026-04-19
 
 ### Added

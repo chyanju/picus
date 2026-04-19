@@ -192,7 +192,6 @@ fn extract_linear_term(expr: &RExpr) -> Option<(BigUint, usize)> {
     None
 }
 
-/// Resolve named constants introduced by the subp optimizer.
 
 pub fn extract_signal_id(expr: &RExpr) -> Option<usize> {
     if let RExpr::Var(name) = expr {

@@ -16,7 +16,7 @@ Picus is organized as a Cargo workspace with six crates. Data flows top-to-botto
 └──────┬──────┘
        │
 ┌──────▼──────┐
-│  picus-r1cs │   Binary R1CS parser, AST types, .sym parser
+│  picus-r1cs │   Binary R1CS parser, AST types
 └─────────────┘
 
 ┌──────────────┐   ┌────────────┐
@@ -33,7 +33,6 @@ Foundation layer. No external Picus dependencies.
 
 - **`grammar.rs`** — AST type definitions (`RCmd`, `RExpr`) used by the propagation pipeline, plus variable extraction utilities (linear vs. nonlinear classification).
 - **`parser.rs`** — Reads the [iden3 R1CS binary format](https://github.com/iden3/r1csfile/blob/master/doc/r1cs_bin_format.md): magic number, header, constraints (sparse A·B=C triples), wire-to-label section.
-- **`sym.rs`** — Parses Circom `.sym` CSV files to map signal indices to qualified names and scope information.
 
 ### `picus-smt`
 
