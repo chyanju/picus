@@ -15,6 +15,11 @@ path = "src/main.rs"
 picus-r1cs = { path = "../picus-r1cs" }
 picus-smt = { path = "../picus-smt" }
 picus-analysis = { path = "../picus-analysis" }
+num-bigint = { workspace = true }
 clap = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
+owo-colors = "4"
+anstream = "1.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -37,6 +37,10 @@ cargo build --release
 
 # Option 3: Build and run in one step
 cargo run --release -p picus-cli -- check --r1cs circuit.r1cs
+
+# Option 4: Docker
+docker build -t picus .
+docker run --rm -v $(pwd):/data picus check --r1cs /data/circuit.r1cs
 ```
 
 ## Usage
@@ -48,6 +52,7 @@ picus check --r1cs circuit.r1cs                              # default: cvc5 + f
 picus check --r1cs circuit.r1cs --solver z3 --theory nia     # z3 with integer arithmetic
 picus check --r1cs circuit.r1cs --solver none                # propagation only
 picus check --r1cs circuit.r1cs --lemmas linear,binary01     # select specific lemmas
+picus check --r1cs circuit.r1cs --format json                # JSON output
 picus check --r1cs circuit.r1cs --dump-smt /tmp/smt/         # dump SMT queries
 ```
 
@@ -58,7 +63,8 @@ picus check --r1cs circuit.r1cs --dump-smt /tmp/smt/         # dump SMT queries
 | `--theory <ff\|nia>` | `ff` | Theory: `ff` (finite field) or `nia` (integer mod) |
 | `--timeout <ms>` | `5000` | Per-query solver timeout |
 | `--selector <first\|counter>` | `counter` | Signal selection heuristic |
-| `--lemmas <list>` | `all` | Lemmas: `all`, `none`, or comma-separated names (`linear`, `binary01`, `basis2`, `aboz`, `bim`) |
+| `--lemmas <list>` | `all` | Lemmas: `all`, `none`, or comma-separated names |
+| `--format <human\|json>` | `human` | Output format |
 | `--dump-smt <dir>` | — | Dump SMT-LIB queries to directory |
 
 > **Note**: `z3 + ff` is not supported (z3 has no finite field theory). Picus will reject this combination.

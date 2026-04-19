@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-04-19
+
+### Added
+- **Dockerfile**: Multi-stage Docker build (Ubuntu 24.04). `docker build -t picus .` produces a self-contained image with all solvers pre-compiled. Users can run `docker run --rm -v $(pwd):/data picus check --r1cs /data/circuit.r1cs`.
+- **`--format` flag**: `--format human` (default) produces styled terminal output with color and structured layout. `--format json` outputs machine-readable JSON to stdout. Supported by both `check` and `info` subcommands.
+- **Colored terminal output**: Uses `owo-colors` + `anstream` for automatic color detection. Colors are enabled in terminals, automatically stripped when piping to files or other programs.
+- **Structured human output**: Circuit info, analysis config, and results are displayed in clearly separated sections with aligned labels.
+
 ## [1.4.0] - 2026-04-19
 
 ### Fixed
