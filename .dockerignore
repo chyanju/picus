@@ -1,0 +1,11 @@
+# Don't copy these into the Docker build context
+target/
+benchmarks/
+.git/
+.gitmodules
+docs/
+chat/
+*.md
+LICENSE
+Dockerfile
+.dockerignore

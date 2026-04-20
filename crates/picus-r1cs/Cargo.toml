@@ -1,0 +1,13 @@
+[package]
+name = "picus-r1cs"
+description = "R1CS binary parser and constraint AST for Picus"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+
+[dependencies]
+num-bigint = { workspace = true }
+byteorder = { workspace = true }
+thiserror = { workspace = true }

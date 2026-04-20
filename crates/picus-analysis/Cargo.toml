@@ -1,0 +1,16 @@
+[package]
+name = "picus-analysis"
+description = "DPVL algorithm and propagation lemmas for Picus"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+
+[dependencies]
+picus-r1cs = { path = "../picus-r1cs" }
+picus-smt = { path = "../picus-smt" }
+num-bigint = { workspace = true }
+num-traits = { workspace = true }
+num-integer = { workspace = true }
+log = { workspace = true }
