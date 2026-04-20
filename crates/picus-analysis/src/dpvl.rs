@@ -142,7 +142,12 @@ pub fn run_dpvl(
     let output_set: HashSet<usize> = r1cs.outputs.iter().copied().collect();
     let target_set = output_set;
 
-    // --- Propagation pipeline (still uses RCmds AST) ---
+    // --- Propagation pipeline (uses RCmds AST, always z3-style) ---
+    // The propagation lemmas operate on AST patterns (Or, Mul, Add, etc.)
+    // which are produced by the z3-style parser/optimizer. This is independent
+    // of the actual solver backend — solving uses the IR path (UniquenessQuery),
+    // not the AST. AB0 is enabled here (z3 path) to produce Or patterns that
+    // the binary01 lemma matches.
     let ast_solver = SolverKind::Z3;
 
     let parsed = r1cs_parser::parse_r1cs(r1cs, &[], ast_solver);

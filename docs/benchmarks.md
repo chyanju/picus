@@ -1,6 +1,6 @@
 # Benchmarks
 
-The `benchmarks/` directory contains Circom circuit sources from 23 real-world projects, pinned to specific git commits. These are the same benchmarks used in the PLDI 2023 paper evaluation.
+The `benchmarks/` directory is a [git submodule](https://github.com/chyanju/picus-benchmarks) containing Circom circuit sources from real-world and synthetic ZK projects, pinned to specific git commits. These are the same benchmarks used in the PLDI 2023 paper evaluation.
 
 ## Projects
 
@@ -30,12 +30,10 @@ The `benchmarks/` directory contains Circom circuit sources from 23 real-world p
 Circuits require [circom](https://docs.circom.io/) 2.0+ to compile. The `libs/` directory contains shared dependencies.
 
 ```bash
-circom benchmarks/circomlib-cff5ab6/AND@gates.circom \
-  --r1cs --sym --O0 \
-  --output /tmp/ \
-  -l benchmarks/libs/
+cd benchmarks/circom
+./compile.sh build circomlib-cff5ab6
 
-picus check --r1cs /tmp/AND@gates.r1cs --solver z3
+picus check --r1cs benchmarks/circom/circomlib-cff5ab6/AND@gates.r1cs
 ```
 
 > Use `--O0` (no optimization) to preserve the original constraint structure.
@@ -54,6 +52,6 @@ Circuits that Picus identifies as **unsafe** (under-constrained outputs):
 | MontgomeryDouble | unsafe |
 | Decoder | unsafe |
 
-All 112 solvable benchmarks from the PLDI 2023 paper (cvc5-bcp column, < 100s) have been verified to produce identical results with Picus v1.6.0.
+All 112 solvable benchmarks from the PLDI 2023 paper (cvc5-bcp column, < 100s) have been verified to produce identical results with Picus v1.7.0.
 
 > **Note**: cvc5 requires the GPL build (with CoCoA) for QF_FF finite field support. The non-GPL builds will report "not configured with --cocoa".

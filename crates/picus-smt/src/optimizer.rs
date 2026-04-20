@@ -17,7 +17,7 @@ use crate::SolverKind;
 pub fn optimize_p0(cnsts: &RCmds, solver: SolverKind) -> RCmds {
     match solver {
         SolverKind::Z3 => ab0_optimize_z3(cnsts),
-        // Skip AB0 for cvc5: cvc5 1.2.0 has a bug where `or` disjunctions in QF_FF
+        // Skip AB0 for cvc5: cvc5 1.2.0–1.3.3 has a bug where `or` disjunctions in QF_FF
         // can produce spurious SAT results with inconsistent models.
         // The solver handles nonlinear A*B=0 constraints natively.
         SolverKind::None => unreachable!(),
@@ -309,7 +309,7 @@ fn is_zero_rhs_z3(expr: &RExpr) -> bool {
     false
 }
 
-// NOTE: cvc5 AB0 disabled due to cvc5 1.2.0 bug with `or` in QF_FF.
+// NOTE: cvc5 AB0 disabled due to cvc5 1.2.0–1.3.3 bug with `or` in QF_FF.
 // These functions are retained for when the bug is fixed in future cvc5 versions.
 #[allow(dead_code)]
 fn ab0_optimize_cvc5(cmds: &RCmds) -> RCmds {

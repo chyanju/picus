@@ -31,7 +31,7 @@ impl SolverBackend for Z3NiaBackend {
         let solver = Solver::new();
 
         let mut params = Params::new();
-        params.set_u32("timeout", timeout_ms as u32);
+        params.set_u32("timeout", timeout_ms.min(u32::MAX as u64) as u32);
         solver.set_params(&params);
 
         let p_ast = bigint(&query.prime);

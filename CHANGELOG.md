@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.0] - 2026-04-19
+
+### Changed
+- **Benchmarks externalized**: The `benchmarks/` directory is now a [git submodule](https://github.com/chyanju/picus-benchmarks) (`picus-benchmarks`). Benchmark circuits are organized under `benchmarks/circom/` with a `compile.sh` helper script. This keeps the main repository focused on the tool itself.
+- **Library API `Config::dump_smt` version pin**: Library usage example in README now includes a version tag for reproducibility.
+
+### Fixed
+- **z3 timeout truncation**: `timeout_ms` (u64) was silently truncated to u32 when passed to z3. Now uses saturating cast.
+- **`create_backend` panic on invalid combination**: Replaced `unreachable!()` with proper error return in the public API.
+- **AB0 version comments**: Code comments now correctly reference "cvc5 1.2.0–1.3.3" instead of just "1.2.0".
+- **README build dependencies**: Added missing `git`, `libclang-dev`, and `pkg-config` to the prerequisites list.
+- **Hardcoded z3 AST path documented**: Added explanatory comment for why the propagation pipeline always uses z3-style AST regardless of the solver choice.
+
 ## [1.6.0] - 2026-04-19
 
 ### Added

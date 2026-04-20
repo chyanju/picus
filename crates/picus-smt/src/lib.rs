@@ -67,6 +67,6 @@ pub fn create_backend(
         (SolverKind::Cvc5, Theory::Ff) => Ok(Some(Box::new(backends::cvc5_ff::Cvc5FfBackend::new()))),
         (SolverKind::Cvc5, Theory::Nia) => Ok(Some(Box::new(backends::cvc5_nia::Cvc5NiaBackend::new()))),
         (SolverKind::None, _) => Ok(None),
-        _ => unreachable!(),
+        _ => Err(format!("unsupported combination: {:?} + {:?}", solver, theory)),
     }
 }

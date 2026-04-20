@@ -37,3 +37,4 @@ JSON-based precondition files that could seed the known-set with assumed-unique 
 - **Plonkish/AIR constraint formats**: Extend beyond R1CS to support Halo2 (Plonkish) and STARK (AIR) arithmetizations.
 - **BabyJubJub lemma**: Re-implement the domain-specific propagation lemma for Edwards curve circuits.
 - **Compositional CEX**: Re-implement scope-by-scope counterexample generation for better diagnostics on large circuits.
+- **Multiple counter-examples**: When a circuit is unsafe, allow enumerating additional counter-examples by re-invoking the solver with previously found counter-examples banned. This would help users understand the scope of a vulnerability.

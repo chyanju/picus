@@ -21,7 +21,7 @@ The techniques underlying Picus are described in the PLDI 2023 paper *"Automated
 
 Both z3 and cvc5 (with finite field support) are automatically compiled from source during `cargo build`. No manual solver installation is required.
 
-**Build dependencies:** cmake, python3, C++ compiler (gcc or clang), make, bison.
+**Build dependencies:** cmake, python3, python3-venv, C++ compiler (gcc or clang), make, bison, git, libclang-dev, pkg-config.
 
 > First build takes ~15-20 minutes (z3 + cvc5 compilation). Subsequent builds are incremental.
 
@@ -61,7 +61,7 @@ Picus can also be used as a library crate in other Rust projects:
 
 ```toml
 [dependencies]
-picus = { git = "https://github.com/chyanju/Picus" }
+picus = { git = "https://github.com/chyanju/Picus", tag = "v1.7.0" }
 ```
 
 ```rust
@@ -119,9 +119,10 @@ picus info --r1cs circuit.r1cs --constraints
 
 | | |
 |---|---|
+| [Usage Guide](docs/usage-guide.md) | Result interpretation, solver differences, troubleshooting, large circuit strategies |
 | [Architecture](docs/architecture.md) | Crate structure, data flow, solver backends |
 | [Propagation Lemmas](docs/propagation-lemmas.md) | Deduction rules and their implementation |
-| [Benchmarks](docs/benchmarks.md) | Test suite from 23 real-world projects |
+| [Benchmarks](docs/benchmarks.md) | Test suite from real-world ZK projects |
 | [Future Work](docs/TODO.md) | Planned features and removed components |
 | [Changelog](CHANGELOG.md) | Version history |
 
