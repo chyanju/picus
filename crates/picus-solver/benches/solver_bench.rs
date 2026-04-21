@@ -52,6 +52,7 @@ fn issue10937_system() -> ConstraintSystem {
         disequalities: vec![("mac_sum".into(), "s".into())],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     system.equalities.push(vec![
         vt("mac_sum"),
@@ -79,6 +80,7 @@ fn bigff_is_zero_system() -> ConstraintSystem {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     }
 }
 
@@ -94,6 +96,7 @@ fn field_poly_gf7_system() -> ConstraintSystem {
         disequalities: vec![("a7".into(), "a".into())],
         assignments: vec![],
         add_field_polys: true,
+        bitsums: vec![],
     }
 }
 
@@ -124,6 +127,7 @@ fn random_6var_system() -> ConstraintSystem {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     }
 }
 

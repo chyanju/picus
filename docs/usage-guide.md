@@ -12,12 +12,14 @@ Picus outputs one of three results:
 
 ## Solver Differences
 
-Picus supports two solver backends with different SMT theories:
+Picus supports four solver backends:
 
 | Backend | Theory | How it works |
 |---------|--------|-------------|
-| cvc5 + QF_FF | Finite field | Native field arithmetic — most accurate for ZK circuits |
+| cvc5 + QF_FF | Finite field | Native field arithmetic via cvc5's CoCoA/Groebner basis solver — most accurate for ZK circuits |
+| native + QF_FF | Finite field | Pure-Rust solver (`picus-solver`) using feanor-math — no C++ dependencies, same algorithm as cvc5 |
 | z3 + QF_NIA | Integer mod p | Simulates field arithmetic using integers with modular reduction |
+| none | — | Propagation only — no SMT solver invoked, uses lemma-based deduction |
 
 Both encodings are semantically equivalent when implemented correctly. If both solvers terminate, they should agree on safe/unsafe. In practice:
 
@@ -43,7 +45,7 @@ If the solver does not return within the timeout, Picus reports `unknown`. Commo
 
 Options:
 - Increase `--timeout` (e.g., `--timeout 60000` for 60 seconds)
-- Try a different solver (`--solver z3 --theory nia` vs the default `--solver cvc5 --theory ff`)
+- Try a different solver (`--solver z3 --theory nia`, `--solver native --theory ff`, or the default `--solver cvc5 --theory ff`)
 - Use `--solver none` to see how much propagation alone can resolve
 
 ## Analyzing Large Circuits

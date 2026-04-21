@@ -29,6 +29,7 @@ fn bench_is_zero_bn128() {
         disequalities: vec![("iz".into(), "izp".into())],
         assignments: vec![("x".into(), BigUint::from(5u32))],
         add_field_polys: false,
+        bitsums: vec![],
     };
 
     let start = Instant::now();
@@ -97,6 +98,7 @@ fn bench_multi_constraint_gf17() {
             ("b3p".into(), BigUint::from(0u32)),
         ],
         add_field_polys: false,
+        bitsums: vec![],
     };
 
     let start = Instant::now();

@@ -6,6 +6,9 @@
 use num_bigint::BigUint;
 use std::collections::{HashMap, HashSet};
 
+use feanor_math::homomorphism::*;
+use feanor_math::ring::RingStore;
+
 use crate::field::FfField;
 use crate::ideal::leading_coefficient;
 use crate::poly::{FfPolyRing, Poly};
@@ -14,6 +17,11 @@ use crate::poly::{FfPolyRing, Poly};
 pub struct EncodedSystem {
     pub poly_ring: FfPolyRing,
     pub polynomials: Vec<Poly>,
+    /// Bitsum definition polynomials: `b0 + 2*b1 + ... - aux = 0`.
+    /// These are kept separate from `polynomials` because the split-GB
+    /// algorithm seeds them only into the linear basis (basis 0), not
+    /// the nonlinear basis (basis 1).
+    pub bitsum_polys: Vec<Poly>,
     pub var_map: HashMap<String, usize>,
 }
 
@@ -36,9 +44,14 @@ pub struct ConstraintSystem {
     /// Variable assignments: var = value.
     pub assignments: Vec<(String, BigUint)>,
     /// Whether to add field polynomials x^p - x for each variable.
-    /// This ensures the GB "knows" about the field structure.
-    /// Needed for small fields; usually unnecessary for large primes (BN128).
     pub add_field_polys: bool,
+    /// Optional bitsum declarations.  Each entry is a list of variable names
+    /// `[b0, b1, ..., bk]` representing a bitsum `b0 + 2*b1 + 4*b2 + ...`.
+    /// When provided, the encoder creates a fresh auxiliary variable for each
+    /// bitsum and adds a definition polynomial `b0 + 2*b1 + ... - aux = 0`
+    /// to a separate list (matching cvc5's `CocoaEncoder::bitsumPolys()`).
+    /// When empty, the solver falls back to heuristic detection via `parse::bit_sums`.
+    pub bitsums: Vec<Vec<String>>,
 }
 
 impl ConstraintSystem {
@@ -59,6 +72,11 @@ impl ConstraintSystem {
             vars.insert(a.clone());
             vars.insert(b.clone());
         }
+        for bs in &self.bitsums {
+            for v in bs {
+                vars.insert(v.clone());
+            }
+        }
         let mut sorted: Vec<_> = vars.into_iter().collect();
         sorted.sort();
         sorted
@@ -76,6 +94,14 @@ pub fn encode(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
         let name = format!("__w_diseq_{}", i);
         var_names.push(name.clone());
         witness_vars.push(name);
+    }
+
+    // Add bitsum auxiliary variables.
+    let mut bitsum_aux_vars: Vec<String> = Vec::with_capacity(system.bitsums.len());
+    for i in 0..system.bitsums.len() {
+        let name = format!("__bitsum_{}", i);
+        var_names.push(name.clone());
+        bitsum_aux_vars.push(name);
     }
 
     let field = FfField::new(&system.prime);
@@ -128,6 +154,29 @@ pub fn encode(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
         polynomials.push(rabinowitsch);
     }
 
+    // Encode bitsum definitions: b0 + 2*b1 + 4*b2 + ... - aux = 0.
+    // These go into a separate list (bitsum_polys) because the split-GB
+    // algorithm seeds them only into the linear basis.
+    let mut bitsum_polys = Vec::new();
+    for (bs, aux_name) in system.bitsums.iter().zip(bitsum_aux_vars.iter()) {
+        let fp = poly_ring.field.field();
+        let two = fp.int_hom().map(2);
+        let mut sum = poly_ring.zero();
+        let mut coeff = poly_ring.field.one();
+        for bit_var in bs {
+            let idx = *var_map.get(bit_var).ok_or_else(|| format!("unknown bitsum var: {}", bit_var))?;
+            let term = poly_ring.scale(fp.clone_el(&coeff), poly_ring.var(idx));
+            sum = poly_ring.add(sum, term);
+            coeff = fp.mul_ref(&coeff, &two);
+        }
+        let aux_idx = *var_map.get(aux_name).unwrap();
+        let aux = poly_ring.var(aux_idx);
+        let def_poly = poly_ring.sub(sum, aux);
+        if !poly_ring.is_zero(&def_poly) {
+            bitsum_polys.push(normalize_poly(&poly_ring, def_poly));
+        }
+    }
+
     // Optionally add field polynomials: x^p - x = 0 for each variable.
     if system.add_field_polys {
         let p_usize = system.prime.to_u64_digits();
@@ -161,7 +210,7 @@ pub fn encode(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
         normalize_poly(&poly_ring, p)
     }).collect();
 
-    Ok(EncodedSystem { poly_ring, polynomials, var_map })
+    Ok(EncodedSystem { poly_ring, polynomials, bitsum_polys, var_map })
 }
 
 /// Divide a polynomial by its leading coefficient (in DegRevLex order).

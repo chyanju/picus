@@ -200,22 +200,41 @@ pub fn split_zero_extend<'r>(
 }
 
 /// Cancel-aware version of `split_zero_extend`.
+///
+/// Uses an explicit stack instead of recursion to avoid stack overflow
+/// on deep searches (matching cvc5's iterative `splitZeroExtend`).
 pub fn split_zero_extend_cancel<'r>(
     poly_ring: &'r FfPolyRing,
     orig_polys: &[Poly],
-    cur_bases: SplitGb<'r>,
-    cur_r: PartialPoint,
+    initial_bases: SplitGb<'r>,
+    initial_r: PartialPoint,
     bit_prop: &mut BitProp<'r>,
     cancel: &CancelToken,
 ) -> ZeroExtendResult {
-    if cancel.is_cancelled() { return ZeroExtendResult::NoZero; }
+    // Each stack frame holds: (bases, partial_assignment, remaining_candidates)
+    struct Frame<'r> {
+        bases: SplitGb<'r>,
+        r: PartialPoint,
+        candidates: Vec<(usize, FfEl)>,
+    }
 
-    // Whole-ring detection: if any basis is the whole ring, the partial
-    // assignment is infeasible.  We need to find a conflict polynomial.
-    if cur_bases.iter().any(|b| b.is_whole_ring()) {
+    let mut stack: Vec<Frame<'r>> = Vec::new();
+
+    // Push the initial frame
+    stack.push(Frame {
+        bases: initial_bases,
+        r: initial_r,
+        candidates: Vec::new(), // sentinel: will be populated below
+    });
+
+    // Process the first frame specially (compute candidates)
+    let first = stack.last_mut().unwrap();
+
+    // Check whole ring
+    if first.bases.iter().any(|b| b.is_whole_ring()) {
         for p in orig_polys {
-            if let Some(val) = evaluate_full(poly_ring, p, &cur_r) {
-                if !poly_ring.field.is_zero(&val) && !cur_bases[0].contains(p) {
+            if let Some(val) = evaluate_full(poly_ring, p, &first.r) {
+                if !poly_ring.field.is_zero(&val) && !first.bases[0].contains(p) {
                     return ZeroExtendResult::Conflict(poly_ring.ring.clone_el(p));
                 }
             }
@@ -223,24 +242,41 @@ pub fn split_zero_extend_cancel<'r>(
         return ZeroExtendResult::NoZero;
     }
 
-    let n_assigned = cur_r.iter().filter(|v| v.is_some()).count();
+    // Check all assigned
+    let n_assigned = first.r.iter().filter(|v| v.is_some()).count();
     if n_assigned == poly_ring.n_vars {
-        let out: Vec<FfEl> = cur_r.into_iter().map(|v| v.unwrap()).collect();
+        let out: Vec<FfEl> = first.r.clone().into_iter().map(|v| v.unwrap()).collect();
         return ZeroExtendResult::Point(out);
     }
 
-    // Apply branching rule on bases[0]
-    let candidates = apply_rule(poly_ring, &cur_bases[0], &cur_r);
-    for (var, val) in candidates {
+    first.candidates = apply_rule(poly_ring, &first.bases[0], &first.r);
+
+    loop {
         if cancel.is_cancelled() { return ZeroExtendResult::NoZero; }
 
-        let mut new_r = cur_r.clone();
+        // If stack is empty, search exhausted
+        let frame = match stack.last_mut() {
+            Some(f) => f,
+            None => return ZeroExtendResult::NoZero,
+        };
+
+        // Try next candidate
+        let (var, val) = match frame.candidates.pop() {
+            Some(c) => c,
+            None => {
+                // Brancher exhausted → backtrack
+                stack.pop();
+                continue;
+            }
+        };
+
+        let mut new_r = frame.r.clone();
         new_r[var] = Some(poly_ring.field.field().clone_el(&val));
         let assign_poly = assignment_poly(poly_ring, var, &val);
 
         // Build new generator sets: each basis + the assignment polynomial
-        let mut new_split_gens: Vec<Vec<Poly>> = Vec::with_capacity(cur_bases.len());
-        for b in &cur_bases {
+        let mut new_split_gens: Vec<Vec<Poly>> = Vec::with_capacity(frame.bases.len());
+        for b in &frame.bases {
             let mut g: Vec<Poly> = b.basis.iter().map(|p| poly_ring.ring.clone_el(p)).collect();
             g.push(poly_ring.ring.clone_el(&assign_poly));
             new_split_gens.push(g);
@@ -249,13 +285,35 @@ pub fn split_zero_extend_cancel<'r>(
             Ok(b) => b,
             Err(_) => return ZeroExtendResult::NoZero,
         };
-        let result = split_zero_extend_cancel(poly_ring, orig_polys, new_bases, new_r, bit_prop, cancel);
-        match result {
-            ZeroExtendResult::NoZero => continue, // try next candidate
-            other => return other,
+
+        // Check the new state
+        if new_bases.iter().any(|b| b.is_whole_ring()) {
+            // UNSAT at this branch → look for conflict poly
+            for p in orig_polys {
+                if let Some(val) = evaluate_full(poly_ring, p, &new_r) {
+                    if !poly_ring.field.is_zero(&val) && !new_bases[0].contains(p) {
+                        return ZeroExtendResult::Conflict(poly_ring.ring.clone_el(p));
+                    }
+                }
+            }
+            // No conflict found, just backtrack (try next candidate)
+            continue;
         }
+
+        let n_assigned = new_r.iter().filter(|v| v.is_some()).count();
+        if n_assigned == poly_ring.n_vars {
+            let out: Vec<FfEl> = new_r.into_iter().map(|v| v.unwrap()).collect();
+            return ZeroExtendResult::Point(out);
+        }
+
+        // Go deeper: compute candidates for the new state and push
+        let new_candidates = apply_rule(poly_ring, &new_bases[0], &new_r);
+        stack.push(Frame {
+            bases: new_bases,
+            r: new_r,
+            candidates: new_candidates,
+        });
     }
-    ZeroExtendResult::NoZero
 }
 
 /// Apply branching rule.  Returns a list of `(var_idx, value)` to try.

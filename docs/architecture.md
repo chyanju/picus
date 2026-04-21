@@ -1,6 +1,6 @@
 # Architecture
 
-Picus is organized as a Cargo workspace with seven crates. Data flows top-to-bottom through the pipeline; each layer depends only on the one below it.
+Picus is organized as a Cargo workspace with eight crates. Data flows top-to-bottom through the pipeline; each layer depends only on the one below it.
 
 ```
 ┌─────────────┐
@@ -27,6 +27,10 @@ Picus is organized as a Cargo workspace with seven crates. Data flows top-to-bot
 │  cvc5-ff-sys │   │  cvc5-ff   │   Local fork of cvc5 Rust bindings
 │  (C FFI)     │◄──│  (safe API)│   Auto-compiles cvc5 with CoCoA from source
 └──────────────┘   └────────────┘
+
+┌──────────────┐
+│ picus-solver │   Pure-Rust QF_FF solver (feanor-math, no C++ deps)
+└──────────────┘
 ```
 
 ## Crates
@@ -86,6 +90,23 @@ Thin entry point with two subcommands:
 - **`picus check`** — Runs DPVL on an R1CS file and prints `safe`, `unsafe` (with counter-example), or `unknown`.
 - **`picus info`** — Prints R1CS metadata and optionally all constraints in human-readable form.
 
+### `picus-solver`
+
+Pure-Rust finite field (QF_FF) solver, replacing cvc5's CoCoA-based theory solver. Uses [feanor-math](https://github.com/chyanju/feanor-math) (forked) for Groebner basis computation.
+
+- **`core.rs`** — High-level API (`solve_split_gb`, `solve_single_gb`, `SolverMode`, `SolveOutcome`).
+- **`split_gb.rs`** — Split GB algorithm with inter-basis propagation, matching cvc5's `--ff-solver split`.
+- **`gb.rs`** — Single GB solver (DegRevLex → Lex) with cooperative timeout.
+- **`ideal.rs`** — Ideal operations (GB computation, membership, reduce, zero-dim check, minimal polynomial).
+- **`tracer.rs`** — UNSAT core tracing via `BuchbergerObserver` hooks. Builds a dependency DAG to identify the input subset responsible for unsatisfiability.
+- **`encoder.rs`** — `ConstraintSystem` → polynomial encoding with bitsum and normalization support.
+- **`model.rs`** — Model construction via iterative ideal augmentation (univariate roots, minimal polynomial, round-robin).
+- **`bitprop.rs`** — Bit propagation (constant + equal bitsum) across split bases.
+- **`parse.rs`** — Pattern detection (`bit_constraint`, `linear_monomial`, `bit_sums`).
+- **`incremental.rs`** — Push/pop API for incremental solving.
+- **`roots.rs`** — Univariate root finding (Cantor-Zassenhaus via feanor-math).
+- **`timeout.rs`** — `CancelToken` (atomic cancellation threaded through Buchberger).
+
 ## Data Flow
 
 ```
@@ -107,8 +128,8 @@ R1CS binary (.r1cs)
   │         5 lemmas              SolverBackend::solve()
   │         (fixed-point)          ├── Z3NiaBackend
   │              │                 ├── Cvc5FfBackend
-  │              ▼                 └── Cvc5NiaBackend
-  │         known_set                      │
+  │              ▼                 ├── Cvc5NiaBackend
+  │         known_set              └── NativeFfBackend (picus-solver)
   │              └────────┬────────────────┘
   │                       ▼
   └──────────────► DpvlResult { Safe | Unsafe(model) | Unknown }

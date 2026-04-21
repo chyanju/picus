@@ -95,6 +95,7 @@ impl IncrementalSolver {
             disequalities,
             assignments,
             add_field_polys: self.add_field_polys,
+            bitsums: vec![],
         };
         let encoded = encode(&cs).expect("encode failed");
         solve_encoded(&encoded)
@@ -109,6 +110,7 @@ impl IncrementalSolver {
             disequalities,
             assignments,
             add_field_polys: self.add_field_polys,
+            bitsums: vec![],
         };
         let encoded = encode(&cs).expect("encode failed");
         solve_encoded_with_cancel(&encoded, cancel)

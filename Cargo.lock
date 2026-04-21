@@ -383,8 +383,7 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 [[package]]
 name = "feanor-math"
 version = "3.5.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a78768b915b608997bb6be55e866f5a9cad0cd045f625d92b446cc8f1ef0ef67"
+source = "git+https://github.com/chyanju/feanor-math?rev=a3c08f7f4a47c51fc27a683752c28ba44c1091b4#a3c08f7f4a47c51fc27a683752c28ba44c1091b4"
 dependencies = [
  "append-only-vec",
  "atomicbox",
@@ -631,7 +630,7 @@ checksum = "d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d"
 
 [[package]]
 name = "picus"
-version = "1.7.1"
+version = "1.7.2"
 dependencies = [
  "num-bigint",
  "picus-analysis",
@@ -642,7 +641,7 @@ dependencies = [
 
 [[package]]
 name = "picus-analysis"
-version = "1.7.1"
+version = "1.7.2"
 dependencies = [
  "log",
  "num-bigint",
@@ -654,7 +653,7 @@ dependencies = [
 
 [[package]]
 name = "picus-cli"
-version = "1.7.1"
+version = "1.7.2"
 dependencies = [
  "anstream",
  "clap",
@@ -668,7 +667,7 @@ dependencies = [
 
 [[package]]
 name = "picus-r1cs"
-version = "1.7.1"
+version = "1.7.2"
 dependencies = [
  "byteorder",
  "num-bigint",
@@ -677,7 +676,7 @@ dependencies = [
 
 [[package]]
 name = "picus-smt"
-version = "1.7.1"
+version = "1.7.2"
 dependencies = [
  "cvc5-ff",
  "log",
@@ -691,7 +690,7 @@ dependencies = [
 
 [[package]]
 name = "picus-solver"
-version = "1.7.1"
+version = "1.7.2"
 dependencies = [
  "criterion",
  "env_logger",

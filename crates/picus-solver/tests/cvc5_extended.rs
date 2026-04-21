@@ -64,6 +64,7 @@ fn test_bigff_is_zero_sound() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     // The placeholder above is messy; rebuild equalities cleanly.
     let p_minus_1 = &p - BigUint::one();
@@ -84,6 +85,7 @@ fn test_bigff_is_zero_sound() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert_eq!(solve(&system), "unsat");
 }
@@ -112,6 +114,7 @@ fn test_bigff_is_zero_unsound() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert_eq!(solve(&system), "sat");
 }
@@ -199,6 +202,7 @@ fn test_bitsum_overflow() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert_eq!(solve(&system), "sat");
 }
@@ -223,6 +227,7 @@ fn test_issue11932() {
         disequalities: vec![],
         assignments: vec![("dummy".into(), BigUint::from(0u32))],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert_eq!(solve(&system), "sat");
 }
@@ -250,6 +255,7 @@ fn test_field_poly_gf7() {
         disequalities: vec![("a7".into(), "a".into())],
         assignments: vec![],
         add_field_polys: true,
+        bitsums: vec![],
     };
     assert_eq!(solve(&system), "unsat");
 }
@@ -276,6 +282,7 @@ fn test_negneg_bn128() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert_eq!(solve(&system), "sat");
 }
@@ -311,6 +318,7 @@ fn test_issue10937_mac_linearity() {
         disequalities: vec![("mac_sum".into(), "s".into())],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     // Add mac_sum - mac1 - mac2 = 0 to equalities:
     let mut system = system;
@@ -341,6 +349,7 @@ fn test_issue11969() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: true,
+        bitsums: vec![],
     };
     assert_eq!(solve(&system), "sat");
 }
@@ -359,6 +368,7 @@ fn test_as() {
         disequalities: vec![],
         assignments: vec![("dummy".into(), BigUint::from(0u32))],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert_eq!(solve(&system), "sat");
 }
@@ -379,6 +389,7 @@ fn test_bitsum_eval() {
         disequalities: vec![],
         assignments: vec![("dummy".into(), BigUint::from(0u32))],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert_eq!(solve(&system), "sat");
 }
@@ -396,6 +407,7 @@ fn test_proj_issue704() {
         disequalities: vec![],
         assignments: vec![("x".into(), BigUint::from(0u32))],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert_eq!(solve(&system), "sat");
 }
@@ -420,6 +432,7 @@ fn test_issue11107_redundant_eqs() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert_eq!(solve(&system), "sat");
 }

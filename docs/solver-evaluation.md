@@ -31,7 +31,7 @@ This document evaluates `picus-solver`, the pure-Rust finite field (QF_FF) solve
 
 | Test file | Tests | Source |
 |-----------|-------|--------|
-| `lib.rs` unit tests | 38 | Solver internals (field, poly, ideal, parse, bitprop, split_gb, core, incremental, timeout, stats) |
+| `lib.rs` unit tests | 46 | Solver internals (field, poly, ideal, parse, bitprop, split_gb, core, incremental, timeout, stats, tracer) |
 | `cvc5_regression.rs` | 9 | Direct ports of `regress0/ff/*.smt2` |
 | `cvc5_extended.rs` | 14 | Extended ports of additional cvc5 regression tests |
 | `cvc5_unit_uni_roots.rs` | 5 | Ports of `theory_ff_uni_roots_black.cpp` |
@@ -40,7 +40,7 @@ This document evaluates `picus-solver`, the pure-Rust finite field (QF_FF) solve
 | `cvc5_unit_parse.rs` | 11 | Ports of `theory_ff_parse_white.cpp` |
 | `integration.rs` | 6 | End-to-end integration tests |
 | `timeout.rs` | 7 | Cooperative timeout integration tests |
-| **Total** | **109** | (+ 4 ignored perf/probe tests) |
+| **Total** | **117** | (+ 4 ignored perf/probe tests) |
 
 ### A/B correctness guarantee
 
@@ -53,8 +53,9 @@ The following cvc5 features are **not implemented** (they live in cvc5's Boolean
 - Boolean connectives (`or`, `not`, `=>`, `ite`)
 - Uninterpreted functions (`with_uf*` tests)
 - Disjunctive bit constraint elimination
-- Non-trivial UNSAT core tracing (`ffTraceGb` mode — see `docs/TODO.md`)
 - Resource manager / `tlimit_per`
+
+Non-trivial UNSAT core tracing (`ffTraceGb`) is implemented for single-GB mode. Split-GB mode returns trivial (all-input) cores. See `docs/TODO.md` for remaining limitations.
 
 These are architectural boundaries, not bugs. A full SMT solver built on top of `picus-solver` would handle these at the SAT/DPLL(T) level.
 
@@ -117,7 +118,7 @@ feanor-math's `MultivariatePolyRingImpl::new` defaults to a multiplication table
 | Single GB solver (DegRevLex → Lex → findZero) | ✅ | ✅ | Complete, selectable via `SolverMode` |
 | Model construction (univariate roots, minpoly, round-robin) | ✅ | ✅ | Complete |
 | UNSAT core (trivial mode) | ✅ | ✅ | Complete |
-| UNSAT core (GB-trace mode, `ffTraceGb`) | ✅ | ❌ | Deferred (see `docs/TODO.md`) |
+| UNSAT core (GB-trace mode, `ffTraceGb`) | ✅ | ✅ | Complete for single-GB mode (see `docs/TODO.md`) |
 | Incremental push/pop | ✅ | ✅ | Complete |
 | Cooperative timeout | ✅ | ✅ | Complete (`CancelToken` via `abort_early_if`) |
 | Polynomial normalization (divide by LC) | ✅ | ✅ | Complete |
@@ -158,6 +159,6 @@ cd picus/crates/picus-solver/benches
 
 ## 6. Known Limitations
 
-- **Non-trivial UNSAT core tracing** (`ffTraceGb`): deferred because feanor-math's `ComputationController` trait lacks Buchberger-step-level callbacks. See `docs/TODO.md`.
+- **Non-trivial UNSAT core tracing** (`ffTraceGb`): implemented for single-GB mode via Buchberger observer hooks in a forked feanor-math. The core is approximate (conservative on initial inter-reduce; no reduction-step-level tracking). Split-GB mode returns trivial cores. See `docs/TODO.md`.
 - **`picus-cli` full build requires cvc5-ff-sys**: the workspace includes `cvc5-ff-sys` which builds cvc5 and GMP from source (requires `yacc`/`bison` and `m4` on PATH). The `picus-solver` crate itself builds independently without these dependencies.
 - **`Or` constraint handling in `NativeFfBackend`**: encodes all branches as conjunctions (unsound for disjunction). This matches the current behavior where AB0 optimization is disabled for the cvc5-ff backend. See `docs/TODO.md`.
