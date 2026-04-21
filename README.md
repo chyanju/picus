@@ -61,7 +61,7 @@ Picus can also be used as a library crate in other Rust projects:
 
 ```toml
 [dependencies]
-picus = { git = "https://github.com/chyanju/Picus", tag = "v1.7.0" }
+picus = { git = "https://github.com/chyanju/Picus", tag = "v1.7.1" }
 ```
 
 ```rust
@@ -88,6 +88,7 @@ See `crates/picus/src/lib.rs` for the full API, including `check_r1cs_bytes()`, 
 
 ```bash
 picus check --r1cs circuit.r1cs                              # default: cvc5 + ff
+picus check --r1cs circuit.r1cs --solver native --theory ff  # pure Rust solver (no cvc5)
 picus check --r1cs circuit.r1cs --solver z3 --theory nia     # z3 with integer arithmetic
 picus check --r1cs circuit.r1cs --solver none                # propagation only
 picus check --r1cs circuit.r1cs --lemmas all-bim             # all lemmas except bim
@@ -98,7 +99,7 @@ picus check --r1cs circuit.r1cs --dump-smt /tmp/smt/         # dump SMT queries
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--r1cs <path>` | *required* | R1CS binary file |
-| `--solver <cvc5\|z3\|none>` | `cvc5` | Solver backend (`none` = propagation only) |
+| `--solver <cvc5\|z3\|native\|none>` | `cvc5` | Solver backend (`native` = pure Rust, `none` = propagation only) |
 | `--theory <ff\|nia>` | `ff` | Theory: `ff` (finite field) or `nia` (integer mod) |
 | `--timeout <ms>` | `5000` | Per-query solver timeout |
 | `--selector <first\|counter>` | `counter` | Signal selection heuristic |

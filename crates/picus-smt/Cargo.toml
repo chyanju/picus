@@ -17,3 +17,4 @@ log = { workspace = true }
 # Solver backends
 z3 = { version = "0.20", features = ["vendored"] }
 cvc5-ff = { path = "../cvc5-ff" }
+picus-solver = { path = "../picus-solver" }

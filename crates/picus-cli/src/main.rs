@@ -34,8 +34,8 @@ enum Commands {
         #[arg(long)]
         r1cs: PathBuf,
 
-        /// Solver backend: cvc5, z3, or none (propagation only)
-        #[arg(long, default_value = "cvc5", value_parser = ["z3", "cvc5", "none"])]
+        /// Solver backend: cvc5, z3, native (pure Rust GB), or none (propagation only)
+        #[arg(long, default_value = "cvc5", value_parser = ["z3", "cvc5", "native", "none"])]
         solver: String,
 
         /// SMT theory
