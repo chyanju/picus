@@ -31,6 +31,7 @@ fn probe_issue10937() {
         disequalities: vec![("mac_sum".into(), "s".into())],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     system.equalities.push(vec![vt("mac_sum"), svt(p_minus_1.to_u64_digits()[0], "mac1"), svt(p_minus_1.to_u64_digits()[0], "mac2")]);
 

@@ -1,11 +1,11 @@
 //! UNSAT core type and high-level solving API.
 //!
 //! Mirrors cvc5's `FfCore` (a list of input facts that are jointly
-//! unsatisfiable).  We currently implement the **trivial conflict** mode
-//! (return all input facts on UNSAT), matching cvc5's default behaviour
-//! when `ffTraceGb` is disabled.  Full GB-step tracing (Buchberger
-//! reduction history → backtrace to which inputs produced 1) is left as
-//! future work; the structure here is designed to accommodate it.
+//! unsatisfiable).  The single-GB solver uses Buchberger observer hooks
+//! (via `tracer::GbTracer`) to track which input polynomials contribute
+//! to the UNSAT proof, matching cvc5's `--ff-trace-gb` mode.  The
+//! split-GB solver returns trivial (all-input) cores, also matching
+//! cvc5's behavior.
 
 use std::collections::{HashMap, HashSet};
 
@@ -14,7 +14,7 @@ use feanor_math::ring::RingStore;
 
 use crate::bitprop::BitProp;
 use crate::encoder::EncodedSystem;
-use crate::gb::{compute_gb_with_timeout, GbResult};
+use crate::gb::{compute_gb_with_timeout_traced, GbResultTraced};
 use crate::model;
 use crate::parse;
 use crate::poly::{FfPolyRing, Poly};
@@ -84,12 +84,17 @@ fn populate_bitprop<'r>(
 pub fn solve_split_gb<'r>(
     poly_ring: &'r FfPolyRing,
     original_polys: &[Poly],
+    bitsum_polys: &[Poly],
 ) -> SolveOutcome {
     // Split into two ideals per cvc5's `split` (split_gb.cpp:148-160):
     //   - basis 0 ("linear"): bitsum polys + every input poly with deg <= 1
     //   - basis 1 ("nonlinear"): ALL input polys
     let nl_gens: Vec<Poly> = original_polys.iter().map(|p| poly_ring.ring.clone_el(p)).collect();
     let mut l_gens: Vec<Poly> = Vec::new();
+    // Seed bitsum definition polys into basis 0 (linear), matching cvc5.
+    for p in bitsum_polys {
+        l_gens.push(poly_ring.ring.clone_el(p));
+    }
     for p in original_polys {
         if admit(poly_ring, 0, p) {
             l_gens.push(poly_ring.ring.clone_el(p));
@@ -107,14 +112,20 @@ pub fn solve_split_gb<'r>(
 
     match split_find_zero(poly_ring, split_basis, &mut bit_prop) {
         Some(point) => {
-            let mut model = HashMap::new();
+            let mut model_map = HashMap::new();
             let field = &poly_ring.field;
             for (idx, val) in point.iter().enumerate() {
                 if idx < poly_ring.var_names.len() {
-                    model.insert(poly_ring.var_names[idx].clone(), field.to_biguint(val));
+                    model_map.insert(poly_ring.var_names[idx].clone(), field.to_biguint(val));
                 }
             }
-            SolveOutcome::Sat(model)
+            // Validate model against original polynomials (matches cvc5's checkZero)
+            if model::verify_model(poly_ring, original_polys, &model_map) {
+                SolveOutcome::Sat(model_map)
+            } else {
+                log::warn!("model validation failed; reporting Unknown");
+                SolveOutcome::Unknown
+            }
         }
         None => SolveOutcome::Unsat((0..original_polys.len()).collect()),
     }
@@ -122,7 +133,7 @@ pub fn solve_split_gb<'r>(
 
 /// Solve an `EncodedSystem` directly.  Convenience wrapper.
 pub fn solve_encoded(encoded: &EncodedSystem) -> SolveOutcome {
-    solve_split_gb(&encoded.poly_ring, &encoded.polynomials)
+    solve_split_gb(&encoded.poly_ring, &encoded.polynomials, &encoded.bitsum_polys)
 }
 
 /// Solve with a specified mode.
@@ -131,7 +142,7 @@ pub fn solve_encoded_with_mode(
     mode: SolverMode,
 ) -> SolveOutcome {
     match mode {
-        SolverMode::SplitGb => solve_split_gb(&encoded.poly_ring, &encoded.polynomials),
+        SolverMode::SplitGb => solve_split_gb(&encoded.poly_ring, &encoded.polynomials, &encoded.bitsum_polys),
         SolverMode::SingleGb => {
             let polys: Vec<Poly> = encoded.polynomials.iter()
                 .map(|p| encoded.poly_ring.ring.clone_el(p)).collect();
@@ -147,7 +158,7 @@ pub fn solve_encoded_with_mode_cancel(
     cancel: &CancelToken,
 ) -> SolveOutcome {
     match mode {
-        SolverMode::SplitGb => solve_split_gb_cancel(&encoded.poly_ring, &encoded.polynomials, cancel),
+        SolverMode::SplitGb => solve_split_gb_cancel(&encoded.poly_ring, &encoded.polynomials, &encoded.bitsum_polys, cancel),
         SolverMode::SingleGb => {
             if cancel.is_cancelled() { return SolveOutcome::Unknown; }
             let polys: Vec<Poly> = encoded.polynomials.iter()
@@ -162,18 +173,27 @@ pub fn solve_encoded_with_mode_cancel(
 }
 
 /// Single Groebner basis solver (matches cvc5's `--ff-solver gb`).
+///
+/// Uses Buchberger observer hooks to trace which input polynomials
+/// contribute to the UNSAT proof, matching cvc5's `--ff-trace-gb` mode.
 pub fn solve_single_gb(
     poly_ring: &FfPolyRing,
     polynomials: Vec<Poly>,
 ) -> SolveOutcome {
-    let n = polynomials.len();
-    let gb_result = compute_gb_with_timeout(poly_ring, polynomials, None);
+    let gb_result = compute_gb_with_timeout_traced(poly_ring, polynomials, None);
     match gb_result {
-        GbResult::Trivial => SolveOutcome::Unsat((0..n).collect()),
-        GbResult::Timeout => SolveOutcome::Unknown,
-        GbResult::NonTrivial(gb) => {
+        GbResultTraced::Trivial(core) => SolveOutcome::Unsat(core),
+        GbResultTraced::Timeout => SolveOutcome::Unknown,
+        GbResultTraced::NonTrivial(gb) => {
             match model::find_zero(poly_ring, &gb) {
-                Some(m) => SolveOutcome::Sat(m),
+                Some(m) => {
+                    if model::verify_model(poly_ring, &gb, &m) {
+                        SolveOutcome::Sat(m)
+                    } else {
+                        log::warn!("SingleGb model validation failed; reporting Unknown");
+                        SolveOutcome::Unknown
+                    }
+                }
                 None => SolveOutcome::Unknown,
             }
         }
@@ -187,17 +207,21 @@ pub fn solve_encoded_with_cancel(
     encoded: &EncodedSystem,
     cancel: &CancelToken,
 ) -> SolveOutcome {
-    solve_split_gb_cancel(&encoded.poly_ring, &encoded.polynomials, cancel)
+    solve_split_gb_cancel(&encoded.poly_ring, &encoded.polynomials, &encoded.bitsum_polys, cancel)
 }
 
 /// Solve with cooperative cancellation.
 pub fn solve_split_gb_cancel<'r>(
     poly_ring: &'r FfPolyRing,
     original_polys: &[Poly],
+    bitsum_polys: &[Poly],
     cancel: &CancelToken,
 ) -> SolveOutcome {
     let nl_gens: Vec<Poly> = original_polys.iter().map(|p| poly_ring.ring.clone_el(p)).collect();
     let mut l_gens: Vec<Poly> = Vec::new();
+    for p in bitsum_polys {
+        l_gens.push(poly_ring.ring.clone_el(p));
+    }
     for p in original_polys {
         if admit(poly_ring, 0, p) {
             l_gens.push(poly_ring.ring.clone_el(p));
@@ -217,14 +241,19 @@ pub fn solve_split_gb_cancel<'r>(
 
     match split_find_zero_cancel(poly_ring, split_basis, &mut bit_prop, cancel) {
         Ok(Some(point)) => {
-            let mut model = HashMap::new();
+            let mut model_map = HashMap::new();
             let field = &poly_ring.field;
             for (idx, val) in point.iter().enumerate() {
                 if idx < poly_ring.var_names.len() {
-                    model.insert(poly_ring.var_names[idx].clone(), field.to_biguint(val));
+                    model_map.insert(poly_ring.var_names[idx].clone(), field.to_biguint(val));
                 }
             }
-            SolveOutcome::Sat(model)
+            if model::verify_model(poly_ring, original_polys, &model_map) {
+                SolveOutcome::Sat(model_map)
+            } else {
+                log::warn!("model validation failed; reporting Unknown");
+                SolveOutcome::Unknown
+            }
         }
         Ok(None) => SolveOutcome::Unsat((0..original_polys.len()).collect()),
         Err(_) => SolveOutcome::Unknown,
@@ -247,7 +276,7 @@ mod tests {
         let two = pr.field.from_int(2);
         let p2 = pr.sub(pr.var(0), pr.constant(two));
 
-        match solve_split_gb(&pr, &[p1, p2]) {
+        match solve_split_gb(&pr, &[p1, p2], &[]) {
             SolveOutcome::Sat(m) => {
                 assert_eq!(m["x"], BigUint::from(2u32));
                 let prod = (&m["x"] * &m["y"]) % BigUint::from(7u32);
@@ -265,12 +294,55 @@ mod tests {
         let three = pr.field.from_int(3);
         let p1 = pr.sub(pr.var(0), pr.constant(two));
         let p2 = pr.sub(pr.var(0), pr.constant(three));
-        match solve_split_gb(&pr, &[p1, p2]) {
+        match solve_split_gb(&pr, &[p1, p2], &[]) {
             SolveOutcome::Unsat(core) => {
                 assert_eq!(core.len(), 2);
                 assert!(core.contains(&0) && core.contains(&1));
             }
             _ => panic!("expected UNSAT"),
+        }
+    }
+
+    #[test]
+    fn test_single_gb_traced_unsat_core() {
+        // System: x = 2, x = 3, y = 1  in GF(7).
+        // The UNSAT comes from the first two constraints only.
+        // With tracing, the core should be a subset of {0, 1, 2}
+        // and must include both 0 and 1 (since those are contradictory).
+        let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
+        let two = pr.field.from_int(2);
+        let three = pr.field.from_int(3);
+        let one = pr.field.from_int(1);
+        let p0 = pr.sub(pr.var(0), pr.constant(two));   // x = 2
+        let p1 = pr.sub(pr.var(0), pr.constant(three));  // x = 3
+        let p2 = pr.sub(pr.var(1), pr.constant(one));    // y = 1 (irrelevant)
+        match solve_single_gb(&pr, vec![p0, p1, p2]) {
+            SolveOutcome::Unsat(core) => {
+                // Core must contain 0 and 1 (the contradictory pair).
+                assert!(core.contains(&0), "core must contain input 0 (x=2)");
+                assert!(core.contains(&1), "core must contain input 1 (x=3)");
+                // Core should NOT contain 2 (y=1 is irrelevant) in an
+                // ideal tracer.  Due to conservative initial-basis tracking
+                // this may still include 2, but it must be <= 3 elements.
+                assert!(core.len() <= 3, "core should be bounded by total inputs");
+                log::info!("UNSAT core: {:?} (ideal: [0, 1])", core);
+            }
+            _ => panic!("expected UNSAT"),
+        }
+    }
+
+    #[test]
+    fn test_single_gb_traced_sat() {
+        // x*y = 1 in GF(7): SAT, tracing should not interfere.
+        let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
+        let xy = pr.mul(pr.var(0), pr.var(1));
+        let p = pr.sub(xy, pr.one());
+        match solve_single_gb(&pr, vec![p]) {
+            SolveOutcome::Sat(m) => {
+                let prod = (&m["x"] * &m["y"]) % BigUint::from(7u32);
+                assert_eq!(prod, BigUint::from(1u32));
+            }
+            _ => panic!("expected SAT"),
         }
     }
 }

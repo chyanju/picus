@@ -346,7 +346,7 @@ pub fn leading_coefficient<O: MonomialOrder + Copy>(
 /// This is sufficient for QF_FF circuits (constraints are typically linear or
 /// Rabinowitsch quadratic; field polys `x^p - x` are accommodated by
 /// `max_supported_deg`).
-fn compute_gb_fast<'r>(poly_ring: &'r FfPolyRing, generators: Vec<Poly>, cancel: &CancelToken) -> Vec<Poly> {
+fn compute_gb_fast(poly_ring: &FfPolyRing, generators: Vec<Poly>, cancel: &CancelToken) -> Vec<Poly> {
     // Wrap in catch_unwind to gracefully handle feanor-math panics
     // (e.g., monomial degree overflow when max_supported_deg is exceeded).
     // On panic, return the original generators unreduced rather than an empty
@@ -367,40 +367,85 @@ fn compute_gb_fast<'r>(poly_ring: &'r FfPolyRing, generators: Vec<Poly>, cancel:
     }
 }
 
-fn compute_gb_fast_inner<'r>(poly_ring: &'r FfPolyRing, generators: Vec<Poly>, cancel: &CancelToken) -> Vec<Poly> {
+fn compute_gb_fast_inner(poly_ring: &FfPolyRing, generators: Vec<Poly>, cancel: &CancelToken) -> Vec<Poly> {
+    compute_gb_with_order(poly_ring, generators, cancel, DegRevLex)
+}
+
+/// Compute a GB in a specified monomial order using the optimized `(2,2)`
+/// multiplication table.  This is the shared implementation for both
+/// DegRevLex (used by `Ideal::new`) and Lex (used by the single-GB solver).
+pub fn compute_gb_with_order<O: MonomialOrder + Copy + Send + Sync>(
+    poly_ring: &FfPolyRing,
+    generators: Vec<Poly>,
+    cancel: &CancelToken,
+    order: O,
+) -> Vec<Poly> {
+    if generators.is_empty() {
+        return Vec::new();
+    }
     let ring = &poly_ring.ring;
     let n_vars = ring.indeterminate_count();
     let as_local_pir = AsLocalPIR::from_field(ring.base_ring());
-    let max_deg = if n_vars <= 4 { 256 }
-        else if n_vars <= 8 { 64 }
-        else { 32 };
+    let max_deg = max_supported_deg(n_vars);
     let new_poly_ring = MultivariatePolyRingImpl::new_with_mult_table(
-        &as_local_pir,
-        n_vars,
-        max_deg,
-        (2, 2),
-        Global,
+        &as_local_pir, n_vars, max_deg, (2, 2), Global,
     );
-    let from_ring = new_poly_ring.lifted_hom(
-        ring,
-        WrapHom::to_delegate_ring(as_local_pir.get_ring()),
-    );
+    let from_ring = new_poly_ring.lifted_hom(ring, WrapHom::to_delegate_ring(as_local_pir.get_ring()));
     let mapped: Vec<_> = generators.into_iter().map(|f| from_ring.map(f)).collect();
+    let backup: Vec<_> = mapped.iter().map(|f| new_poly_ring.clone_el(f)).collect();
     let cancel_clone = cancel.clone();
-    let result = buchberger::<_, _, _, _, _>(
-        &new_poly_ring,
-        mapped,
-        DegRevLex,
-        default_sort_fn(&new_poly_ring, DegRevLex),
+    let result = buchberger(
+        &new_poly_ring, mapped, order,
+        default_sort_fn(&new_poly_ring, order),
         move |_| cancel_clone.is_cancelled(),
         DontObserve,
-    )
-    .unwrap_or_else(|_| Vec::new());
-    let to_ring = ring.lifted_hom(
-        &new_poly_ring,
-        UnwrapHom::from_delegate_ring(as_local_pir.get_ring()),
     );
-    result.into_iter().map(|f| to_ring.map(f)).collect()
+    let basis = match result { Ok(gb) => gb, Err(_) => backup };
+    let to_ring = ring.lifted_hom(&new_poly_ring, UnwrapHom::from_delegate_ring(as_local_pir.get_ring()));
+    basis.into_iter().map(|f| to_ring.map(f)).collect()
+}
+
+/// Like [`compute_gb_with_order`], but accepts a [`GbTracer`] for
+/// UNSAT core tracing.  The observer receives callbacks as the Buchberger
+/// algorithm derives new polynomials.
+pub fn compute_gb_with_order_traced<O: MonomialOrder + Copy + Send + Sync>(
+    poly_ring: &FfPolyRing,
+    generators: Vec<Poly>,
+    cancel: &CancelToken,
+    order: O,
+    tracer: &mut crate::tracer::GbTracer,
+) -> Vec<Poly> {
+    if generators.is_empty() {
+        return Vec::new();
+    }
+    let ring = &poly_ring.ring;
+    let n_vars = ring.indeterminate_count();
+    let as_local_pir = AsLocalPIR::from_field(ring.base_ring());
+    let max_deg = max_supported_deg(n_vars);
+    let new_poly_ring = MultivariatePolyRingImpl::new_with_mult_table(
+        &as_local_pir, n_vars, max_deg, (2, 2), Global,
+    );
+    let from_ring = new_poly_ring.lifted_hom(ring, WrapHom::to_delegate_ring(as_local_pir.get_ring()));
+    let mapped: Vec<_> = generators.into_iter().map(|f| from_ring.map(f)).collect();
+    let backup: Vec<_> = mapped.iter().map(|f| new_poly_ring.clone_el(f)).collect();
+    let cancel_clone = cancel.clone();
+    let result = buchberger_observed(
+        &new_poly_ring, mapped, order,
+        default_sort_fn(&new_poly_ring, order),
+        move |_| cancel_clone.is_cancelled(),
+        DontObserve,
+        tracer,
+    );
+    let basis = match result { Ok(gb) => gb, Err(_) => backup };
+    let to_ring = ring.lifted_hom(&new_poly_ring, UnwrapHom::from_delegate_ring(as_local_pir.get_ring()));
+    basis.into_iter().map(|f| to_ring.map(f)).collect()
+}
+
+/// Maximum supported polynomial degree, based on variable count.
+fn max_supported_deg(n_vars: usize) -> u16 {
+    if n_vars <= 4 { 256 }
+    else if n_vars <= 8 { 64 }
+    else { 32 }
 }
 
 /// Get the coefficient of a specific monomial in `p`.

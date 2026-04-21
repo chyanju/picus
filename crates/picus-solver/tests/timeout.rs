@@ -33,6 +33,7 @@ fn test_pre_cancelled_returns_unknown() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     let encoded = encode(&system).unwrap();
     let cancel = CancelToken::cancelled();
@@ -56,6 +57,7 @@ fn test_no_timeout_sat() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     let encoded = encode(&system).unwrap();
     let cancel = CancelToken::none();
@@ -80,6 +82,7 @@ fn test_no_timeout_unsat() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     let encoded = encode(&system).unwrap();
     let cancel = CancelToken::none();
@@ -107,6 +110,7 @@ fn test_generous_timeout_completes() {
         disequalities: vec![("mac_sum".into(), "s".into())],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     let encoded = encode(&system).unwrap();
     // 10 seconds is way more than needed

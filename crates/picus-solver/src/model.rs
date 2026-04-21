@@ -1,229 +1,236 @@
-//! Model construction from a Lex Groebner basis.
+//! Model construction from a Groebner basis.
 //!
-//! Implements `findZero` from [OKTB23]: extract variable assignments
-//! from a Lex GB via back-substitution and univariate root finding.
+//! Implements `findZero` from [OKTB23] (Figure 5): given an ideal, finds a
+//! common zero of all polynomials using iterative backtracking with ideal
+//! augmentation.  At each branch point, a variable assignment `x = c` is
+//! added to the ideal and the GB is recomputed, propagating the constraint
+//! algebraically to all other polynomials.
+//!
+//! This matches cvc5's `multi_roots.cpp::findZero` algorithm exactly:
+//! stack-based iterative search with three branching strategies
+//! (univariate factoring, minimal polynomial, round-robin enumeration).
 
 use std::collections::HashMap;
 use num_bigint::BigUint;
 
 use feanor_math::ring::*;
 use feanor_math::rings::multivariate::*;
-use feanor_math::homomorphism::*;
 use feanor_math::field::FieldStore;
 
 use crate::field::{FfField, FfEl};
-use crate::poly::{FfPolyRing, Poly, PolyRingType};
+use crate::ideal::Ideal;
+use crate::poly::{FfPolyRing, Poly};
 use crate::roots::find_roots;
+use crate::timeout::CancelToken;
 
-/// Try to extract a model from a Lex Groebner basis.
+/// Try to find a common zero of the polynomials that generated `initial_gb`.
+///
+/// Uses iterative backtracking with ideal augmentation (matching cvc5):
+/// at each branch, `x - val` is added to the generators and the GB is
+/// recomputed.  Returns `Some(model)` on SAT, `None` on UNSAT/timeout.
 pub fn find_zero(
     poly_ring: &FfPolyRing,
-    gb: &[Poly],
+    initial_gb: &[Poly],
 ) -> Option<HashMap<String, BigUint>> {
-    let n_vars = poly_ring.n_vars;
-    let ring = &poly_ring.ring;
-    let field = &poly_ring.field;
-    let fp = field.field();
+    find_zero_cancel(poly_ring, initial_gb, &CancelToken::none())
+}
 
-    let mut assignment: HashMap<usize, FfEl> = HashMap::new();
+/// Cancel-aware model search.
+pub fn find_zero_cancel(
+    poly_ring: &FfPolyRing,
+    initial_gb: &[Poly],
+    cancel: &CancelToken,
+) -> Option<HashMap<String, BigUint>> {
+    // Build initial ideal from the provided GB
+    let initial_gens: Vec<Poly> = initial_gb.iter()
+        .map(|p| poly_ring.ring.clone_el(p))
+        .collect();
+    let initial_ideal = Ideal::new(poly_ring, initial_gens);
 
-    // Phase 1: Extract direct linear assignments (x_i - c) from GB
-    for p in gb {
-        if let Some((var_idx, value)) = extract_linear_assignment(ring, fp, p, n_vars) {
-            assignment.entry(var_idx).or_insert(value);
+    // Stack-based iterative search (matching cvc5's findZero)
+    let mut ideals: Vec<Ideal> = vec![initial_ideal];
+    let mut branchers: Vec<Vec<(usize, FfEl)>> = Vec::new();
+
+    while !ideals.is_empty() {
+        if cancel.is_cancelled() { return None; }
+
+        let ideal = ideals.last().unwrap();
+
+        // Check UNSAT
+        if ideal.is_whole_ring() {
+            ideals.pop();
+            if branchers.len() >= ideals.len() {
+                branchers.pop();
+            }
+            continue;
+        }
+
+        // Check if all variables are assigned
+        if let Some(model) = try_extract_full_assignment(poly_ring, ideal) {
+            return Some(model);
+        }
+
+        // Create brancher if needed
+        if ideals.len() > branchers.len() {
+            let candidates = compute_candidates(poly_ring, ideal);
+            branchers.push(candidates);
+        }
+
+        // Get next candidate from brancher
+        let brancher = branchers.last_mut().unwrap();
+        if let Some((var, val)) = brancher.pop() {
+            // Add x_var - val to the ideal generators
+            let v = poly_ring.var(var);
+            let c = poly_ring.constant(poly_ring.field.field().clone_el(&val));
+            let assign_poly = poly_ring.sub(v, c);
+
+            let mut new_gens: Vec<Poly> = ideals.last().unwrap().basis.iter()
+                .map(|p| poly_ring.ring.clone_el(p))
+                .collect();
+            new_gens.push(assign_poly);
+            let new_ideal = Ideal::new(poly_ring, new_gens);
+            ideals.push(new_ideal);
+        } else {
+            // Brancher exhausted → backtrack
+            branchers.pop();
+            ideals.pop();
         }
     }
 
-    if assignment.len() == n_vars {
-        return Some(build_model(field, poly_ring, &assignment));
-    }
+    None // exhausted search space
+}
 
-    // Phase 2: Iterative substitution + root finding
-    for _ in 0..n_vars * 2 {
-        let mut progress = false;
+/// Try to extract a complete assignment from the GB.
+/// Returns Some(model) if every variable has a linear assignment `x_i = c`
+/// in the basis.
+fn try_extract_full_assignment(
+    poly_ring: &FfPolyRing,
+    ideal: &Ideal,
+) -> Option<HashMap<String, BigUint>> {
+    let ring = &poly_ring.ring;
+    let fp = poly_ring.field.field();
+    let n_vars = poly_ring.n_vars;
+    let mut assignment: HashMap<usize, FfEl> = HashMap::new();
 
-        for p in gb {
-            let substituted = substitute_known(ring, fp, p, n_vars, &assignment);
-            if ring.is_zero(&substituted) {
-                continue;
-            }
-
-            // Find which unassigned variables appear
-            let appearing = ring.appearing_indeterminates(&substituted);
-            let unassigned: Vec<usize> = appearing.iter()
-                .map(|&(idx, _)| idx)
-                .filter(|idx| !assignment.contains_key(idx))
-                .collect();
-
-            if unassigned.len() == 1 {
-                let var_idx = unassigned[0];
-                if let Some(coeffs) = extract_univariate_coeffs(ring, fp, &substituted, var_idx, n_vars) {
-                    let roots = find_roots(field, &coeffs);
-                    if let Some(root) = roots.into_iter().next() {
-                        assignment.insert(var_idx, root);
-                        progress = true;
+    for p in &ideal.basis {
+        let appearing = ring.appearing_indeterminates(p);
+        if appearing.len() == 1 {
+            let (var_idx, max_deg) = appearing[0];
+            if max_deg == 1 {
+                if let Some(coeffs) = extract_univariate_coeffs(ring, fp, p, var_idx) {
+                    if coeffs.len() == 2 && !fp.is_zero(&coeffs[1]) {
+                        let val = fp.negate(fp.div(&coeffs[0], &coeffs[1]));
+                        assignment.entry(var_idx).or_insert(val);
                     }
                 }
             }
         }
-
-        if assignment.len() == n_vars {
-            return Some(build_model(field, poly_ring, &assignment));
-        }
-        if !progress {
-            break;
-        }
     }
 
-    // Phase 3: Backtracking search for remaining unassigned variables.
-    // Try small values (0, 1, 2, ...) for each unassigned variable.
-    let unassigned: Vec<usize> = (0..n_vars)
-        .filter(|i| !assignment.contains_key(i))
-        .collect();
-
-    if !unassigned.is_empty() {
-        let max_tries_per_var = 20usize; // limit search space
-        if backtrack_assign(ring, fp, field, gb, n_vars, &mut assignment, &unassigned, 0, max_tries_per_var) {
-            return Some(build_model(field, poly_ring, &assignment));
-        }
+    if assignment.len() == n_vars {
+        Some(build_model(&poly_ring.field, poly_ring, &assignment))
+    } else {
+        None
     }
-
-    None
 }
 
-/// Backtracking search to assign remaining variables.
-fn backtrack_assign(
-    ring: &PolyRingType,
-    fp: &crate::field::FfFieldType,
-    field: &FfField,
-    gb: &[Poly],
-    n_vars: usize,
-    assignment: &mut HashMap<usize, FfEl>,
-    unassigned: &[usize],
-    depth: usize,
-    max_tries: usize,
-) -> bool {
-    if depth == unassigned.len() {
-        return verify_assignment(ring, fp, gb, n_vars, assignment);
-    }
+/// Compute branching candidates using the same 3-case strategy as cvc5's
+/// `applyRule` (and our `split_gb::apply_rule`).
+fn compute_candidates(
+    poly_ring: &FfPolyRing,
+    ideal: &Ideal,
+) -> Vec<(usize, FfEl)> {
+    let ring = &poly_ring.ring;
+    let field = &poly_ring.field;
+    let n_vars = poly_ring.n_vars;
 
-    let var_idx = unassigned[depth];
-    for val in 0..max_tries {
-        let el = field.from_int(val as i32);
-        assignment.insert(var_idx, el);
-
-        // Quick partial check: do the already-assigned substitutions produce contradictions?
-        if backtrack_assign(ring, fp, field, gb, n_vars, assignment, unassigned, depth + 1, max_tries) {
-            return true;
+    // Determine which variables are already assigned
+    let mut assigned = vec![false; n_vars];
+    for p in &ideal.basis {
+        let appearing = ring.appearing_indeterminates(p);
+        if appearing.len() == 1 {
+            let (var_idx, max_deg) = appearing[0];
+            if max_deg == 1 {
+                assigned[var_idx] = true;
+            }
         }
     }
 
-    assignment.remove(&var_idx);
-    false
-}
-
-/// Extract x_i = c from a linear univariate polynomial.
-fn extract_linear_assignment(
-    ring: &PolyRingType,
-    fp: &crate::field::FfFieldType,
-    poly: &Poly,
-    n_vars: usize,
-) -> Option<(usize, FfEl)> {
-    let appearing = ring.appearing_indeterminates(poly);
-    if appearing.len() != 1 {
-        return None;
-    }
-    let (var_idx, max_deg) = appearing[0];
-    if max_deg != 1 {
-        return None;
+    // Case 1: univariate polynomial with deg > 1 in an unassigned variable
+    for p in &ideal.basis {
+        let appearing = ring.appearing_indeterminates(p);
+        if appearing.len() == 1 {
+            let (var_idx, _) = appearing[0];
+            if !assigned[var_idx] {
+                if let Some(coeffs) = extract_univariate_coeffs(ring, field.field(), p, var_idx) {
+                    if coeffs.len() > 2 { // deg > 1
+                        let roots = find_roots(field, &coeffs);
+                        return roots.into_iter().map(|v| (var_idx, v)).collect();
+                    }
+                }
+            }
+        }
     }
 
-    let coeffs = extract_univariate_coeffs(ring, fp, poly, var_idx, n_vars)?;
-    if coeffs.len() != 2 {
-        return None;
+    // Case 2: zero-dimensional ideal → minimal polynomial
+    if ideal.is_zero_dim() {
+        for v in 0..n_vars {
+            if !assigned[v] {
+                if let Some(coeffs) = ideal.min_poly(v) {
+                    let roots = find_roots(field, &coeffs);
+                    return roots.into_iter().map(|val| (v, val)).collect();
+                }
+            }
+        }
     }
 
-    let c0 = &coeffs[0];
-    let c1 = &coeffs[1];
-    if fp.is_zero(c1) {
-        return None;
-    }
+    // Case 3: round-robin over all unassigned variables × field values
+    let unassigned: Vec<usize> = (0..n_vars).filter(|i| !assigned[*i]).collect();
+    if unassigned.is_empty() { return Vec::new(); }
 
-    // x = -c0/c1
-    let result = fp.negate(fp.div(c0, c1));
-    Some((var_idx, result))
+    let prime = &field.prime;
+    const ROUND_ROBIN_CAP: u64 = 256;
+    let per_var: u64 = if prime.bits() > 16 {
+        ROUND_ROBIN_CAP
+    } else {
+        prime.iter_u64_digits().next().unwrap_or(2).min(ROUND_ROBIN_CAP).max(2)
+    };
+    let total = per_var.saturating_mul(unassigned.len() as u64);
+
+    let mut out = Vec::with_capacity(total as usize);
+    for idx in 0..total {
+        let which_var = (idx as usize) % unassigned.len();
+        let which_val = idx / (unassigned.len() as u64);
+        let val_bi = num_bigint::BigUint::from(which_val);
+        out.push((unassigned[which_var], field.from_biguint(&val_bi)));
+    }
+    out
 }
 
 /// Extract univariate coefficients w.r.t. `var_idx`.
-/// Returns None if other variables appear.
 fn extract_univariate_coeffs(
-    ring: &PolyRingType,
+    ring: &crate::poly::PolyRingType,
     fp: &crate::field::FfFieldType,
     poly: &Poly,
     var_idx: usize,
-    _n_vars: usize,
 ) -> Option<Vec<FfEl>> {
-    // Check only var_idx appears
     let appearing = ring.appearing_indeterminates(poly);
     for &(v, _) in &appearing {
-        if v != var_idx {
-            return None;
-        }
+        if v != var_idx { return None; }
     }
-
-    // Collect coefficients by degree of var_idx
     let mut max_deg: usize = 0;
     let mut coeff_map: HashMap<usize, FfEl> = HashMap::new();
-
     for (coeff, monomial) in ring.terms(poly) {
         let deg = ring.exponent_at(monomial, var_idx);
-        if deg > max_deg {
-            max_deg = deg;
-        }
+        if deg > max_deg { max_deg = deg; }
         let entry = coeff_map.entry(deg).or_insert_with(|| fp.zero());
         fp.add_assign(entry, fp.clone_el(coeff));
     }
-
     let mut coeffs = Vec::with_capacity(max_deg + 1);
     for d in 0..=max_deg {
         coeffs.push(coeff_map.remove(&d).unwrap_or_else(|| fp.zero()));
     }
-
     Some(coeffs)
-}
-
-/// Substitute known values into a polynomial.
-fn substitute_known(
-    ring: &PolyRingType,
-    fp: &crate::field::FfFieldType,
-    poly: &Poly,
-    _n_vars: usize,
-    assignment: &HashMap<usize, FfEl>,
-) -> Poly {
-    // Use specialize for each assigned variable, one at a time
-    let mut result = ring.clone_el(poly);
-    for (&var_idx, val) in assignment {
-        let val_poly = ring.inclusion().map(fp.clone_el(val));
-        result = ring.specialize(&result, var_idx, &val_poly);
-    }
-    result
-}
-
-/// Verify that an assignment satisfies all polynomials.
-fn verify_assignment(
-    ring: &PolyRingType,
-    fp: &crate::field::FfFieldType,
-    polys: &[Poly],
-    n_vars: usize,
-    assignment: &HashMap<usize, FfEl>,
-) -> bool {
-    for p in polys {
-        let substituted = substitute_known(ring, fp, p, n_vars, assignment);
-        if !ring.is_zero(&substituted) {
-            return false;
-        }
-    }
-    true
 }
 
 /// Build output model from assignment.
@@ -239,6 +246,41 @@ fn build_model(
         }
     }
     model
+}
+
+/// Verify that an assignment satisfies all polynomials.
+pub fn verify_model(
+    poly_ring: &FfPolyRing,
+    polys: &[Poly],
+    model: &HashMap<String, BigUint>,
+) -> bool {
+    let ring = &poly_ring.ring;
+    let fp = poly_ring.field.field();
+
+    for p in polys {
+        let mut val = fp.zero();
+        for (c, m) in ring.terms(p) {
+            let mut term_val = fp.clone_el(c);
+            for v in 0..poly_ring.n_vars {
+                let e = ring.exponent_at(m, v);
+                if e > 0 {
+                    let var_name = &poly_ring.var_names[v];
+                    let var_val = match model.get(var_name) {
+                        Some(bv) => poly_ring.field.from_biguint(bv),
+                        None => fp.zero(), // unassigned → 0
+                    };
+                    for _ in 0..e {
+                        term_val = fp.mul_ref(&term_val, &var_val);
+                    }
+                }
+            }
+            fp.add_assign(&mut val, term_val);
+        }
+        if !fp.is_zero(&val) {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -260,5 +302,46 @@ mod tests {
         let model = find_zero(&pr, &[p1, p2]).unwrap();
         assert_eq!(model["x"], BigUint::from(3u32));
         assert_eq!(model["y"], BigUint::from(5u32));
+    }
+
+    #[test]
+    fn test_find_zero_quadratic() {
+        // x^2 - 1 = 0 over GF(17) → roots 1, 16
+        let ff = FfField::new(&BigUint::from(17u32));
+        let pr = FfPolyRing::new(ff, vec!["x".into()]);
+
+        let x2 = pr.mul(pr.var(0), pr.var(0));
+        let p = pr.sub(x2, pr.one());
+
+        let model = find_zero(&pr, &[p]).unwrap();
+        let x = &model["x"];
+        let x_sq = (x * x) % BigUint::from(17u32);
+        assert_eq!(x_sq, BigUint::from(1u32));
+    }
+
+    #[test]
+    fn test_find_zero_unsat() {
+        // x = 0 ∧ x = 1 over GF(17) → UNSAT
+        let ff = FfField::new(&BigUint::from(17u32));
+        let pr = FfPolyRing::new(ff, vec!["x".into()]);
+
+        let p1 = pr.var(0);
+        let p2 = pr.sub(pr.var(0), pr.one());
+
+        assert!(find_zero(&pr, &[p1, p2]).is_none());
+    }
+
+    #[test]
+    fn test_find_zero_inverse() {
+        // x*y = 1 over GF(7) → model where x*y ≡ 1 mod 7
+        let ff = FfField::new(&BigUint::from(7u32));
+        let pr = FfPolyRing::new(ff, vec!["x".into(), "y".into()]);
+
+        let xy = pr.mul(pr.var(0), pr.var(1));
+        let p = pr.sub(xy, pr.one());
+
+        let model = find_zero(&pr, &[p]).unwrap();
+        let prod = (&model["x"] * &model["y"]) % BigUint::from(7u32);
+        assert_eq!(prod, BigUint::from(1u32));
     }
 }

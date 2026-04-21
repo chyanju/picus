@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.2] - 2026-04-21
+
+### Added
+- **UNSAT core tracing (`ffTraceGb`)**: Single-GB mode now traces which input polynomials contribute to an UNSAT proof, matching cvc5's `--ff-trace-gb` behavior. Uses `BuchbergerObserver` hooks in a forked feanor-math to build a polynomial dependency DAG during Groebner basis computation. The `tracer` module extracts a (possibly non-trivial) subset of input indices, rather than returning all inputs.
+- **`tracer.rs` module**: `GbTracer` struct implementing feanor-math's `BuchbergerObserver` trait. Tracks transitive input dependencies for each derived basis element via `BTreeSet`-based dependency propagation.
+- **`GbResultTraced` enum in `gb.rs`**: Traced variant of GB computation that returns the UNSAT core directly on trivial (UNSAT) results.
+
+### Changed
+- **feanor-math dependency**: Now depends on a [forked feanor-math](https://github.com/chyanju/feanor-math) with `BuchbergerObserver` trait extensions (`on_initial_basis`, `on_new_poly`, `on_inter_reduce`). Recursive Buchberger restarts now propagate the observer instead of discarding it.
+- **`solve_single_gb` uses traced GB**: The single-GB solver automatically traces polynomial derivations and returns a precise UNSAT core instead of the trivial all-inputs core.
+- **`compute_gb_with_order` refactored**: Extracted `max_supported_deg` helper; added `compute_gb_with_order_traced` variant sharing the same ring setup logic.
+
+### Fixed
+- **Misplaced doc comment in feanor-math fork**: `BuchbergerObserver` trait methods now have correctly placed documentation (`on_initial_basis` before `on_new_poly`).
+- **`GbTracer::deps_of` bounds safety**: Now returns `Option` instead of panicking on out-of-range indices. `unsat_core_for` falls back to trivial core on invalid index.
+
 ## [1.7.1] - 2026-04-21
 
 ### Added

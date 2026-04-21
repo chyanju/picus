@@ -55,6 +55,7 @@ fn test_negneg_field_identity() {
         disequalities: vec![("x".into(), "zero".into())],
         assignments: vec![("zero".into(), BigUint::from(0u32))],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert_eq!(solve_system(&system), "sat");
 }
@@ -76,6 +77,7 @@ fn test_univar_conjunction_sat() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert_eq!(solve_system(&system), "sat");
 }
@@ -97,6 +99,7 @@ fn test_univar_conjunction_unsat() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert_eq!(solve_system(&system), "unsat");
 }
@@ -135,6 +138,7 @@ fn test_is_zero_sound_bit_constraint() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert_eq!(solve_system(&system), "unsat");
 }
@@ -158,6 +162,7 @@ fn test_field_poly_gf3() {
         disequalities: vec![("aaa".into(), "a".into())],
         assignments: vec![],
         add_field_polys: true,
+        bitsums: vec![],
     };
     assert_eq!(solve_system(&system), "unsat");
 }
@@ -174,6 +179,7 @@ fn test_simple_sat_gf5() {
         disequalities: vec![],
         assignments: vec![("a".into(), BigUint::from(2u32))],
         add_field_polys: false,
+        bitsums: vec![],
     };
     let encoded = encode(&system).unwrap();
     match solve_encoded(&encoded) {
@@ -199,6 +205,7 @@ fn test_simple_unsat_gf5() {
             ("b".into(), BigUint::from(2u32)),
         ],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert_eq!(solve_system(&system), "unsat");
 }
@@ -226,6 +233,7 @@ fn test_xor_sum_is_binary() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert_eq!(solve_system(&system), "unsat");
 }
@@ -242,6 +250,7 @@ fn test_bn128_simple() {
         disequalities: vec![],
         assignments: vec![("a".into(), BigUint::from(2u32))],
         add_field_polys: false,
+        bitsums: vec![],
     };
     let encoded = encode(&system).unwrap();
     match solve_encoded(&encoded) {

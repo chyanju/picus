@@ -1,15 +1,18 @@
 //! Groebner Basis computation over GF(p) using feanor-math's Buchberger algorithm.
 //!
-//! Provides a single-GB solver mode (DegRevLex → Lex) with optional timeout.
-//! This is the simpler alternative to the Split GB approach.
+//! Provides a single-GB solver mode (DegRevLex → Lex) with cooperative
+//! timeout.  Uses the optimized `(2,2)` multiplication table ring from
+//! `ideal::compute_gb_with_order` to avoid the O(C(n+8,8)^2) precomputation
+//! cost of feanor-math's default ring.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use feanor_math::ring::*;
-use feanor_math::algorithms::buchberger::*;
 use feanor_math::rings::multivariate::*;
 
+use crate::ideal::{compute_gb_with_order, compute_gb_with_order_traced};
 use crate::poly::{FfPolyRing, Poly};
+use crate::timeout::CancelToken;
+use crate::tracer::GbTracer;
 
 /// Result of a Groebner basis computation.
 pub enum GbResult {
@@ -17,16 +20,31 @@ pub enum GbResult {
     Trivial,
     /// Non-trivial GB — may be SAT. Contains the Lex-ordered GB.
     NonTrivial(Vec<Poly>),
-    /// Computation timed out.
+    /// Computation timed out or was cancelled.
     Timeout,
 }
 
-/// Compute a Groebner basis with optional timeout.
+/// Result of a traced Groebner basis computation.
+pub enum GbResultTraced {
+    /// UNSAT with a traced core: indices into the original input polynomials.
+    Trivial(Vec<usize>),
+    /// Non-trivial — same as `GbResult::NonTrivial`.
+    NonTrivial(Vec<Poly>),
+    /// Timeout.
+    Timeout,
+}
+
+/// Compute a Groebner basis without timeout.
 pub fn compute_gb(poly_ring: &FfPolyRing, polynomials: Vec<Poly>) -> GbResult {
     compute_gb_with_timeout(poly_ring, polynomials, None)
 }
 
-/// Compute a Groebner basis with a timeout deadline.
+/// Compute a Groebner basis with optional timeout.
+///
+/// Phase 1: DegRevLex GB (faster ordering for reduction).
+/// Phase 2: Lex GB from Phase 1 output (needed for model extraction).
+/// Both phases use the optimized `(2,2)` multiplication table ring and
+/// support cooperative cancellation via `CancelToken`.
 pub fn compute_gb_with_timeout(
     poly_ring: &FfPolyRing,
     polynomials: Vec<Poly>,
@@ -36,49 +54,106 @@ pub fn compute_gb_with_timeout(
         return GbResult::NonTrivial(vec![]);
     }
 
-    let ring = &poly_ring.ring;
-    let deadline = timeout.map(|t| Instant::now() + t);
+    let cancel = match timeout {
+        Some(d) => CancelToken::with_timeout(d),
+        None => CancelToken::none(),
+    };
 
-    // Phase 1: DegRevLex GB (faster)
-    let gb_degrevlex = buchberger_simple(ring, polynomials, DegRevLex);
+    // Phase 1: DegRevLex GB
+    let gb_degrevlex = compute_gb_with_order(poly_ring, polynomials, &cancel, DegRevLex);
 
-    if let Some(d) = deadline {
-        if Instant::now() > d {
-            return GbResult::Timeout;
-        }
+    if cancel.is_cancelled() {
+        return GbResult::Timeout;
     }
-
-    if is_trivial(ring, &gb_degrevlex) {
+    if is_trivial(&poly_ring.ring, &gb_degrevlex) {
         return GbResult::Trivial;
     }
 
-    // Phase 2: Lex GB (for model extraction)
-    let gb_lex = buchberger_simple(ring, gb_degrevlex, Lex);
+    // Phase 2: Lex GB (for model extraction via back-substitution)
+    let gb_lex = compute_gb_with_order(poly_ring, gb_degrevlex, &cancel, Lex);
 
-    if let Some(d) = deadline {
-        if Instant::now() > d {
-            return GbResult::Timeout;
-        }
+    if cancel.is_cancelled() {
+        return GbResult::Timeout;
     }
-
-    if is_trivial(ring, &gb_lex) {
+    if is_trivial(&poly_ring.ring, &gb_lex) {
         return GbResult::Trivial;
     }
 
     GbResult::NonTrivial(gb_lex)
 }
 
+/// Like [`compute_gb_with_timeout`], but with UNSAT core tracing enabled.
+///
+/// When the DegRevLex phase produces a trivial basis (UNSAT), the tracer
+/// is used to extract the minimal set of input polynomial indices
+/// responsible.  This mirrors cvc5's `--ff-trace-gb` mode.
+pub fn compute_gb_with_timeout_traced(
+    poly_ring: &FfPolyRing,
+    polynomials: Vec<Poly>,
+    timeout: Option<Duration>,
+) -> GbResultTraced {
+    let n_inputs = polynomials.len();
+    if polynomials.is_empty() {
+        return GbResultTraced::NonTrivial(vec![]);
+    }
+
+    let cancel = match timeout {
+        Some(d) => CancelToken::with_timeout(d),
+        None => CancelToken::none(),
+    };
+
+    // Phase 1: DegRevLex GB with tracing
+    let mut tracer = GbTracer::new(n_inputs);
+    let gb_degrevlex = compute_gb_with_order_traced(
+        poly_ring, polynomials, &cancel, DegRevLex, &mut tracer,
+    );
+
+    if cancel.is_cancelled() {
+        return GbResultTraced::Timeout;
+    }
+
+    if let Some(const_idx) = find_trivial_element(&poly_ring.ring, &gb_degrevlex) {
+        // UNSAT — extract the core from the tracer
+        let core = if const_idx < tracer.basis_count() {
+            tracer.unsat_core_for(const_idx)
+        } else {
+            // Fallback: trivial core (all inputs)
+            (0..n_inputs).collect()
+        };
+        return GbResultTraced::Trivial(core);
+    }
+
+    // Phase 2: Lex GB (no tracing needed — only used for model extraction)
+    let gb_lex = compute_gb_with_order(poly_ring, gb_degrevlex, &cancel, Lex);
+
+    if cancel.is_cancelled() {
+        return GbResultTraced::Timeout;
+    }
+    if is_trivial(&poly_ring.ring, &gb_lex) {
+        // Became trivial in Lex phase — no trace info, return trivial core
+        return GbResultTraced::Trivial((0..n_inputs).collect());
+    }
+
+    GbResultTraced::NonTrivial(gb_lex)
+}
+
 /// Check if a GB is trivial (ideal = whole ring).
 fn is_trivial(ring: &crate::poly::PolyRingType, gb: &[Poly]) -> bool {
-    for p in gb {
+    find_trivial_element(ring, gb).is_some()
+}
+
+/// Find the index of a nonzero constant in the basis, if any.
+fn find_trivial_element(ring: &crate::poly::PolyRingType, gb: &[Poly]) -> Option<usize> {
+    use feanor_math::ring::RingStore;
+    for (i, p) in gb.iter().enumerate() {
         if !ring.is_zero(p) {
             let vars = ring.appearing_indeterminates(p);
             if vars.is_empty() {
-                return true;
+                return Some(i);
             }
         }
     }
-    false
+    None
 }
 
 #[cfg(test)]

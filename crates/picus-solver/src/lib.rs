@@ -22,6 +22,7 @@ pub mod roots;
 pub mod model;
 pub mod timeout;
 pub mod stats;
+pub mod tracer;
 
 use num_bigint::BigUint;
 use std::collections::HashMap;

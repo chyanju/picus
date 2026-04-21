@@ -64,6 +64,7 @@ fn test_is_unsat_a_factored() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert!(is_sat(&system));
 }
@@ -76,6 +77,7 @@ fn test_is_unsat_a_zero() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert!(is_sat(&system));
 }
@@ -92,6 +94,7 @@ fn test_is_unsat_a_b_minus_1() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert!(is_sat(&system));
 }
@@ -109,6 +112,7 @@ fn test_is_unsat_a_b_c() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert!(is_sat(&system));
 }
@@ -125,6 +129,7 @@ fn test_is_unsat_a_and_a_minus_1() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert!(is_unsat(&system));
 }
@@ -154,7 +159,8 @@ fn test_is_unsat_a_no_field_poly() {
         ],
         disequalities: vec![],
         assignments: vec![],
-        add_field_polys: true,    // with field poly a^3 = a → a + 2a + 2 = 3a+2 = 2 ≠ 0
+        add_field_polys: true,
+        bitsums: vec![],
     };
     assert!(is_unsat(&system));
 
@@ -179,6 +185,7 @@ fn test_is_unsat_a_b_c_inverse() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert!(is_unsat(&system));
 }
@@ -206,6 +213,7 @@ fn test_common_root_a_eq_b_eq_zero() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     if let SolveOutcome::Sat(m) = solve(&system) {
         assert_eq!(m.get("a"), Some(&BigUint::from(0u32)));
@@ -229,6 +237,7 @@ fn test_common_root_a_zero_b_one() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     if let SolveOutcome::Sat(m) = solve(&system) {
         assert_eq!(m.get("a"), Some(&BigUint::from(0u32)));
@@ -250,6 +259,7 @@ fn test_common_root_unsat_a() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: false,
+        bitsums: vec![],
     };
     assert!(is_unsat(&system));
 }
@@ -265,6 +275,7 @@ fn test_common_root_a_b_inverse_pair() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: true,
+        bitsums: vec![],
     };
     if let SolveOutcome::Sat(m) = solve(&system) {
         let a = m.get("a").unwrap();
@@ -288,6 +299,7 @@ fn test_common_root_a_b_inv_b_zero() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: true,
+        bitsums: vec![],
     };
     assert!(is_unsat(&system));
 }
@@ -304,6 +316,7 @@ fn test_common_root_a_b_inv_b_two() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: true,
+        bitsums: vec![],
     };
     if let SolveOutcome::Sat(m) = solve(&system) {
         assert_eq!(m.get("a"), Some(&BigUint::from(2u32)));
@@ -332,6 +345,7 @@ fn test_common_root_big() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: true,
+        bitsums: vec![],
     };
     if let SolveOutcome::Sat(m) = solve(&system) {
         assert_eq!(m.get("a"), Some(&BigUint::from(0u32)));
@@ -364,6 +378,7 @@ fn test_common_root_constraints() {
         disequalities: vec![],
         assignments: vec![],
         add_field_polys: true,
+        bitsums: vec![],
     };
     if let SolveOutcome::Sat(m) = solve(&system) {
         let a = m.get("a").unwrap();

@@ -32,6 +32,7 @@ fn test_is_zero_sound() {
         disequalities: vec![("iz".into(), "izp".into())],
         assignments: vec![("x".into(), BigUint::from(5u32))],
         add_field_polys: false,
+        bitsums: vec![],
     };
     match solve(&system) {
         SolveOutcome::Unsat(_) => {}
@@ -60,6 +61,7 @@ fn test_is_zero_unsound() {
         disequalities: vec![("iz".into(), "izp".into())],
         assignments: vec![("x".into(), BigUint::from(5u32))],
         add_field_polys: false,
+        bitsums: vec![],
     };
     match solve(&system) {
         SolveOutcome::Sat(model) => {
@@ -84,6 +86,7 @@ fn test_contradiction_unsat() {
         disequalities: vec![],
         assignments: vec![("x".into(), BigUint::from(3u32))],
         add_field_polys: false,
+        bitsums: vec![],
     };
     match solve(&system) {
         SolveOutcome::Unsat(_) => {}
@@ -113,6 +116,7 @@ fn test_inverse_unique() {
             ("ap".into(), BigUint::from(2u32)),
         ],
         add_field_polys: false,
+        bitsums: vec![],
     };
     match solve(&system) {
         SolveOutcome::Unsat(_) => {}
@@ -139,6 +143,7 @@ fn test_multiple_disequalities_sat() {
         ],
         assignments: vec![("zero".into(), BigUint::from(0u32))],
         add_field_polys: false,
+        bitsums: vec![],
     };
     let encoded = encode(&system).unwrap();
     let n_witnesses = encoded.poly_ring.var_names.iter().filter(|n| n.starts_with("__w_diseq_")).count();
@@ -173,6 +178,7 @@ fn test_multiple_disequalities_unsat() {
             ("zero".into(), BigUint::from(0u32)),
         ],
         add_field_polys: false,
+        bitsums: vec![],
     };
     match solve(&system) {
         SolveOutcome::Unsat(_) => {}
