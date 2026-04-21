@@ -8,6 +8,8 @@ pub mod optimizer;
 pub enum SolverKind {
     Z3,
     Cvc5,
+    /// Native Rust finite field solver (Groebner basis).
+    Native,
     /// No solver — propagation only.
     None,
 }
@@ -27,8 +29,9 @@ impl std::str::FromStr for SolverKind {
         match s {
             "z3" => Ok(SolverKind::Z3),
             "cvc5" => Ok(SolverKind::Cvc5),
+            "native" => Ok(SolverKind::Native),
             "none" => Ok(SolverKind::None),
-            _ => Err(format!("unknown solver: '{}'. Use 'z3', 'cvc5', or 'none'.", s)),
+            _ => Err(format!("unknown solver: '{}'. Use 'z3', 'cvc5', 'native', or 'none'.", s)),
         }
     }
 }
@@ -50,6 +53,9 @@ pub fn validate_combination(solver: SolverKind, theory: Theory) -> Result<(), St
         (SolverKind::Z3, Theory::Ff) => {
             Err("z3 does not support finite field theory (QF_FF). Use --theory nia, or switch to --solver cvc5.".into())
         }
+        (SolverKind::Native, Theory::Nia) => {
+            Err("native solver only supports finite field theory (QF_FF). Use --theory ff.".into())
+        }
         (SolverKind::None, _) => Ok(()),
         _ => Ok(()),
     }
@@ -66,6 +72,7 @@ pub fn create_backend(
         (SolverKind::Z3, Theory::Nia) => Ok(Some(Box::new(backends::z3_nia::Z3NiaBackend::new()))),
         (SolverKind::Cvc5, Theory::Ff) => Ok(Some(Box::new(backends::cvc5_ff::Cvc5FfBackend::new()))),
         (SolverKind::Cvc5, Theory::Nia) => Ok(Some(Box::new(backends::cvc5_nia::Cvc5NiaBackend::new()))),
+        (SolverKind::Native, Theory::Ff) => Ok(Some(Box::new(backends::native_ff::NativeFfBackend::new()))),
         (SolverKind::None, _) => Ok(None),
         _ => Err(format!("unsupported combination: {:?} + {:?}", solver, theory)),
     }

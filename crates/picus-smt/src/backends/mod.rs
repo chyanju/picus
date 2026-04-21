@@ -3,6 +3,7 @@
 pub mod z3_nia;
 pub mod cvc5_ff;
 pub mod cvc5_nia;
+pub mod native_ff;
 
 use num_bigint::BigUint;
 use std::collections::HashMap;

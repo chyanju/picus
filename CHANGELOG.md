@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.1] - 2026-04-21
+
+### Added
+- **Native finite field solver (`picus-solver`)**: Pure-Rust replacement for cvc5's QF_FF theory solver, eliminating the C++/CoCoA/GPL dependency. Uses feanor-math for Groebner basis computation.
+  - Split GB solver with bit propagation, matching cvc5's `--ff-solver split` mode.
+  - Single GB solver (DegRevLex → Lex → findZero), matching cvc5's `--ff-solver gb` mode.
+  - Pattern detection (`bit_constraint`, `linear_monomial`, `bit_sums`) wired into the solver pipeline.
+  - Cooperative timeout via `CancelToken` (atomic cancellation threaded through Buchberger).
+  - Incremental push/pop API.
+  - 109 passing tests ported from cvc5's regression and unit test suites.
+- **`--solver native` CLI option**: Select the pure-Rust solver backend with `picus check --solver native --theory ff`.
+- **Criterion benchmark suite**: `cargo bench -p picus-solver` runs encode, end-to-end, and root-finding benchmarks.
+- **cvc5 CLI benchmark script**: `benches/benchmark_cvc5.sh` for comparing native vs cvc5 on matching .smt2 inputs.
+- **Solver statistics**: `SolverStats` module tracks GB run counts, timing, and branching strategy usage.
+- **Evaluation report**: `docs/solver-evaluation.md` documents architecture, correctness, performance, and feature parity with cvc5.
+
+### Fixed
+- **`admit` predicate swap**: The split-GB admission criteria for basis 0 (linear) and basis 1 (nonlinear) were swapped, weakening cross-basis propagation. Now matches cvc5's `split_gb.cpp:245-249`.
+- **Degree-overflow safety**: feanor-math panics from exceeding `max_supported_deg` are caught via `catch_unwind`; the solver returns the original generators unreduced instead of an empty basis (which would be misinterpreted as SAT).
+- **`NativeFfBackend` upgraded**: Now uses the Split GB pipeline (`core::solve_encoded_with_cancel`) instead of the old plain-Buchberger path.
+
+### Changed
+- **Polynomial normalization**: Encoded polynomials are divided by their leading coefficient, matching cvc5's `cocoa_encoder.cpp` behavior.
+- **feanor-math multiplication table tuning**: `MultivariatePolyRingImpl` uses `new_with_mult_table((2, 2))` to avoid the O(C(n+8,8)^2) precomputation cost of the default `(6, 8)` table.
+
 ## [1.7.0] - 2026-04-19
 
 ### Changed
