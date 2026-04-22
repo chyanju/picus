@@ -383,7 +383,7 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 [[package]]
 name = "feanor-math"
 version = "3.5.18"
-source = "git+https://github.com/chyanju/feanor-math?rev=a3c08f7f4a47c51fc27a683752c28ba44c1091b4#a3c08f7f4a47c51fc27a683752c28ba44c1091b4"
+source = "git+https://github.com/chyanju/feanor-math?rev=79495ba0f7f2596286bf89d9ed08c381c5ef1f66#79495ba0f7f2596286bf89d9ed08c381c5ef1f66"
 dependencies = [
  "append-only-vec",
  "atomicbox",
@@ -630,7 +630,7 @@ checksum = "d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d"
 
 [[package]]
 name = "picus"
-version = "1.7.3"
+version = "1.7.4"
 dependencies = [
  "num-bigint",
  "picus-analysis",
@@ -641,7 +641,7 @@ dependencies = [
 
 [[package]]
 name = "picus-analysis"
-version = "1.7.3"
+version = "1.7.4"
 dependencies = [
  "log",
  "num-bigint",
@@ -653,7 +653,7 @@ dependencies = [
 
 [[package]]
 name = "picus-cli"
-version = "1.7.3"
+version = "1.7.4"
 dependencies = [
  "anstream",
  "clap",
@@ -667,7 +667,7 @@ dependencies = [
 
 [[package]]
 name = "picus-r1cs"
-version = "1.7.3"
+version = "1.7.4"
 dependencies = [
  "byteorder",
  "num-bigint",
@@ -676,7 +676,7 @@ dependencies = [
 
 [[package]]
 name = "picus-smt"
-version = "1.7.3"
+version = "1.7.4"
 dependencies = [
  "cvc5-ff",
  "log",
@@ -690,7 +690,7 @@ dependencies = [
 
 [[package]]
 name = "picus-solver"
-version = "1.7.3"
+version = "1.7.4"
 dependencies = [
  "criterion",
  "env_logger",

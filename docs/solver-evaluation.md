@@ -31,7 +31,7 @@ This document evaluates `picus-solver`, the pure-Rust finite field (QF_FF) solve
 
 | Test file | Tests | Source |
 |-----------|-------|--------|
-| `lib.rs` unit tests | 46 | Solver internals (field, poly, ideal, parse, bitprop, split_gb, core, incremental, timeout, stats, tracer) |
+| `lib.rs` unit tests | 48 | Solver internals (field, poly, ideal, parse, bitprop, split_gb, core, incremental, timeout, stats, tracer, roots) |
 | `cvc5_regression.rs` | 9 | Direct ports of `regress0/ff/*.smt2` |
 | `cvc5_extended.rs` | 14 | Extended ports of additional cvc5 regression tests |
 | `cvc5_unit_uni_roots.rs` | 5 | Ports of `theory_ff_uni_roots_black.cpp` |
@@ -40,7 +40,7 @@ This document evaluates `picus-solver`, the pure-Rust finite field (QF_FF) solve
 | `cvc5_unit_parse.rs` | 11 | Ports of `theory_ff_parse_white.cpp` |
 | `integration.rs` | 6 | End-to-end integration tests |
 | `timeout.rs` | 7 | Cooperative timeout integration tests |
-| **Total** | **117** | (+ 4 ignored perf/probe tests) |
+| **Total** | **119** | (+ 4 ignored perf/probe tests) |
 
 ### A/B correctness guarantee
 
@@ -162,4 +162,4 @@ cd picus/crates/picus-solver/benches
 - **Non-trivial UNSAT core tracing** (`ffTraceGb`): implemented for single-GB mode via Buchberger observer hooks in a forked feanor-math. The core is approximate (conservative on initial inter-reduce; no reduction-step-level tracking). Split-GB mode returns trivial cores. See `docs/TODO.md`.
 - **`picus-cli` full build requires cvc5-ff-sys**: the workspace includes `cvc5-ff-sys` which builds cvc5 and GMP from source (requires `bison`, `flex`, and `m4` on PATH, plus `clang` for bindgen). The `picus-solver` crate itself builds independently without these dependencies.
 - **`Or` constraint handling in `NativeFfBackend`**: encodes all branches as conjunctions (unsound for disjunction). This matches the current behavior where AB0 optimization is disabled for the cvc5-ff backend. See `docs/TODO.md`.
-- **Performance gap on mid-size circuits**: 23 circuits (out of 465 tested) that cvc5 resolves within 30s exceed the native solver's per-query timeout. These are circuits with 20-50 original variables (40-100 after DPVL duplication), where feanor-math's Groebner basis computation is slower than CoCoA. This is a performance limitation, not a correctness issue — all circuits that the native solver does resolve produce results identical to cvc5.
+- **Performance gap on mid-size circuits**: 20 circuits (out of 465 tested) that cvc5 resolves within 30s exceed the native solver's per-query timeout. The root cause is the number of search-tree branches explored during model construction (~3000 GB calls per query), combined with a per-call overhead of 1-12ms in feanor-math vs 0.1-1ms in CoCoA. The feanor-math fork has been optimized with Gebauer-Möller pair management and DivMask fast divisibility, and the search strategy now checks all split-GB bases for branching structure. This is a performance limitation, not a correctness issue — all circuits that the native solver does resolve produce results identical to cvc5.

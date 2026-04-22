@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.4] - 2026-04-22
+
+### Added
+- **Gebauer-Möller pair management in feanor-math fork**: Implemented B_k criterion (retroactive pair elimination when a new polynomial's LT divides an existing pair's LCM) and M criterion (dominated pair removal among new pairs). This reduces unnecessary S-polynomial computations during Groebner basis computation, matching CoCoA's `TmpGReductor` pair management strategy.
+- **DivMask for fast divisibility rejection**: Added O(1) bitmask pre-filter in `find_reducer` — before the O(n_vars) exponent comparison, a bitwise check `(mask_reducer & ~mask_target) != 0` rejects non-divisible cases instantly. Matches CoCoA's `DivMaskRule` optimization.
+- **Multi-basis branching in split-GB model search**: `apply_rule` now checks ALL split-GB bases (not just the linear basis) for univariate polynomials and zero-dimensional structure. This discovers branching structure in the nonlinear basis that the linear basis alone misses, reducing round-robin fallback.
+- **Squarefree root preprocessing**: `find_roots` now computes `gcd(f, x^q - x mod f)` before factoring, stripping repeated roots and irreducible factors of degree > 1. Matches cvc5's `distinctRootsPoly` (`uni_roots.cpp:74-85`).
+- **Fast paths in root finding**: Direct extraction for linear polynomials and zero roots before invoking the full factoring library. Matches cvc5's `uni_roots.cpp:174-188`.
+- **Lazy branching**: Round-robin candidate generation uses a counter-based iterator instead of pre-allocating all candidates. Prevents O(p × n_vars) allocation for large primes.
+
+### Fixed
+- **UNSAT-pop-brancher bug in model.rs**: The UNSAT handler incorrectly popped the parent's brancher when a child branch was UNSAT, causing infinite loops when the first round-robin candidate was UNSAT. Now matches cvc5's behavior: only the ideal is popped on UNSAT, never the brancher.
+- **Timeout vs UNSAT distinction in split-GB search**: Added `ZeroExtendResult::Cancelled` variant to distinguish timeout from genuine UNSAT in `split_zero_extend_cancel`. Previously both returned `NoZero`, risking false-UNSAT on timeout during model construction.
+- **Quick UNSAT pre-check**: Before running expensive `split_gb_cancel` at search branch nodes, fully evaluates polynomials under the partial assignment to detect trivially UNSAT branches in O(n) time.
+- **Linear-first UNSAT check**: Before the full split-GB recomputation at branch nodes, tests the linear basis alone (cheap O(n²) Gaussian elimination). If the linear basis is already UNSAT, skips the expensive nonlinear basis recomputation.
+
+### Changed
+- **feanor-math dependency**: Updated to fork revision `79495ba` with Gebauer-Möller and DivMask optimizations.
+- **Benchmark results**: 295 of 465 circuits now resolve correctly (was 293 in v1.7.3). MontgomeryDouble (both variants) newly resolved as `unsafe` in 1-2s.
+
 ## [1.7.3] - 2026-04-22
 
 ### Fixed
