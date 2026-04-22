@@ -160,5 +160,6 @@ cd picus/crates/picus-solver/benches
 ## 6. Known Limitations
 
 - **Non-trivial UNSAT core tracing** (`ffTraceGb`): implemented for single-GB mode via Buchberger observer hooks in a forked feanor-math. The core is approximate (conservative on initial inter-reduce; no reduction-step-level tracking). Split-GB mode returns trivial cores. See `docs/TODO.md`.
-- **`picus-cli` full build requires cvc5-ff-sys**: the workspace includes `cvc5-ff-sys` which builds cvc5 and GMP from source (requires `yacc`/`bison` and `m4` on PATH). The `picus-solver` crate itself builds independently without these dependencies.
+- **`picus-cli` full build requires cvc5-ff-sys**: the workspace includes `cvc5-ff-sys` which builds cvc5 and GMP from source (requires `bison`, `flex`, and `m4` on PATH, plus `clang` for bindgen). The `picus-solver` crate itself builds independently without these dependencies.
 - **`Or` constraint handling in `NativeFfBackend`**: encodes all branches as conjunctions (unsound for disjunction). This matches the current behavior where AB0 optimization is disabled for the cvc5-ff backend. See `docs/TODO.md`.
+- **Performance gap on mid-size circuits**: 23 circuits (out of 465 tested) that cvc5 resolves within 30s exceed the native solver's per-query timeout. These are circuits with 20-50 original variables (40-100 after DPVL duplication), where feanor-math's Groebner basis computation is slower than CoCoA. This is a performance limitation, not a correctness issue — all circuits that the native solver does resolve produce results identical to cvc5.

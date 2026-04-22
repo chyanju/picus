@@ -21,6 +21,7 @@ pub fn optimize_p0(cnsts: &RCmds, solver: SolverKind) -> RCmds {
         // can produce spurious SAT results with inconsistent models.
         // The solver handles nonlinear A*B=0 constraints natively.
         SolverKind::None => unreachable!(),
+        SolverKind::Native => unreachable!(),
         SolverKind::Cvc5 => cnsts.clone(),
     }
 }
@@ -29,6 +30,7 @@ pub fn normalize(cnsts: &RCmds, solver: SolverKind) -> RCmds {
     match solver {
         SolverKind::Z3 => simple_optimize_z3(cnsts),
         SolverKind::None => unreachable!(),
+        SolverKind::Native => unreachable!(),
         SolverKind::Cvc5 => simple_optimize_cvc5(cnsts),
     }
 }
@@ -40,6 +42,7 @@ pub fn optimize_p1(cnsts: &RCmds, decls: &RCmds, solver: SolverKind, include_p_d
     match solver {
         SolverKind::Z3 => subp_optimize_z3(cnsts, decls, include_p_defs),
         SolverKind::None => unreachable!(),
+        SolverKind::Native => unreachable!(),
         SolverKind::Cvc5 => subp_optimize_cvc5(cnsts, decls, include_p_defs),
     }
 }

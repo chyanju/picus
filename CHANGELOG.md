@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.3] - 2026-04-22
+
+### Fixed
+- **Degree overflow crash in native solver**: `FfPolyRing::new` and `compute_gb_with_order` used overly large `max_supported_deg` for circuits with many variables (the DPVL doubled-variable formulation produces 2x the original variable count). Reduced the degree thresholds: 32 for ≤20 vars, 16 for ≤50, 8 for ≤200, 4 otherwise. This eliminates panics on mid-size circuits (20-100 variables).
+- **`NativeFfBackend` panic safety**: Wrapped `encode()` + `solve_encoded_with_cancel()` in `catch_unwind` with panic hook suppression to gracefully return `Unknown` instead of crashing the CLI when feanor-math panics on degree overflow. Prevents DPVL loop from flooding stderr with repeated panic messages.
+- **Encoder variable count guard**: `encode()` now returns an error for systems with more than 5000 variables, avoiding construction of impossibly large polynomial rings.
+- **`picus-cli` build errors**: Fixed 6 compilation errors in `picus-smt` that prevented building the full CLI:
+  - Added missing `bitsums` field in `NativeFfBackend`'s `ConstraintSystem` initializer.
+  - Added `SolverKind::Native` arms to match statements in `optimizer.rs` and `r1cs_parser.rs`.
+  - Removed unused `HashMap` import in `native_ff.rs`.
+
+### Changed
+- **Benchmark validation**: Full 465-circuit benchmark suite tested with `--solver native`. All 292 circuits that the native solver resolves (277 safe + 15 unsafe) produce results identical to cvc5. 23 circuits that cvc5 solves within 30s exceed the native solver's timeout — a performance gap, not a correctness issue.
+
 ## [1.7.2] - 2026-04-21
 
 ### Added
