@@ -152,6 +152,8 @@ pub enum ZeroExtendResult {
     Conflict(Poly),
     /// No common zeros exist that extend the current partial assignment.
     NoZero,
+    /// Computation was cancelled (timeout).
+    Cancelled,
 }
 
 /// Build a polynomial of the form `x_var - val`.
@@ -211,11 +213,11 @@ pub fn split_zero_extend_cancel<'r>(
     bit_prop: &mut BitProp<'r>,
     cancel: &CancelToken,
 ) -> ZeroExtendResult {
-    // Each stack frame holds: (bases, partial_assignment, remaining_candidates)
+    // Each stack frame holds: (bases, partial_assignment, brancher)
     struct Frame<'r> {
         bases: SplitGb<'r>,
         r: PartialPoint,
-        candidates: Vec<(usize, FfEl)>,
+        candidates: Brancher,
     }
 
     let mut stack: Vec<Frame<'r>> = Vec::new();
@@ -224,7 +226,7 @@ pub fn split_zero_extend_cancel<'r>(
     stack.push(Frame {
         bases: initial_bases,
         r: initial_r,
-        candidates: Vec::new(), // sentinel: will be populated below
+        candidates: Brancher::Roots(Vec::new()), // sentinel: will be populated below
     });
 
     // Process the first frame specially (compute candidates)
@@ -249,10 +251,10 @@ pub fn split_zero_extend_cancel<'r>(
         return ZeroExtendResult::Point(out);
     }
 
-    first.candidates = apply_rule(poly_ring, &first.bases[0], &first.r);
+    first.candidates = apply_rule_multi(poly_ring, &first.bases, &first.r);
 
     loop {
-        if cancel.is_cancelled() { return ZeroExtendResult::NoZero; }
+        if cancel.is_cancelled() { return ZeroExtendResult::Cancelled; }
 
         // If stack is empty, search exhausted
         let frame = match stack.last_mut() {
@@ -261,7 +263,7 @@ pub fn split_zero_extend_cancel<'r>(
         };
 
         // Try next candidate
-        let (var, val) = match frame.candidates.pop() {
+        let (var, val) = match frame.candidates.next(&poly_ring.field) {
             Some(c) => c,
             None => {
                 // Brancher exhausted → backtrack
@@ -275,7 +277,53 @@ pub fn split_zero_extend_cancel<'r>(
         let assign_poly = assignment_poly(poly_ring, var, &val);
 
         // Build new generator sets: each basis + the assignment polynomial
+        // Quick UNSAT check: if substituting val for var in any basis poly
+        // yields a nonzero constant, the branch is immediately UNSAT.
+        let mut quick_unsat = false;
+        for b in &frame.bases {
+            for p in &b.basis {
+                if let Some(v) = evaluate_full(poly_ring, p, &new_r) {
+                    if !poly_ring.field.is_zero(&v) {
+                        quick_unsat = true;
+                        break;
+                    }
+                }
+            }
+            if quick_unsat { break; }
+        }
+        if quick_unsat {
+            // This branch is UNSAT without needing a full GB recomputation.
+            // Check for conflict polynomial (same as the full UNSAT path).
+            for p in orig_polys {
+                if let Some(val) = evaluate_full(poly_ring, p, &new_r) {
+                    if !poly_ring.field.is_zero(&val) && !frame.bases[0].contains(p) {
+                        return ZeroExtendResult::Conflict(poly_ring.ring.clone_el(p));
+                    }
+                }
+            }
+            continue; // backtrack to next candidate
+        }
+
         let mut new_split_gens: Vec<Vec<Poly>> = Vec::with_capacity(frame.bases.len());
+
+        // Optimization: first check if adding the assignment to the linear
+        // basis (basis 0) alone makes it the whole ring.  This is cheap
+        // (~1ms) and eliminates UNSAT branches without the expensive
+        // nonlinear basis recomputation (~12ms).
+        if !frame.bases.is_empty() {
+            let mut lin_gens: Vec<Poly> = frame.bases[0].basis.iter()
+                .map(|p| poly_ring.ring.clone_el(p)).collect();
+            lin_gens.push(poly_ring.ring.clone_el(&assign_poly));
+            let lin_ideal = match Ideal::new_with_cancel(poly_ring, lin_gens, cancel) {
+                Ok(i) => i,
+                Err(_) => return ZeroExtendResult::Cancelled,
+            };
+            if lin_ideal.is_whole_ring() {
+                // Linear basis alone is UNSAT — skip this branch
+                continue;
+            }
+        }
+
         for b in &frame.bases {
             let mut g: Vec<Poly> = b.basis.iter().map(|p| poly_ring.ring.clone_el(p)).collect();
             g.push(poly_ring.ring.clone_el(&assign_poly));
@@ -283,7 +331,7 @@ pub fn split_zero_extend_cancel<'r>(
         }
         let new_bases = match split_gb_cancel(poly_ring, new_split_gens, bit_prop, cancel) {
             Ok(b) => b,
-            Err(_) => return ZeroExtendResult::NoZero,
+            Err(_) => return ZeroExtendResult::Cancelled,
         };
 
         // Check the new state
@@ -307,7 +355,7 @@ pub fn split_zero_extend_cancel<'r>(
         }
 
         // Go deeper: compute candidates for the new state and push
-        let new_candidates = apply_rule(poly_ring, &new_bases[0], &new_r);
+        let new_candidates = apply_rule_multi(poly_ring, &new_bases, &new_r);
         stack.push(Frame {
             bases: new_bases,
             r: new_r,
@@ -316,19 +364,110 @@ pub fn split_zero_extend_cancel<'r>(
     }
 }
 
-/// Apply branching rule.  Returns a list of `(var_idx, value)` to try.
+/// Brancher: lazily produces (var_idx, value) candidates.
+///
+/// cvc5 uses `AssignmentEnumerator` with a `next()` method.  We use a
+/// struct with a `Vec` for cases 1-2 (small root lists) and a counter-
+/// based generator for case 3 (round-robin, potentially millions of
+/// candidates).
+pub enum Brancher {
+    /// Pre-computed root list (cases 1 and 2): small, iterate from back.
+    Roots(Vec<(usize, FfEl)>),
+    /// Round-robin: lazily generates (var, val) from index counter.
+    RoundRobin {
+        unassigned: Vec<usize>,
+        idx: u64,
+        total: u64,
+    },
+}
+
+impl Brancher {
+    fn next(&mut self, field: &FfField) -> Option<(usize, FfEl)> {
+        match self {
+            Brancher::Roots(v) => v.pop(),
+            Brancher::RoundRobin { unassigned, idx, total } => {
+                if *idx >= *total || unassigned.is_empty() {
+                    return None;
+                }
+                let which_var = (*idx as usize) % unassigned.len();
+                let which_val = *idx / (unassigned.len() as u64);
+                *idx += 1;
+                let val_bi = num_bigint::BigUint::from(which_val);
+                Some((unassigned[which_var], field.from_biguint(&val_bi)))
+            }
+        }
+    }
+}
+
+use crate::field::FfField;
+
+/// Like `apply_rule` but checks ALL bases for univariate/zero-dim structure.
+/// cvc5 only checks basis[0], but checking all bases can avoid expensive
+/// round-robin by finding structure in the nonlinear basis.
+fn apply_rule_multi<'r>(
+    poly_ring: &'r FfPolyRing,
+    bases: &[Ideal<'r>],
+    r: &PartialPoint,
+) -> Brancher {
+    let ring = &poly_ring.ring;
+    let field = &poly_ring.field;
+
+    // (1) Check ALL bases for univariate polynomial in an unassigned variable
+    for gb in bases {
+        for p in &gb.basis {
+            let appearing = ring.appearing_indeterminates(p);
+            if appearing.len() == 1 {
+                let (var_idx, _) = appearing[0];
+                if r[var_idx].is_none() {
+                    if let Some(coeffs) = univariate_coeffs(poly_ring, p, var_idx) {
+                        let roots = crate::roots::find_roots(field, &coeffs);
+                        return Brancher::Roots(
+                            roots.into_iter().map(|v| (var_idx, v)).collect()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // (2) Check ALL bases for zero-dim → minimal polynomial
+    for gb in bases {
+        if gb.is_zero_dim() {
+            for v in 0..poly_ring.n_vars {
+                if r[v].is_none() {
+                    if let Some(coeffs) = gb.min_poly(v) {
+                        let roots = crate::roots::find_roots(field, &coeffs);
+                        return Brancher::Roots(
+                            roots.into_iter().map(|val| (v, val)).collect()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // (3) round-robin on basis[0]
+    if !bases.is_empty() {
+        apply_rule(poly_ring, &bases[0], r)
+    } else {
+        Brancher::Roots(Vec::new())
+    }
+}
+
+/// Apply branching rule on a single basis.
 ///
 /// (1) if `gb` has a univariate polynomial in some unassigned variable,
 ///     enumerate its roots over GF(p);
 /// (2) if `gb` is zero-dimensional, compute the minimal polynomial of an
 ///     unassigned variable and enumerate its roots;
-/// (3) otherwise, round-robin: for each unassigned variable, try every
-///     value in `0..p` (capped for large `p`).
+/// (3) otherwise, round-robin: for each unassigned variable, try values
+///     in `0..min(p, cap)` (lazily generated, matching cvc5's
+///     `RoundRobinEnumerator`).
 pub fn apply_rule<'r>(
     poly_ring: &'r FfPolyRing,
     gb: &Ideal<'r>,
     r: &PartialPoint,
-) -> Vec<(usize, FfEl)> {
+) -> Brancher {
     let ring = &poly_ring.ring;
     let field = &poly_ring.field;
 
@@ -340,7 +479,9 @@ pub fn apply_rule<'r>(
             if r[var_idx].is_none() {
                 if let Some(coeffs) = univariate_coeffs(poly_ring, p, var_idx) {
                     let roots = crate::roots::find_roots(field, &coeffs);
-                    return roots.into_iter().map(|v| (var_idx, v)).collect();
+                    return Brancher::Roots(
+                        roots.into_iter().map(|v| (var_idx, v)).collect()
+                    );
                 }
             }
         }
@@ -352,40 +493,41 @@ pub fn apply_rule<'r>(
             if r[v].is_none() {
                 if let Some(coeffs) = gb.min_poly(v) {
                     let roots = crate::roots::find_roots(field, &coeffs);
-                    return roots.into_iter().map(|val| (v, val)).collect();
+                    // Return roots as candidates. If roots is empty, the
+                    // ideal is inconsistent under any assignment to this
+                    // variable — return empty to trigger backtracking.
+                    return Brancher::Roots(
+                        roots.into_iter().map(|val| (v, val)).collect()
+                    );
                 }
             }
         }
     }
 
-    // (3) round-robin: enumerate (var, val) ∈ unassigned_vars × Fp,
-    //     iterating `idx` from 0 upward and decoding
-    //         var = unassigned[idx % len], val = idx / len
-    //     This matches cvc5's RoundRobinEnumerator (multi_roots.cpp:93).
+    // (3) round-robin: lazy generation matching cvc5's RoundRobinEnumerator
     let unassigned: Vec<usize> = (0..poly_ring.n_vars).filter(|i| r[*i].is_none()).collect();
-    if unassigned.is_empty() { return Vec::new(); }
+    if unassigned.is_empty() {
+        return Brancher::Roots(Vec::new());
+    }
 
     let prime = &field.prime;
-    // Cap total guesses for tractability on large primes.  cvc5 has no cap,
-    // but relies on the resource manager / timeout.  We cap at
-    // `min(p, ROUND_ROBIN_CAP_PER_VAR) * num_vars`.
-    const ROUND_ROBIN_CAP_PER_VAR: u64 = 256;
+    // cvc5 has no per-variable cap — it relies on timeout.  We set a
+    // generous limit that covers all practical cases while preventing
+    // allocation of impossibly large state for BN128-sized primes.
+    const ROUND_ROBIN_MAX: u64 = 256;
     let per_var: u64 = if prime.bits() > 16 {
-        ROUND_ROBIN_CAP_PER_VAR
+        ROUND_ROBIN_MAX
     } else {
         let x = prime.iter_u64_digits().next().unwrap_or(2);
-        x.min(ROUND_ROBIN_CAP_PER_VAR).max(2)
+        x.max(2)
     };
     let total = per_var.saturating_mul(unassigned.len() as u64);
 
-    let mut out = Vec::with_capacity(total as usize);
-    for idx in 0..total {
-        let which_var = (idx as usize) % unassigned.len();
-        let which_val = idx / (unassigned.len() as u64);
-        let val_bi = num_bigint::BigUint::from(which_val);
-        out.push((unassigned[which_var], field.from_biguint(&val_bi)));
+    Brancher::RoundRobin {
+        unassigned,
+        idx: 0,
+        total,
     }
-    out
 }
 
 /// Extract univariate coefficients (assumes only `var_idx` appears in `p`).
@@ -469,8 +611,10 @@ pub fn split_find_zero_cancel<'r>(
                 split_basis = split_gb_cancel(poly_ring, new_gens, bit_prop, cancel)?;
             }
             ZeroExtendResult::NoZero => {
-                if cancel.is_cancelled() { return Err(Cancelled); }
                 return Ok(None);
+            }
+            ZeroExtendResult::Cancelled => {
+                return Err(Cancelled);
             }
             ZeroExtendResult::Point(pt) => return Ok(Some(pt)),
         }
@@ -547,15 +691,18 @@ mod tests {
         let pr = FfPolyRing::new(ff(5), vec!["x".into(), "y".into()]);
         let gb: Ideal = Ideal::from_gb(&pr, vec![]);
         let r: PartialPoint = vec![None, None];
-        let cands = apply_rule(&pr, &gb, &r);
+        let mut brancher = apply_rule(&pr, &gb, &r);
         // first 2 candidates should be (0, 0) and (1, 0): same val, different var.
-        assert_eq!(cands[0].0, 0);
-        assert_eq!(pr.field.to_biguint(&cands[0].1), num_bigint::BigUint::from(0u32));
-        assert_eq!(cands[1].0, 1);
-        assert_eq!(pr.field.to_biguint(&cands[1].1), num_bigint::BigUint::from(0u32));
+        let c0 = brancher.next(&pr.field).unwrap();
+        assert_eq!(c0.0, 0);
+        assert_eq!(pr.field.to_biguint(&c0.1), num_bigint::BigUint::from(0u32));
+        let c1 = brancher.next(&pr.field).unwrap();
+        assert_eq!(c1.0, 1);
+        assert_eq!(pr.field.to_biguint(&c1.1), num_bigint::BigUint::from(0u32));
         // third candidate: var 0 again, val 1.
-        assert_eq!(cands[2].0, 0);
-        assert_eq!(pr.field.to_biguint(&cands[2].1), num_bigint::BigUint::from(1u32));
+        let c2 = brancher.next(&pr.field).unwrap();
+        assert_eq!(c2.0, 0);
+        assert_eq!(pr.field.to_biguint(&c2.1), num_bigint::BigUint::from(1u32));
     }
 
     #[test]
@@ -567,7 +714,12 @@ mod tests {
         let p = pr.sub(y_sq, pr.constant(four));
         let gb = Ideal::new(&pr, vec![p]);
         let r: PartialPoint = vec![None, None];
-        let cands = apply_rule(&pr, &gb, &r);
+        let mut brancher = apply_rule(&pr, &gb, &r);
+        // Collect all candidates
+        let mut cands = Vec::new();
+        while let Some(c) = brancher.next(&pr.field) {
+            cands.push(c);
+        }
         // All candidates should be for variable 1 (y).
         assert!(cands.iter().all(|(v, _)| *v == 1));
         // Roots should include 2 and 5.

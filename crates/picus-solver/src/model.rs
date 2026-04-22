@@ -23,6 +23,34 @@ use crate::poly::{FfPolyRing, Poly};
 use crate::roots::find_roots;
 use crate::timeout::CancelToken;
 
+/// Brancher for model construction (same concept as split_gb::Brancher).
+enum Brancher {
+    Roots(Vec<(usize, FfEl)>),
+    RoundRobin {
+        unassigned: Vec<usize>,
+        idx: u64,
+        total: u64,
+    },
+}
+
+impl Brancher {
+    fn next(&mut self, field: &FfField) -> Option<(usize, FfEl)> {
+        match self {
+            Brancher::Roots(v) => v.pop(),
+            Brancher::RoundRobin { unassigned, idx, total } => {
+                if *idx >= *total || unassigned.is_empty() {
+                    return None;
+                }
+                let which_var = (*idx as usize) % unassigned.len();
+                let which_val = *idx / (unassigned.len() as u64);
+                *idx += 1;
+                let val_bi = num_bigint::BigUint::from(which_val);
+                Some((unassigned[which_var], field.from_biguint(&val_bi)))
+            }
+        }
+    }
+}
+
 /// Try to find a common zero of the polynomials that generated `initial_gb`.
 ///
 /// Uses iterative backtracking with ideal augmentation (matching cvc5):
@@ -49,19 +77,16 @@ pub fn find_zero_cancel(
 
     // Stack-based iterative search (matching cvc5's findZero)
     let mut ideals: Vec<Ideal> = vec![initial_ideal];
-    let mut branchers: Vec<Vec<(usize, FfEl)>> = Vec::new();
+    let mut branchers: Vec<Brancher> = Vec::new();
 
     while !ideals.is_empty() {
         if cancel.is_cancelled() { return None; }
 
         let ideal = ideals.last().unwrap();
 
-        // Check UNSAT
+        // Check UNSAT — pop the ideal only (matching cvc5 multi_roots.cpp:264-267)
         if ideal.is_whole_ring() {
             ideals.pop();
-            if branchers.len() >= ideals.len() {
-                branchers.pop();
-            }
             continue;
         }
 
@@ -70,15 +95,15 @@ pub fn find_zero_cancel(
             return Some(model);
         }
 
-        // Create brancher if needed
+        // If this ideal doesn't have a brancher yet, create one
         if ideals.len() > branchers.len() {
             let candidates = compute_candidates(poly_ring, ideal);
             branchers.push(candidates);
         }
 
-        // Get next candidate from brancher
+        // ideals.len() == branchers.len() — get next candidate
         let brancher = branchers.last_mut().unwrap();
-        if let Some((var, val)) = brancher.pop() {
+        if let Some((var, val)) = brancher.next(&poly_ring.field) {
             // Add x_var - val to the ideal generators
             let v = poly_ring.var(var);
             let c = poly_ring.constant(poly_ring.field.field().clone_el(&val));
@@ -139,7 +164,7 @@ fn try_extract_full_assignment(
 fn compute_candidates(
     poly_ring: &FfPolyRing,
     ideal: &Ideal,
-) -> Vec<(usize, FfEl)> {
+) -> Brancher {
     let ring = &poly_ring.ring;
     let field = &poly_ring.field;
     let n_vars = poly_ring.n_vars;
@@ -165,7 +190,9 @@ fn compute_candidates(
                 if let Some(coeffs) = extract_univariate_coeffs(ring, field.field(), p, var_idx) {
                     if coeffs.len() > 2 { // deg > 1
                         let roots = find_roots(field, &coeffs);
-                        return roots.into_iter().map(|v| (var_idx, v)).collect();
+                        return Brancher::Roots(
+                            roots.into_iter().map(|v| (var_idx, v)).collect()
+                        );
                     }
                 }
             }
@@ -178,33 +205,34 @@ fn compute_candidates(
             if !assigned[v] {
                 if let Some(coeffs) = ideal.min_poly(v) {
                     let roots = find_roots(field, &coeffs);
-                    return roots.into_iter().map(|val| (v, val)).collect();
+                    return Brancher::Roots(
+                        roots.into_iter().map(|val| (v, val)).collect()
+                    );
                 }
             }
         }
     }
 
-    // Case 3: round-robin over all unassigned variables × field values
+    // Case 3: round-robin — lazy generation
     let unassigned: Vec<usize> = (0..n_vars).filter(|i| !assigned[*i]).collect();
-    if unassigned.is_empty() { return Vec::new(); }
+    if unassigned.is_empty() {
+        return Brancher::Roots(Vec::new());
+    }
 
     let prime = &field.prime;
-    const ROUND_ROBIN_CAP: u64 = 256;
+    const ROUND_ROBIN_MAX: u64 = 256;
     let per_var: u64 = if prime.bits() > 16 {
-        ROUND_ROBIN_CAP
+        ROUND_ROBIN_MAX
     } else {
-        prime.iter_u64_digits().next().unwrap_or(2).min(ROUND_ROBIN_CAP).max(2)
+        prime.iter_u64_digits().next().unwrap_or(2).max(2)
     };
     let total = per_var.saturating_mul(unassigned.len() as u64);
 
-    let mut out = Vec::with_capacity(total as usize);
-    for idx in 0..total {
-        let which_var = (idx as usize) % unassigned.len();
-        let which_val = idx / (unassigned.len() as u64);
-        let val_bi = num_bigint::BigUint::from(which_val);
-        out.push((unassigned[which_var], field.from_biguint(&val_bi)));
+    Brancher::RoundRobin {
+        unassigned,
+        idx: 0,
+        total,
     }
-    out
 }
 
 /// Extract univariate coefficients w.r.t. `var_idx`.
