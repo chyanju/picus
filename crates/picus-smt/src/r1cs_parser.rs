@@ -35,6 +35,7 @@ pub fn parse_r1cs(
     match solver {
         SolverKind::Z3 => parse_r1cs_z3(r1cs, xlist_in),
         SolverKind::None => unreachable!("propagation-only mode should not reach parser"),
+        SolverKind::Native => unreachable!("native solver does not use R1CS AST parser"),
         SolverKind::Cvc5 => parse_r1cs_cvc5(r1cs, xlist_in),
     }
 }
@@ -44,6 +45,7 @@ pub fn expand_r1cs(cnsts: &RCmds, solver: SolverKind) -> RCmds {
     match solver {
         SolverKind::Z3 => expand_r1cs_z3(cnsts),
         SolverKind::None => unreachable!("propagation-only mode should not reach expand"),
+        SolverKind::Native => unreachable!("native solver does not use R1CS AST expand"),
         SolverKind::Cvc5 => expand_r1cs_cvc5(cnsts),
     }
 }

@@ -2,7 +2,6 @@
 //!
 //! This backend is a pure-Rust replacement for cvc5's QF_FF theory solver.
 
-use std::collections::HashMap;
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
 use log;
@@ -139,6 +138,7 @@ fn query_to_constraint_system(query: &UniquenessQuery) -> ConstraintSystem {
         disequalities: vec![(target_x, target_y)],
         assignments,
         add_field_polys: false, // BN128 prime is too large for field polys
+        bitsums: vec![],
     }
 }
 
@@ -150,21 +150,36 @@ impl SolverBackend for NativeFfBackend {
     ) -> Result<SolverResult, SolverError> {
         let cs = query_to_constraint_system(query);
 
-        let encoded = encode(&cs).map_err(|e| SolverError::Internal(e))?;
+        // Wrap encode + solve in catch_unwind as a safety net for any
+        // remaining feanor-math panics (e.g., unexpected degree overflow).
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {})); // silence repeated panics
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let encoded = encode(&cs).map_err(|e| SolverError::Internal(e))?;
 
-        log::debug!(
-            "native-ff: {} polynomials, {} variables",
-            encoded.polynomials.len(),
-            encoded.poly_ring.n_vars
-        );
+            log::debug!(
+                "native-ff: {} polynomials, {} variables",
+                encoded.polynomials.len(),
+                encoded.poly_ring.n_vars
+            );
 
-        let cancel = CancelToken::with_timeout(std::time::Duration::from_millis(timeout_ms));
-        let outcome = solve_encoded_with_cancel(&encoded, &cancel);
+            let cancel = CancelToken::with_timeout(std::time::Duration::from_millis(timeout_ms));
+            let outcome = solve_encoded_with_cancel(&encoded, &cancel);
 
-        match outcome {
-            SolveOutcome::Sat(model) => Ok(SolverResult::Sat(model)),
-            SolveOutcome::Unsat(_) => Ok(SolverResult::Unsat),
-            SolveOutcome::Unknown => Ok(SolverResult::Unknown),
+            match outcome {
+                SolveOutcome::Sat(model) => Ok(SolverResult::Sat(model)),
+                SolveOutcome::Unsat(_) => Ok(SolverResult::Unsat),
+                SolveOutcome::Unknown => Ok(SolverResult::Unknown),
+            }
+        }));
+        std::panic::set_hook(prev_hook); // restore hook
+
+        match result {
+            Ok(r) => r,
+            Err(_) => {
+                log::warn!("native-ff: solver panicked (likely degree overflow); returning Unknown");
+                Ok(SolverResult::Unknown)
+            }
         }
     }
 

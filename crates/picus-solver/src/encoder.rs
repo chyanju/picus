@@ -105,6 +105,20 @@ pub fn encode(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
     }
 
     let field = FfField::new(&system.prime);
+
+    // Check that the variable count is within feanor-math's capacity.
+    // The ring constructor requires C(n_vars + max_deg, n_vars) < 2^64.
+    // For ZK circuits in the DPVL duplicated-variable formulation, the
+    // actual polynomial degree is ≤ 2, so max_deg = 4 suffices.  But
+    // when n_vars is extremely large even C(n+4, 4) can overflow.
+    let n_vars = var_names.len();
+    if n_vars > 5000 {
+        return Err(format!(
+            "too many variables ({}) for polynomial ring construction",
+            n_vars
+        ));
+    }
+
     let poly_ring = FfPolyRing::new(field, var_names.clone());
 
     let mut var_map: HashMap<String, usize> = HashMap::new();

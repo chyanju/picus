@@ -43,7 +43,10 @@ impl FfPolyRing {
         // large precomputation cost.
         let max_supported_deg = if n_vars <= 4 { 256 }
             else if n_vars <= 8 { 64 }
-            else { 32 };
+            else if n_vars <= 20 { 32 }
+            else if n_vars <= 50 { 16 }
+            else if n_vars <= 200 { 8 }
+            else { 4 };
         let table = if n_vars <= 4 { (4, 4) } else { (2, 2) };
         let ring = MultivariatePolyRingImpl::new_with_mult_table(
             field.field().clone(),

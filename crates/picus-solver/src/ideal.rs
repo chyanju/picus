@@ -441,11 +441,17 @@ pub fn compute_gb_with_order_traced<O: MonomialOrder + Copy + Send + Sync>(
     basis.into_iter().map(|f| to_ring.map(f)).collect()
 }
 
-/// Maximum supported polynomial degree, based on variable count.
+/// Maximum supported polynomial degree for the inner ring, based on
+/// variable count.  Must satisfy C(n_vars + max_deg, n_vars) < 2^63
+/// to avoid feanor-math panics.  QF_FF constraints are at most degree 2,
+/// but Buchberger S-polynomials can increase degree during reduction.
 fn max_supported_deg(n_vars: usize) -> u16 {
     if n_vars <= 4 { 256 }
     else if n_vars <= 8 { 64 }
-    else { 32 }
+    else if n_vars <= 20 { 32 }
+    else if n_vars <= 50 { 16 }
+    else if n_vars <= 200 { 8 }
+    else { 4 }
 }
 
 /// Get the coefficient of a specific monomial in `p`.
