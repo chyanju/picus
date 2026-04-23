@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.5] - 2026-04-23
+
+### Added
+- **Yan-style geobucket reduction in feanor-math fork**: Polynomial reduction during Buchberger now accumulates intermediate sums in a logarithmic bucket structure, deferring monomial-merge work until the bucket is materialized. This avoids the quadratic cost of repeatedly merging the running residue with each reducer's tail, matching the strategy used in modern Groebner basis implementations (Singular, Macaulay2).
+- **Bigint scratch pool with `Global` allocator specialization**: A thread-local pool reuses `BigInt` allocations across the inner FMA loop of `bigint_mul_assign`. The hot path is specialized on the `Global` allocator (the only allocator used in practice by the polynomial pipeline), avoiding allocation churn during reduction.
+
+### Fixed
+- **`bigint_fma` allocator contract**: The `scratch_alloc` parameter was previously silently ignored when the function fell through to the `Global` fast path, violating the documented API contract. Split into two functions: `bigint_fma` (honors the caller's allocator for inner workspace) and `pub(crate) bigint_fma_global` (used by the scratch pool, which is `Global`-only by construction). Restores correctness for callers passing custom allocators.
+
+### Changed
+- **feanor-math dependency**: Updated to fork revision `0fb1ea4` (geobucket + scratch pool); switched picus-solver back to a git dependency (no path override).
+- **Code cleanup in feanor-math fork**: Removed ~440 lines of dead code (`reduction_accum.rs` module, `bigint_mul_pooled`, unused accessors); fixed misplaced doc comments and `Debug` impl brace; suppressed dead-code warnings on `geobucket` API methods kept for module completeness.
+- **Deduplicated `mult_table_bounds` and `max_supported_deg`**: `poly.rs` now reuses the helpers exported from `ideal.rs` instead of inlining the same sizing tables.
+- **Demoted high-volume `split_zero_extend` logs to `trace`**: Per-iteration progress lines no longer appear at `debug` level.
+
+### Verified
+- 398 lib + integration tests pass in feanor-math fork; 48 picus-solver lib + 7 integration tests pass.
+- circomlibex-cff5ab6 sweep (110 circuits, 15s timeout): 103 agree (35 both-timeout), 0 mismatch vs cvc5.
+
 ## [1.7.4] - 2026-04-22
 
 ### Added

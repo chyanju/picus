@@ -252,9 +252,28 @@ pub fn split_zero_extend_cancel<'r>(
     }
 
     first.candidates = apply_rule_multi(poly_ring, &first.bases, &first.r);
+    log::trace!(
+        "split_zero_extend: {} vars, {} assigned, brancher={}",
+        poly_ring.n_vars,
+        n_assigned,
+        match &first.candidates {
+            Brancher::Roots(v) => format!("Roots({})", v.len()),
+            Brancher::RoundRobin { unassigned, .. } =>
+                format!("RoundRobin({} vars)", unassigned.len()),
+        }
+    );
 
+    let mut iter_count: u64 = 0;
     loop {
         if cancel.is_cancelled() { return ZeroExtendResult::Cancelled; }
+        iter_count += 1;
+
+        if iter_count % 100 == 0 {
+            log::trace!(
+                "split_zero_extend: iter={}, stack_depth={}",
+                iter_count, stack.len()
+            );
+        }
 
         // If stack is empty, search exhausted
         let frame = match stack.last_mut() {
@@ -356,6 +375,16 @@ pub fn split_zero_extend_cancel<'r>(
 
         // Go deeper: compute candidates for the new state and push
         let new_candidates = apply_rule_multi(poly_ring, &new_bases, &new_r);
+        log::trace!(
+            "split_zero_extend: depth={}, var={}, brancher={}",
+            stack.len(),
+            var,
+            match &new_candidates {
+                Brancher::Roots(v) => format!("Roots({})", v.len()),
+                Brancher::RoundRobin { unassigned, .. } =>
+                    format!("RoundRobin({} vars)", unassigned.len()),
+            }
+        );
         stack.push(Frame {
             bases: new_bases,
             r: new_r,

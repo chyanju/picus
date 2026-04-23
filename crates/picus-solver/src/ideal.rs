@@ -347,6 +347,8 @@ pub fn leading_coefficient<O: MonomialOrder + Copy>(
 /// Rabinowitsch quadratic; field polys `x^p - x` are accommodated by
 /// `max_supported_deg`).
 fn compute_gb_fast(poly_ring: &FfPolyRing, generators: Vec<Poly>, cancel: &CancelToken) -> Vec<Poly> {
+    let n_gens = generators.len();
+    let n_vars = poly_ring.ring.indeterminate_count();
     // Wrap in catch_unwind to gracefully handle feanor-math panics
     // (e.g., monomial degree overflow when max_supported_deg is exceeded).
     // On panic, return the original generators unreduced rather than an empty
@@ -355,15 +357,25 @@ fn compute_gb_fast(poly_ring: &FfPolyRing, generators: Vec<Poly>, cancel: &Cance
         .map(|p| poly_ring.ring.clone_el(p))
         .collect();
     let cancel_clone = cancel.clone();
+    let start = std::time::Instant::now();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         compute_gb_fast_inner(poly_ring, generators, &cancel_clone)
     }));
+    let elapsed = start.elapsed();
     match result {
-        Ok(basis) => basis,
+        Ok(ref basis) => {
+            log::trace!(
+                "GB call: {} gens, {} vars → {} basis elems in {:.1}ms",
+                n_gens, n_vars, basis.len(), elapsed.as_secs_f64() * 1000.0
+            );
+        }
         Err(_) => {
             log::warn!("GB computation panicked (likely degree overflow); returning generators unreduced");
-            gens_backup
         }
+    }
+    match result {
+        Ok(basis) => basis,
+        Err(_) => gens_backup,
     }
 }
 
@@ -388,7 +400,7 @@ pub fn compute_gb_with_order<O: MonomialOrder + Copy + Send + Sync>(
     let as_local_pir = AsLocalPIR::from_field(ring.base_ring());
     let max_deg = max_supported_deg(n_vars);
     let new_poly_ring = MultivariatePolyRingImpl::new_with_mult_table(
-        &as_local_pir, n_vars, max_deg, (2, 2), Global,
+        &as_local_pir, n_vars, max_deg, mult_table_bounds(n_vars), Global,
     );
     let from_ring = new_poly_ring.lifted_hom(ring, WrapHom::to_delegate_ring(as_local_pir.get_ring()));
     let mapped: Vec<_> = generators.into_iter().map(|f| from_ring.map(f)).collect();
@@ -423,7 +435,7 @@ pub fn compute_gb_with_order_traced<O: MonomialOrder + Copy + Send + Sync>(
     let as_local_pir = AsLocalPIR::from_field(ring.base_ring());
     let max_deg = max_supported_deg(n_vars);
     let new_poly_ring = MultivariatePolyRingImpl::new_with_mult_table(
-        &as_local_pir, n_vars, max_deg, (2, 2), Global,
+        &as_local_pir, n_vars, max_deg, mult_table_bounds(n_vars), Global,
     );
     let from_ring = new_poly_ring.lifted_hom(ring, WrapHom::to_delegate_ring(as_local_pir.get_ring()));
     let mapped: Vec<_> = generators.into_iter().map(|f| from_ring.map(f)).collect();
@@ -441,11 +453,20 @@ pub fn compute_gb_with_order_traced<O: MonomialOrder + Copy + Send + Sync>(
     basis.into_iter().map(|f| to_ring.map(f)).collect()
 }
 
-/// Maximum supported polynomial degree for the inner ring, based on
-/// variable count.  Must satisfy C(n_vars + max_deg, n_vars) < 2^63
+/// Multiplication table bounds: `(d1, d2)` where table covers products
+/// with one factor degree ≤ d1 and the other ≤ d2.  Larger tables avoid
+/// the expensive decode-add-encode fallback for monomial multiplication.
+/// Bounded by memory: table size ∝ C(n+d1,d1) × C(n+d2,d2) × 8 bytes.
+pub(crate) fn mult_table_bounds(n_vars: usize) -> (u16, u16) {
+    if n_vars <= 5 { (6, 6) }        // ~1.7MB
+    else if n_vars <= 8 { (4, 4) }   // ~2MB
+    else if n_vars <= 15 { (3, 3) }  // ~5MB
+    else if n_vars <= 25 { (2, 3) }  // ~5-20MB
+    else { (2, 2) }                   // minimal
+}
 /// to avoid feanor-math panics.  QF_FF constraints are at most degree 2,
 /// but Buchberger S-polynomials can increase degree during reduction.
-fn max_supported_deg(n_vars: usize) -> u16 {
+pub(crate) fn max_supported_deg(n_vars: usize) -> u16 {
     if n_vars <= 4 { 256 }
     else if n_vars <= 8 { 64 }
     else if n_vars <= 20 { 32 }
