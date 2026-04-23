@@ -7,6 +7,7 @@ use feanor_math::homomorphism::*;
 use std::alloc::Global;
 
 use crate::field::{FfField, FfFieldType, FfEl};
+use crate::ideal::{max_supported_deg, mult_table_bounds};
 
 /// Type alias for our polynomial ring.
 pub type PolyRingType = MultivariatePolyRingImpl<FfFieldType>;
@@ -32,22 +33,10 @@ impl FfPolyRing {
         // expensive for n_vars >= ~10 (3+ seconds at startup).  Most ZK
         // circuits we encode have polynomials of total degree <= 2 (linear
         // constraints + Rabinowitsch quadratic + bitsum), so a table covering
-        // (2, 2) suffices for hot multiplications.  `max_supported_deg` is
-        // larger to accommodate `add_field_polys` (x^p - x) and minpoly work.
-        // `max_supported_deg` must accommodate field polynomials `x^p - x`
-        // for small primes (used via `add_field_polys`) and intermediate
-        // S-polynomial reductions during Buchberger (which can push degrees
-        // up to ~2p).  Scale inversely with n_vars: the feanor-math
-        // constructor requires C(n+d,n) to fit in u64, so high n_vars forces
-        // a lower max degree.  Table dimension is kept tiny to avoid the
-        // large precomputation cost.
-        let max_supported_deg = if n_vars <= 4 { 256 }
-            else if n_vars <= 8 { 64 }
-            else if n_vars <= 20 { 32 }
-            else if n_vars <= 50 { 16 }
-            else if n_vars <= 200 { 8 }
-            else { 4 };
-        let table = if n_vars <= 4 { (4, 4) } else { (2, 2) };
+        // (2, 2) suffices for hot multiplications.  See `ideal::max_supported_deg`
+        // and `ideal::mult_table_bounds` for the shared sizing tables.
+        let max_supported_deg = max_supported_deg(n_vars);
+        let table = mult_table_bounds(n_vars);
         let ring = MultivariatePolyRingImpl::new_with_mult_table(
             field.field().clone(),
             n_vars,
