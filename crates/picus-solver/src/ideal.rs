@@ -27,22 +27,68 @@ use feanor_math::rings::multivariate::*;
 use feanor_math::rings::multivariate::multivariate_impl::*;
 use std::alloc::Global;
 
-use crate::field::FfEl;
+use crate::field::{FfEl, FfFieldType};
 use crate::poly::{FfPolyRing, Poly, PolyRingType};
 use crate::timeout::{CancelToken, Cancelled};
 
+/// Type aliases for the inner ring used during GB computation.
+type GbBaseRing<'r> = AsLocalPIR<&'r FfFieldType>;
+type GbPolyRingType<'r> = MultivariatePolyRingImpl<GbBaseRing<'r>>;
+type GbPoly<'r> = El<GbPolyRingType<'r>>;
+
+/// Pre-built polynomial ring over `AsLocalPIR<&FfFieldType>` for Buchberger.
+///
+/// Construct once via [`GbRingCache::new`] and pass to the cached GB
+/// functions.  Avoids rebuilding the monomial multiplication table
+/// (O(C(n+d,d)^2)) on every GB call.
+pub(crate) struct GbRingCache<'r> {
+    pub(crate) inner_ring: GbPolyRingType<'r>,
+    outer_ring: &'r PolyRingType,
+}
+
+impl<'r> GbRingCache<'r> {
+    /// Build the cache from the outer `FfPolyRing`.
+    pub(crate) fn new(poly_ring: &'r FfPolyRing) -> Self {
+        let ring = &poly_ring.ring;
+        let n_vars = ring.indeterminate_count();
+        let as_local_pir = AsLocalPIR::from_field(ring.base_ring());
+        let max_deg = max_supported_deg(n_vars);
+        let inner_ring = MultivariatePolyRingImpl::new_with_mult_table(
+            as_local_pir, n_vars, max_deg, mult_table_bounds(n_vars), Global,
+        );
+        GbRingCache { inner_ring, outer_ring: ring }
+    }
+
+    /// Map a batch of polynomials from the outer ring into the inner (GB) ring.
+    fn map_in_batch(&self, polys: Vec<Poly>) -> Vec<GbPoly<'r>> {
+        let hom = self.inner_ring.lifted_hom(
+            self.outer_ring,
+            WrapHom::to_delegate_ring(self.inner_ring.base_ring().get_ring()),
+        );
+        polys.into_iter().map(|f| hom.map(f)).collect()
+    }
+
+    /// Map a batch of polynomials from the inner (GB) ring back to the outer ring.
+    fn map_out_batch(&self, polys: Vec<GbPoly<'r>>) -> Vec<Poly> {
+        let hom = self.outer_ring.lifted_hom(
+            &self.inner_ring,
+            UnwrapHom::from_delegate_ring(self.inner_ring.base_ring().get_ring()),
+        );
+        polys.into_iter().map(|f| hom.map(f)).collect()
+    }
+}
+
 // ============================================================================
-// Sprint 2.5 T3 — Process-global GB strategy selector.
+// Process-global GB strategy selector.
 //
-// Mirrors the `--profile`/profile.rs pattern: a single AtomicU8 holds the
-// active strategy; CLI / library callers flip it before computing GBs.
-// All `Ideal::new*` calls dispatch through `compute_gb_dispatch`, which
-// consults this atomic and routes to either:
-//   * Direct  — the existing `compute_gb_fast` (DegRevLex Buchberger on P)
-//   * ByHomog — `crate::gb_homog::compute_gb_by_homog` (homogenize → GB on Ph
-//                → dehom → interreduce in P)
+// A single AtomicU8 holds the active strategy; CLI / library callers set it
+// before computing GBs.  All `Ideal::new*` calls dispatch through
+// `compute_gb_dispatch`, which routes to either:
+//   * Direct  — `compute_gb_fast` (DegRevLex Buchberger on P)
+//   * ByHomog — `crate::gb_homog::compute_gb_by_homog` (homogenize → GB
+//                on Ph → dehom → interreduce in P)
 //   * Auto    — Direct if every input is already total-degree-homogeneous,
-//               otherwise ByHomog.  Cheap test (one pass over generators).
+//               otherwise ByHomog.
 // ============================================================================
 
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -161,11 +207,11 @@ impl<'r> Ideal<'r> {
         }
         let basis = compute_gb_dispatch(poly_ring, generators, cancel);
         if cancel.is_cancelled() { return Err(Cancelled); }
-        // R6 Gap F: interreduce so the basis is canonical (reduced GB).
+        // Interreduce so the basis is canonical (reduced GB).
         // This shrinks the basis, accelerates downstream reduce/min_poly,
         // and matches what cvc5/CoCoA produce.
         //
-        // Sprint 2.5: when the strategy is ByHomog (or Auto-resolved-to-ByHomog),
+        // When the strategy is ByHomog (or Auto-resolved-to-ByHomog),
         // `compute_gb_by_homog` already interreduces internally.  Re-running
         // here is harmless (idempotent on a reduced basis) so we keep it
         // unconditional for simplicity.
@@ -174,23 +220,21 @@ impl<'r> Ideal<'r> {
         Ok(Ideal { poly_ring, basis })
     }
 
-    /// Sprint 2.7 — extend an existing ideal by adding new generators,
-    /// using *incremental* Buchberger to avoid recomputing the GB from
-    /// scratch.
+    /// Extend an existing ideal by adding new generators, using
+    /// *incremental* Buchberger to avoid recomputing the GB from scratch.
     ///
     /// Precondition: `self.basis` MUST be a reduced GB in `DegRevLex`
-    /// (this is the invariant maintained by `new_with_cancel`).  Calling
-    /// `extend_with_cancel` on an `Ideal` constructed via `from_gb` with
-    /// a non-GB `basis` is undefined behaviour (silently wrong result).
+    /// (this is the invariant maintained by `new_with_cancel`).
     ///
     /// Returns `Err(Cancelled)` if the token fires.
-    pub fn extend_with_cancel(
+    /// Uses a pre-built `GbRingCache` to avoid ring construction on every call.
+    pub(crate) fn extend_with_cancel_cached(
         self,
         new_polys: Vec<Poly>,
         cancel: &CancelToken,
+        cache: &GbRingCache<'r>,
     ) -> Result<Self, Cancelled> {
         if cancel.is_cancelled() { return Err(Cancelled); }
-        // Filter out trivial zero generators.
         let ring = &self.poly_ring.ring;
         let new_polys: Vec<Poly> = new_polys.into_iter()
             .filter(|f| !ring.is_zero(f))
@@ -199,14 +243,10 @@ impl<'r> Ideal<'r> {
             return Ok(self);
         }
         let Ideal { poly_ring, basis: known_gb } = self;
-        let basis = compute_gb_incremental_with_order(
-            poly_ring, known_gb, new_polys, cancel, DegRevLex,
+        let basis = compute_gb_incremental_with_order_cached(
+            known_gb, new_polys, cancel, DegRevLex, cache,
         );
         if cancel.is_cancelled() { return Err(Cancelled); }
-        // Match `new_with_cancel` behaviour: ensure the result is a
-        // reduced GB (Sprint 2.7 incremental does inter_reduce inside
-        // the loop on each round, but we run it once more here for
-        // canonical form, matching `new_with_cancel`).
         let basis = interreduce_basis(poly_ring, basis, cancel);
         if cancel.is_cancelled() { return Err(Cancelled); }
         Ok(Ideal { poly_ring, basis })
@@ -334,8 +374,8 @@ impl<'r> Ideal<'r> {
 
         // For a true zero-dim ideal, dependence MUST be found by
         // d = dim_K(R/I) which is bounded but not cheaply computable;
-        // this cap is a safety net (was 256 — too small for
-        // higher-degree projected ideals, see R6 Gap A).
+        // this cap is a safety net (increased from 256 to handle
+        // higher-degree projected ideals).
         const MIN_POLY_DEG_CAP: usize = 4096;
         let max_deg = MIN_POLY_DEG_CAP;
 
@@ -671,7 +711,7 @@ pub fn compute_gb_with_order<O: MonomialOrder + Copy + Send + Sync>(
     basis.into_iter().map(|f| to_ring.map(f)).collect()
 }
 
-/// Sprint 2.7 — incremental GB computation.
+/// Incremental GB computation.
 ///
 /// Computes a Gröbner basis of `<known_gb> + <new_polys>` by extending
 /// an existing reduced GB rather than recomputing it from scratch.  The
@@ -724,6 +764,66 @@ pub fn compute_gb_incremental_with_order<O: MonomialOrder + Copy + Send + Sync>(
     let to_ring = ring.lifted_hom(&new_poly_ring, UnwrapHom::from_delegate_ring(as_local_pir.get_ring()));
     basis.into_iter().map(|f| to_ring.map(f)).collect()
 }
+
+/// Cached version of `compute_gb_with_order`.
+/// Uses a pre-built `GbRingCache` instead of constructing a new ring.
+fn compute_gb_with_order_cached<'r, O: MonomialOrder + Copy + Send + Sync>(
+    generators: Vec<Poly>,
+    cancel: &CancelToken,
+    order: O,
+    cache: &GbRingCache<'r>,
+) -> Vec<Poly> {
+    let _t = crate::profile::ScopedTimer::new("compute_gb_with_order");
+    if generators.is_empty() {
+        return Vec::new();
+    }
+    let mapped = cache.map_in_batch(generators);
+    let backup: Vec<_> = mapped.iter().map(|f| cache.inner_ring.clone_el(f)).collect();
+    let cancel_clone = cancel.clone();
+    let mut stats_obs = crate::gb_stats::GbStatsObserver::default();
+    let result = buchberger_observed(
+        &cache.inner_ring, mapped, order,
+        default_sort_fn(&cache.inner_ring, order),
+        move |_| cancel_clone.is_cancelled(),
+        DontObserve,
+        &mut stats_obs,
+    );
+    let basis = match result { Ok(gb) => gb, Err(_) => backup };
+    cache.map_out_batch(basis)
+}
+
+/// Cached version of `compute_gb_incremental_with_order`.
+fn compute_gb_incremental_with_order_cached<'r, O: MonomialOrder + Copy + Send + Sync>(
+    known_gb: Vec<Poly>,
+    new_polys: Vec<Poly>,
+    cancel: &CancelToken,
+    order: O,
+    cache: &GbRingCache<'r>,
+) -> Vec<Poly> {
+    let _t = crate::profile::ScopedTimer::new("compute_gb_incremental_with_order");
+    if new_polys.is_empty() {
+        return known_gb;
+    }
+    if known_gb.is_empty() {
+        return compute_gb_with_order_cached(new_polys, cancel, order, cache);
+    }
+    let mapped_known = cache.map_in_batch(known_gb);
+    let mapped_new = cache.map_in_batch(new_polys);
+    let backup: Vec<_> = mapped_known.iter().chain(mapped_new.iter())
+        .map(|f| cache.inner_ring.clone_el(f)).collect();
+    let cancel_clone = cancel.clone();
+    let mut stats_obs = crate::gb_stats::GbStatsObserver::default();
+    let result = buchberger_incremental_observed(
+        &cache.inner_ring, mapped_known, mapped_new, order,
+        default_sort_fn(&cache.inner_ring, order),
+        move |_| cancel_clone.is_cancelled(),
+        DontObserve,
+        &mut stats_obs,
+    );
+    let basis = match result { Ok(gb) => gb, Err(_) => backup };
+    cache.map_out_batch(basis)
+}
+
 pub fn compute_gb_with_order_traced<O: MonomialOrder + Copy + Send + Sync>(
     poly_ring: &FfPolyRing,
     generators: Vec<Poly>,
