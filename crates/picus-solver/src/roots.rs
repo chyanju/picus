@@ -24,6 +24,7 @@ use crate::field::{FfField, FfEl};
 ///    product of distinct linear factors.
 /// 3. Factoring of the squarefree part via Cantor-Zassenhaus.
 pub fn find_roots(field: &FfField, coeffs: &[FfEl]) -> Vec<FfEl> {
+    let _t = crate::profile::ScopedTimer::new("find_roots");
     let fp = field.field();
     let poly_ring = DensePolyRing::new(fp, "t");
 

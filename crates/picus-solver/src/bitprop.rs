@@ -72,6 +72,7 @@ impl<'r> BitProp<'r> {
     /// from the structure of the bitsums and the current GB.  See cvc5's
     /// `BitProp::getBitEqualities` for the original algorithm.
     pub fn get_bit_equalities(&mut self, split_basis: &[Ideal<'r>]) -> Vec<Poly> {
+        let _t = crate::profile::ScopedTimer::new("bitprop::get_bit_equalities");
         let pr = self.poly_ring;
         let ring = &pr.ring;
         let fp = pr.field.field();

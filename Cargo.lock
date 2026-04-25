@@ -381,9 +381,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "errno"
+version = "0.3.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
+dependencies = [
+ "libc",
+ "windows-sys",
+]
+
+[[package]]
 name = "feanor-math"
 version = "3.5.18"
-source = "git+https://github.com/chyanju/feanor-math?rev=0fb1ea4a6c75a0030812ca1f2877f1343045ab7d#0fb1ea4a6c75a0030812ca1f2877f1343045ab7d"
+source = "git+https://github.com/chyanju/feanor-math?rev=58cf287aa5968e3ab3de1a2e5a5740689065ff6c#58cf287aa5968e3ab3de1a2e5a5740689065ff6c"
 dependencies = [
  "append-only-vec",
  "atomicbox",
@@ -630,7 +640,7 @@ checksum = "d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d"
 
 [[package]]
 name = "picus"
-version = "1.7.5"
+version = "1.7.6"
 dependencies = [
  "num-bigint",
  "picus-analysis",
@@ -641,7 +651,7 @@ dependencies = [
 
 [[package]]
 name = "picus-analysis"
-version = "1.7.5"
+version = "1.7.6"
 dependencies = [
  "log",
  "num-bigint",
@@ -653,7 +663,7 @@ dependencies = [
 
 [[package]]
 name = "picus-cli"
-version = "1.7.5"
+version = "1.7.6"
 dependencies = [
  "anstream",
  "clap",
@@ -661,13 +671,15 @@ dependencies = [
  "log",
  "owo-colors",
  "picus",
+ "picus-solver",
  "serde",
  "serde_json",
+ "signal-hook",
 ]
 
 [[package]]
 name = "picus-r1cs"
-version = "1.7.5"
+version = "1.7.6"
 dependencies = [
  "byteorder",
  "num-bigint",
@@ -676,7 +688,7 @@ dependencies = [
 
 [[package]]
 name = "picus-smt"
-version = "1.7.5"
+version = "1.7.6"
 dependencies = [
  "cvc5-ff",
  "log",
@@ -690,7 +702,7 @@ dependencies = [
 
 [[package]]
 name = "picus-solver"
-version = "1.7.5"
+version = "1.7.6"
 dependencies = [
  "criterion",
  "env_logger",
@@ -907,6 +919,26 @@ name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
+
+[[package]]
+name = "signal-hook"
+version = "0.3.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d881a16cf4426aa584979d30bd82cb33429027e42122b169753d6ef1085ed6e2"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
+
+[[package]]
+name = "signal-hook-registry"
+version = "1.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
+dependencies = [
+ "errno",
+ "libc",
+]
 
 [[package]]
 name = "stability"

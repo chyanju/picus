@@ -23,6 +23,10 @@ pub mod model;
 pub mod timeout;
 pub mod stats;
 pub mod tracer;
+pub mod profile;
+pub mod gb_stats;
+pub mod homog;
+pub mod gb_homog;
 
 use num_bigint::BigUint;
 use std::collections::HashMap;

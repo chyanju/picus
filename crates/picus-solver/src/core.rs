@@ -111,7 +111,7 @@ pub fn solve_split_gb<'r>(
     }
 
     match split_find_zero(poly_ring, split_basis, &mut bit_prop) {
-        Some(point) => {
+        crate::split_gb::SplitFindZeroOutcome::Sat(point) => {
             let mut model_map = HashMap::new();
             let field = &poly_ring.field;
             for (idx, val) in point.iter().enumerate() {
@@ -127,7 +127,10 @@ pub fn solve_split_gb<'r>(
                 SolveOutcome::Unknown
             }
         }
-        None => SolveOutcome::Unsat((0..original_polys.len()).collect()),
+        crate::split_gb::SplitFindZeroOutcome::Unsat => {
+            SolveOutcome::Unsat((0..original_polys.len()).collect())
+        }
+        crate::split_gb::SplitFindZeroOutcome::Unknown => SolveOutcome::Unknown,
     }
 }
 
@@ -186,7 +189,7 @@ pub fn solve_single_gb(
         GbResultTraced::Timeout => SolveOutcome::Unknown,
         GbResultTraced::NonTrivial(gb) => {
             match model::find_zero(poly_ring, &gb) {
-                Some(m) => {
+                model::FindZeroOutcome::Sat(m) => {
                     if model::verify_model(poly_ring, &gb, &m) {
                         SolveOutcome::Sat(m)
                     } else {
@@ -194,7 +197,8 @@ pub fn solve_single_gb(
                         SolveOutcome::Unknown
                     }
                 }
-                None => SolveOutcome::Unknown,
+                model::FindZeroOutcome::Unsat => SolveOutcome::Unknown,
+                model::FindZeroOutcome::Unknown => SolveOutcome::Unknown,
             }
         }
     }
@@ -240,7 +244,7 @@ pub fn solve_split_gb_cancel<'r>(
     }
 
     match split_find_zero_cancel(poly_ring, split_basis, &mut bit_prop, cancel) {
-        Ok(Some(point)) => {
+        Ok(crate::split_gb::SplitFindZeroOutcome::Sat(point)) => {
             let mut model_map = HashMap::new();
             let field = &poly_ring.field;
             for (idx, val) in point.iter().enumerate() {
@@ -255,7 +259,10 @@ pub fn solve_split_gb_cancel<'r>(
                 SolveOutcome::Unknown
             }
         }
-        Ok(None) => SolveOutcome::Unsat((0..original_polys.len()).collect()),
+        Ok(crate::split_gb::SplitFindZeroOutcome::Unsat) => {
+            SolveOutcome::Unsat((0..original_polys.len()).collect())
+        }
+        Ok(crate::split_gb::SplitFindZeroOutcome::Unknown) => SolveOutcome::Unknown,
         Err(_) => SolveOutcome::Unknown,
     }
 }

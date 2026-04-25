@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 picus = { path = "../picus" }
+picus-solver = { path = "../picus-solver" }
 clap = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
@@ -20,3 +21,4 @@ owo-colors = "4"
 anstream = "1.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+signal-hook = "0.3"

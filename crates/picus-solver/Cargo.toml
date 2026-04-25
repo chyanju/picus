@@ -13,7 +13,7 @@ num-traits.workspace = true
 num-integer.workspace = true
 log.workspace = true
 thiserror.workspace = true
-feanor-math = { git = "https://github.com/chyanju/feanor-math", rev = "0fb1ea4a6c75a0030812ca1f2877f1343045ab7d", features = ["unstable-enable"] }
+feanor-math = { git = "https://github.com/chyanju/feanor-math", rev = "58cf287aa5968e3ab3de1a2e5a5740689065ff6c", features = ["unstable-enable"] }
 oorandom = "11.1"
 
 [dev-dependencies]
