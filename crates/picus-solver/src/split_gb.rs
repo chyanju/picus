@@ -24,7 +24,7 @@ use feanor_math::rings::multivariate::*;
 
 use crate::bitprop::BitProp;
 use crate::field::FfEl;
-use crate::ideal::Ideal;
+use crate::ideal::{Ideal, GbRingCache};
 use crate::poly::{FfPolyRing, Poly};
 use crate::timeout::{CancelToken, Cancelled};
 
@@ -93,6 +93,7 @@ pub fn split_gb_cancel<'r>(
     cancel: &CancelToken,
 ) -> Result<SplitGb<'r>, Cancelled> {
     let _t = crate::profile::ScopedTimer::new("split_gb_cancel");
+    let cache = GbRingCache::new(poly_ring);
     let k = generator_sets.len();
     let mut new_polys: Vec<Vec<Poly>> = generator_sets;
     let mut split_basis: SplitGb<'r> = (0..k)
@@ -102,10 +103,10 @@ pub fn split_gb_cancel<'r>(
     loop {
         if cancel.is_cancelled() { return Err(Cancelled); }
 
-        // Sprint 2.7: incremental Buchberger — extend each existing
-        // basis with its new polys instead of recomputing GB on the
-        // full union.  At first iteration `split_basis[i]` is empty
-        // (line 99 above), so `extend_with_cancel` short-circuits via
+        // Incremental Buchberger — extend each existing basis with its
+        // new polys instead of recomputing GB on the full union.  At
+        // first iteration `split_basis[i]` is empty (line 99 above),
+        // so `extend_with_cancel` short-circuits via
         // `compute_gb_with_order` on `new_polys[i]` alone.  On later
         // iterations the existing basis is a reduced GB (output of a
         // prior `extend_with_cancel`), so the incremental precondition
@@ -117,7 +118,7 @@ pub fn split_gb_cancel<'r>(
                     &mut split_basis[i],
                     Ideal::from_gb(poly_ring, Vec::new()),
                 );
-                split_basis[i] = existing.extend_with_cancel(added, cancel)?;
+                split_basis[i] = existing.extend_with_cancel_cached(added, cancel, &cache)?;
             }
         }
 
@@ -148,7 +149,7 @@ pub fn split_gb_cancel<'r>(
     Ok(split_basis)
 }
 
-/// Sprint 2.8a — incremental version of [`split_gb_cancel`].
+/// Incremental version of [`split_gb_cancel`].
 ///
 /// Takes a *pre-existing* `SplitGb` (whose ideals are already reduced
 /// GBs) plus per-split `new_polys`, and runs the bit-prop fixpoint
@@ -161,18 +162,18 @@ pub fn split_gb_cancel<'r>(
 ///
 /// `split_zero_extend_cancel` calls `split_gb_cancel` from inside a
 /// DFS loop where each iteration adds ONE assignment polynomial to
-/// each split's basis (Sprint 2.8a callsite 2 at
-/// `split_gb.rs:363-371`).  Each such call recomputes the full GB
+/// each split's basis.  Each such call recomputes the full GB
 /// from scratch, even though every split's basis is already a reduced
 /// GB and only one new generator is being added.  Using
 /// `split_gb_extend_cancel` from that hot path lets each ideal grow
 /// incrementally.
-pub fn split_gb_extend_cancel<'r>(
+pub(crate) fn split_gb_extend_cancel<'r>(
     poly_ring: &'r FfPolyRing,
     starting: SplitGb<'r>,
     new_polys: Vec<Vec<Poly>>,
     bit_prop: &mut BitProp<'r>,
     cancel: &CancelToken,
+    cache: &GbRingCache<'r>,
 ) -> Result<SplitGb<'r>, Cancelled> {
     let _t = crate::profile::ScopedTimer::new("split_gb_extend_cancel");
     let k = starting.len();
@@ -192,7 +193,7 @@ pub fn split_gb_extend_cancel<'r>(
                     &mut split_basis[i],
                     Ideal::from_gb(poly_ring, Vec::new()),
                 );
-                split_basis[i] = existing.extend_with_cancel(added, cancel)?;
+                split_basis[i] = existing.extend_with_cancel_cached(added, cancel, cache)?;
             }
         }
 
@@ -300,6 +301,7 @@ pub fn split_zero_extend_cancel<'r>(
     cancel: &CancelToken,
 ) -> ZeroExtendResult {
     let _t = crate::profile::ScopedTimer::new("split_zero_extend_cancel");
+    let cache = GbRingCache::new(poly_ring);
     // Each stack frame holds: (bases, partial_assignment, brancher)
     struct Frame<'r> {
         bases: SplitGb<'r>,
@@ -420,17 +422,16 @@ pub fn split_zero_extend_cancel<'r>(
         // (~1ms) and eliminates UNSAT branches without the expensive
         // nonlinear basis recomputation (~12ms).
         //
-        // Sprint 2.8a (S2.8a-2): use `extend_with_cancel` (incremental
-        // Buchberger) instead of `Ideal::new_with_cancel` to avoid
-        // recomputing the linear basis's GB from scratch on every
-        // branching candidate.  `frame.bases[0]` is a reduced GB by
-        // invariant.
+        // Uses `extend_with_cancel` (incremental Buchberger) instead of
+        // `Ideal::new_with_cancel` to avoid recomputing the linear
+        // basis's GB from scratch on every branching candidate.
+        // `frame.bases[0]` is a reduced GB by invariant.
         if !frame.bases.is_empty() {
             let cloned_basis: Vec<Poly> = frame.bases[0].basis.iter()
                 .map(|p| poly_ring.ring.clone_el(p)).collect();
             let lin_ideal_seed = Ideal::from_gb(poly_ring, cloned_basis);
-            let lin_ideal = match lin_ideal_seed.extend_with_cancel(
-                vec![poly_ring.ring.clone_el(&assign_poly)], cancel,
+            let lin_ideal = match lin_ideal_seed.extend_with_cancel_cached(
+                vec![poly_ring.ring.clone_el(&assign_poly)], cancel, &cache,
             ) {
                 Ok(i) => i,
                 Err(_) => return ZeroExtendResult::Cancelled,
@@ -441,13 +442,13 @@ pub fn split_zero_extend_cancel<'r>(
             }
         }
 
-        // Sprint 2.8a — callsite 2 (S2.8a-3): instead of cloning every
-        // split's basis polys, appending `assign_poly`, and recomputing
-        // each GB from scratch via `split_gb_cancel`, build a starting
-        // `SplitGb` of cloned ideals (already reduced GBs by invariant)
-        // and call `split_gb_extend_cancel` with `assign_poly` as the
-        // single new generator per split.  The bit-prop fixpoint loop
-        // is preserved; only the per-iteration GB recompute is replaced
+        // Instead of cloning every split's basis polys, appending
+        // `assign_poly`, and recomputing each GB from scratch via
+        // `split_gb_cancel`, build a starting `SplitGb` of cloned
+        // ideals (already reduced GBs by invariant) and call
+        // `split_gb_extend_cancel` with `assign_poly` as the single
+        // new generator per split.  The bit-prop fixpoint loop is
+        // preserved; only the per-iteration GB recompute is replaced
         // with incremental Buchberger.
         let starting: SplitGb<'r> = frame.bases.iter()
             .map(|b| {
@@ -461,7 +462,7 @@ pub fn split_zero_extend_cancel<'r>(
             .map(|_| vec![poly_ring.ring.clone_el(&assign_poly)])
             .collect();
         let new_bases = match split_gb_extend_cancel(
-            poly_ring, starting, new_polys_per_split, bit_prop, cancel,
+            poly_ring, starting, new_polys_per_split, bit_prop, cancel, &cache,
         ) {
             Ok(b) => b,
             Err(_) => return ZeroExtendResult::Cancelled,
@@ -522,8 +523,8 @@ pub enum Brancher {
         idx: u64,
         total: u64,
         /// True iff `total` covers every (var, value) pair in F_p^n.
-        /// On large primes we cap `per_var` at `ROUND_ROBIN_MAX = 256`,
-        /// which means brancher exhaustion is NOT a proof of UNSAT.
+        /// On large primes `per_var = u64::MAX`, which means brancher
+        /// exhaustion is NOT a proof of UNSAT.
         exhaustive: bool,
     },
 }
@@ -668,16 +669,19 @@ pub fn apply_rule<'r>(
     }
 
     let prime = &field.prime;
-    // cvc5 has no per-variable cap — it relies on timeout.  We set a
-    // generous limit that covers all practical cases while preventing
-    // allocation of impossibly large state for BN128-sized primes.
-    const ROUND_ROBIN_MAX: u64 = 256;
+    // No per-variable cap — cvc5 relies on the solver-level timeout to
+    // terminate enumeration. We follow that model: set the count to the
+    // field size (capped at u64::MAX for huge primes).  The DFS
+    // cancel-token check terminates exhaustive enumeration when time
+    // runs out, just as in cvc5.
     let exhaustive = prime.bits() <= 16;
     let per_var: u64 = if exhaustive {
         let x = prime.iter_u64_digits().next().unwrap_or(2);
         x.max(2)
     } else {
-        ROUND_ROBIN_MAX
+        // Large prime: enumerate up to u64::MAX. Practically the cancel
+        // token will fire long before this is exhausted.
+        u64::MAX
     };
     let total = per_var.saturating_mul(unassigned.len() as u64);
 

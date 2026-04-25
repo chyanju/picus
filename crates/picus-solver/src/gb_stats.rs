@@ -1,4 +1,4 @@
-//! Sprint 2.0.3 — Buchberger statistics collector.
+//! Buchberger statistics collector.
 //!
 //! Records per-call counts (S-pair reductions, inter-reductions, top-level entries)
 //! into a process-global accumulator.  Enabled only when `is_enabled()` is
@@ -28,7 +28,7 @@ static N_BUCHBERGER_CALLS: AtomicU64 = AtomicU64::new(0);
 static N_INITIAL_BASIS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static N_NEW_POLY: AtomicU64 = AtomicU64::new(0);
 static N_INTER_REDUCE: AtomicU64 = AtomicU64::new(0);
-// Sprint 2.3.5: running-sugar counters.
+// Running-sugar counters.
 //   N_SUGAR_SAMPLES   — total `on_running_sugar` events (S-pair count).
 //   N_SUGAR_TIGHTENED — events where final_sugar > initial_sugar
 //                       (running update materially changed the value).
@@ -38,7 +38,7 @@ static N_SUGAR_SAMPLES: AtomicU64 = AtomicU64::new(0);
 static N_SUGAR_TIGHTENED: AtomicU64 = AtomicU64::new(0);
 static N_SUGAR_RAISES: AtomicU64 = AtomicU64::new(0);
 
-// Sprint 2.6b: per-batch zero-reduction tally.
+// Per-batch zero-reduction tally.
 //   N_BATCHES         — number of sugar batches processed (across ALL
 //                       buchberger calls in this snapshot window).
 //   N_BATCH_PAIRS     — total S-pairs processed (sum of n_pairs across
@@ -79,21 +79,21 @@ pub struct GbStatsSnapshot {
     pub initial_basis_total: u64,
     pub new_polys: u64,
     pub inter_reductions: u64,
-    /// Sprint 2.3.5: total S-pairs whose running sugar was sampled.
+    /// Total S-pairs whose running sugar was sampled.
     pub sugar_samples: u64,
-    /// Sprint 2.3.5: S-pairs where running update *raised* the sugar.
+    /// S-pairs where running update *raised* the sugar.
     pub sugar_tightened: u64,
-    /// Sprint 2.3.5: total `Sugar::my_update` strict-raise events.
+    /// Total `Sugar::my_update` strict-raise events.
     pub sugar_raises: u64,
-    /// Sprint 2.6b: number of sugar batches dispatched.
+    /// Number of sugar batches dispatched.
     pub batches: u64,
-    /// Sprint 2.6b: total S-pairs across all batches.
+    /// Total S-pairs across all batches.
     pub batch_pairs: u64,
-    /// Sprint 2.6b: total S-pairs that reduced to zero.
+    /// Total S-pairs that reduced to zero.
     pub batch_zeros: u64,
-    /// Sprint 2.6b: total S-pairs in batches with sugar > HIGH_SUGAR_THRESHOLD.
+    /// Total S-pairs in batches with sugar > HIGH_SUGAR_THRESHOLD.
     pub batch_pairs_high: u64,
-    /// Sprint 2.6b: highest sugar batch dispatched.
+    /// Highest sugar batch dispatched.
     pub max_sugar_seen: u64,
 }
 
@@ -128,17 +128,15 @@ pub fn dump_to_stderr(header: &str) {
     eprintln!("{:<32} {:>12}", "metric", "value");
     eprintln!("{:<32} {:>12}", "buchberger_calls", s.buchberger_calls);
     eprintln!("{:<32} {:>12}", "initial_basis_total", s.initial_basis_total);
-    // Sprint 2.9 — relabeled.  Pre-2.8b, every restart triggered a
-    // recursive `buchberger_observed` call, so `buchberger_calls - 1`
-    // approximated "restart count".  Since 2.8b made restarts in-place,
-    // this metric counts only **extra top-level entries** from
-    // picus-solver's split DFS (not Buchberger's internal restart
-    // trigger, which is rarely hit on the 17-bench workload).
+    // Relabeled: since restarts became in-place, this metric counts
+    // only **extra top-level entries** from picus-solver's split DFS
+    // (not Buchberger's internal restart trigger, which is rarely hit
+    // on the 17-bench workload).
     eprintln!("{:<32} {:>12}", "extra_top_level_calls", s.buchberger_calls.saturating_sub(1));
     eprintln!("{:<32} {:>12}", "new_polys (S-pair reductions ≠ 0)", s.new_polys);
     eprintln!("{:<32} {:>12}", "inter_reductions", s.inter_reductions);
     eprintln!("(note: inter_reductions remains 0 until feanor invokes on_inter_reduce)");
-    // Sprint 2.3.5: running-sugar usage.
+    // Running-sugar usage.
     eprintln!("{:<32} {:>12}", "sugar_samples (S-pairs)", s.sugar_samples);
     eprintln!("{:<32} {:>12}", "sugar_tightened (raised >0)", s.sugar_tightened);
     eprintln!("{:<32} {:>12}", "sugar_raises (my_update hits)", s.sugar_raises);
@@ -146,7 +144,7 @@ pub fn dump_to_stderr(header: &str) {
         let pct = 100.0 * (s.sugar_tightened as f64) / (s.sugar_samples as f64);
         eprintln!("{:<32} {:>11.2}%", "sugar_tightened/samples", pct);
     }
-    // Sprint 2.6b: per-batch tally — use this to estimate Hilbert pair-pruning value.
+    // Per-batch tally — use this to estimate Hilbert pair-pruning value.
     eprintln!("{:<32} {:>12}", "batches", s.batches);
     eprintln!("{:<32} {:>12}", "batch_pairs (S-pair total)", s.batch_pairs);
     eprintln!("{:<32} {:>12}", "batch_zeros (→ 0 reductions)", s.batch_zeros);

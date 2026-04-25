@@ -1,4 +1,4 @@
-//! Sprint 2.5 T2 — `compute_gb_by_homog`: GB-by-homogenization driver.
+//! `compute_gb_by_homog`: GB-by-homogenization driver.
 //!
 //! Mirrors CoCoA's `myGBasisByHomog` (`SparsePolyOps-ideal.C:819-862`):
 //!

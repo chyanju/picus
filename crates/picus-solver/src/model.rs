@@ -31,8 +31,9 @@ enum Brancher {
         idx: u64,
         total: u64,
         /// True iff `total` covers every (var, value) pair in F_p^n.
-        /// On large primes we cap `per_var` at `ROUND_ROBIN_MAX = 256`,
-        /// which means brancher exhaustion is NOT a proof of UNSAT.
+        /// For large primes, per_var = u64::MAX (effectively unbounded),
+        /// so exhaustion is not a proof of UNSAT; the cancel token
+        /// terminates the search.
         exhaustive: bool,
     },
 }
@@ -260,12 +261,13 @@ fn compute_candidates(
     }
 
     let prime = &field.prime;
-    const ROUND_ROBIN_MAX: u64 = 256;
+    // Match split_gb.rs: no fixed cap. For large primes, set per_var
+    // to u64::MAX; the cancel token in the DFS loop handles termination.
     let exhaustive = prime.bits() <= 16;
     let per_var: u64 = if exhaustive {
         prime.iter_u64_digits().next().unwrap_or(2).max(2)
     } else {
-        ROUND_ROBIN_MAX
+        u64::MAX
     };
     let total = per_var.saturating_mul(unassigned.len() as u64);
 

@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.7] - 2026-04-25
+
+### Changed
+- **Buchberger algorithm overhaul in feanor-math fork** (matching CoCoA behaviour):
+  - Removed density-triggered restart heuristic — CoCoA never restarts; the restart was firing on essentially every top-level call (29k/29k on MontgomeryAdd) and was a major source of redundant work.
+  - Moved inter-reduction from per-sugar-batch to once at loop termination — CoCoA inter-reduces only at the end.
+  - Changed basis deactivation from strict proper divisibility to non-strict divisibility (matching CoCoA's `IsDivisibleFast`); deactivated-element pairs are now kept in the queue (matching CoCoA).
+  - Changed S-pair processing from sugar-batch to one-at-a-time (matching CoCoA's single-pair main loop).
+- **GB ring caching (`GbRingCache`)**: The `AsLocalPIR` + `MultivariatePolyRingImpl` polynomial ring (with its O(C(n+d,d)^2) multiplication table) is now built once per solve and reused across all incremental GB calls, eliminating ~25k redundant ring constructions on typical circuits.
+- **Removed round-robin branching cap**: Both `split_gb` and `model` branchers no longer cap at 256 values for large primes; enumeration is bounded by the cancel token / timeout, matching cvc5's behaviour.
+- **Removed dead `extend_with_cancel`**: Only the cached variant (`extend_with_cancel_cached`) remains; the non-cached path that rebuilt the ring on every call has been removed.
+- **`map_in_batch` / `map_out_batch`**: Polynomial ring homomorphisms are now created once per batch instead of once per polynomial.
+- **feanor-math dependency**: bumped to revision `f40ec3e` (Buchberger overhaul).
+- **Internal cleanup**: Removed all sprint/plan development-tracking comments; made `GbRingCache` and related functions `pub(crate)`.
+
+### Verified
+- All buchberger tests pass in feanor-math fork (18 passed, 5 ignored).
+- All picus-solver tests pass (130 tests).
+- circomlibex-cff5ab6 sweep (110 circuits, 15 s timeout): 100 agree (35 both-timeout), **0 mismatch** vs cvc5.
+- 17-bench KPI (60 s timeout): **3 / 17 solved** — `MontgomeryAdd@montgomery` unsafe (45 s), `Pedersen@pedersen_old` safe (22 s), `biglessthan_23` safe (17 s).
+
+### Known limitations
+- The 13/17 remaining timeouts are due to the split-DFS branching strategy (~25k branching iterations), not per-call GB performance. cvc5's CDCL conflict-driven search prunes branches that picus's plain DFS cannot. An architectural refactor of the search strategy is required for further progress.
+
 ## [1.7.6] - 2026-04-24
 
 ### Added
