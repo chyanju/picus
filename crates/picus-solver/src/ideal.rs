@@ -31,6 +31,95 @@ use crate::field::FfEl;
 use crate::poly::{FfPolyRing, Poly, PolyRingType};
 use crate::timeout::{CancelToken, Cancelled};
 
+// ============================================================================
+// Sprint 2.5 T3 — Process-global GB strategy selector.
+//
+// Mirrors the `--profile`/profile.rs pattern: a single AtomicU8 holds the
+// active strategy; CLI / library callers flip it before computing GBs.
+// All `Ideal::new*` calls dispatch through `compute_gb_dispatch`, which
+// consults this atomic and routes to either:
+//   * Direct  — the existing `compute_gb_fast` (DegRevLex Buchberger on P)
+//   * ByHomog — `crate::gb_homog::compute_gb_by_homog` (homogenize → GB on Ph
+//                → dehom → interreduce in P)
+//   * Auto    — Direct if every input is already total-degree-homogeneous,
+//               otherwise ByHomog.  Cheap test (one pass over generators).
+// ============================================================================
+
+use std::sync::atomic::{AtomicU8, Ordering};
+
+/// Strategy for computing a Groebner basis.  See [`set_gb_strategy`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum GbStrategy {
+    /// Plain DegRevLex Buchberger on `P` (the historical default).
+    Direct = 0,
+    /// CoCoA-style homogenize → GB on `P[h]` → dehomogenize → interreduce.
+    /// Mirrors `myGBasisByHomog` (`SparsePolyOps-ideal.C:819-862`).
+    ByHomog = 1,
+    /// Pick `Direct` if every input is already homogeneous w.r.t. the
+    /// total-degree grading; otherwise pick `ByHomog`.
+    Auto = 2,
+}
+
+static GB_STRATEGY: AtomicU8 = AtomicU8::new(GbStrategy::Direct as u8);
+
+/// Read the currently-active GB strategy.  Default is [`GbStrategy::Direct`].
+#[inline]
+pub fn gb_strategy() -> GbStrategy {
+    match GB_STRATEGY.load(Ordering::Relaxed) {
+        1 => GbStrategy::ByHomog,
+        2 => GbStrategy::Auto,
+        _ => GbStrategy::Direct,
+    }
+}
+
+/// Override the process-global GB strategy.  Idempotent and thread-safe.
+pub fn set_gb_strategy(s: GbStrategy) {
+    GB_STRATEGY.store(s as u8, Ordering::Relaxed);
+}
+
+/// Returns true iff `p` is total-degree-homogeneous (every term has the same
+/// total degree).  Empty / zero polynomials are trivially homogeneous.
+fn is_total_deg_homogeneous(pr: &FfPolyRing, p: &Poly) -> bool {
+    let ring = &pr.ring;
+    let n = pr.n_vars;
+    let mut iter = ring.terms(p);
+    let Some((_, m0)) = iter.next() else { return true; };
+    let d0: usize = (0..n).map(|i| ring.exponent_at(m0, i)).sum();
+    for (_, m) in iter {
+        let d: usize = (0..n).map(|i| ring.exponent_at(m, i)).sum();
+        if d != d0 { return false; }
+    }
+    true
+}
+
+/// Resolve [`GbStrategy::Auto`] against an actual generator set: returns
+/// `Direct` if every non-zero generator is already total-degree-homogeneous,
+/// otherwise `ByHomog`.
+fn resolve_auto(pr: &FfPolyRing, gens: &[Poly]) -> GbStrategy {
+    let all_homog = gens.iter()
+        .filter(|p| !pr.is_zero(p))
+        .all(|p| is_total_deg_homogeneous(pr, p));
+    if all_homog { GbStrategy::Direct } else { GbStrategy::ByHomog }
+}
+
+/// Single dispatch point used by [`Ideal::new`] and [`Ideal::new_with_cancel`].
+/// Honors [`gb_strategy()`].
+fn compute_gb_dispatch(pr: &FfPolyRing, gens: Vec<Poly>, cancel: &CancelToken) -> Vec<Poly> {
+    if gens.is_empty() {
+        return Vec::new();
+    }
+    let strat = match gb_strategy() {
+        GbStrategy::Auto => resolve_auto(pr, &gens),
+        s => s,
+    };
+    match strat {
+        GbStrategy::Direct => compute_gb_fast(pr, gens, cancel),
+        GbStrategy::ByHomog => crate::gb_homog::compute_gb_by_homog(pr, gens, cancel),
+        // Auto resolved above; this arm is unreachable but keeps match exhaustive.
+        GbStrategy::Auto => compute_gb_fast(pr, gens, cancel),
+    }
+}
+
 /// A Groebner basis equipped with the data needed for ideal operations.
 ///
 /// The basis is interpreted as the generators of an ideal `I` in
@@ -55,7 +144,7 @@ impl<'r> Ideal<'r> {
         if generators.is_empty() {
             return Ideal { poly_ring, basis: Vec::new() };
         }
-        let basis = compute_gb_fast(poly_ring, generators, &CancelToken::none());
+        let basis = compute_gb_dispatch(poly_ring, generators, &CancelToken::none());
         Ideal { poly_ring, basis }
     }
 
@@ -70,7 +159,55 @@ impl<'r> Ideal<'r> {
         if generators.is_empty() {
             return Ok(Ideal { poly_ring, basis: Vec::new() });
         }
-        let basis = compute_gb_fast(poly_ring, generators, cancel);
+        let basis = compute_gb_dispatch(poly_ring, generators, cancel);
+        if cancel.is_cancelled() { return Err(Cancelled); }
+        // R6 Gap F: interreduce so the basis is canonical (reduced GB).
+        // This shrinks the basis, accelerates downstream reduce/min_poly,
+        // and matches what cvc5/CoCoA produce.
+        //
+        // Sprint 2.5: when the strategy is ByHomog (or Auto-resolved-to-ByHomog),
+        // `compute_gb_by_homog` already interreduces internally.  Re-running
+        // here is harmless (idempotent on a reduced basis) so we keep it
+        // unconditional for simplicity.
+        let basis = interreduce_basis(poly_ring, basis, cancel);
+        if cancel.is_cancelled() { return Err(Cancelled); }
+        Ok(Ideal { poly_ring, basis })
+    }
+
+    /// Sprint 2.7 — extend an existing ideal by adding new generators,
+    /// using *incremental* Buchberger to avoid recomputing the GB from
+    /// scratch.
+    ///
+    /// Precondition: `self.basis` MUST be a reduced GB in `DegRevLex`
+    /// (this is the invariant maintained by `new_with_cancel`).  Calling
+    /// `extend_with_cancel` on an `Ideal` constructed via `from_gb` with
+    /// a non-GB `basis` is undefined behaviour (silently wrong result).
+    ///
+    /// Returns `Err(Cancelled)` if the token fires.
+    pub fn extend_with_cancel(
+        self,
+        new_polys: Vec<Poly>,
+        cancel: &CancelToken,
+    ) -> Result<Self, Cancelled> {
+        if cancel.is_cancelled() { return Err(Cancelled); }
+        // Filter out trivial zero generators.
+        let ring = &self.poly_ring.ring;
+        let new_polys: Vec<Poly> = new_polys.into_iter()
+            .filter(|f| !ring.is_zero(f))
+            .collect();
+        if new_polys.is_empty() {
+            return Ok(self);
+        }
+        let Ideal { poly_ring, basis: known_gb } = self;
+        let basis = compute_gb_incremental_with_order(
+            poly_ring, known_gb, new_polys, cancel, DegRevLex,
+        );
+        if cancel.is_cancelled() { return Err(Cancelled); }
+        // Match `new_with_cancel` behaviour: ensure the result is a
+        // reduced GB (Sprint 2.7 incremental does inter_reduce inside
+        // the loop on each round, but we run it once more here for
+        // canonical form, matching `new_with_cancel`).
+        let basis = interreduce_basis(poly_ring, basis, cancel);
         if cancel.is_cancelled() { return Err(Cancelled); }
         Ok(Ideal { poly_ring, basis })
     }
@@ -165,6 +302,17 @@ impl<'r> Ideal<'r> {
     /// We use a simple Gaussian-elimination scheme on the coefficients
     /// of the normal forms (treated as vectors indexed by monomials).
     pub fn min_poly(&self, var_idx: usize) -> Option<Vec<FfEl>> {
+        self.min_poly_cancel(var_idx, &CancelToken::none())
+    }
+
+    /// Cancel-aware variant of [`Self::min_poly`].
+    ///
+    /// Returns `None` if the cancellation token fires, the ideal is not
+    /// zero-dimensional, or the search reaches the safety cap (which
+    /// should not happen for circuit-derived ideals; the cap is
+    /// generous, see `MIN_POLY_DEG_CAP`).
+    pub fn min_poly_cancel(&self, var_idx: usize, cancel: &CancelToken) -> Option<Vec<FfEl>> {
+        let _t = crate::profile::ScopedTimer::new("ideal::min_poly");
         let ring = &self.poly_ring.ring;
         let fp = self.poly_ring.field.field();
 
@@ -179,21 +327,17 @@ impl<'r> Ideal<'r> {
 
         // Compute normal forms of x^0, x^1, x^2, ... modulo I
         // and look for a linear dependency among them.
-        //
-        // We collect the "vectors" (monomial -> coefficient) of each
-        // normal form into a row-echelon matrix and detect when a new
-        // power of x can be expressed as a linear combination of
-        // previous ones.
 
         let x_poly = self.poly_ring.var(var_idx);
         let one_nf = self.reduce(&ring.one());
         let mut powers: Vec<Poly> = vec![one_nf];
 
-        // Limit: dimension of R/I is finite, but we don't know it.
-        // A safe upper bound is the number of standard monomials, which
-        // for a zero-dim ideal is a finite number.  We use a generous
-        // limit that should suffice for circuits we encounter.
-        let max_deg = 256usize;
+        // For a true zero-dim ideal, dependence MUST be found by
+        // d = dim_K(R/I) which is bounded but not cheaply computable;
+        // this cap is a safety net (was 256 — too small for
+        // higher-degree projected ideals, see R6 Gap A).
+        const MIN_POLY_DEG_CAP: usize = 4096;
+        let max_deg = MIN_POLY_DEG_CAP;
 
         // Augmented matrix of (normal_form, dependency vector).
         // dep[i] are the coefficients of the dependency vector
@@ -203,6 +347,7 @@ impl<'r> Ideal<'r> {
         let mut pivot_monos: Vec<crate::poly::Mono> = Vec::new();
 
         for d in 0..=max_deg {
+            if cancel.is_cancelled() { return None; }
             let nf = if d == 0 {
                 ring.clone_el(&powers[0])
             } else {
@@ -346,6 +491,112 @@ pub fn leading_coefficient<O: MonomialOrder + Copy>(
 /// This is sufficient for QF_FF circuits (constraints are typically linear or
 /// Rabinowitsch quadratic; field polys `x^p - x` are accommodated by
 /// `max_supported_deg`).
+/// Interreduce a Groebner basis: replace each polynomial by its normal
+/// form modulo the others, drop zeros, and monic-normalize.  Iterates
+/// until no leading monomial changes.  Output is the *reduced* GB
+/// (canonical: every non-leading monomial of every poly is irreducible
+/// w.r.t. the rest).
+///
+/// This shrinks `basis.len()` (often substantially) and shortens each
+/// polynomial, which speeds up every subsequent `multivariate_division`,
+/// `is_zero_dim`, and `min_poly` call.  Matches what cvc5/CoCoA produce
+/// after Buchberger.
+pub(crate) fn interreduce_basis(
+    poly_ring: &FfPolyRing,
+    mut basis: Vec<Poly>,
+    cancel: &CancelToken,
+) -> Vec<Poly> {
+    let _t = crate::profile::ScopedTimer::new("ideal::interreduce");
+    let ring = &poly_ring.ring;
+
+    // Drop zeros up front.
+    basis.retain(|p| !ring.is_zero(p));
+    if basis.len() <= 1 {
+        // Single polynomial: just monic-normalize.
+        if let Some(p) = basis.first_mut() {
+            let lc = leading_coefficient(ring, p, DegRevLex);
+            let fp = poly_ring.field.field();
+            if !fp.is_one(&lc) && !fp.is_zero(&lc) {
+                let inv = fp.div(&fp.one(), &lc);
+                let inv_poly = poly_ring.constant(inv);
+                *p = ring.mul_ref(&inv_poly, p);
+            }
+        }
+        return basis;
+    }
+
+    let mut changed = true;
+    let mut passes = 0usize;
+    // Hard cap to avoid pathological non-termination (shouldn't happen
+    // for a valid GB, but we are defensive).
+    const MAX_PASSES: usize = 32;
+    while changed && passes < MAX_PASSES {
+        if cancel.is_cancelled() { return basis; }
+        changed = false;
+        passes += 1;
+        let mut i = 0;
+        while i < basis.len() {
+            if cancel.is_cancelled() { return basis; }
+            // Capture old leading monomial to detect change.
+            let old_lm = leading_monomial(ring, &basis[i], DegRevLex);
+            // Move out poly_i, divide by the rest, put back.
+            let p_i = std::mem::replace(&mut basis[i], ring.zero());
+            let nf = multivariate_division(
+                ring,
+                p_i,
+                basis.iter().enumerate()
+                    .filter(|(j, _)| *j != i)
+                    .map(|(_, q)| q),
+                DegRevLex,
+            );
+
+            if ring.is_zero(&nf) {
+                // Reduced to zero: drop entry.
+                basis.remove(i);
+                changed = true;
+                continue;
+            }
+            // Monic-normalize.
+            let lc = leading_coefficient(ring, &nf, DegRevLex);
+            let fp = poly_ring.field.field();
+            let nf_monic = if fp.is_one(&lc) || fp.is_zero(&lc) {
+                nf
+            } else {
+                let inv = fp.div(&fp.one(), &lc);
+                let inv_poly = poly_ring.constant(inv);
+                ring.mul_ref(&inv_poly, &nf)
+            };
+            let new_lm = leading_monomial(ring, &nf_monic, DegRevLex);
+            let lm_changed = match (&old_lm, &new_lm) {
+                (None, None) => false,
+                (Some(_), None) | (None, Some(_)) => true,
+                (Some(a), Some(b)) => {
+                    let n_vars = ring.indeterminate_count();
+                    (0..n_vars).any(|i| ring.exponent_at(a, i) != ring.exponent_at(b, i))
+                }
+            };
+            if lm_changed {
+                changed = true;
+            }
+            basis[i] = nf_monic;
+            i += 1;
+        }
+    }
+    basis
+}
+
+
+/// Compute a DegRevLex Groebner basis of `generators` using a custom inner
+/// ring with a *small* multiplication table.  This avoids the 3+ seconds
+/// per-call cost of `buchberger_simple`, which internally constructs
+/// `MultivariatePolyRingImpl::new(...)` (default mult-table `(6,8)`,
+/// O(C(n+8,8)^2) precomputation) on every invocation.
+///
+/// We mirror `buchberger_simple` exactly except for the inner-ring
+/// configuration: `max_supported_deg=16`, `max_multiplication_table=(2,2)`.
+/// This is sufficient for QF_FF circuits (constraints are typically linear or
+/// Rabinowitsch quadratic; field polys `x^p - x` are accommodated by
+/// `max_supported_deg`).
 fn compute_gb_fast(poly_ring: &FfPolyRing, generators: Vec<Poly>, cancel: &CancelToken) -> Vec<Poly> {
     let n_gens = generators.len();
     let n_vars = poly_ring.ring.indeterminate_count();
@@ -392,6 +643,7 @@ pub fn compute_gb_with_order<O: MonomialOrder + Copy + Send + Sync>(
     cancel: &CancelToken,
     order: O,
 ) -> Vec<Poly> {
+    let _t = crate::profile::ScopedTimer::new("compute_gb_with_order");
     if generators.is_empty() {
         return Vec::new();
     }
@@ -406,20 +658,72 @@ pub fn compute_gb_with_order<O: MonomialOrder + Copy + Send + Sync>(
     let mapped: Vec<_> = generators.into_iter().map(|f| from_ring.map(f)).collect();
     let backup: Vec<_> = mapped.iter().map(|f| new_poly_ring.clone_el(f)).collect();
     let cancel_clone = cancel.clone();
-    let result = buchberger(
+    let mut stats_obs = crate::gb_stats::GbStatsObserver::default();
+    let result = buchberger_observed(
         &new_poly_ring, mapped, order,
         default_sort_fn(&new_poly_ring, order),
         move |_| cancel_clone.is_cancelled(),
         DontObserve,
+        &mut stats_obs,
     );
     let basis = match result { Ok(gb) => gb, Err(_) => backup };
     let to_ring = ring.lifted_hom(&new_poly_ring, UnwrapHom::from_delegate_ring(as_local_pir.get_ring()));
     basis.into_iter().map(|f| to_ring.map(f)).collect()
 }
 
-/// Like [`compute_gb_with_order`], but accepts a [`GbTracer`] for
-/// UNSAT core tracing.  The observer receives callbacks as the Buchberger
-/// algorithm derives new polynomials.
+/// Sprint 2.7 — incremental GB computation.
+///
+/// Computes a Gröbner basis of `<known_gb> + <new_polys>` by extending
+/// an existing reduced GB rather than recomputing it from scratch.  The
+/// caller MUST guarantee that `known_gb` is already a reduced GB in the
+/// given `order` (this holds automatically when it comes from a prior
+/// `compute_gb_with_order` call followed by `interreduce_basis`).
+///
+/// On cancellation, returns `known_gb ++ new_polys` (the union of inputs)
+/// as a best-effort fallback, mirroring `compute_gb_with_order`'s backup
+/// behaviour.
+pub fn compute_gb_incremental_with_order<O: MonomialOrder + Copy + Send + Sync>(
+    poly_ring: &FfPolyRing,
+    known_gb: Vec<Poly>,
+    new_polys: Vec<Poly>,
+    cancel: &CancelToken,
+    order: O,
+) -> Vec<Poly> {
+    let _t = crate::profile::ScopedTimer::new("compute_gb_incremental_with_order");
+    // Fast paths
+    if new_polys.is_empty() {
+        return known_gb;
+    }
+    if known_gb.is_empty() {
+        return compute_gb_with_order(poly_ring, new_polys, cancel, order);
+    }
+
+    let ring = &poly_ring.ring;
+    let n_vars = ring.indeterminate_count();
+    let as_local_pir = AsLocalPIR::from_field(ring.base_ring());
+    let max_deg = max_supported_deg(n_vars);
+    let new_poly_ring = MultivariatePolyRingImpl::new_with_mult_table(
+        &as_local_pir, n_vars, max_deg, mult_table_bounds(n_vars), Global,
+    );
+    let from_ring = new_poly_ring.lifted_hom(ring, WrapHom::to_delegate_ring(as_local_pir.get_ring()));
+    let mapped_known: Vec<_> = known_gb.into_iter().map(|f| from_ring.map(f)).collect();
+    let mapped_new: Vec<_> = new_polys.into_iter().map(|f| from_ring.map(f)).collect();
+    // Best-effort backup for cancellation: union of inputs.
+    let backup: Vec<_> = mapped_known.iter().chain(mapped_new.iter())
+        .map(|f| new_poly_ring.clone_el(f)).collect();
+    let cancel_clone = cancel.clone();
+    let mut stats_obs = crate::gb_stats::GbStatsObserver::default();
+    let result = buchberger_incremental_observed(
+        &new_poly_ring, mapped_known, mapped_new, order,
+        default_sort_fn(&new_poly_ring, order),
+        move |_| cancel_clone.is_cancelled(),
+        DontObserve,
+        &mut stats_obs,
+    );
+    let basis = match result { Ok(gb) => gb, Err(_) => backup };
+    let to_ring = ring.lifted_hom(&new_poly_ring, UnwrapHom::from_delegate_ring(as_local_pir.get_ring()));
+    basis.into_iter().map(|f| to_ring.map(f)).collect()
+}
 pub fn compute_gb_with_order_traced<O: MonomialOrder + Copy + Send + Sync>(
     poly_ring: &FfPolyRing,
     generators: Vec<Poly>,
@@ -427,6 +731,7 @@ pub fn compute_gb_with_order_traced<O: MonomialOrder + Copy + Send + Sync>(
     order: O,
     tracer: &mut crate::tracer::GbTracer,
 ) -> Vec<Poly> {
+    let _t = crate::profile::ScopedTimer::new("compute_gb_with_order_traced");
     if generators.is_empty() {
         return Vec::new();
     }
@@ -441,12 +746,14 @@ pub fn compute_gb_with_order_traced<O: MonomialOrder + Copy + Send + Sync>(
     let mapped: Vec<_> = generators.into_iter().map(|f| from_ring.map(f)).collect();
     let backup: Vec<_> = mapped.iter().map(|f| new_poly_ring.clone_el(f)).collect();
     let cancel_clone = cancel.clone();
+    let mut stats_obs = crate::gb_stats::GbStatsObserver::default();
+    let mut chained = crate::gb_stats::ChainedObserver::new(tracer, &mut stats_obs);
     let result = buchberger_observed(
         &new_poly_ring, mapped, order,
         default_sort_fn(&new_poly_ring, order),
         move |_| cancel_clone.is_cancelled(),
         DontObserve,
-        tracer,
+        &mut chained,
     );
     let basis = match result { Ok(gb) => gb, Err(_) => backup };
     let to_ring = ring.lifted_hom(&new_poly_ring, UnwrapHom::from_delegate_ring(as_local_pir.get_ring()));

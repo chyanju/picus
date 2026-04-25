@@ -21,7 +21,7 @@ use picus_solver::field::{FfEl, FfField};
 use picus_solver::poly::{FfPolyRing, Poly};
 use picus_solver::ideal::Ideal;
 use picus_solver::bitprop::BitProp;
-use picus_solver::split_gb::{split_gb, split_find_zero};
+use picus_solver::split_gb::{split_gb, split_find_zero, SplitFindZeroOutcome};
 use feanor_math::ring::*;
 use feanor_math::rings::multivariate::*;
 use num_bigint::BigUint;
@@ -131,8 +131,10 @@ fn test_rand_sat() {
         let split_basis = split_gb(&pr, bases, &mut bp);
         let result = split_find_zero(&pr, split_basis, &mut bp);
 
-        assert!(result.is_some(), "RandSat iteration should find a root (one exists by construction)");
-        let point = result.unwrap();
+        let point = match result {
+            SplitFindZeroOutcome::Sat(p) => p,
+            other => panic!("RandSat iteration should find a root (one exists by construction); got {:?}", other),
+        };
         for g in &all_gens {
             let v = eval_poly(&pr, g, &point);
             assert!(pr.field.is_zero(&v), "returned model must zero every generator");
@@ -172,7 +174,7 @@ fn test_rand_unsat() {
         let split_basis = split_gb(&pr, bases, &mut bp);
         let result = split_find_zero(&pr, split_basis, &mut bp);
 
-        if let Some(point) = result {
+        if let SplitFindZeroOutcome::Sat(point) = result {
             // SAT → the model must actually satisfy the constraints.
             for g in &all_gens {
                 let v = eval_poly(&pr, g, &point);

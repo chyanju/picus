@@ -92,6 +92,7 @@ pub fn split_gb_cancel<'r>(
     bit_prop: &mut BitProp<'r>,
     cancel: &CancelToken,
 ) -> Result<SplitGb<'r>, Cancelled> {
+    let _t = crate::profile::ScopedTimer::new("split_gb_cancel");
     let k = generator_sets.len();
     let mut new_polys: Vec<Vec<Poly>> = generator_sets;
     let mut split_basis: SplitGb<'r> = (0..k)
@@ -101,15 +102,97 @@ pub fn split_gb_cancel<'r>(
     loop {
         if cancel.is_cancelled() { return Err(Cancelled); }
 
-        // Add new polys to each basis & recompute GB.
+        // Sprint 2.7: incremental Buchberger — extend each existing
+        // basis with its new polys instead of recomputing GB on the
+        // full union.  At first iteration `split_basis[i]` is empty
+        // (line 99 above), so `extend_with_cancel` short-circuits via
+        // `compute_gb_with_order` on `new_polys[i]` alone.  On later
+        // iterations the existing basis is a reduced GB (output of a
+        // prior `extend_with_cancel`), so the incremental precondition
+        // holds.
         for i in 0..k {
             if !new_polys[i].is_empty() {
-                let mut combined: Vec<Poly> = Vec::new();
-                for q in split_basis[i].basis.iter() {
-                    combined.push(poly_ring.ring.clone_el(q));
+                let added = std::mem::take(&mut new_polys[i]);
+                let existing = std::mem::replace(
+                    &mut split_basis[i],
+                    Ideal::from_gb(poly_ring, Vec::new()),
+                );
+                split_basis[i] = existing.extend_with_cancel(added, cancel)?;
+            }
+        }
+
+        if split_basis.iter().any(|b| b.is_whole_ring()) {
+            break;
+        }
+
+        let mut to_propagate = bit_prop.get_bit_equalities(&split_basis);
+        for b in &split_basis {
+            for p in &b.basis {
+                to_propagate.push(poly_ring.ring.clone_el(p));
+            }
+        }
+
+        let mut any_new = false;
+        for p in &to_propagate {
+            for j in 0..k {
+                if admit(poly_ring, j, p) && !split_basis[j].contains(p) {
+                    new_polys[j].push(poly_ring.ring.clone_el(p));
+                    any_new = true;
                 }
-                combined.append(&mut new_polys[i]);
-                split_basis[i] = Ideal::new_with_cancel(poly_ring, combined, cancel)?;
+            }
+        }
+
+        if !any_new { break; }
+    }
+
+    Ok(split_basis)
+}
+
+/// Sprint 2.8a — incremental version of [`split_gb_cancel`].
+///
+/// Takes a *pre-existing* `SplitGb` (whose ideals are already reduced
+/// GBs) plus per-split `new_polys`, and runs the bit-prop fixpoint
+/// loop using `Ideal::extend_with_cancel` instead of full GB
+/// recomputes.  This is a strict generalisation of `split_gb_cancel`:
+/// the latter is equivalent to calling this function with an empty
+/// starting `SplitGb` and `new_polys = generator_sets`.
+///
+/// # Why this matters
+///
+/// `split_zero_extend_cancel` calls `split_gb_cancel` from inside a
+/// DFS loop where each iteration adds ONE assignment polynomial to
+/// each split's basis (Sprint 2.8a callsite 2 at
+/// `split_gb.rs:363-371`).  Each such call recomputes the full GB
+/// from scratch, even though every split's basis is already a reduced
+/// GB and only one new generator is being added.  Using
+/// `split_gb_extend_cancel` from that hot path lets each ideal grow
+/// incrementally.
+pub fn split_gb_extend_cancel<'r>(
+    poly_ring: &'r FfPolyRing,
+    starting: SplitGb<'r>,
+    new_polys: Vec<Vec<Poly>>,
+    bit_prop: &mut BitProp<'r>,
+    cancel: &CancelToken,
+) -> Result<SplitGb<'r>, Cancelled> {
+    let _t = crate::profile::ScopedTimer::new("split_gb_extend_cancel");
+    let k = starting.len();
+    debug_assert_eq!(k, new_polys.len(),
+        "split_gb_extend_cancel: starting and new_polys must have same length");
+    let mut new_polys: Vec<Vec<Poly>> = new_polys;
+    let mut split_basis: SplitGb<'r> = starting;
+
+    loop {
+        if cancel.is_cancelled() { return Err(Cancelled); }
+
+        // Extend each basis with its new polys via incremental Buchberger.
+        for i in 0..k {
+            if !new_polys[i].is_empty() {
+                let added = std::mem::take(&mut new_polys[i]);
+                let existing = std::mem::replace(
+                    &mut split_basis[i],
+                    Ideal::from_gb(poly_ring, Vec::new()),
+                );
+                split_basis[i] = existing.extend_with_cancel(added, cancel)?;
             }
         }
 
@@ -151,7 +234,10 @@ pub enum ZeroExtendResult {
     /// under the partial assignment.
     Conflict(Poly),
     /// No common zeros exist that extend the current partial assignment.
-    NoZero,
+    /// `exhaustive = true` means the search proved UNSAT; `false` means
+    /// the search exhausted a non-exhaustive round-robin brancher on a
+    /// large prime and the result is INCONCLUSIVE (Unknown), not UNSAT.
+    NoZero { exhaustive: bool },
     /// Computation was cancelled (timeout).
     Cancelled,
 }
@@ -213,6 +299,7 @@ pub fn split_zero_extend_cancel<'r>(
     bit_prop: &mut BitProp<'r>,
     cancel: &CancelToken,
 ) -> ZeroExtendResult {
+    let _t = crate::profile::ScopedTimer::new("split_zero_extend_cancel");
     // Each stack frame holds: (bases, partial_assignment, brancher)
     struct Frame<'r> {
         bases: SplitGb<'r>,
@@ -241,7 +328,7 @@ pub fn split_zero_extend_cancel<'r>(
                 }
             }
         }
-        return ZeroExtendResult::NoZero;
+        return ZeroExtendResult::NoZero { exhaustive: true };
     }
 
     // Check all assigned
@@ -264,6 +351,7 @@ pub fn split_zero_extend_cancel<'r>(
     );
 
     let mut iter_count: u64 = 0;
+    let mut bounded_search_used = false;
     loop {
         if cancel.is_cancelled() { return ZeroExtendResult::Cancelled; }
         iter_count += 1;
@@ -278,14 +366,18 @@ pub fn split_zero_extend_cancel<'r>(
         // If stack is empty, search exhausted
         let frame = match stack.last_mut() {
             Some(f) => f,
-            None => return ZeroExtendResult::NoZero,
+            None => return ZeroExtendResult::NoZero { exhaustive: !bounded_search_used },
         };
 
         // Try next candidate
         let (var, val) = match frame.candidates.next(&poly_ring.field) {
             Some(c) => c,
             None => {
-                // Brancher exhausted → backtrack
+                // Brancher exhausted → backtrack.  If it was a non-exhaustive
+                // RoundRobin, the search did not cover the full space here.
+                if !frame.candidates.is_exhaustive() {
+                    bounded_search_used = true;
+                }
                 stack.pop();
                 continue;
             }
@@ -323,17 +415,23 @@ pub fn split_zero_extend_cancel<'r>(
             continue; // backtrack to next candidate
         }
 
-        let mut new_split_gens: Vec<Vec<Poly>> = Vec::with_capacity(frame.bases.len());
-
         // Optimization: first check if adding the assignment to the linear
         // basis (basis 0) alone makes it the whole ring.  This is cheap
         // (~1ms) and eliminates UNSAT branches without the expensive
         // nonlinear basis recomputation (~12ms).
+        //
+        // Sprint 2.8a (S2.8a-2): use `extend_with_cancel` (incremental
+        // Buchberger) instead of `Ideal::new_with_cancel` to avoid
+        // recomputing the linear basis's GB from scratch on every
+        // branching candidate.  `frame.bases[0]` is a reduced GB by
+        // invariant.
         if !frame.bases.is_empty() {
-            let mut lin_gens: Vec<Poly> = frame.bases[0].basis.iter()
+            let cloned_basis: Vec<Poly> = frame.bases[0].basis.iter()
                 .map(|p| poly_ring.ring.clone_el(p)).collect();
-            lin_gens.push(poly_ring.ring.clone_el(&assign_poly));
-            let lin_ideal = match Ideal::new_with_cancel(poly_ring, lin_gens, cancel) {
+            let lin_ideal_seed = Ideal::from_gb(poly_ring, cloned_basis);
+            let lin_ideal = match lin_ideal_seed.extend_with_cancel(
+                vec![poly_ring.ring.clone_el(&assign_poly)], cancel,
+            ) {
                 Ok(i) => i,
                 Err(_) => return ZeroExtendResult::Cancelled,
             };
@@ -343,12 +441,28 @@ pub fn split_zero_extend_cancel<'r>(
             }
         }
 
-        for b in &frame.bases {
-            let mut g: Vec<Poly> = b.basis.iter().map(|p| poly_ring.ring.clone_el(p)).collect();
-            g.push(poly_ring.ring.clone_el(&assign_poly));
-            new_split_gens.push(g);
-        }
-        let new_bases = match split_gb_cancel(poly_ring, new_split_gens, bit_prop, cancel) {
+        // Sprint 2.8a — callsite 2 (S2.8a-3): instead of cloning every
+        // split's basis polys, appending `assign_poly`, and recomputing
+        // each GB from scratch via `split_gb_cancel`, build a starting
+        // `SplitGb` of cloned ideals (already reduced GBs by invariant)
+        // and call `split_gb_extend_cancel` with `assign_poly` as the
+        // single new generator per split.  The bit-prop fixpoint loop
+        // is preserved; only the per-iteration GB recompute is replaced
+        // with incremental Buchberger.
+        let starting: SplitGb<'r> = frame.bases.iter()
+            .map(|b| {
+                let cloned: Vec<Poly> = b.basis.iter()
+                    .map(|p| poly_ring.ring.clone_el(p))
+                    .collect();
+                Ideal::from_gb(poly_ring, cloned)
+            })
+            .collect();
+        let new_polys_per_split: Vec<Vec<Poly>> = (0..frame.bases.len())
+            .map(|_| vec![poly_ring.ring.clone_el(&assign_poly)])
+            .collect();
+        let new_bases = match split_gb_extend_cancel(
+            poly_ring, starting, new_polys_per_split, bit_prop, cancel,
+        ) {
             Ok(b) => b,
             Err(_) => return ZeroExtendResult::Cancelled,
         };
@@ -407,6 +521,10 @@ pub enum Brancher {
         unassigned: Vec<usize>,
         idx: u64,
         total: u64,
+        /// True iff `total` covers every (var, value) pair in F_p^n.
+        /// On large primes we cap `per_var` at `ROUND_ROBIN_MAX = 256`,
+        /// which means brancher exhaustion is NOT a proof of UNSAT.
+        exhaustive: bool,
     },
 }
 
@@ -414,7 +532,7 @@ impl Brancher {
     fn next(&mut self, field: &FfField) -> Option<(usize, FfEl)> {
         match self {
             Brancher::Roots(v) => v.pop(),
-            Brancher::RoundRobin { unassigned, idx, total } => {
+            Brancher::RoundRobin { unassigned, idx, total, .. } => {
                 if *idx >= *total || unassigned.is_empty() {
                     return None;
                 }
@@ -424,6 +542,15 @@ impl Brancher {
                 let val_bi = num_bigint::BigUint::from(which_val);
                 Some((unassigned[which_var], field.from_biguint(&val_bi)))
             }
+        }
+    }
+
+    /// Whether exhausting this brancher constitutes a proof that no
+    /// extension exists.  See `Brancher::RoundRobin.exhaustive`.
+    pub fn is_exhaustive(&self) -> bool {
+        match self {
+            Brancher::Roots(_) => true,
+            Brancher::RoundRobin { exhaustive, .. } => *exhaustive,
         }
     }
 }
@@ -438,6 +565,7 @@ fn apply_rule_multi<'r>(
     bases: &[Ideal<'r>],
     r: &PartialPoint,
 ) -> Brancher {
+    let _t = crate::profile::ScopedTimer::new("apply_rule_multi");
     let ring = &poly_ring.ring;
     let field = &poly_ring.field;
 
@@ -544,11 +672,12 @@ pub fn apply_rule<'r>(
     // generous limit that covers all practical cases while preventing
     // allocation of impossibly large state for BN128-sized primes.
     const ROUND_ROBIN_MAX: u64 = 256;
-    let per_var: u64 = if prime.bits() > 16 {
-        ROUND_ROBIN_MAX
-    } else {
+    let exhaustive = prime.bits() <= 16;
+    let per_var: u64 = if exhaustive {
         let x = prime.iter_u64_digits().next().unwrap_or(2);
         x.max(2)
+    } else {
+        ROUND_ROBIN_MAX
     };
     let total = per_var.saturating_mul(unassigned.len() as u64);
 
@@ -556,6 +685,7 @@ pub fn apply_rule<'r>(
         unassigned,
         idx: 0,
         total,
+        exhaustive,
     }
 }
 
@@ -588,24 +718,38 @@ fn univariate_coeffs(
 
 /// Top-level `split` routine: encode `(orig_polys, bitsums)` into a split
 /// GB, run the propagation fixpoint, then `splitFindZero` to extract a
-/// model.  Returns `Some(model)` for SAT, `None` for UNSAT.
+/// model.
 pub fn split_find_zero<'r>(
     poly_ring: &'r FfPolyRing,
     split_basis: SplitGb<'r>,
     bit_prop: &mut BitProp<'r>,
-) -> Option<Vec<FfEl>> {
-    split_find_zero_cancel(poly_ring, split_basis, bit_prop, &CancelToken::none())
-        .unwrap_or(None)
+) -> SplitFindZeroOutcome {
+    match split_find_zero_cancel(poly_ring, split_basis, bit_prop, &CancelToken::none()) {
+        Ok(o) => o,
+        Err(_) => SplitFindZeroOutcome::Unknown,
+    }
 }
 
-/// Cancel-aware model search.  Returns `Ok(Some(model))` for SAT,
-/// `Ok(None)` for UNSAT, `Err(Cancelled)` on timeout.
+/// Three-valued outcome of `split_find_zero`.
+///
+/// `Unknown` means the search exhausted its bounded round-robin cap on
+/// a large prime field; the formula may still be SAT outside the range
+/// we tried.  Callers must NOT treat `Unknown` as UNSAT.
+#[derive(Debug)]
+pub enum SplitFindZeroOutcome {
+    Sat(Vec<FfEl>),
+    Unsat,
+    Unknown,
+}
+
+/// Cancel-aware model search.  Returns `Sat / Unsat / Unknown` on success;
+/// `Err(Cancelled)` on timeout.
 pub fn split_find_zero_cancel<'r>(
     poly_ring: &'r FfPolyRing,
     split_basis: SplitGb<'r>,
     bit_prop: &mut BitProp<'r>,
     cancel: &CancelToken,
-) -> Result<Option<Vec<FfEl>>, Cancelled> {
+) -> Result<SplitFindZeroOutcome, Cancelled> {
     let mut split_basis = split_basis;
     loop {
         if cancel.is_cancelled() { return Err(Cancelled); }
@@ -639,13 +783,16 @@ pub fn split_find_zero_cancel<'r>(
                 }
                 split_basis = split_gb_cancel(poly_ring, new_gens, bit_prop, cancel)?;
             }
-            ZeroExtendResult::NoZero => {
-                return Ok(None);
+            ZeroExtendResult::NoZero { exhaustive: true } => {
+                return Ok(SplitFindZeroOutcome::Unsat);
+            }
+            ZeroExtendResult::NoZero { exhaustive: false } => {
+                return Ok(SplitFindZeroOutcome::Unknown);
             }
             ZeroExtendResult::Cancelled => {
                 return Err(Cancelled);
             }
-            ZeroExtendResult::Point(pt) => return Ok(Some(pt)),
+            ZeroExtendResult::Point(pt) => return Ok(SplitFindZeroOutcome::Sat(pt)),
         }
     }
 }
@@ -689,7 +836,10 @@ mod tests {
         let gens: Vec<Vec<Poly>> = vec![vec![pr.clone_poly(&p2)], vec![p1, p2]];
         let basis = split_gb(&pr, gens, &mut bp);
         assert!(!basis.iter().any(|b| b.is_whole_ring()));
-        let pt = split_find_zero(&pr, basis, &mut bp).expect("SAT");
+        let pt = match split_find_zero(&pr, basis, &mut bp) {
+            SplitFindZeroOutcome::Sat(pt) => pt,
+            other => panic!("expected SAT, got {:?}", other),
+        };
         // Check x = 2, y = 4 (or the other valid roots; should satisfy x*y=1).
         let x_val = pr.field.to_biguint(&pt[0]);
         let y_val = pr.field.to_biguint(&pt[1]);

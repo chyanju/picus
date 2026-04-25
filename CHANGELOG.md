@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.6] - 2026-04-24
+
+### Added
+- **In-place Buchberger restart in feanor-math fork**: When the algorithm needs to switch reducer set after a round of pair processing, the basis/sugar/active/open structures are now cleared and rebuilt in place via `update_basis`, instead of returning to the top-level driver and re-entering the function. The reducer cache is preserved across restarts, eliminating redundant reduction work. On `biglessthan_23`, end-to-end native solver time dropped from 26.3 s → 16.5 s (-33%).
+- **Hilbert numerator engine in feanor-math fork (`src/algorithms/hilbert/`)**: New ~2 200-line module with `EMonom` exponent-vector representation, `TermList` working state, recursive splitter via coprimality and connected-component decomposition, leaf evaluators, and univariate polynomial helpers (multiplication by `1 - t^k`, synthetic division by `1 - t`). 38 internal tests. Reusable primitive; not yet wired into the Buchberger loop.
+- **Pair-profile diagnostic (`buchberger_pair_profile.rs`)**: Test-only helper that records S-pair lifecycle events (sugar bucket, F4-style trace) for analysis of where Buchberger spends time. Sister of `gb_stats.rs` on the picus side; intended for sprint-style profiling and post-mortem.
+- **GB statistics profile in picus-solver (`gb_stats.rs`)**: Counters covering Buchberger top-level invocation count, S-pair reductions, sugar tightening, batch-zero rate, etc. Enabled via the `--profile gb` CLI flag and gated by `is_enabled()`; emits a tabular `eprintln!` summary at end of run. Used to characterise the picus-solver split-DFS bottleneck (≥ 18 000 distinct top-level calls per circuit, 99.62 % batch-zero S-pair reductions).
+- **Homogenisation infrastructure (`gb_homog.rs`, `homog.rs`)**: Plumbing for working in homogenised polynomial rings during specific Buchberger sub-tasks. Currently dormant — feature-gated, opt-in, no callers in the default path.
+- **Profile module (`profile.rs`)**: Thin per-stage timing wrapper; complements `gb_stats.rs`.
+
+### Changed
+- **`gb_stats` label fix**: The metric formerly mislabelled as `restarts (calls-1)` is now `extra_top_level_calls`, with a clarifying comment. After the in-place restart change above, that counter no longer represents restart count — it equals the number of *additional* top-level Buchberger entries from picus-solver's split-DFS recursion (which is the real bottleneck, not feanor-internal restarts).
+- **feanor-math dependency**: bumped to revision `58cf287` (Hilbert engine + in-place restart + pair profile, on top of the 1.7.5 geobucket/scratch-pool work).
+
+### Verified
+- 451/451 lib tests pass in feanor-math fork (18 ignored).
+- 132/132 lib + bin + integration tests pass across the picus workspace (6 ignored).
+- circomlibex-cff5ab6 sweep (110 circuits, 15 s timeout): 103 agree (38 both-timeout), **0 mismatch** vs cvc5.
+- 17-bench KPI (60 s timeout): **3 / 17 solved** — `MontgomeryAdd@montgomery` unsafe, `Pedersen@pedersen_old` safe, `biglessthan_23` safe. Stable across consecutive runs (per-bench timing has high noise).
+
+### Known limitations
+- The 17-bench KPI did not reach the projection in `chat/plan-v2/PLAN_v2.md` §4 (16-17/17). Profiling shows the bottleneck is **picus-solver's split-DFS top-level re-invocation count**, not per-call Buchberger work — all Plan v2 sprints targeted per-call optimisations and so hit a ceiling. An architectural refactor of the split-DFS loop is a candidate for a future cycle and is out of scope for v1.7.6. See `chat/plan-v2/STATUS.md` "Sprint 2.9 close-out" for full gap analysis.
+
 ## [1.7.5] - 2026-04-23
 
 ### Added

@@ -30,6 +30,10 @@ enum Brancher {
         unassigned: Vec<usize>,
         idx: u64,
         total: u64,
+        /// True iff `total` covers every (var, value) pair in F_p^n.
+        /// On large primes we cap `per_var` at `ROUND_ROBIN_MAX = 256`,
+        /// which means brancher exhaustion is NOT a proof of UNSAT.
+        exhaustive: bool,
     },
 }
 
@@ -37,7 +41,7 @@ impl Brancher {
     fn next(&mut self, field: &FfField) -> Option<(usize, FfEl)> {
         match self {
             Brancher::Roots(v) => v.pop(),
-            Brancher::RoundRobin { unassigned, idx, total } => {
+            Brancher::RoundRobin { unassigned, idx, total, .. } => {
                 if *idx >= *total || unassigned.is_empty() {
                     return None;
                 }
@@ -49,17 +53,42 @@ impl Brancher {
             }
         }
     }
+
+    /// Whether exhausting this brancher constitutes a proof that no
+    /// extension exists.  `Roots` is always exhaustive (we computed
+    /// every root over F_p); `RoundRobin` is exhaustive only when the
+    /// per-variable cap covers F_p (i.e. small primes).
+    fn is_exhaustive(&self) -> bool {
+        match self {
+            Brancher::Roots(_) => true,
+            Brancher::RoundRobin { exhaustive, .. } => *exhaustive,
+        }
+    }
+}
+
+/// Three-valued outcome of a model search.
+///
+/// `Unknown` means the search exhausted its bounded round-robin cap on
+/// a large prime field; the formula may still be SAT outside the range
+/// we tried.  Callers must NOT treat `Unknown` as UNSAT.
+#[derive(Debug)]
+pub enum FindZeroOutcome {
+    Sat(HashMap<String, BigUint>),
+    Unsat,
+    Unknown,
 }
 
 /// Try to find a common zero of the polynomials that generated `initial_gb`.
 ///
 /// Uses iterative backtracking with ideal augmentation (matching cvc5):
 /// at each branch, `x - val` is added to the generators and the GB is
-/// recomputed.  Returns `Some(model)` on SAT, `None` on UNSAT/timeout.
+/// recomputed.  Returns `Sat(model)`, `Unsat`, or `Unknown` (when the
+/// search exhausted a non-exhaustive round-robin brancher on a large prime
+/// field — the formula could still have a model outside the bounded range).
 pub fn find_zero(
     poly_ring: &FfPolyRing,
     initial_gb: &[Poly],
-) -> Option<HashMap<String, BigUint>> {
+) -> FindZeroOutcome {
     find_zero_cancel(poly_ring, initial_gb, &CancelToken::none())
 }
 
@@ -68,7 +97,7 @@ pub fn find_zero_cancel(
     poly_ring: &FfPolyRing,
     initial_gb: &[Poly],
     cancel: &CancelToken,
-) -> Option<HashMap<String, BigUint>> {
+) -> FindZeroOutcome {
     // Build initial ideal from the provided GB
     let initial_gens: Vec<Poly> = initial_gb.iter()
         .map(|p| poly_ring.ring.clone_el(p))
@@ -78,9 +107,12 @@ pub fn find_zero_cancel(
     // Stack-based iterative search (matching cvc5's findZero)
     let mut ideals: Vec<Ideal> = vec![initial_ideal];
     let mut branchers: Vec<Brancher> = Vec::new();
+    // True iff at least one popped brancher was a non-exhaustive
+    // RoundRobin (i.e. we never enumerated its full per-variable range).
+    let mut bounded_search_used = false;
 
     while !ideals.is_empty() {
-        if cancel.is_cancelled() { return None; }
+        if cancel.is_cancelled() { return FindZeroOutcome::Unknown; }
 
         let ideal = ideals.last().unwrap();
 
@@ -92,7 +124,7 @@ pub fn find_zero_cancel(
 
         // Check if all variables are assigned
         if let Some(model) = try_extract_full_assignment(poly_ring, ideal) {
-            return Some(model);
+            return FindZeroOutcome::Sat(model);
         }
 
         // If this ideal doesn't have a brancher yet, create one
@@ -116,13 +148,21 @@ pub fn find_zero_cancel(
             let new_ideal = Ideal::new(poly_ring, new_gens);
             ideals.push(new_ideal);
         } else {
-            // Brancher exhausted → backtrack
+            // Brancher exhausted → backtrack.  If it was a non-exhaustive
+            // RoundRobin, the bounded search may have missed a real model.
+            if !brancher.is_exhaustive() {
+                bounded_search_used = true;
+            }
             branchers.pop();
             ideals.pop();
         }
     }
 
-    None // exhausted search space
+    if bounded_search_used {
+        FindZeroOutcome::Unknown
+    } else {
+        FindZeroOutcome::Unsat
+    }
 }
 
 /// Try to extract a complete assignment from the GB.
@@ -221,10 +261,11 @@ fn compute_candidates(
 
     let prime = &field.prime;
     const ROUND_ROBIN_MAX: u64 = 256;
-    let per_var: u64 = if prime.bits() > 16 {
-        ROUND_ROBIN_MAX
-    } else {
+    let exhaustive = prime.bits() <= 16;
+    let per_var: u64 = if exhaustive {
         prime.iter_u64_digits().next().unwrap_or(2).max(2)
+    } else {
+        ROUND_ROBIN_MAX
     };
     let total = per_var.saturating_mul(unassigned.len() as u64);
 
@@ -232,6 +273,7 @@ fn compute_candidates(
         unassigned,
         idx: 0,
         total,
+        exhaustive,
     }
 }
 
@@ -327,7 +369,10 @@ mod tests {
         let p1 = pr.sub(pr.var(0), pr.constant(three));
         let p2 = pr.sub(pr.var(1), pr.constant(five));
 
-        let model = find_zero(&pr, &[p1, p2]).unwrap();
+        let model = match find_zero(&pr, &[p1, p2]) {
+            FindZeroOutcome::Sat(m) => m,
+            other => panic!("expected Sat, got {:?}", other),
+        };
         assert_eq!(model["x"], BigUint::from(3u32));
         assert_eq!(model["y"], BigUint::from(5u32));
     }
@@ -341,7 +386,10 @@ mod tests {
         let x2 = pr.mul(pr.var(0), pr.var(0));
         let p = pr.sub(x2, pr.one());
 
-        let model = find_zero(&pr, &[p]).unwrap();
+        let model = match find_zero(&pr, &[p]) {
+            FindZeroOutcome::Sat(m) => m,
+            other => panic!("expected Sat, got {:?}", other),
+        };
         let x = &model["x"];
         let x_sq = (x * x) % BigUint::from(17u32);
         assert_eq!(x_sq, BigUint::from(1u32));
@@ -356,7 +404,7 @@ mod tests {
         let p1 = pr.var(0);
         let p2 = pr.sub(pr.var(0), pr.one());
 
-        assert!(find_zero(&pr, &[p1, p2]).is_none());
+        assert!(matches!(find_zero(&pr, &[p1, p2]), FindZeroOutcome::Unsat));
     }
 
     #[test]
@@ -368,8 +416,12 @@ mod tests {
         let xy = pr.mul(pr.var(0), pr.var(1));
         let p = pr.sub(xy, pr.one());
 
-        let model = find_zero(&pr, &[p]).unwrap();
+        let model = match find_zero(&pr, &[p]) {
+            FindZeroOutcome::Sat(m) => m,
+            other => panic!("expected Sat, got {:?}", other),
+        };
         let prod = (&model["x"] * &model["y"]) % BigUint::from(7u32);
         assert_eq!(prod, BigUint::from(1u32));
     }
 }
+

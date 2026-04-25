@@ -63,6 +63,21 @@ enum Commands {
         /// Output format
         #[arg(long, default_value = "human", value_enum)]
         format: OutputFormat,
+
+        /// Profile output: none (default), wall (per-site wall-clock),
+        /// gb (wall + Buchberger stats: pair count, reductions, restarts).
+        /// Stats are written to stderr.
+        #[arg(long, default_value = "none", value_parser = ["none", "wall", "gb"])]
+        profile: String,
+
+        /// GB strategy (Sprint 2.5):
+        ///   off  — direct DegRevLex Buchberger on P (default, baseline);
+        ///   on   — homogenize → GB on P[h] → dehom → interreduce (CoCoA myGBasisByHomog);
+        ///   auto — pick `on` iff at least one input is non-homogeneous (cheap test).
+        /// Targets the bit-decomp benchmark family where sugar mis-prediction
+        /// causes intermediate expression swell.
+        #[arg(long, default_value = "off", value_parser = ["off", "on", "auto"])]
+        gb_by_homog: String,
     },
 
     /// Print R1CS circuit information
@@ -83,6 +98,7 @@ enum Commands {
 
 fn main() {
     env_logger::init();
+    install_profile_signal_handler();
     let cli = Cli::parse();
 
     match cli.command {
@@ -95,13 +111,31 @@ fn main() {
             lemmas,
             dump_smt,
             format,
-        } => cmd_check(r1cs, &solver, &theory, timeout, &selector, &lemmas, dump_smt, format),
+            profile,
+            gb_by_homog,
+        } => {
+            match profile.as_str() {
+                "wall" => picus_solver::profile::enable(),
+                "gb" => {
+                    picus_solver::profile::enable();
+                    picus_solver::gb_stats::enable();
+                }
+                _ => {}
+            }
+            match gb_by_homog.as_str() {
+                "on" => picus_solver::ideal::set_gb_strategy(picus_solver::ideal::GbStrategy::ByHomog),
+                "auto" => picus_solver::ideal::set_gb_strategy(picus_solver::ideal::GbStrategy::Auto),
+                _ => {} // "off" is the default Direct
+            }
+            cmd_check(r1cs, &solver, &theory, timeout, &selector, &lemmas, dump_smt, format)
+        },
         Commands::Info {
             r1cs,
             constraints,
             format,
-        } => cmd_info(r1cs, constraints, format),
-    }
+        } => cmd_info(r1cs, constraints, format),    }
+    picus_solver::profile::dump_to_stderr("cli");
+    picus_solver::gb_stats::dump_to_stderr("cli");
 }
 
 // ============================================================
@@ -190,6 +224,25 @@ fn print_field_pair(l1: &str, v1: &str, l2: &str, v2: &str) {
 fn exit_error(msg: &str) -> ! {
     aprintln!("{} {}", "error:".red().bold(), msg);
     std::process::exit(1);
+}
+
+/// On SIGTERM/SIGINT, dump profile counters to stderr (if PICUS_PROFILE=1)
+/// before exiting. Lets us profile runs that don't terminate cleanly.
+fn install_profile_signal_handler() {
+    use signal_hook::consts::{SIGINT, SIGTERM};
+    use signal_hook::iterator::Signals;
+    let mut signals = match Signals::new([SIGTERM, SIGINT]) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    std::thread::spawn(move || {
+        for sig in signals.forever() {
+            picus_solver::profile::dump_to_stderr(&format!("signal={}", sig));
+            picus_solver::gb_stats::dump_to_stderr(&format!("signal={}", sig));
+            // Re-raise default behavior: exit with conventional code.
+            std::process::exit(128 + sig);
+        }
+    });
 }
 
 // ============================================================
