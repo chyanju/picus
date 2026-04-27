@@ -114,12 +114,12 @@ impl GbTracer {
     pub fn unsat_core_for_trivial(
         &self,
         basis: &[Polynomial],
-        ring: &PolyRing,
+        _ring: &PolyRing,
     ) -> Option<Vec<usize>> {
         let mut combined: BTreeSet<usize> = BTreeSet::new();
         let mut found = false;
         for (idx, p) in basis.iter().enumerate() {
-            if !p.is_zero() && p.is_constant(ring) {
+            if !p.is_zero() && p.is_constant() {
                 found = true;
                 if let Some(set) = self.deps.get(idx) {
                     combined.extend(set.iter().copied());

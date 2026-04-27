@@ -13,55 +13,12 @@
 use std::collections::HashMap;
 use num_bigint::BigUint;
 
+use crate::brancher::Brancher;
 use crate::field::{FfField, FfEl};
 use crate::ideal::Ideal;
 use crate::poly::{FfPolyRing, Poly};
 use crate::roots::find_roots;
 use crate::timeout::CancelToken;
-
-/// Brancher for model construction (same concept as split_gb::Brancher).
-enum Brancher {
-    Roots(Vec<(usize, FfEl)>),
-    RoundRobin {
-        unassigned: Vec<usize>,
-        idx: u64,
-        total: u64,
-        /// True iff `total` covers every (var, value) pair in F_p^n.
-        /// For large primes, per_var = u64::MAX (effectively unbounded),
-        /// so exhaustion is not a proof of UNSAT; the cancel token
-        /// terminates the search.
-        exhaustive: bool,
-    },
-}
-
-impl Brancher {
-    fn next(&mut self, field: &FfField) -> Option<(usize, FfEl)> {
-        match self {
-            Brancher::Roots(v) => v.pop(),
-            Brancher::RoundRobin { unassigned, idx, total, .. } => {
-                if *idx >= *total || unassigned.is_empty() {
-                    return None;
-                }
-                let which_var = (*idx as usize) % unassigned.len();
-                let which_val = *idx / (unassigned.len() as u64);
-                *idx += 1;
-                let val_bi = num_bigint::BigUint::from(which_val);
-                Some((unassigned[which_var], field.from_biguint(&val_bi)))
-            }
-        }
-    }
-
-    /// Whether exhausting this brancher constitutes a proof that no
-    /// extension exists.  `Roots` is always exhaustive (we computed
-    /// every root over F_p); `RoundRobin` is exhaustive only when the
-    /// per-variable cap covers F_p (i.e. small primes).
-    fn is_exhaustive(&self) -> bool {
-        match self {
-            Brancher::Roots(_) => true,
-            Brancher::RoundRobin { exhaustive, .. } => *exhaustive,
-        }
-    }
-}
 
 /// Three-valued outcome of a model search.
 ///
@@ -337,9 +294,8 @@ pub fn verify_model(
                         Some(bv) => poly_ring.field.from_biguint(bv),
                         None => fp.zero(), // unassigned → 0
                     };
-                    for _ in 0..e {
-                        term_val = fp.mul_ref(&term_val, &var_val);
-                    }
+                    let pow = fp.pow_u64(&var_val, e as u64);
+                    fp.mul_assign(&mut term_val, &pow);
                 }
             }
             fp.add_assign(&mut val, term_val);

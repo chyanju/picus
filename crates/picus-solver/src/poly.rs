@@ -65,7 +65,7 @@ impl FfPolyRing {
     pub fn sub(&self, a: Poly, b: Poly) -> Poly { a.sub(&b, &self.ring.ctx) }
     pub fn mul(&self, a: Poly, b: Poly) -> Poly { a.mul(&b, &self.ring.ctx) }
     pub fn neg(&self, a: Poly) -> Poly { a.negate(&self.ring.ctx) }
-    pub fn clone_poly(&self, p: &Poly) -> Poly { p.clone_poly() }
+    pub fn clone_poly(&self, p: &Poly) -> Poly { p.clone() }
     pub fn is_zero(&self, p: &Poly) -> bool { p.is_zero() }
 
     /// Multiply polynomial by a scalar.
@@ -170,7 +170,7 @@ impl PolyRingFacade {
     pub fn sub(&self, a: Poly, b: Poly) -> Poly { a.sub(&b, &self.ctx) }
     pub fn mul(&self, a: Poly, b: Poly) -> Poly { a.mul(&b, &self.ctx) }
     pub fn negate(&self, a: Poly) -> Poly { a.negate(&self.ctx) }
-    pub fn clone_el(&self, p: &Poly) -> Poly { p.clone_poly() }
+    pub fn clone_el(&self, p: &Poly) -> Poly { p.clone() }
     pub fn is_zero(&self, p: &Poly) -> bool { p.is_zero() }
     pub fn zero(&self) -> Poly { Polynomial::zero() }
     pub fn one(&self) -> Poly { Polynomial::constant(self.ctx.field.one(), &self.ctx) }
@@ -203,14 +203,9 @@ impl<'a> Iterator for TermsIter<'a> {
         if self.idx >= self.poly.num_terms() { return None; }
         let t = self.poly.term(self.idx, self.ctx);
         let m = t.monomial();
-        // Coefficient is a stable reference into `poly`.
         let c = t.coefficient();
-        // Erase the temporary lifetime of `t` and re-borrow `c` from the
-        // longer-lived `poly`. This is sound because `poly` outlives the
-        // iterator, and the coefficient slice is part of `poly`'s storage.
-        let c_long: &'a FfEl = unsafe { &*(c as *const FfEl) };
         self.idx += 1;
-        Some((c_long, m))
+        Some((c, m))
     }
 }
 

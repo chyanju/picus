@@ -7,7 +7,6 @@
 //! for the rest of the crate (and for `picus-cli` / `picus-smt`).
 
 use std::collections::HashSet;
-use std::marker::PhantomData;
 
 use crate::ff::buchberger::{
     self, BuchbergerConfig, GBasis, Ideal as FfIdeal, IncrementalGB,
@@ -16,23 +15,6 @@ use crate::ff::monomial::MonomialOrder as FfOrder;
 use crate::field::FfEl;
 use crate::poly::{FfPolyRing, Mono, Poly, PolyRingType};
 use crate::timeout::{CancelToken, Cancelled};
-
-// ─────────────────────── GbRingCache (compat shim) ────────────────────────
-//
-// In the feanor backend this cached a pre-built inner ring with a small
-// multiplication table. The `ff` backend uses the ring referenced by
-// `FfPolyRing.ctx()` directly (no expensive precomputation per call), so the
-// cache is now a phantom no-op preserving the API used by `split_gb.rs`.
-
-pub(crate) struct GbRingCache<'r> {
-    _marker: PhantomData<&'r FfPolyRing>,
-}
-
-impl<'r> GbRingCache<'r> {
-    pub(crate) fn new(_poly_ring: &'r FfPolyRing) -> Self {
-        GbRingCache { _marker: PhantomData }
-    }
-}
 
 // ───────────────────── Process-global GB strategy ─────────────────────────
 
@@ -96,7 +78,7 @@ fn compute_gb_dispatch(pr: &FfPolyRing, gens: Vec<Poly>, cancel: &CancelToken) -
     match strat {
         GbStrategy::Direct => compute_gb_with_order(pr, gens, cancel, FfOrder::DegRevLex),
         GbStrategy::ByHomog => crate::gb_homog::compute_gb_by_homog(pr, gens, cancel),
-        GbStrategy::Auto => compute_gb_with_order(pr, gens, cancel, FfOrder::DegRevLex),
+        GbStrategy::Auto => unreachable!("Auto resolved above"),
     }
 }
 
@@ -142,11 +124,10 @@ impl<'r> Ideal<'r> {
     }
 
     /// Extend an existing ideal by adding new generators incrementally.
-    pub(crate) fn extend_with_cancel_cached(
+    pub(crate) fn extend_with_cancel(
         self,
         new_polys: Vec<Poly>,
         cancel: &CancelToken,
-        _cache: &GbRingCache<'r>,
     ) -> Result<Self, Cancelled> {
         if cancel.is_cancelled() { return Err(Cancelled); }
         let new_polys: Vec<Poly> = new_polys.into_iter()
@@ -165,7 +146,7 @@ impl<'r> Ideal<'r> {
         Ok(Ideal { poly_ring, basis })
     }
 
-    /// Traced variant of `extend_with_cancel_cached`.
+    /// Traced variant of `extend_with_cancel`.
     ///
     /// Feeds Buchberger observer events to the supplied `tracer`, which
     /// must be sized for at least `self.basis.len() + new_polys.len()` (after
@@ -176,11 +157,10 @@ impl<'r> Ideal<'r> {
     /// first all elements of `self.basis` (already a reduced GB), then all
     /// surviving `new_polys`.
     #[allow(dead_code)] // future Task 07 #3 retry — see plan
-    pub(crate) fn extend_with_cancel_cached_traced(
+    pub(crate) fn extend_with_cancel_traced(
         self,
         new_polys: Vec<Poly>,
         cancel: &CancelToken,
-        _cache: &GbRingCache<'r>,
         tracer: &mut crate::tracer::GbTracer,
     ) -> Result<Self, Cancelled> {
         if cancel.is_cancelled() { return Err(Cancelled); }
@@ -206,7 +186,7 @@ impl<'r> Ideal<'r> {
     /// Reduce `p` modulo the ideal. Returns the *normal form* of `p`.
     pub fn reduce(&self, p: &Poly) -> Poly {
         if self.basis.is_empty() {
-            return p.clone_poly();
+            return p.clone();
         }
         let ring = &self.poly_ring.ctx();
         p.reduce_by(&self.basis, ring)
@@ -219,8 +199,7 @@ impl<'r> Ideal<'r> {
 
     /// Returns `true` iff `I = R` (i.e. `1 ∈ I`).
     pub fn is_whole_ring(&self) -> bool {
-        let ring = self.poly_ring.ctx();
-        self.basis.iter().any(|p| !p.is_zero() && p.is_constant(ring))
+        self.basis.iter().any(|p| !p.is_zero() && p.is_constant())
     }
 
     /// Returns `true` iff `R/I` is a finite-dimensional `K`-vector space.
@@ -269,7 +248,7 @@ impl<'r> Ideal<'r> {
     pub fn min_poly_cancel(&self, var_idx: usize, cancel: &CancelToken) -> Option<Vec<FfEl>> {
         let _t = crate::profile::ScopedTimer::new("ideal::min_poly");
         let ring = self.poly_ring.ctx().clone();
-        let ff_ideal = FfIdeal::new(ring, self.basis.iter().map(|p| p.clone_poly()).collect());
+        let ff_ideal = FfIdeal::new(ring, self.basis.iter().map(|p| p.clone()).collect());
         ff_ideal.min_poly_cancel(var_idx, cancel)
     }
 
@@ -357,7 +336,7 @@ pub fn compute_gb_with_order(
         abort_on_trivial: true,
     };
     let start = std::time::Instant::now();
-    let backup: Vec<Poly> = generators.iter().map(|p| p.clone_poly()).collect();
+    let backup: Vec<Poly> = generators.iter().map(|p| p.clone()).collect();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         buchberger::groebner_basis(generators, &ring, &cfg)
     }));
@@ -407,7 +386,7 @@ pub fn compute_gb_incremental_with_order(
 
     // Backup for panic / error fallback (matches compute_gb_with_order behavior).
     let backup: Vec<Poly> = known_gb.iter().chain(new_polys.iter())
-        .map(|p| p.clone_poly())
+        .map(|p| p.clone())
         .collect();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -456,7 +435,7 @@ pub fn compute_gb_with_order_traced(
         cancel_token: Some(cancel.clone()),
         abort_on_trivial: true,
     };
-    let backup: Vec<Poly> = generators.iter().map(|p| p.clone_poly()).collect();
+    let backup: Vec<Poly> = generators.iter().map(|p| p.clone()).collect();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         buchberger::groebner_basis_observed(generators, &ring, &cfg, tracer)
@@ -501,7 +480,7 @@ pub fn compute_gb_incremental_with_order_traced(
         abort_on_trivial: true,
     };
     let backup: Vec<Poly> = known_gb.iter().chain(new_polys.iter())
-        .map(|p| p.clone_poly())
+        .map(|p| p.clone())
         .collect();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut igb = IncrementalGB::new(ring.clone(), cfg);

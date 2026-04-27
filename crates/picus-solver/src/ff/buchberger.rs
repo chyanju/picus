@@ -76,6 +76,7 @@ impl BuchbergerObserver for NoObserver {}
 struct BasisElement {
     poly: Polynomial,
     lt: Monomial,
+    #[allow(dead_code)] // reserved for future Gebauer-Möller chain criterion
     lt_divmask: DivMask,
     /// Lazily deactivated when superseded by a smaller-LT element.
     active: bool,
@@ -130,7 +131,7 @@ pub fn interreduce(mut basis: Vec<Polynomial>, ring: &Arc<PolyRing>) -> Vec<Poly
     // Drop zeros and constants > 0 collapse to {1}.
     basis.retain(|p| !p.is_zero());
     // If any constant is present, the ideal is the whole ring.
-    if basis.iter().any(|p| p.is_constant(ring)) {
+    if basis.iter().any(|p| p.is_constant()) {
         return vec![Polynomial::constant(ring.field.one(), ring)];
     }
     // Make monic.
@@ -169,8 +170,11 @@ pub fn interreduce(mut basis: Vec<Polynomial>, ring: &Arc<PolyRing>) -> Vec<Poly
     // pass). We now use `reduce_by_refs` with a `Vec<&Polynomial>` that
     // skips index `i` — zero polynomial clones for the divisor list.
     let mut changed = true;
-    while changed {
+    let max_passes = filtered.len().max(2) * 2;
+    let mut pass = 0;
+    while changed && pass < max_passes {
         changed = false;
+        pass += 1;
         for i in 0..filtered.len() {
             let others: Vec<&Polynomial> = filtered.iter()
                 .enumerate()
@@ -266,7 +270,7 @@ impl BuchbergerState {
             let mut g_red = g.reduce_by_refs(&active_refs, &self.ring);
             if g_red.is_zero() { continue; }
             g_red = g_red.make_monic(&self.ring);
-            if g_red.is_constant(&self.ring) {
+            if g_red.is_constant() {
                 // We've found a unit — the ideal is the whole ring.
                 self.trivial = true;
                 let idx = self.basis.len();
@@ -353,6 +357,14 @@ impl BuchbergerState {
             .collect()
     }
 
+    fn active_poly_refs(&self) -> Vec<&Polynomial> {
+        self.basis
+            .iter()
+            .filter(|e| e.active)
+            .map(|e| &e.poly)
+            .collect()
+    }
+
     /// In-place tail-reduce all active basis elements.
     ///
     /// For each active element `i`, computes the normal form of `basis[i].poly`
@@ -430,25 +442,6 @@ impl BuchbergerState {
             .collect()
     }
 
-    /// Apply the Gebauer-Möller chain criterion: skip pair (i, j) if there is
-    /// some k != i, j whose LT divides LCM(LT_i, LT_j) AND such that the pairs
-    /// (i, k) and (k, j) have already been (or will be) processed (LCM strictly
-    /// smaller, etc.). Practical implementation: drop the pair if any earlier
-    /// element's LT divides the lcm.
-    #[allow(dead_code)]
-    fn chain_criterion_skip(&self, pair: &SPair) -> bool {
-        for k in 0..self.basis.len() {
-            if k == pair.i || k == pair.j { continue; }
-            let bk = &self.basis[k];
-            if !bk.active { continue; }
-            if !bk.lt_divmask.divides_consistent_with(pair.lcm_divmask) { continue; }
-            if bk.lt.divides(&pair.lcm) {
-                return true;
-            }
-        }
-        false
-    }
-
     fn run<O: BuchbergerObserver>(&mut self, observer: &mut O) -> Result<(), SolverError> {
         if self.trivial && self.cfg.abort_on_trivial { return Ok(()); }
         // Periodic in-loop tail-reduction throttle: after every
@@ -512,7 +505,7 @@ impl BuchbergerState {
             observer.on_new_poly(new_idx, &nf, (pair.i, pair.j));
 
             // Trivial-ideal short-circuit.
-            if nf.is_constant(&self.ring) {
+            if nf.is_constant() {
                 self.trivial = true;
                 self.basis.push(BasisElement { poly: nf, lt, lt_divmask, active: true, sugar });
                 if self.cfg.abort_on_trivial { return Ok(()); }
@@ -553,7 +546,7 @@ impl BuchbergerState {
             .map(|e| e.poly)
             .collect();
         // If there's a constant, the basis is just {1}.
-        if active.iter().any(|p| p.is_constant(&self.ring)) {
+        if active.iter().any(|p| p.is_constant()) {
             return vec![Polynomial::constant(self.ring.field.one(), &self.ring)];
         }
         interreduce(active, &self.ring)
@@ -625,6 +618,8 @@ impl IncrementalGB {
         Ok(self.state.trivial)
     }
 
+    /// Save a checkpoint for backtracking. Cost: O(basis_len + open_len log open_len)
+    /// due to cloning the S-pair queue. Generation tagging would make this O(1).
     pub fn push(&mut self) {
         let active_snapshot: Vec<bool> = self.state.basis.iter().map(|e| e.active).collect();
         self.trail.push(Checkpoint {
@@ -664,8 +659,8 @@ impl IncrementalGB {
     }
 
     pub fn reduce(&self, p: &Polynomial) -> Polynomial {
-        let polys = self.state.active_polys();
-        p.reduce_by(&polys, &self.state.ring)
+        let refs = self.state.active_poly_refs();
+        p.reduce_by_refs(&refs, &self.state.ring)
     }
 
     pub fn is_trivial(&self) -> bool {
@@ -712,7 +707,7 @@ impl Ideal {
     }
 
     pub fn is_whole_ring(&self) -> bool {
-        self.basis.iter().any(|p| p.is_constant(&self.ring) && !p.is_zero())
+        self.basis.iter().any(|p| p.is_constant() && !p.is_zero())
     }
 
     /// Zero-dimensional iff every variable has a pure-power leading monomial in the GB.
@@ -797,6 +792,8 @@ impl Ideal {
                     let scaled = nf_i.scale(&neg_factor, ring);
                     row_poly = row_poly.add(&scaled, ring);
                     let dep_i = &deps[i];
+                    debug_assert!(dep_i.len() <= row_dep.len(),
+                        "echelon row dep length exceeds current row_dep");
                     for k in 0..dep_i.len() {
                         let prod = f.mul(&factor, &dep_i[k]);
                         f.sub_assign(&mut row_dep[k], &prod);
@@ -830,9 +827,24 @@ impl Ideal {
 
 // Look up the coefficient at a specific monomial within a polynomial.
 fn poly_coefficient_at(p: &Polynomial, mon: &Monomial, ring: &PolyRing) -> FieldElem {
-    for term in p.terms(ring) {
-        if term.exponents() == mon.exponents() {
-            return term.coefficient().clone();
+    let n = ring.n_vars;
+    let target_deg = mon.total_degree();
+    let target_exps = mon.exponents();
+    let num = p.num_terms();
+    let exps = p.raw_exponents();
+    let coeffs = p.raw_coeffs();
+    let degs = p.raw_total_degs();
+    let mut lo = 0usize;
+    let mut hi = num;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        let mid_exps = &exps[mid * n..(mid + 1) * n];
+        let mid_deg = degs[mid];
+        let cmp = Polynomial::cmp_term_at(mid_exps, mid_deg, target_exps, target_deg, ring.order);
+        match cmp {
+            std::cmp::Ordering::Equal => return coeffs[mid].clone(),
+            std::cmp::Ordering::Greater => lo = mid + 1,
+            std::cmp::Ordering::Less => hi = mid,
         }
     }
     ring.field.zero()
@@ -866,7 +878,7 @@ mod tests {
         let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
         let gb = groebner_basis(vec![const_p(&r, 1)], &r, &cfg).unwrap();
         assert_eq!(gb.basis.len(), 1);
-        assert!(gb.basis[0].is_constant(&r));
+        assert!(gb.basis[0].is_constant());
     }
 
     #[test]

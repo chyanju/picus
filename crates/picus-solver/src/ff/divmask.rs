@@ -31,7 +31,9 @@ impl DivMask {
 
 /// Per-variable thresholds for the DivMask encoding.
 ///
-/// `thresholds.len() == n_vars * bits_per_var`. Bit `(v * bits_per_var + k)` is
+/// `thresholds.len() == actual_vars * bits_per_var` where
+/// `actual_vars = min(n_vars, 32 / bits_per_var)`. Variables beyond
+/// `actual_vars` get no DivMask bits. Bit `(v * bits_per_var + k)` is
 /// set in a monomial's mask iff `monomial.exponent(v) > thresholds[v * bits_per_var + k]`.
 #[derive(Clone, Debug)]
 pub struct DivMaskScheme {
@@ -68,10 +70,15 @@ impl DivMaskScheme {
     }
 
     pub fn compute(&self, mon: &Monomial) -> DivMask {
+        self.compute_from_slice(mon.exponents())
+    }
+
+    #[inline]
+    pub fn compute_from_slice(&self, exps: &[u16]) -> DivMask {
         let mut mask: u32 = 0;
         let actual_vars = self.thresholds.len() / self.bits_per_var.max(1);
         for v in 0..actual_vars {
-            let exp = mon.exponent(v);
+            let exp = if v < exps.len() { exps[v] } else { 0 };
             for k in 0..self.bits_per_var {
                 let t = self.thresholds[v * self.bits_per_var + k];
                 if exp > t {

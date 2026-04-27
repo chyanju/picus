@@ -18,5 +18,8 @@ logs/
 *.swp
 *.swo
 
+# Solver runtime traces
+.z3-trace
+
 # Temporary solver files
 /tmp/picus*

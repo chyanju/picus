@@ -72,7 +72,7 @@ pub struct TermRef<'a> {
 
 impl<'a> TermRef<'a> {
     #[inline]
-    pub fn coefficient(&self) -> &FieldElem {
+    pub fn coefficient(&self) -> &'a FieldElem {
         &self.poly.coeffs[self.idx]
     }
 
@@ -82,7 +82,7 @@ impl<'a> TermRef<'a> {
     }
 
     #[inline]
-    pub fn exponents(&self) -> &[u16] {
+    pub fn exponents(&self) -> &'a [u16] {
         let start = self.idx * self.n_vars;
         &self.poly.exponents[start..start + self.n_vars]
     }
@@ -162,6 +162,10 @@ impl Polynomial {
         if !coeffs.is_empty() {
             debug_assert_eq!(exponents.len() / coeffs.len() * coeffs.len(), exponents.len());
         }
+        debug_assert!(
+            total_degs.windows(2).all(|w| w[0] >= w[1]),
+            "from_raw_sorted: total_degs must be non-increasing (descending order)"
+        );
         Polynomial { exponents, coeffs, total_degs }
     }
 
@@ -186,7 +190,7 @@ impl Polynomial {
         self.coeffs.len()
     }
 
-    pub fn is_constant(&self, _ring: &PolyRing) -> bool {
+    pub fn is_constant(&self) -> bool {
         match self.coeffs.len() {
             0 => true,
             1 => self.total_degs[0] == 0,
@@ -216,7 +220,7 @@ impl Polynomial {
 
     /// Maximum total degree across all terms.
     pub fn total_degree(&self) -> u32 {
-        self.total_degs.iter().copied().max().unwrap_or(0)
+        self.total_degs.first().copied().unwrap_or(0)
     }
 
     /// Iterate terms in descending order.
@@ -229,11 +233,8 @@ impl Polynomial {
     pub(crate) fn raw_exponents(&self) -> &[u16] { &self.exponents }
     #[inline]
     pub(crate) fn raw_coeffs(&self) -> &[FieldElem] { &self.coeffs }
-
-    /// Produce a clone (alias for `Clone::clone` for API symmetry).
-    pub fn clone_poly(&self) -> Self {
-        self.clone()
-    }
+    #[inline]
+    pub(crate) fn raw_total_degs(&self) -> &[u32] { &self.total_degs }
 
     /// Negate every coefficient in place.
     pub fn negate_in_place(&mut self, ring: &PolyRing) {
@@ -278,7 +279,7 @@ impl Polynomial {
     }
 
     /// Comparison helper between term `i` of `self` and term `j` of `other` under the ring order.
-    fn cmp_term_at(
+    pub(crate) fn cmp_term_at(
         a_exps: &[u16],
         a_deg: u32,
         b_exps: &[u16],
@@ -311,8 +312,7 @@ impl Polynomial {
         }
     }
 
-    /// Merge-based addition. Both inputs are descending-sorted.
-    pub fn add(&self, other: &Polynomial, ring: &PolyRing) -> Polynomial {
+    fn merge_sorted(&self, other: &Polynomial, ring: &PolyRing, negate_other: bool) -> Polynomial {
         let n = ring.n_vars;
         let mut out_exps: Vec<u16> = Vec::with_capacity(self.exponents.len() + other.exponents.len());
         let mut out_coeffs: Vec<FieldElem> = Vec::with_capacity(self.coeffs.len() + other.coeffs.len());
@@ -333,12 +333,17 @@ impl Polynomial {
                 }
                 Ordering::Less => {
                     out_exps.extend_from_slice(be);
-                    out_coeffs.push(other.coeffs[j].clone());
+                    let c = if negate_other { ring.field.neg(&other.coeffs[j]) } else { other.coeffs[j].clone() };
+                    out_coeffs.push(c);
                     out_degs.push(bd);
                     j += 1;
                 }
                 Ordering::Equal => {
-                    let s = ring.field.add(&self.coeffs[i], &other.coeffs[j]);
+                    let s = if negate_other {
+                        ring.field.sub(&self.coeffs[i], &other.coeffs[j])
+                    } else {
+                        ring.field.add(&self.coeffs[i], &other.coeffs[j])
+                    };
                     if !ring.field.is_zero(&s) {
                         out_exps.extend_from_slice(ae);
                         out_coeffs.push(s);
@@ -359,66 +364,22 @@ impl Polynomial {
         while j < lb {
             let be = &other.exponents[j * n..(j + 1) * n];
             out_exps.extend_from_slice(be);
-            out_coeffs.push(other.coeffs[j].clone());
+            let c = if negate_other { ring.field.neg(&other.coeffs[j]) } else { other.coeffs[j].clone() };
+            out_coeffs.push(c);
             out_degs.push(other.total_degs[j]);
             j += 1;
         }
         Polynomial { exponents: out_exps, coeffs: out_coeffs, total_degs: out_degs }
     }
 
+    /// Merge-based addition. Both inputs are descending-sorted.
+    pub fn add(&self, other: &Polynomial, ring: &PolyRing) -> Polynomial {
+        self.merge_sorted(other, ring, false)
+    }
+
     /// Merge-based subtraction.
     pub fn sub(&self, other: &Polynomial, ring: &PolyRing) -> Polynomial {
-        let n = ring.n_vars;
-        let mut out_exps: Vec<u16> = Vec::with_capacity(self.exponents.len() + other.exponents.len());
-        let mut out_coeffs: Vec<FieldElem> = Vec::with_capacity(self.coeffs.len() + other.coeffs.len());
-        let mut out_degs: Vec<u32> = Vec::with_capacity(self.coeffs.len() + other.coeffs.len());
-        let (mut i, mut j) = (0usize, 0usize);
-        let (la, lb) = (self.coeffs.len(), other.coeffs.len());
-        while i < la && j < lb {
-            let ae = &self.exponents[i * n..(i + 1) * n];
-            let be = &other.exponents[j * n..(j + 1) * n];
-            let ad = self.total_degs[i];
-            let bd = other.total_degs[j];
-            match Self::cmp_term_at(ae, ad, be, bd, ring.order) {
-                Ordering::Greater => {
-                    out_exps.extend_from_slice(ae);
-                    out_coeffs.push(self.coeffs[i].clone());
-                    out_degs.push(ad);
-                    i += 1;
-                }
-                Ordering::Less => {
-                    out_exps.extend_from_slice(be);
-                    out_coeffs.push(ring.field.neg(&other.coeffs[j]));
-                    out_degs.push(bd);
-                    j += 1;
-                }
-                Ordering::Equal => {
-                    let s = ring.field.sub(&self.coeffs[i], &other.coeffs[j]);
-                    if !ring.field.is_zero(&s) {
-                        out_exps.extend_from_slice(ae);
-                        out_coeffs.push(s);
-                        out_degs.push(ad);
-                    }
-                    i += 1;
-                    j += 1;
-                }
-            }
-        }
-        while i < la {
-            let ae = &self.exponents[i * n..(i + 1) * n];
-            out_exps.extend_from_slice(ae);
-            out_coeffs.push(self.coeffs[i].clone());
-            out_degs.push(self.total_degs[i]);
-            i += 1;
-        }
-        while j < lb {
-            let be = &other.exponents[j * n..(j + 1) * n];
-            out_exps.extend_from_slice(be);
-            out_coeffs.push(ring.field.neg(&other.coeffs[j]));
-            out_degs.push(other.total_degs[j]);
-            j += 1;
-        }
-        Polynomial { exponents: out_exps, coeffs: out_coeffs, total_degs: out_degs }
+        self.merge_sorted(other, ring, true)
     }
 
     /// Multiply by a single (monomial, coefficient) term. Result preserves sorted order.
@@ -435,7 +396,9 @@ impl Polynomial {
         for i in 0..self.coeffs.len() {
             let src = &self.exponents[i * n..(i + 1) * n];
             for k in 0..n {
-                out_exps.push(src[k] + term_exps[k]);
+                let sum = src[k].checked_add(term_exps[k])
+                    .expect("exponent overflow: u16 too small for this polynomial degree");
+                out_exps.push(sum);
             }
             out_coeffs.push(ring.field.mul(&self.coeffs[i], term_coeff));
             out_degs.push(self.total_degs[i] + term_deg);
@@ -458,7 +421,8 @@ impl Polynomial {
                 let bexps = &other.exponents[j * n..(j + 1) * n];
                 let mut prod_exps = Vec::with_capacity(n);
                 for k in 0..n {
-                    prod_exps.push(aexps[k] + bexps[k]);
+                    prod_exps.push(aexps[k].checked_add(bexps[k])
+                        .expect("exponent overflow: u16 too small for this polynomial degree"));
                 }
                 let prod_coeff = ring.field.mul(&self.coeffs[i], &other.coeffs[j]);
                 acc.push((Monomial::from_exponents(prod_exps), prod_coeff));
@@ -568,30 +532,42 @@ impl Polynomial {
         }
         let n = ring.n_vars;
         let mut current = self.clone();
-        let mut result_terms: Vec<(Monomial, FieldElem)> = Vec::new();
+        // Cursor into `current`: terms before `cursor` have been peeled off
+        // into `result_terms`. This avoids O(len) drain/remove(0) on every
+        // "no reducer found" step — advancing the cursor is O(1).
+        let mut cursor: usize = 0;
+        let mut result_exps: Vec<u16> = Vec::new();
+        let mut result_coeffs: Vec<FieldElem> = Vec::new();
+        let mut result_degs: Vec<u32> = Vec::new();
 
-        // Precompute leading exponents/coeffs for divisors.
-        let div_lt: Vec<Option<(Vec<u16>, u32, FieldElem)>> = divisors
+        // Precompute leading exponents/coeffs/divmasks for divisors.
+        use super::divmask::DivMask;
+        let div_lt: Vec<Option<(Vec<u16>, u32, FieldElem, DivMask)>> = divisors
             .iter()
             .map(|d| {
                 if let Some(lt) = d.leading_term(ring) {
-                    Some((lt.exponents().to_vec(), lt.total_degree(), lt.coefficient().clone()))
+                    let mon = lt.monomial();
+                    let dm = ring.divmask.compute(&mon);
+                    Some((lt.exponents().to_vec(), lt.total_degree(), lt.coefficient().clone(), dm))
                 } else {
                     None
                 }
             })
             .collect();
 
-        while !current.is_zero() {
-            // Identify the leading term of `current` (slice, no copy).
-            let lt_exps: &[u16] = &current.exponents[0..n];
-            let lt_deg = current.total_degs[0];
+        while cursor < current.coeffs.len() {
+            let lt_exps: &[u16] = &current.exponents[cursor * n..(cursor + 1) * n];
+            let lt_deg = current.total_degs[cursor];
+            let cur_dm = ring.divmask.compute_from_slice(lt_exps);
 
             // Find a divisor whose LM divides current's LM.
             let mut chosen: Option<usize> = None;
             for (di, lt_opt) in div_lt.iter().enumerate() {
-                if let Some((d_exps, d_deg, _)) = lt_opt {
+                if let Some((d_exps, d_deg, _, d_dm)) = lt_opt {
                     if *d_deg > lt_deg {
+                        continue;
+                    }
+                    if !d_dm.divides_consistent_with(cur_dm) {
                         continue;
                     }
                     let mut divides = true;
@@ -609,32 +585,35 @@ impl Polynomial {
             }
 
             if let Some(di) = chosen {
-                let (d_exps, _d_deg, d_lc) = div_lt[di].as_ref().unwrap();
-                let lt_coeff = current.coeffs[0].clone();
-                // Compute the multiplier term: (lc / d_lc) * (lt / d_lt).
+                let (d_exps, _d_deg, d_lc, _) = div_lt[di].as_ref().unwrap();
+                let lt_coeff = current.coeffs[cursor].clone();
                 let coeff_ratio = ring.field.div(&lt_coeff, d_lc).expect("nonzero divisor LC");
                 let neg_coeff = ring.field.neg(&coeff_ratio);
                 let mut mul_exps = vec![0u16; n];
                 for k in 0..n {
                     mul_exps[k] = lt_exps[k] - d_exps[k];
                 }
-                // current -= (coeff_ratio * (lt/d_lt)) * divisors[di]
-                // i.e.    += (-coeff_ratio * (lt/d_lt)) * divisors[di]
                 let scaled = divisors[di].mul_term(&mul_exps, &neg_coeff, ring);
-                current = current.add(&scaled, ring);
+                // Build a "tail" polynomial from cursor onward, add the scaled
+                // divisor, and replace current. The terms before cursor have
+                // already been moved to result_terms.
+                let tail = Polynomial::from_raw_sorted(
+                    current.exponents[cursor * n..].to_vec(),
+                    current.coeffs[cursor..].to_vec(),
+                    current.total_degs[cursor..].to_vec(),
+                );
+                current = tail.add(&scaled, ring);
+                cursor = 0;
             } else {
-                // No reducer — peel off the leading term to result.
-                let lt_exps_vec: Vec<u16> = current.exponents[0..n].to_vec();
-                let lt_coeff = current.coeffs[0].clone();
-                result_terms.push((Monomial::from_exponents(lt_exps_vec), lt_coeff));
-                // Drop the leading term in-place.
-                current.exponents.drain(0..n);
-                current.coeffs.remove(0);
-                current.total_degs.remove(0);
+                // No reducer — peel off the leading term to result (O(1)).
+                result_exps.extend_from_slice(&current.exponents[cursor * n..(cursor + 1) * n]);
+                result_coeffs.push(current.coeffs[cursor].clone());
+                result_degs.push(current.total_degs[cursor]);
+                cursor += 1;
             }
         }
 
-        Polynomial::from_terms(result_terms, ring)
+        Polynomial::from_raw_sorted(result_exps, result_coeffs, result_degs)
     }
 }
 

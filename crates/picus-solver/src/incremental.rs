@@ -97,7 +97,13 @@ impl IncrementalSolver {
             add_field_polys: self.add_field_polys,
             bitsums: vec![],
         };
-        let encoded = encode(&cs).expect("encode failed");
+        let encoded = match encode(&cs) {
+            Ok(e) => e,
+            Err(e) => {
+                log::error!("encode failed: {e}");
+                return SolveOutcome::Unknown;
+            }
+        };
         solve_encoded(&encoded)
     }
 
@@ -112,7 +118,13 @@ impl IncrementalSolver {
             add_field_polys: self.add_field_polys,
             bitsums: vec![],
         };
-        let encoded = encode(&cs).expect("encode failed");
+        let encoded = match encode(&cs) {
+            Ok(e) => e,
+            Err(e) => {
+                log::error!("encode failed: {e}");
+                return SolveOutcome::Unknown;
+            }
+        };
         solve_encoded_with_cancel(&encoded, cancel)
     }
 

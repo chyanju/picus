@@ -98,7 +98,7 @@ These are architectural boundaries, not bugs. A full SMT solver built on top of 
 
 ### Performance note: in-tree GB engine
 
-Earlier picus releases used `feanor-math`'s `MultivariatePolyRingImpl`, whose `new` defaulted to a multiplication table size of `(6, 8)` and precomputed `O(C(n+8,8)^2)` monomial products — this caused multi-second startup per ring construction with 11+ variables, and `buchberger_simple` re-created the ring on every call. As of v1.7.8, picus-solver uses a from-scratch in-tree engine (`src/ff/`) over `BigUint` with packed monomial vectors and divisibility masks; ring construction is O(n_vars) and there is no precomputed monomial table at all. The hot reduction loop avoids `RingStore`/`El` indirection and per-iteration `Vec<Polynomial>` clones via `reduce_by_refs(&[&Polynomial])`.
+Earlier picus releases used `feanor-math`'s `MultivariatePolyRingImpl`, whose `new` defaulted to a multiplication table size of `(6, 8)` and precomputed `O(C(n+8,8)^2)` monomial products — this caused multi-second startup per ring construction with 11+ variables, and `buchberger_simple` re-created the ring on every call. As of v1.7.9, picus-solver uses a from-scratch in-tree engine (`src/ff/`) over `BigUint` with packed monomial vectors and divisibility masks; ring construction is O(n_vars) and there is no precomputed monomial table at all. The hot reduction loop avoids `RingStore`/`El` indirection and per-iteration `Vec<Polynomial>` clones via `reduce_by_refs(&[&Polynomial])`.
 
 ## 4. Feature Matrix
 

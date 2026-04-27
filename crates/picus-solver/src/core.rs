@@ -182,6 +182,7 @@ pub fn solve_single_gb(
     poly_ring: &FfPolyRing,
     polynomials: Vec<Poly>,
 ) -> SolveOutcome {
+    let n_polys = polynomials.len();
     let gb_result = compute_gb_with_timeout_traced(poly_ring, polynomials, None);
     match gb_result {
         GbResultTraced::Trivial(core) => SolveOutcome::Unsat(core),
@@ -196,7 +197,9 @@ pub fn solve_single_gb(
                         SolveOutcome::Unknown
                     }
                 }
-                model::FindZeroOutcome::Unsat => SolveOutcome::Unknown,
+                model::FindZeroOutcome::Unsat => {
+                    SolveOutcome::Unsat((0..n_polys).collect())
+                }
                 model::FindZeroOutcome::Unknown => SolveOutcome::Unknown,
             }
         }
