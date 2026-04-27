@@ -17,7 +17,7 @@ Picus supports four solver backends:
 | Backend | Theory | How it works |
 |---------|--------|-------------|
 | cvc5 + QF_FF | Finite field | Native field arithmetic via cvc5's CoCoA/Groebner basis solver — most accurate for ZK circuits |
-| native + QF_FF | Finite field | Pure-Rust solver (`picus-solver`) using feanor-math — no C++ dependencies, same algorithm as cvc5 |
+| native + QF_FF | Finite field | Pure-Rust solver (`picus-solver`) with an in-tree Groebner basis engine — no C++ dependencies, same algorithm class as cvc5 |
 | z3 + QF_NIA | Integer mod p | Simulates field arithmetic using integers with modular reduction |
 | none | — | Propagation only — no SMT solver invoked, uses lemma-based deduction |
 

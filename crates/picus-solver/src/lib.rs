@@ -6,8 +6,7 @@
 //!
 //! The algorithm follows [OKTB23] "Satisfiability Modulo Finite Fields" (CAV 2023).
 
-#![feature(allocator_api)]
-
+pub mod ff;
 pub mod field;
 pub mod poly;
 pub mod ideal;
@@ -24,7 +23,6 @@ pub mod timeout;
 pub mod stats;
 pub mod tracer;
 pub mod profile;
-pub mod gb_stats;
 pub mod homog;
 pub mod gb_homog;
 

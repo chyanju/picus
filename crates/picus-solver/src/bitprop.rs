@@ -15,9 +15,6 @@
 
 use std::collections::HashSet;
 
-use feanor_math::homomorphism::*;
-use feanor_math::ring::*;
-use feanor_math::rings::multivariate::*;
 use num_bigint::BigUint;
 use num_traits::Zero;
 
@@ -183,7 +180,7 @@ fn constant_term_value(pr: &FfPolyRing, p: &Poly) -> FfEl {
     for (c, m) in ring.terms(p) {
         let mut deg = 0usize;
         for v in 0..pr.n_vars {
-            deg += ring.exponent_at(m, v);
+            deg += ring.exponent_at(&m, v);
         }
         if deg == 0 {
             fp.add_assign(&mut acc, fp.clone_el(c));

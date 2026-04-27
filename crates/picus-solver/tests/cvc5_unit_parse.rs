@@ -7,8 +7,6 @@
 use picus_solver::field::FfField;
 use picus_solver::parse::*;
 use picus_solver::poly::FfPolyRing;
-use feanor_math::ring::*;
-use feanor_math::homomorphism::*;
 use num_bigint::BigUint;
 use std::collections::HashSet;
 

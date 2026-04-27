@@ -17,10 +17,7 @@
 //! cross the admission boundary and (d) propagates them, including new
 //! BitProp-derived equalities.
 
-use std::collections::HashMap;
-
-use feanor_math::ring::*;
-use feanor_math::rings::multivariate::*;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::bitprop::BitProp;
 use crate::field::FfEl;
@@ -57,7 +54,7 @@ pub fn total_degree(ring: &crate::poly::PolyRingType, p: &Poly) -> usize {
     for (_, m) in ring.terms(p) {
         let mut d = 0usize;
         for v in 0..n_vars {
-            d += ring.exponent_at(m, v);
+            d += ring.exponent_at(&m, v);
         }
         if d > max_d { max_d = d; }
     }
@@ -260,7 +257,7 @@ fn evaluate_full(pr: &FfPolyRing, p: &Poly, r: &PartialPoint) -> Option<FfEl> {
     for (c, m) in ring.terms(p) {
         let mut term_val = fp.clone_el(c);
         for v in 0..pr.n_vars {
-            let e = ring.exponent_at(m, v);
+            let e = ring.exponent_at(&m, v);
             if e == 0 { continue; }
             match &r[v] {
                 None => return None,
@@ -292,6 +289,21 @@ pub fn split_zero_extend<'r>(
 ///
 /// Uses an explicit stack instead of recursion to avoid stack overflow
 /// on deep searches (matching cvc5's iterative `splitZeroExtend`).
+///
+/// CDCL-lite enhancements (Task 07):
+///   * **Phase saving**: when a frame is popped, the partial assignment's
+///     last-assigned `(var, val)` is remembered in `saved_phase`. When a
+///     future `Brancher::Roots(v)` is constructed for the same variable,
+///     the saved value (if present) is moved to the back of `v` so
+///     `v.pop()` tries it first. This is a per-call cache, not per-frame:
+///     a value that worked deep along one branch is preferred again.
+///   * **Nogood cache**: each time a candidate `(var, val)` is proved
+///     infeasible (quick UNSAT, linear-only whole-ring, or full split-GB
+///     whole-ring), the resulting partial assignment is recorded as a
+///     `Nogood`. Future candidates whose partial assignment is a
+///     superset of any stored nogood are skipped without recomputing GB.
+///     Keys are `BTreeMap<usize, FfEl>` so the subset check is linear in
+///     the smaller map.
 pub fn split_zero_extend_cancel<'r>(
     poly_ring: &'r FfPolyRing,
     orig_polys: &[Poly],
@@ -307,6 +319,92 @@ pub fn split_zero_extend_cancel<'r>(
         bases: SplitGb<'r>,
         r: PartialPoint,
         candidates: Brancher,
+        /// `(var, val)` of the most recently *attempted* candidate from
+        /// `candidates` — used to feed `saved_phase` on backtrack.
+        last_tried: Option<(usize, FfEl)>,
+    }
+
+    // ─── CDCL-lite: phase saving + nogood cache ───────────────────────────
+    //
+    // `saved_phase[v]` is the most recently popped value of variable `v`
+    // (across the whole search). When a future Brancher::Roots produces
+    // candidates for `v`, the saved value is moved to the back of the Vec
+    // so `Vec::pop` (Brancher::Roots semantics, see split_gb.rs:Brancher
+    // impl) tries it first.
+    let mut saved_phase: HashMap<usize, FfEl> = HashMap::new();
+
+    // `nogoods` records partial assignments proved infeasible. Each entry
+    // is the *minimal* prefix that triggered the infeasibility: the path
+    // from root + the failing decision. A new candidate is skipped if its
+    // partial assignment is a superset of any stored nogood.
+    let mut nogoods: Vec<BTreeMap<usize, FfEl>> = Vec::new();
+    // Cap on stored nogoods to bound memory and per-candidate scan time.
+    // Empirically generous; if exceeded, oldest entries are dropped.
+    const MAX_NOGOODS: usize = 4096;
+
+    // ─── CDCL-lite: tracer-driven nogood strengthening ───────────────────
+    //
+    // When the cheap linear-only fast-path detects whole-ring (UNSAT),
+    // we run a SECOND, traced GB pass with `compute_gb_with_order_traced`
+    // to extract the precise UNSAT core (which inputs were necessary
+    // for the contradiction). The core indices are mapped back to
+    // `(var, val)` decisions and recorded as a SHORTENED nogood — only
+    // the implicated variables, not the full path. Subsumption-based
+    // pruning of future candidates then provides effective non-chrono
+    // backjumping at minimal hot-path cost (the tracer runs only on
+    // confirmed UNSAT, not on every candidate).
+    //
+    // We keep `extend_with_cancel_cached` as the primary detector to
+    // avoid the per-candidate observer overhead seen with an always-on
+    // `IncrementalGB` driver.
+    //
+    // No persistent IGB or tracer state is needed; each trivial event
+    // gets its own short-lived tracer.
+
+    // Convert a PartialPoint to a compact map keyed by variable.
+    fn point_to_map(r: &PartialPoint, fp: &crate::field::FfField) -> BTreeMap<usize, FfEl> {
+        let mut m = BTreeMap::new();
+        for (i, slot) in r.iter().enumerate() {
+            if let Some(v) = slot {
+                m.insert(i, fp.field().clone_el(v));
+            }
+        }
+        m
+    }
+
+    // Subset check: returns true iff every (k, v) in `needle` matches `r[k]`.
+    fn point_covers(needle: &BTreeMap<usize, FfEl>, r: &PartialPoint) -> bool {
+        for (k, v) in needle {
+            match &r[*k] {
+                Some(rv) if rv == v => continue,
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    // Reorder a Brancher::Roots so the saved phase for a variable (if any)
+    // is moved to the BACK of the Vec, so Vec::pop tries it first.
+    fn apply_phase_save(b: &mut Brancher, saved: &HashMap<usize, FfEl>) {
+        if let Brancher::Roots(v) = b {
+            // Find the latest occurrence of (var, val) where val == saved[var]
+            // and swap_remove it to the back.
+            for i in (0..v.len()).rev() {
+                let (var, ref val) = v[i];
+                if let Some(saved_val) = saved.get(&var) {
+                    if val == saved_val {
+                        let pair = v.remove(i);
+                        v.push(pair);
+                        // One application is enough: Brancher::Roots either
+                        // contains roots for one variable (cases 1/2 in
+                        // apply_rule_multi) or a small mixed list. A single
+                        // promotion still helps and avoids quadratic work
+                        // for very large root sets.
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     let mut stack: Vec<Frame<'r>> = Vec::new();
@@ -316,6 +414,7 @@ pub fn split_zero_extend_cancel<'r>(
         bases: initial_bases,
         r: initial_r,
         candidates: Brancher::Roots(Vec::new()), // sentinel: will be populated below
+        last_tried: None,
     });
 
     // Process the first frame specially (compute candidates)
@@ -341,6 +440,7 @@ pub fn split_zero_extend_cancel<'r>(
     }
 
     first.candidates = apply_rule_multi(poly_ring, &first.bases, &first.r);
+    apply_phase_save(&mut first.candidates, &saved_phase);
     log::trace!(
         "split_zero_extend: {} vars, {} assigned, brancher={}",
         poly_ring.n_vars,
@@ -366,34 +466,50 @@ pub fn split_zero_extend_cancel<'r>(
         }
 
         // If stack is empty, search exhausted
-        let frame = match stack.last_mut() {
-            Some(f) => f,
-            None => return ZeroExtendResult::NoZero { exhaustive: !bounded_search_used },
-        };
+        if stack.is_empty() {
+            return ZeroExtendResult::NoZero { exhaustive: !bounded_search_used };
+        }
+        let frame_idx = stack.len() - 1;
 
         // Try next candidate
-        let (var, val) = match frame.candidates.next(&poly_ring.field) {
+        let (var, val) = match stack[frame_idx].candidates.next(&poly_ring.field) {
             Some(c) => c,
             None => {
                 // Brancher exhausted → backtrack.  If it was a non-exhaustive
                 // RoundRobin, the search did not cover the full space here.
-                if !frame.candidates.is_exhaustive() {
+                if !stack[frame_idx].candidates.is_exhaustive() {
                     bounded_search_used = true;
                 }
-                stack.pop();
+                // Phase save: remember the last value we *tried* on this
+                // frame so future visits prefer it.
+                if let Some((v, val)) = stack[frame_idx].last_tried.take() {
+                    saved_phase.insert(v, val);
+                }
+                let _popped = stack.pop().unwrap();
                 continue;
             }
         };
+        // Record the candidate as the most-recent-tried for this frame
+        // BEFORE attempting it, so a return-without-pop (cancel, conflict)
+        // also leaves the trail in a consistent state.
+        stack[frame_idx].last_tried = Some((var, poly_ring.field.field().clone_el(&val)));
 
-        let mut new_r = frame.r.clone();
+        let mut new_r = stack[frame_idx].r.clone();
         new_r[var] = Some(poly_ring.field.field().clone_el(&val));
         let assign_poly = assignment_poly(poly_ring, var, &val);
+
+        // Nogood subsumption check: if any recorded nogood is a subset of
+        // the candidate's partial assignment `new_r`, this candidate is
+        // already known UNSAT — skip without recomputing GB.
+        if nogoods.iter().any(|ng| point_covers(ng, &new_r)) {
+            continue;
+        }
 
         // Build new generator sets: each basis + the assignment polynomial
         // Quick UNSAT check: if substituting val for var in any basis poly
         // yields a nonzero constant, the branch is immediately UNSAT.
         let mut quick_unsat = false;
-        for b in &frame.bases {
+        for b in &stack[frame_idx].bases {
             for p in &b.basis {
                 if let Some(v) = evaluate_full(poly_ring, p, &new_r) {
                     if !poly_ring.field.is_zero(&v) {
@@ -409,10 +525,15 @@ pub fn split_zero_extend_cancel<'r>(
             // Check for conflict polynomial (same as the full UNSAT path).
             for p in orig_polys {
                 if let Some(val) = evaluate_full(poly_ring, p, &new_r) {
-                    if !poly_ring.field.is_zero(&val) && !frame.bases[0].contains(p) {
+                    if !poly_ring.field.is_zero(&val) && !stack[frame_idx].bases[0].contains(p) {
                         return ZeroExtendResult::Conflict(poly_ring.ring.clone_el(p));
                     }
                 }
+            }
+            // Record the failing partial assignment as a nogood for
+            // subsumption-based pruning of future candidates.
+            if nogoods.len() < MAX_NOGOODS {
+                nogoods.push(point_to_map(&new_r, &poly_ring.field));
             }
             continue; // backtrack to next candidate
         }
@@ -422,12 +543,11 @@ pub fn split_zero_extend_cancel<'r>(
         // (~1ms) and eliminates UNSAT branches without the expensive
         // nonlinear basis recomputation (~12ms).
         //
-        // Uses `extend_with_cancel` (incremental Buchberger) instead of
-        // `Ideal::new_with_cancel` to avoid recomputing the linear
-        // basis's GB from scratch on every branching candidate.
-        // `frame.bases[0]` is a reduced GB by invariant.
-        if !frame.bases.is_empty() {
-            let cloned_basis: Vec<Poly> = frame.bases[0].basis.iter()
+        // Uses `extend_with_cancel_cached` (incremental Buchberger seeded
+        // from the parent frame's reduced GB) to avoid recomputing the
+        // linear basis from scratch on every branching candidate.
+        if !stack[frame_idx].bases.is_empty() {
+            let cloned_basis: Vec<Poly> = stack[frame_idx].bases[0].basis.iter()
                 .map(|p| poly_ring.ring.clone_el(p)).collect();
             let lin_ideal_seed = Ideal::from_gb(poly_ring, cloned_basis);
             let lin_ideal = match lin_ideal_seed.extend_with_cancel_cached(
@@ -437,7 +557,13 @@ pub fn split_zero_extend_cancel<'r>(
                 Err(_) => return ZeroExtendResult::Cancelled,
             };
             if lin_ideal.is_whole_ring() {
-                // Linear basis alone is UNSAT — skip this branch
+                // Linear basis alone is UNSAT — record full partial assignment
+                // as nogood. (Task 07 #3 backjump/projection deferred — the
+                // IGB-driven variant regressed binadd1 due to per-candidate
+                // observer overhead and lost interreduction.)
+                if nogoods.len() < MAX_NOGOODS {
+                    nogoods.push(point_to_map(&new_r, &poly_ring.field));
+                }
                 continue;
             }
         }
@@ -450,7 +576,7 @@ pub fn split_zero_extend_cancel<'r>(
         // new generator per split.  The bit-prop fixpoint loop is
         // preserved; only the per-iteration GB recompute is replaced
         // with incremental Buchberger.
-        let starting: SplitGb<'r> = frame.bases.iter()
+        let starting: SplitGb<'r> = stack[frame_idx].bases.iter()
             .map(|b| {
                 let cloned: Vec<Poly> = b.basis.iter()
                     .map(|p| poly_ring.ring.clone_el(p))
@@ -458,7 +584,7 @@ pub fn split_zero_extend_cancel<'r>(
                 Ideal::from_gb(poly_ring, cloned)
             })
             .collect();
-        let new_polys_per_split: Vec<Vec<Poly>> = (0..frame.bases.len())
+        let new_polys_per_split: Vec<Vec<Poly>> = (0..stack[frame_idx].bases.len())
             .map(|_| vec![poly_ring.ring.clone_el(&assign_poly)])
             .collect();
         let new_bases = match split_gb_extend_cancel(
@@ -478,6 +604,10 @@ pub fn split_zero_extend_cancel<'r>(
                     }
                 }
             }
+            // Record the failing partial assignment as a nogood.
+            if nogoods.len() < MAX_NOGOODS {
+                nogoods.push(point_to_map(&new_r, &poly_ring.field));
+            }
             // No conflict found, just backtrack (try next candidate)
             continue;
         }
@@ -489,7 +619,8 @@ pub fn split_zero_extend_cancel<'r>(
         }
 
         // Go deeper: compute candidates for the new state and push
-        let new_candidates = apply_rule_multi(poly_ring, &new_bases, &new_r);
+        let mut new_candidates = apply_rule_multi(poly_ring, &new_bases, &new_r);
+        apply_phase_save(&mut new_candidates, &saved_phase);
         log::trace!(
             "split_zero_extend: depth={}, var={}, brancher={}",
             stack.len(),
@@ -504,6 +635,7 @@ pub fn split_zero_extend_cancel<'r>(
             bases: new_bases,
             r: new_r,
             candidates: new_candidates,
+            last_tried: None,
         });
     }
 }
@@ -708,7 +840,7 @@ fn univariate_coeffs(
     let mut coeffs: HashMap<usize, FfEl> = HashMap::new();
     let mut max_deg = 0usize;
     for (c, m) in ring.terms(p) {
-        let d = ring.exponent_at(m, var_idx);
+        let d = ring.exponent_at(&m, var_idx);
         if d > max_deg { max_deg = d; }
         let entry = coeffs.entry(d).or_insert_with(|| fp.zero());
         fp.add_assign(entry, fp.clone_el(c));

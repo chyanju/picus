@@ -22,9 +22,6 @@
 //! trait.  The `ext` ring is a regular `FfPolyRing` with `n+1` variables;
 //! the extra variable `h` lives at index `n` (== `base.n_vars`).
 
-use feanor_math::ring::*;
-use feanor_math::rings::multivariate::*;
-
 use crate::field::FfField;
 use crate::poly::{FfPolyRing, Poly};
 
@@ -84,7 +81,7 @@ impl<'r> HomogRing<'r> {
             let c_bi = self.base.field.to_biguint(c);
             let c_ext = self.ext.field.from_biguint(&c_bi);
             for i in 0..n {
-                exps_buf[i] = base_ring.exponent_at(m, i);
+                exps_buf[i] = base_ring.exponent_at(&m, i);
             }
             exps_buf[n] = 0;
             let mono_ext = ext_ring.create_monomial(exps_buf.iter().copied());
@@ -109,7 +106,7 @@ impl<'r> HomogRing<'r> {
         let mut terms_buf: Vec<(_, Vec<usize>)> = Vec::new();
         let mut max_d: usize = 0;
         for (c, m) in ext_ring.terms(q_lifted) {
-            let exps: Vec<usize> = (0..n_plus_1).map(|i| ext_ring.exponent_at(m, i)).collect();
+            let exps: Vec<usize> = (0..n_plus_1).map(|i| ext_ring.exponent_at(&m, i)).collect();
             let d: usize = exps.iter().sum();
             if d > max_d { max_d = d; }
             terms_buf.push((c, exps));
@@ -152,7 +149,7 @@ impl<'r> HomogRing<'r> {
         for (c, m) in ext_ring.terms(q) {
             let c_bi = self.ext.field.to_biguint(c);
             let c_base = self.base.field.from_biguint(&c_bi);
-            let exps = (0..n).map(|i| ext_ring.exponent_at(m, i));
+            let exps = (0..n).map(|i| ext_ring.exponent_at(&m, i));
             let mono_base = base_ring.create_monomial(exps);
             let term = base_ring.create_term(c_base, mono_base);
             base_ring.add_assign(&mut acc, term);
@@ -165,7 +162,6 @@ impl<'r> HomogRing<'r> {
 mod tests {
     use super::*;
     use crate::field::FfField;
-    use feanor_math::ring::*;
     use num_bigint::BigUint;
 
     fn pr_xy() -> FfPolyRing {
@@ -227,7 +223,7 @@ mod tests {
         // Every term of `homog` must have total degree exactly 2.
         let ext_ring = &h.ext.ring;
         for (_, m) in ext_ring.terms(&homog) {
-            let d: usize = (0..h.ext.n_vars).map(|i| ext_ring.exponent_at(m, i)).sum();
+            let d: usize = (0..h.ext.n_vars).map(|i| ext_ring.exponent_at(&m, i)).sum();
             assert_eq!(d, 2, "homogenized polynomial must be degree-2 homogeneous");
         }
     }

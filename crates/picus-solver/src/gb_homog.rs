@@ -18,8 +18,7 @@
 //! ideals (R3 §5).  Empirically (CoCoA's own primary-decomp adoption)
 //! 5–50× faster on the bit-cube + bitsum + chunked-add shape.
 
-use feanor_math::rings::multivariate::DegRevLex;
-
+use crate::ff::monomial::MonomialOrder;
 use crate::homog::HomogRing;
 use crate::ideal::{compute_gb_with_order, interreduce_basis};
 use crate::poly::{FfPolyRing, Poly};
@@ -65,7 +64,7 @@ pub fn compute_gb_by_homog(
     }
 
     // Step 3: plain DegRevLex GB on Ph.
-    let gb_h = compute_gb_with_order(&h.ext, gh, cancel, DegRevLex);
+    let gb_h = compute_gb_with_order(&h.ext, gh, cancel, MonomialOrder::DegRevLex);
 
     if cancel.is_cancelled() {
         // Best-effort: dehom + interreduce what we have; consumers will
@@ -95,10 +94,9 @@ pub fn compute_gb_by_homog(
 mod tests {
     use super::*;
     use crate::field::FfField;
+    use crate::ff::monomial::MonomialOrder;
     use crate::ideal::compute_gb_with_order;
     use crate::poly::FfPolyRing;
-    use feanor_math::rings::multivariate::*;
-    use feanor_math::ring::*;
     use num_bigint::BigUint;
     use std::collections::BTreeSet;
 
@@ -106,12 +104,12 @@ mod tests {
     /// This is the standard equivalence check (R3 §4 T6): two reduced,
     /// monic, DegRevLex GBs of the same ideal must have identical LM sets.
     fn lm_set(pr: &FfPolyRing, gb: &[Poly]) -> BTreeSet<Vec<usize>> {
-        let ring = &pr.ring;
+        let ctx = pr.ctx();
         let n = pr.n_vars;
         let mut s = BTreeSet::new();
         for p in gb {
-            if let Some((_, m)) = ring.LT(p, DegRevLex) {
-                let exps: Vec<usize> = (0..n).map(|i| ring.exponent_at(m, i)).collect();
+            if let Some(m) = p.leading_monomial(ctx) {
+                let exps: Vec<usize> = (0..n).map(|i| m.exponent(i) as usize).collect();
                 s.insert(exps);
             }
         }
@@ -141,7 +139,7 @@ mod tests {
         // up to monic normalization.
         let pr = pr_xy(17);
         let f = pr.add(pr.var(0), pr.var(1));
-        let gb_direct = compute_gb_with_order(&pr, vec![pr.clone_poly(&f)], &CancelToken::none(), DegRevLex);
+        let gb_direct = compute_gb_with_order(&pr, vec![pr.clone_poly(&f)], &CancelToken::none(), MonomialOrder::DegRevLex);
         let gb_homog = compute_gb_by_homog(&pr, vec![f], &CancelToken::none());
         assert_eq!(lm_set(&pr, &gb_direct), lm_set(&pr, &gb_homog));
     }
@@ -158,7 +156,7 @@ mod tests {
         let f2 = pr.sub(yy, pr.clone_poly(&y));
         let gb_direct = compute_gb_with_order(&pr,
             vec![pr.clone_poly(&f1), pr.clone_poly(&f2)],
-            &CancelToken::none(), DegRevLex);
+            &CancelToken::none(), MonomialOrder::DegRevLex);
         let gb_homog = compute_gb_by_homog(&pr, vec![f1, f2], &CancelToken::none());
         assert_eq!(lm_set(&pr, &gb_direct), lm_set(&pr, &gb_homog),
                    "bit-cube pair: direct LMs vs homog LMs");
@@ -182,7 +180,7 @@ mod tests {
         let gens = vec![bc1, bc2, bs];
         let gb_direct = compute_gb_with_order(&pr,
             gens.iter().map(|p| pr.clone_poly(p)).collect(),
-            &CancelToken::none(), DegRevLex);
+            &CancelToken::none(), MonomialOrder::DegRevLex);
         let gb_homog = compute_gb_by_homog(&pr, gens, &CancelToken::none());
         assert_eq!(lm_set(&pr, &gb_direct), lm_set(&pr, &gb_homog),
                    "bit-cube + bitsum: direct LMs vs homog LMs");
@@ -202,7 +200,7 @@ mod tests {
         let gens = vec![f, rab];
         let gb_direct = compute_gb_with_order(&pr,
             gens.iter().map(|p| pr.clone_poly(p)).collect(),
-            &CancelToken::none(), DegRevLex);
+            &CancelToken::none(), MonomialOrder::DegRevLex);
         let gb_homog = compute_gb_by_homog(&pr, gens, &CancelToken::none());
         assert_eq!(lm_set(&pr, &gb_direct), lm_set(&pr, &gb_homog),
                    "Rabinowitsch: direct LMs vs homog LMs");
@@ -235,7 +233,7 @@ mod tests {
         let gens = vec![bc_a, bc_b, bc_c, chunk];
         let gb_direct = compute_gb_with_order(&pr,
             gens.iter().map(|p| pr.clone_poly(p)).collect(),
-            &CancelToken::none(), DegRevLex);
+            &CancelToken::none(), MonomialOrder::DegRevLex);
         let gb_homog = compute_gb_by_homog(&pr, gens, &CancelToken::none());
         assert_eq!(lm_set(&pr, &gb_direct), lm_set(&pr, &gb_homog),
                    "chunked-add: direct LMs vs homog LMs");

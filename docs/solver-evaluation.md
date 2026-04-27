@@ -6,13 +6,13 @@ This document evaluates `picus-solver`, the pure-Rust finite field (QF_FF) solve
 
 `picus-solver` is a from-scratch Rust reimplementation of cvc5's finite field theory solver. It faithfully replicates cvc5's Split Groebner Basis algorithm, including:
 
-| Component | cvc5 (C++ / CoCoA) | picus-solver (Rust / feanor-math) |
-|-----------|--------------------|------------------------------------|
-| Polynomial ring | CoCoA `SparsePolyRing` | `feanor-math` `MultivariatePolyRingImpl` |
-| Groebner basis | CoCoA `GBasis` | `feanor-math` `buchberger` (custom inner ring) |
+| Component | cvc5 (C++ / CoCoA) | picus-solver (Rust, in-tree) |
+|-----------|--------------------|------------------------------|
+| Polynomial ring | CoCoA `SparsePolyRing` | `ff::polynomial::Polynomial` (`BigUint` coeffs, packed exponents, divisibility masks) |
+| Groebner basis | CoCoA `GBasis` | `ff::buchberger::{BuchbergerState, IncrementalGB}` |
 | Split GB | `theory/ff/split_gb.cpp` | `split_gb.rs` |
 | Model search | `theory/ff/multi_roots.cpp` (`findZero`, `splitFindZero`) | `split_gb.rs` (`split_find_zero`, `split_zero_extend`) |
-| Univariate roots | `theory/ff/uni_roots.cpp` (CoCoA factor) | `roots.rs` (Cantor-Zassenhaus via feanor-math) |
+| Univariate roots | `theory/ff/uni_roots.cpp` (CoCoA factor) | `roots.rs` (Cantor-Zassenhaus, in-tree `ff::univariate`) |
 | Bit propagation | `theory/ff/bitprop.cpp` | `bitprop.rs` |
 | Pattern detection | `theory/ff/parse.cpp` | `parse.rs` |
 | UNSAT core | `theory/ff/core.cpp` (trivial mode) | `core.rs` (trivial mode) |
@@ -22,7 +22,7 @@ This document evaluates `picus-solver`, the pure-Rust finite field (QF_FF) solve
 ### Key differences from cvc5
 
 - **No Boolean layer**: cvc5's FF solver sits below a SAT/DPLL(T) engine that handles `or`, `ite`, `=>`, `not`, and uninterpreted functions. `picus-solver` operates purely at the polynomial constraint level. This means ~25 of cvc5's 42 `regress0/ff/` tests (which require Boolean reasoning) are not applicable.
-- **No CoCoA dependency**: All Groebner basis computation uses feanor-math (pure Rust, nightly). No C++ libraries, no GPL dependency.
+- **No CoCoA dependency**: All Groebner basis computation uses an in-tree pure-Rust engine (`src/ff/`). No C++ libraries, no GPL dependency, no external GB crate.
 - **Cooperative timeout**: Implemented as an atomic cancellation token, plumbed through the Buchberger inner loop and the recursive model search.
 
 ## 2. Correctness
@@ -96,15 +96,9 @@ These are architectural boundaries, not bugs. A full SMT solver built on top of 
 | `bigff_is_zero` | 3,390 µs | 10,653 µs | ~3.1x faster |
 | `field_poly` | 3,090 µs | 8,699 µs | ~2.8x faster |
 
-### Performance note: feanor-math multiplication table tuning
+### Performance note: in-tree GB engine
 
-feanor-math's `MultivariatePolyRingImpl::new` defaults to a multiplication table size of `(6, 8)`, which precomputes `O(C(n+8,8)^2)` monomial products. With 11+ variables this causes multi-second startup per ring construction, and `buchberger_simple` re-creates the ring on every call. picus-solver uses `new_with_mult_table((2, 2))` with a custom `compute_gb_fast` helper to avoid this overhead. The result for `issue10937` (11 variables):
-
-| Component | Default feanor-math | With tuned table | Speedup |
-|-----------|---------------------|-----------------|---------|
-| Ring construction | 3.5 s | 100 µs | 35,000x |
-| Split GB computation | 157 s (debug) | 338 µs | 464,000x |
-| Total end-to-end | 215 s (debug) | ~680 µs | ~316,000x |
+Earlier picus releases used `feanor-math`'s `MultivariatePolyRingImpl`, whose `new` defaulted to a multiplication table size of `(6, 8)` and precomputed `O(C(n+8,8)^2)` monomial products — this caused multi-second startup per ring construction with 11+ variables, and `buchberger_simple` re-created the ring on every call. As of v1.7.8, picus-solver uses a from-scratch in-tree engine (`src/ff/`) over `BigUint` with packed monomial vectors and divisibility masks; ring construction is O(n_vars) and there is no precomputed monomial table at all. The hot reduction loop avoids `RingStore`/`El` indirection and per-iteration `Vec<Polynomial>` clones via `reduce_by_refs(&[&Polynomial])`.
 
 ## 4. Feature Matrix
 
@@ -122,7 +116,7 @@ feanor-math's `MultivariatePolyRingImpl::new` defaults to a multiplication table
 | Incremental push/pop | ✅ | ✅ | Complete |
 | Cooperative timeout | ✅ | ✅ | Complete (`CancelToken` via `abort_early_if`) |
 | Polynomial normalization (divide by LC) | ✅ | ✅ | Complete |
-| Degree-overflow safety | N/A | ✅ | `catch_unwind` on feanor-math panics |
+| Degree-overflow safety | N/A | ✅ | `catch_unwind` on unexpected GB-engine panics |
 | Statistics tracking | ✅ | ✅ | `SolverStats` module |
 | Picus integration (`NativeFfBackend`) | N/A | ✅ | Uses Split GB pipeline with cancel token |
 | CLI `--solver native` | N/A | ✅ | Available in `picus-cli` |
@@ -159,7 +153,7 @@ cd picus/crates/picus-solver/benches
 
 ## 6. Known Limitations
 
-- **Non-trivial UNSAT core tracing** (`ffTraceGb`): implemented for single-GB mode via Buchberger observer hooks in a forked feanor-math. The core is approximate (conservative on initial inter-reduce; no reduction-step-level tracking). Split-GB mode returns trivial cores. See `docs/TODO.md`.
+- **Non-trivial UNSAT core tracing** (`ffTraceGb`): implemented for single-GB mode via Buchberger observer hooks in the in-tree GB engine. The core is approximate (conservative on initial inter-reduce; no reduction-step-level tracking). Split-GB mode returns trivial cores. See `docs/TODO.md`.
 - **`picus-cli` full build requires cvc5-ff-sys**: the workspace includes `cvc5-ff-sys` which builds cvc5 and GMP from source (requires `bison`, `flex`, and `m4` on PATH, plus `clang` for bindgen). The `picus-solver` crate itself builds independently without these dependencies.
 - **`Or` constraint handling in `NativeFfBackend`**: encodes all branches as conjunctions (unsound for disjunction). This matches the current behavior where AB0 optimization is disabled for the cvc5-ff backend. See `docs/TODO.md`.
-- **Performance gap on mid-size circuits**: 20 circuits (out of 465 tested) that cvc5 resolves within 30s exceed the native solver's per-query timeout. The root cause is the number of search-tree branches explored during model construction (~3000 GB calls per query), combined with a per-call overhead of 1-12ms in feanor-math vs 0.1-1ms in CoCoA. The feanor-math fork has been optimized with Gebauer-Möller pair management and DivMask fast divisibility, and the search strategy now checks all split-GB bases for branching structure. This is a performance limitation, not a correctness issue — all circuits that the native solver does resolve produce results identical to cvc5.
+- **Performance gap on dense-ideal circuits**: the 17-bench KPI suite (60 s timeout) currently solves 12-13/17 (one circuit, `chunkedadd1`, lives at the wall-clock boundary and re-runs flap between solve and timeout), vs cvc5's 16/17. The 4 stable timeouts (`Pedersen@pedersen.r1cs`, `modulusagainst2p.r1cs`, `VDBuggy.r1cs`, `inTest.r1cs`) are dense-ideal problems where naive sequential Buchberger hits its combinatorial wall regardless of pair-pruning heuristics. The literature solutions are F4/F5 (batched Macaulay-matrix reduction) or Montgomery-form arithmetic for the BN128 prime; both are out of scope. The previous "performance gap" note about ~3000 GB calls per query and per-call overhead has been substantially mitigated by the in-tree engine and `reduce_by_refs` slice optimisation in v1.7.8 (net +9 KPI solves vs v1.7.7). This is a performance limitation, not a correctness issue — all circuits that the native solver does resolve produce results identical to cvc5 (110/0-mismatch on the 110-circuit correctness gate).
