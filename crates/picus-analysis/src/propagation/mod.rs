@@ -12,6 +12,9 @@ use picus_r1cs::bn128_prime;
 
 /// Resolve named constants introduced by the SubP optimizer.
 /// Shared by binary01 and basis2 lemmas.
+///
+/// NOTE: hardcoded to BN128 prime. If Picus is extended to other curves
+/// (BLS12-381, Goldilocks, etc.), this must accept the prime as a parameter.
 pub fn resolve_named_constant(name: &str) -> Option<BigUint> {
     let p = bn128_prime();
     match name {

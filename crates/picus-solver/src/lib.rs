@@ -12,6 +12,7 @@ pub mod poly;
 pub mod ideal;
 pub mod parse;
 pub mod bitprop;
+pub mod brancher;
 pub mod split_gb;
 pub mod encoder;
 pub mod core;

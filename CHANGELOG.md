@@ -4,6 +4,34 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.9] - 2026-04-27
+
+### Fixed
+- **Soundness: `FindZeroOutcome::Unsat` now correctly maps to `SolveOutcome::Unsat`** instead of `Unknown`. Previously, when the root-finding phase proved unsatisfiability, the result was silently downgraded to Unknown, potentially masking unsafe circuits.
+- **Soundness: `u16` exponent overflow in monomial multiplication** now uses `checked_add` and panics on overflow instead of silently wrapping. Affects `Monomial::mul` and `mul_assign`.
+- **Soundness: `from_i64(i64::MIN)` no longer panics** due to signed overflow on `.abs()`. Uses `unsigned_abs()` instead.
+- **Robustness: `split_gb_cancel` and `split_gb_extend_cancel` fixpoint loops** now have iteration caps (1000 iterations) to prevent infinite loops on pathological inputs.
+- **Robustness: `IncrementalGB::interreduce` safety cap** uses correct post-filter basis length instead of pre-filter length.
+- **Robustness: `incremental.rs` encode failure** now logs an error and returns `Unknown` instead of panicking.
+- **Debug assertion on `row_dep` bounds** in Buchberger matrix row operations.
+
+### Changed
+- **Performance: hot-loop monomial allocation eliminated** in `reduce_by_refs` — uses `DivMask::compute_from_slice` directly on exponent data instead of constructing a temporary `Monomial`.
+- **Performance: `total_degree()` is now O(1)** — cached in `Polynomial` and maintained through all arithmetic operations.
+- **Performance: `poly_coefficient_at` uses binary search** instead of linear scan for sorted term lookup.
+- **Performance: `from_raw_sorted` constructor** avoids re-sorting already-sorted term vectors in reduction output.
+- **Performance: `add`/`sub` refactored** to shared `merge_sorted` with a `negate_other` flag, eliminating code duplication.
+- **`active_poly_refs()` method** on `BuchbergerState` returns `&[&Polynomial]` slice for zero-copy basis access.
+- **Removed dead code**: `chain_criterion_skip` body (retained as `#[allow(dead_code)]`), `bitsum_bits` function, `GbRingCache` type, unused `clone_poly` wrappers.
+- **Legacy feanor-math aliases** in `PrimeField` (`eq_el`, `negate`, `mul_ref`, `add_ref`, `sub_ref`, `from_int`, `int_hom`) documented as deprecated.
+- **Unsafe pointer cast removed** in `TermsIter` — now uses safe lifetime-correct references.
+- **`TermRef::coefficient()` returns `&'a FieldElem`** (borrowed) instead of cloned value.
+- **Doc comment on BN128 hardcoding** added to `picus-analysis/src/propagation/mod.rs`.
+
+### Verified
+- **Lib tests: 167 pass. 0 compiler warnings** across the entire workspace.
+- Clean build on `cargo +nightly` (edition 2024).
+
 ## [1.7.8] - 2026-04-27
 
 ### Added

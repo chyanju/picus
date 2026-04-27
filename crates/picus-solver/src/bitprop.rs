@@ -20,7 +20,6 @@ use num_traits::Zero;
 
 use crate::field::FfEl;
 use crate::ideal::Ideal;
-use crate::parse::BitSum;
 use crate::poly::{FfPolyRing, Poly};
 
 /// State for bit propagation across multiple GBs.
@@ -189,9 +188,6 @@ fn constant_term_value(pr: &FfPolyRing, p: &Poly) -> FfEl {
     acc
 }
 
-/// Adapter: build a `BitSum::bits` list by stripping the scalar `coeff`
-/// (we assume the bitsum has already been normalised).
-pub fn bitsum_bits(bs: &BitSum) -> Vec<usize> { bs.bits.clone() }
 
 #[cfg(test)]
 mod tests {

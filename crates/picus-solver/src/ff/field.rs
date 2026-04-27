@@ -93,9 +93,8 @@ impl PrimeField {
         if v >= 0 {
             self.from_u64(v as u64)
         } else {
-            let abs_val = BigUint::from((-v) as u64);
+            let abs_val = BigUint::from(v.unsigned_abs());
             let r = &*self.prime - (abs_val % &*self.prime);
-            // r might equal *self.prime if abs_val % p == 0; canonicalize:
             if r == *self.prime {
                 self.zero()
             } else {
@@ -234,7 +233,9 @@ impl PrimeField {
     }
 
     // ---- Legacy aliases (feanor-math `RingBase`-style names) ----
-    // These let callers ported from the feanor era use familiar names.
+    // DEPRECATED: prefer the canonical methods (`eq`, `neg`, `mul`, `add`,
+    // `sub`, `from_i64`, `.clone()`). These wrappers exist only for
+    // migration convenience and will be removed in a future release.
 
     /// Alias for `eq` (feanor-style name).
     #[inline]

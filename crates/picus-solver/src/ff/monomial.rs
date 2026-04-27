@@ -77,7 +77,8 @@ impl Monomial {
             .exponents
             .iter()
             .zip(other.exponents.iter())
-            .map(|(&a, &b)| a + b)
+            .map(|(&a, &b)| a.checked_add(b)
+                .expect("exponent overflow: u16 too small for this monomial degree"))
             .collect();
         Monomial {
             exponents: exps.into_boxed_slice(),
@@ -89,7 +90,8 @@ impl Monomial {
     pub fn mul_assign(&mut self, other: &Monomial) {
         debug_assert_eq!(self.exponents.len(), other.exponents.len());
         for (a, &b) in self.exponents.iter_mut().zip(other.exponents.iter()) {
-            *a += b;
+            *a = a.checked_add(b)
+                .expect("exponent overflow: u16 too small for this monomial degree");
         }
         self.total_deg += other.total_deg;
     }

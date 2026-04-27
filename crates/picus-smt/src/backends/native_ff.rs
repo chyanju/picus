@@ -99,22 +99,14 @@ fn query_to_constraint_system(query: &UniquenessQuery) -> ConstraintSystem {
                 IRConstraint::VarNeq(_, _) => {
                     // Disequality is handled separately via the target signal
                 }
-                IRConstraint::Or(subs) => {
-                    // Or constraints: for now, encode each sub-constraint
-                    // This is sound but incomplete (we lose the disjunction).
-                    // The main Or usage in Picus is AB0 optimization, which
-                    // is disabled for cvc5-ff anyway.
-                    log::warn!("Or constraint encountered — encoding all branches (unsound for disjunction)");
-                    for sub in subs {
-                        if let IRConstraint::Linear(terms) = sub {
-                            let poly_terms: Vec<PolyTerm> = terms.iter().map(|t| {
-                                PolyTerm { coeff: t.coeff.clone(), vars: vec![t.var.clone()] }
-                            }).collect();
-                            if !poly_terms.is_empty() {
-                                equalities.push(poly_terms);
-                            }
-                        }
-                    }
+                IRConstraint::Or(_) => {
+                    // Or (disjunction) constraints cannot be soundly encoded
+                    // as polynomial equalities. The main Or usage in Picus is
+                    // the AB0 optimization, which is disabled for the native
+                    // backend. If one appears, skip it and log a warning —
+                    // the solver may return Unknown but will not produce a
+                    // false UNSAT.
+                    log::warn!("Or constraint encountered — skipping (native-ff cannot encode disjunctions)");
                 }
             }
         }
