@@ -25,10 +25,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use feanor_math::homomorphism::*;
-use feanor_math::ring::*;
-use feanor_math::rings::multivariate::*;
-
 use crate::field::FfEl;
 use crate::poly::{FfPolyRing, Poly};
 
@@ -72,7 +68,7 @@ pub fn linear_monomial(pr: &FfPolyRing, p: &Poly) -> Option<LinearMonomial> {
         let mut var: Option<usize> = None;
         let mut total_deg = 0usize;
         for v in 0..n_vars {
-            let e = ring.exponent_at(m, v);
+            let e = ring.exponent_at(&m, v);
             if e > 0 {
                 if var.is_some() || e > 1 {
                     return None;
@@ -114,7 +110,7 @@ pub fn one_constraint(pr: &FfPolyRing, p: &Poly) -> Option<usize> {
         let mut total_deg = 0usize;
         let mut var: Option<usize> = None;
         for v in 0..n_vars {
-            let e = ring.exponent_at(m, v);
+            let e = ring.exponent_at(&m, v);
             if e > 0 {
                 if var.is_some() || e > 1 {
                     return None;
@@ -163,7 +159,7 @@ pub fn bit_constraint(pr: &FfPolyRing, p: &Poly) -> Option<BitConstraint> {
         let mut total_deg = 0usize;
         let mut var: Option<usize> = None;
         for v in 0..n_vars {
-            let e = ring.exponent_at(m, v);
+            let e = ring.exponent_at(&m, v);
             if e > 0 {
                 if var.is_some() {
                     return None;
@@ -221,7 +217,7 @@ pub fn extract_linear_monomials(
         let mut single_var: Option<usize> = None;
         let mut multi = false;
         for v in 0..n_vars {
-            let e = ring.exponent_at(m, v);
+            let e = ring.exponent_at(&m, v);
             if e > 0 {
                 if e > 1 || single_var.is_some() {
                     multi = true;
@@ -234,7 +230,7 @@ pub fn extract_linear_monomials(
             linears.push(LinearMonomial { var: single_var.unwrap(), coeff: fp.clone_el(c) });
         } else {
             // Build a single-term polynomial: c * monomial
-            let term = ring.create_term(fp.clone_el(c), ring.clone_monomial(m));
+            let term = ring.create_term(fp.clone_el(c), ring.clone_monomial(&m));
             rest.push(term);
         }
     }

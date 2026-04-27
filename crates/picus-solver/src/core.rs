@@ -10,7 +10,6 @@
 use std::collections::{HashMap, HashSet};
 
 use num_bigint::BigUint;
-use feanor_math::ring::RingStore;
 
 use crate::bitprop::BitProp;
 use crate::encoder::EncodedSystem;

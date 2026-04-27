@@ -13,7 +13,7 @@ fn solve_system(system: &ConstraintSystem) -> &'static str {
     match solve_encoded(&encoded) {
         SolveOutcome::Sat(_) => "sat",
         SolveOutcome::Unsat(_) => "unsat",
-        _ => panic!("unexpected outcome"),
+        SolveOutcome::Unknown => panic!("unknown (cancelled)"),
     }
 }
 

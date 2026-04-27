@@ -22,8 +22,6 @@ use picus_solver::poly::{FfPolyRing, Poly};
 use picus_solver::ideal::Ideal;
 use picus_solver::bitprop::BitProp;
 use picus_solver::split_gb::{split_gb, split_find_zero, SplitFindZeroOutcome};
-use feanor_math::ring::*;
-use feanor_math::rings::multivariate::*;
 use num_bigint::BigUint;
 use oorandom::Rand64;
 
@@ -65,7 +63,7 @@ fn eval_poly(pr: &FfPolyRing, p: &Poly, point: &[FfEl]) -> FfEl {
     for (c, m) in ring.terms(p) {
         let mut t = fp.clone_el(c);
         for v in 0..pr.n_vars {
-            let e = ring.exponent_at(m, v);
+            let e = ring.exponent_at(&m, v);
             for _ in 0..e {
                 t = fp.mul_ref(&t, &point[v]);
             }

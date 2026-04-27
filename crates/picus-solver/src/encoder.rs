@@ -6,11 +6,7 @@
 use num_bigint::BigUint;
 use std::collections::{HashMap, HashSet};
 
-use feanor_math::homomorphism::*;
-use feanor_math::ring::RingStore;
-
 use crate::field::FfField;
-use crate::ideal::leading_coefficient;
 use crate::poly::{FfPolyRing, Poly};
 
 /// Encoded polynomial system ready for GB computation.
@@ -106,11 +102,9 @@ pub fn encode(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
 
     let field = FfField::new(&system.prime);
 
-    // Check that the variable count is within feanor-math's capacity.
-    // The ring constructor requires C(n_vars + max_deg, n_vars) < 2^64.
-    // For ZK circuits in the DPVL duplicated-variable formulation, the
-    // actual polynomial degree is ≤ 2, so max_deg = 4 suffices.  But
-    // when n_vars is extremely large even C(n+4, 4) can overflow.
+    // Check that the variable count is within the GB ring's working capacity.
+    // Historically the underlying ring required C(n_vars + max_deg, n_vars) < 2^64;
+    // we keep a conservative cap to avoid pathological monomial-table blow-up.
     let n_vars = var_names.len();
     if n_vars > 5000 {
         return Err(format!(
@@ -229,15 +223,13 @@ pub fn encode(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
 
 /// Divide a polynomial by its leading coefficient (in DegRevLex order).
 fn normalize_poly(pr: &FfPolyRing, p: Poly) -> Poly {
-    use feanor_math::rings::multivariate::DegRevLex;
-    use feanor_math::ring::RingStore;
-    use feanor_math::field::FieldStore;
     let ring = &pr.ring;
     let fp = pr.field.field();
-    if ring.is_zero(&p) { return p; }
-    let lc = leading_coefficient(ring, &p, DegRevLex);
+    if ring.is_zero(&p) || p.num_terms() == 0 { return p; }
+    // Leading term is at index 0 (polynomials are stored sorted descending).
+    let lc = fp.clone_el(p.term(0, ring.ctx.as_ref()).coefficient());
     if fp.is_zero(&lc) || fp.is_one(&lc) { return p; }
-    let inv = fp.div(&fp.one(), &lc);
+    let inv = fp.div(&fp.one(), &lc).expect("non-zero leading coefficient");
     let inv_poly = pr.constant(inv);
     ring.mul(inv_poly, p)
 }

@@ -13,10 +13,6 @@
 use std::collections::HashMap;
 use num_bigint::BigUint;
 
-use feanor_math::ring::*;
-use feanor_math::rings::multivariate::*;
-use feanor_math::field::FieldStore;
-
 use crate::field::{FfField, FfEl};
 use crate::ideal::Ideal;
 use crate::poly::{FfPolyRing, Poly};
@@ -185,7 +181,7 @@ fn try_extract_full_assignment(
             if max_deg == 1 {
                 if let Some(coeffs) = extract_univariate_coeffs(ring, fp, p, var_idx) {
                     if coeffs.len() == 2 && !fp.is_zero(&coeffs[1]) {
-                        let val = fp.negate(fp.div(&coeffs[0], &coeffs[1]));
+                        let val = fp.negate(fp.div(&coeffs[0], &coeffs[1]).expect("nonzero divisor"));
                         assignment.entry(var_idx).or_insert(val);
                     }
                 }
@@ -293,7 +289,7 @@ fn extract_univariate_coeffs(
     let mut max_deg: usize = 0;
     let mut coeff_map: HashMap<usize, FfEl> = HashMap::new();
     for (coeff, monomial) in ring.terms(poly) {
-        let deg = ring.exponent_at(monomial, var_idx);
+        let deg = ring.exponent_at(&monomial, var_idx);
         if deg > max_deg { max_deg = deg; }
         let entry = coeff_map.entry(deg).or_insert_with(|| fp.zero());
         fp.add_assign(entry, fp.clone_el(coeff));
@@ -334,7 +330,7 @@ pub fn verify_model(
         for (c, m) in ring.terms(p) {
             let mut term_val = fp.clone_el(c);
             for v in 0..poly_ring.n_vars {
-                let e = ring.exponent_at(m, v);
+                let e = ring.exponent_at(&m, v);
                 if e > 0 {
                     let var_name = &poly_ring.var_names[v];
                     let var_val = match model.get(var_name) {

@@ -29,7 +29,7 @@ Picus is organized as a Cargo workspace with eight crates. Data flows top-to-bot
 └──────────────┘   └────────────┘
 
 ┌──────────────┐
-│ picus-solver │   Pure-Rust QF_FF solver (feanor-math, no C++ deps)
+│ picus-solver │   Pure-Rust QF_FF solver (in-tree GB engine, no C++ deps)
 └──────────────┘
 ```
 
@@ -92,7 +92,7 @@ Thin entry point with two subcommands:
 
 ### `picus-solver`
 
-Pure-Rust finite field (QF_FF) solver, replacing cvc5's CoCoA-based theory solver. Uses [feanor-math](https://github.com/chyanju/feanor-math) (forked) for Groebner basis computation.
+Pure-Rust finite field (QF_FF) solver, replacing cvc5's CoCoA-based theory solver. Uses an in-tree Buchberger engine (`src/ff/`) over `BigUint` for Groebner basis computation; no external GB library dependency.
 
 - **`core.rs`** — High-level API (`solve_split_gb`, `solve_single_gb`, `SolverMode`, `SolveOutcome`).
 - **`split_gb.rs`** — Split GB algorithm with inter-basis propagation, matching cvc5's `--ff-solver split`.
@@ -104,7 +104,7 @@ Pure-Rust finite field (QF_FF) solver, replacing cvc5's CoCoA-based theory solve
 - **`bitprop.rs`** — Bit propagation (constant + equal bitsum) across split bases.
 - **`parse.rs`** — Pattern detection (`bit_constraint`, `linear_monomial`, `bit_sums`).
 - **`incremental.rs`** — Push/pop API for incremental solving.
-- **`roots.rs`** — Univariate root finding (Cantor-Zassenhaus via feanor-math).
+- **`roots.rs`** — Univariate root finding (Cantor-Zassenhaus, in-tree implementation in `ff/univariate.rs`).
 - **`timeout.rs`** — `CancelToken` (atomic cancellation threaded through Buchberger).
 
 ## Data Flow

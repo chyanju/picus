@@ -64,10 +64,9 @@ enum Commands {
         #[arg(long, default_value = "human", value_enum)]
         format: OutputFormat,
 
-        /// Profile output: none (default), wall (per-site wall-clock),
-        /// gb (wall + Buchberger stats: pair count, reductions, restarts).
+        /// Profile output: none (default), wall (per-site wall-clock).
         /// Stats are written to stderr.
-        #[arg(long, default_value = "none", value_parser = ["none", "wall", "gb"])]
+        #[arg(long, default_value = "none", value_parser = ["none", "wall"])]
         profile: String,
 
         /// GB strategy (Sprint 2.5):
@@ -116,10 +115,6 @@ fn main() {
         } => {
             match profile.as_str() {
                 "wall" => picus_solver::profile::enable(),
-                "gb" => {
-                    picus_solver::profile::enable();
-                    picus_solver::gb_stats::enable();
-                }
                 _ => {}
             }
             match gb_by_homog.as_str() {
@@ -135,7 +130,6 @@ fn main() {
             format,
         } => cmd_info(r1cs, constraints, format),    }
     picus_solver::profile::dump_to_stderr("cli");
-    picus_solver::gb_stats::dump_to_stderr("cli");
 }
 
 // ============================================================
@@ -238,7 +232,6 @@ fn install_profile_signal_handler() {
     std::thread::spawn(move || {
         for sig in signals.forever() {
             picus_solver::profile::dump_to_stderr(&format!("signal={}", sig));
-            picus_solver::gb_stats::dump_to_stderr(&format!("signal={}", sig));
             // Re-raise default behavior: exit with conventional code.
             std::process::exit(128 + sig);
         }

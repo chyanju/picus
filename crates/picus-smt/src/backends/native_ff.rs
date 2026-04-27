@@ -151,7 +151,7 @@ impl SolverBackend for NativeFfBackend {
         let cs = query_to_constraint_system(query);
 
         // Wrap encode + solve in catch_unwind as a safety net for any
-        // remaining feanor-math panics (e.g., unexpected degree overflow).
+        // unexpected panics inside the solver (e.g., degree overflow).
         let prev_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {})); // silence repeated panics
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

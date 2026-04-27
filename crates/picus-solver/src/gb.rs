@@ -1,14 +1,12 @@
-//! Groebner Basis computation over GF(p) using feanor-math's Buchberger algorithm.
+//! Groebner Basis computation over GF(p) using the in-tree Buchberger
+//! algorithm (`crate::ff::buchberger`, exposed via `crate::ideal`).
 //!
 //! Provides a single-GB solver mode (DegRevLex → Lex) with cooperative
-//! timeout.  Uses the optimized `(2,2)` multiplication table ring from
-//! `ideal::compute_gb_with_order` to avoid the O(C(n+8,8)^2) precomputation
-//! cost of feanor-math's default ring.
+//! timeout. Thin wrapper over `ideal::compute_gb_with_order{,_traced}`.
 
 use std::time::Duration;
 
-use feanor_math::rings::multivariate::*;
-
+use crate::ff::monomial::MonomialOrder;
 use crate::ideal::{compute_gb_with_order, compute_gb_with_order_traced};
 use crate::poly::{FfPolyRing, Poly};
 use crate::timeout::CancelToken;
@@ -60,7 +58,7 @@ pub fn compute_gb_with_timeout(
     };
 
     // Phase 1: DegRevLex GB
-    let gb_degrevlex = compute_gb_with_order(poly_ring, polynomials, &cancel, DegRevLex);
+    let gb_degrevlex = compute_gb_with_order(poly_ring, polynomials, &cancel, MonomialOrder::DegRevLex);
 
     if cancel.is_cancelled() {
         return GbResult::Timeout;
@@ -70,7 +68,7 @@ pub fn compute_gb_with_timeout(
     }
 
     // Phase 2: Lex GB (for model extraction via back-substitution)
-    let gb_lex = compute_gb_with_order(poly_ring, gb_degrevlex, &cancel, Lex);
+    let gb_lex = compute_gb_with_order(poly_ring, gb_degrevlex, &cancel, MonomialOrder::Lex);
 
     if cancel.is_cancelled() {
         return GbResult::Timeout;
@@ -105,26 +103,31 @@ pub fn compute_gb_with_timeout_traced(
     // Phase 1: DegRevLex GB with tracing
     let mut tracer = GbTracer::new(n_inputs);
     let gb_degrevlex = compute_gb_with_order_traced(
-        poly_ring, polynomials, &cancel, DegRevLex, &mut tracer,
+        poly_ring, polynomials, &cancel, MonomialOrder::DegRevLex, &mut tracer,
     );
 
     if cancel.is_cancelled() {
         return GbResultTraced::Timeout;
     }
 
-    if let Some(const_idx) = find_trivial_element(&poly_ring.ring, &gb_degrevlex) {
-        // UNSAT — extract the core from the tracer
-        let core = if const_idx < tracer.basis_count() {
-            tracer.unsat_core_for(const_idx)
+    if find_trivial_element(&poly_ring.ring, &gb_degrevlex).is_some() {
+        // UNSAT — extract the core from the tracer.
+        //
+        // Note: `find_trivial_element` indexes into the *finalized* basis
+        // (which collapses to `[1]` for any trivial GB and discards
+        // tracer-correlated indices). The actual contradictory polynomial
+        // in the tracer's history is the LAST one pushed before
+        // `abort_on_trivial` returned: `tracer.basis_count() - 1`.
+        let core = if tracer.basis_count() > 0 {
+            tracer.unsat_core_for(tracer.basis_count() - 1)
         } else {
-            // Fallback: trivial core (all inputs)
             (0..n_inputs).collect()
         };
         return GbResultTraced::Trivial(core);
     }
 
     // Phase 2: Lex GB (no tracing needed — only used for model extraction)
-    let gb_lex = compute_gb_with_order(poly_ring, gb_degrevlex, &cancel, Lex);
+    let gb_lex = compute_gb_with_order(poly_ring, gb_degrevlex, &cancel, MonomialOrder::Lex);
 
     if cancel.is_cancelled() {
         return GbResultTraced::Timeout;
@@ -144,7 +147,6 @@ fn is_trivial(ring: &crate::poly::PolyRingType, gb: &[Poly]) -> bool {
 
 /// Find the index of a nonzero constant in the basis, if any.
 fn find_trivial_element(ring: &crate::poly::PolyRingType, gb: &[Poly]) -> Option<usize> {
-    use feanor_math::ring::RingStore;
     for (i, p) in gb.iter().enumerate() {
         if !ring.is_zero(p) {
             let vars = ring.appearing_indeterminates(p);

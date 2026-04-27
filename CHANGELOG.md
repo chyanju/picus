@@ -4,7 +4,41 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.7.7] - 2026-04-25
+## [1.7.8] - 2026-04-27
+
+### Added
+- **In-tree finite-field GB engine (`picus-solver/src/ff/`)**: Replaces the previous `feanor-math` Buchberger pipeline on the live solve path. New modules: `ff::field` (`FieldElem` over `BigUint`), `ff::polynomial` (`Polynomial` with packed monomial vectors and divisibility masks), `ff::monomial` (`MonomialOrder` enum, no `TypeId` dispatch), `ff::buchberger` (`BuchbergerState`, `IncrementalGB`), `ff::univariate` (single-variable factoring for root extraction). Inner reduction loop avoids `RingStore`/`El` indirection and per-iteration `Vec<Polynomial>` clones via `reduce_by_refs(&[&Polynomial])`.
+- **`tail_reduce_active` in `IncrementalGB`** every 32 basis adds (`INTERREDUCE_EVERY=32`). Mutates poly bodies only — never `lt`/`active`/`sugar`/indices — so it preserves all per-element invariants. Architecturally guards against basis bloat in long incremental runs; no KPI gain in isolation but kept as a correctness-preserving hedge.
+
+### Fixed
+- **GB soundness bug in `ff::buchberger::chain_criterion_skip` (CRITICAL)**. The simplified "any-`k` divides lcm → skip" form of Buchberger's chain criterion was unsound: with non-strict deactivation (deactivated basis elements remain in `self.basis` and contribute LTs at index lookup) and `generate_pairs_against` previously skipping inactive elements when adding a new generator, the substitute pairs `(i,k)` and `(j,k)` were not guaranteed to have been generated and discharged. **Symptom**: trivially-UNSAT systems silently produced incomplete GBs; minimal repro `{ab-1, a-2, b-2}` over GF(5) returned **Unknown** instead of **Unsafe** (the constant `3` from S-pair `(0,1)` was being skipped, basis ended at 2 elements, `is_whole_ring()` returned false, model extraction produced a bogus assignment, validation rejected it). The correctness gate masked this for the entire plan-v4 cycle because the gate counted only safe↔unsafe disagreements — Unknown was implicitly "agree". **Fix** (`buchberger.rs`):
+  1. `generate_pairs_against`: removed the `if !self.basis[k].active { continue; }` guard. Pairs against deactivated elements are now generated; their LTs are real S-pair obligations.
+  2. `state.run`: removed the call to `chain_criterion_skip`. The (sound) product criterion at generation time remains. `chain_criterion_skip` is retained as `#[allow(dead_code)]` for future re-introduction with a properly sound Gebauer-Möller chain criterion (full `(i,k)`/`(j,k)` lcm comparison).
+- **`bn128_invariants` integration tests** now pass (`test_simple_unsat_gf5`, `test_is_zero_sound_bit_constraint` in `cvc5_regression`).
+
+### Changed
+- **`feanor-math` dependency fully removed.** No longer in `Cargo.toml`; not in `Cargo.lock`. The legacy `gb_stats.rs` module (which only wrapped feanor's pair-profile observer) was deleted; `gb.rs` is now a thin two-phase (DegRevLex → Lex) wrapper over `ideal::compute_gb_with_order{,_traced}`; `gb_homog.rs` and `homog.rs` rewired to `crate::ff::monomial::MonomialOrder`.
+- **CLI: removed `--profile gb`.** Stats observer was specific to the deleted feanor pipeline. `--profile wall` (per-site wall-clock) is unchanged.
+- **Removed release-profile debug overrides** from `picus/Cargo.toml`. Binary shrunk **627 MB → 67 MB**. No KPI impact.
+- **Removed unused `#![feature(allocator_api)]`** from `picus-solver/src/lib.rs`.
+
+### Verified
+- **Lib tests: 96/96 pass. Integration tests: 71/71 pass** (10 binaries, 0 ignored except 2 long-running probes). Builds clean on `cargo +nightly` (rustc 1.97.0-nightly, edition 2024). Zero warnings across the workspace.
+- **Cargo.lock contains 0 references to `feanor`.**
+- **circomlibex-cff5ab6 sweep (110 circuits, 15 s timeout): 105 agree (35 both-timeout), 0 mismatch vs cvc5.** (Was 106 agree pre-fix; the 1 lost agreement is a single Unknown vs solved on a circuit where no safe↔unsafe collision occurs.)
+- **17-bench KPI (60 s timeout): 12 / 17 solved** — net **+9 vs the 1.7.7 baseline (3/17)**, +2 vs the 1.7.6 baseline (3/17 stable). Plan v4's tracked CSV recorded 13/17 at sign-off; an independent re-measurement on 1.7.8 shipped code gives 12/17. The difference is `chunkedadd1`, which lives right at the wall-clock boundary (~62 s solve time vs the script's 65 s `timeout` wrapper after the chain-criterion fix); re-runs flap between solve and timeout. Net solves attributable to the in-tree `ff` engine + `reduce_by_refs` + chain-criterion fix: ~+9 over 1.7.7.
+
+### Known limitations / trade-offs
+- **The chain-criterion fix slowed two previously-fast circuits**: `chunkedadd` 17.1 s → 44.1 s, `chunkedadd1` 24.9 s → 61.9 s. Their prior numbers had relied on the unsound criterion to prune real S-pair work; new times are correct. A sound Gebauer–Möller chain criterion (deferred to a future release) would recover this 2× cost; estimated at ~150 LoC with non-trivial correctness risk, deemed out of scope for 1.7.8.
+- **4 KPI timeouts remain**: `circomlib-cff5ab6/Pedersen@pedersen.r1cs`, `ed25519-099d19c-fixed/modulusagainst2p.r1cs`, `motivating/VDBuggy.r1cs`, `iden3-core-56a08f9/inTest.r1cs`. All are dense-ideal problems (e.g. Pedersen 2nd GB call: 1100 S-pairs in 20 s, 2100 in 116 s, final basis size 253 in both cases — work is dominated by reductions whose normal form is zero or already-known-redundant). Sequential Buchberger has no way to amortize this; literature solutions are F4/F5 (Macaulay matrix, batched symbolic preprocessing) or Montgomery-form arithmetic for BN128, both out of scope per the user directive ("research-grade solver, no multi-day rewrites").
+- **Correctness-gate masking**: the gate counts only safe↔unsafe disagreements; Unknown vs solved is implicitly "agree". This masked the 1.7.7 chain-criterion soundness bug for the full plan-v4 cycle. Future gates should additionally flag "picus Unknown but cvc5 solved" as a *suspicion* class.
+
+### Internal
+- `chat/plan-4/` retro and progress artifacts shipped (215 + 109 LoC). Document the full design rationale, what worked (in-tree `ff`, slice-not-clone, `tail_reduce_active`, chain-criterion fix), and what did not (full Gebauer–Möller F+B at pair generation: 2-3× regression, reverted; M+F+P only: 2× regression, reverted).
+- Stale `examples/probe_*.rs` and `tests/probe.rs` ad-hoc reproducers removed.
+- Comments in `gb.rs`, `encoder.rs`, `picus-smt/src/backends/native_ff.rs` updated to reflect the in-tree engine (no present-tense feanor references remain in source).
+
+
 
 ### Changed
 - **Buchberger algorithm overhaul in feanor-math fork** (matching CoCoA behaviour):

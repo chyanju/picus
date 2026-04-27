@@ -1,86 +1,251 @@
-//! Multivariate polynomial ring over GF(p) using feanor-math.
+//! Multivariate polynomial ring over GF(p), backed by `crate::ff`.
+//!
+//! This module preserves the public API used by the rest of picus-solver
+//! (`FfPolyRing`, `Poly`, `Mono`, `pr.var(i)`, `pr.constant(el)`,
+//! `pr.add/sub/mul/...`, and the inner `pr.ring.terms(&p)` /
+//! `pr.ring.create_term(c, m)` / `pr.ring.exponent_at(m, i)` /
+//! `pr.ring.appearing_indeterminates(&p)` / `pr.ring.indeterminate(i)` /
+//! etc.) while delegating storage and arithmetic to the inlined `ff::*`
+//! types. The previous feanor-math backend has been removed.
 
-use feanor_math::ring::*;
-use feanor_math::rings::multivariate::*;
-use feanor_math::rings::multivariate::multivariate_impl::*;
-use feanor_math::homomorphism::*;
-use std::alloc::Global;
+use std::sync::Arc;
 
-use crate::field::{FfField, FfFieldType, FfEl};
-use crate::ideal::{max_supported_deg, mult_table_bounds};
+use crate::field::{FfEl, FfField};
+use crate::ff::monomial::{Monomial, MonomialOrder};
+use crate::ff::polynomial::{PolyRing as FfPolyRingCtx, Polynomial};
 
-/// Type alias for our polynomial ring.
-pub type PolyRingType = MultivariatePolyRingImpl<FfFieldType>;
-/// Type alias for a polynomial element.
-pub type Poly = El<PolyRingType>;
-/// Type alias for a monomial.
-pub type Mono = <MultivariatePolyRingImplBase<FfFieldType> as MultivariatePolyRing>::Monomial;
+/// Re-export the polynomial type for the rest of the crate.
+pub type Poly = Polynomial;
+/// Re-export the monomial type.
+pub type Mono = Monomial;
+/// Legacy type alias used by callers that referenced `crate::poly::PolyRingType`.
+/// It points at the facade so `&PolyRingType` works wherever the legacy code
+/// previously held a feanor `&MultivariatePolyRingImpl<...>` reference.
+pub type PolyRingType = PolyRingFacade;
 
-/// A multivariate polynomial ring over GF(p) with named variables.
+/// A multivariate polynomial ring GF(p)[x_0, ..., x_{n-1}].
+///
+/// `pr.ring` exposes the legacy "ring methods" surface (a thin facade around
+/// the new `ff::PolyRing` context) so existing call sites such as
+/// `pr.ring.terms(&p)` and `pr.ring.create_term(c, m)` keep compiling.
 pub struct FfPolyRing {
     pub field: FfField,
-    pub ring: PolyRingType,
+    pub ring: PolyRingFacade,
     pub n_vars: usize,
     pub var_names: Vec<String>,
 }
 
 impl FfPolyRing {
-    /// Create a new polynomial ring GF(p)[x0, x1, ..., x_{n-1}].
+    /// Create a new polynomial ring with degrevlex term order.
     pub fn new(field: FfField, var_names: Vec<String>) -> Self {
         let n_vars = var_names.len();
-        // Choose a small multiplication-table size to avoid the O(C(n+d,d)^2)
-        // precomputation cost.  feanor-math's default of (6,8) is wildly
-        // expensive for n_vars >= ~10 (3+ seconds at startup).  Most ZK
-        // circuits we encode have polynomials of total degree <= 2 (linear
-        // constraints + Rabinowitsch quadratic + bitsum), so a table covering
-        // (2, 2) suffices for hot multiplications.  See `ideal::max_supported_deg`
-        // and `ideal::mult_table_bounds` for the shared sizing tables.
-        let max_supported_deg = max_supported_deg(n_vars);
-        let table = mult_table_bounds(n_vars);
-        let ring = MultivariatePolyRingImpl::new_with_mult_table(
+        let ctx = FfPolyRingCtx::new(
             field.field().clone(),
-            n_vars,
-            max_supported_deg,
-            table,
-            Global,
+            var_names.clone(),
+            MonomialOrder::DegRevLex,
         );
+        let ring = PolyRingFacade { ctx };
         FfPolyRing { field, ring, n_vars, var_names }
     }
 
-    /// Get the i-th indeterminate as a polynomial.
+    /// i-th indeterminate as a polynomial.
     pub fn var(&self, index: usize) -> Poly {
-        let mono = self.ring.indeterminate(index);
-        self.ring.create_term(self.field.one(), mono)
+        Polynomial::variable(index, &self.ring.ctx)
     }
 
     /// Constant polynomial from a field element.
     pub fn constant(&self, el: FfEl) -> Poly {
-        self.ring.inclusion().map(el)
+        Polynomial::constant(el, &self.ring.ctx)
     }
 
-    pub fn zero(&self) -> Poly { self.ring.zero() }
-    pub fn one(&self) -> Poly { self.ring.one() }
+    pub fn zero(&self) -> Poly { Polynomial::zero() }
+    pub fn one(&self) -> Poly { Polynomial::constant(self.field.one(), &self.ring.ctx) }
 
-    pub fn add(&self, a: Poly, b: Poly) -> Poly { self.ring.add(a, b) }
-    pub fn sub(&self, a: Poly, b: Poly) -> Poly { self.ring.sub(a, b) }
-    pub fn mul(&self, a: Poly, b: Poly) -> Poly { self.ring.mul(a, b) }
-    pub fn neg(&self, a: Poly) -> Poly { self.ring.negate(a) }
-    pub fn clone_poly(&self, p: &Poly) -> Poly { self.ring.clone_el(p) }
-    pub fn is_zero(&self, p: &Poly) -> bool { self.ring.is_zero(p) }
-
-    /// Get a raw reference to the ring (for advanced operations like pow).
-    pub fn ring(&self) -> &PolyRingType { &self.ring }
+    pub fn add(&self, a: Poly, b: Poly) -> Poly { a.add(&b, &self.ring.ctx) }
+    pub fn sub(&self, a: Poly, b: Poly) -> Poly { a.sub(&b, &self.ring.ctx) }
+    pub fn mul(&self, a: Poly, b: Poly) -> Poly { a.mul(&b, &self.ring.ctx) }
+    pub fn neg(&self, a: Poly) -> Poly { a.negate(&self.ring.ctx) }
+    pub fn clone_poly(&self, p: &Poly) -> Poly { p.clone_poly() }
+    pub fn is_zero(&self, p: &Poly) -> bool { p.is_zero() }
 
     /// Multiply polynomial by a scalar.
     pub fn scale(&self, coeff: FfEl, poly: Poly) -> Poly {
-        let c = self.constant(coeff);
-        self.ring.mul(c, poly)
+        poly.scale(&coeff, &self.ring.ctx)
     }
 
     /// Look up variable index by name.
     pub fn var_index(&self, name: &str) -> Option<usize> {
         self.var_names.iter().position(|n| n == name)
     }
+
+    /// Reference to the underlying `ff::PolyRing` context, for code that
+    /// needs the raw new-style API.
+    pub fn ctx(&self) -> &Arc<FfPolyRingCtx> { &self.ring.ctx }
+}
+
+/// Facade exposing the legacy "ring." method surface used throughout
+/// picus-solver. It holds a shared `Arc<ff::PolyRing>` context and
+/// dispatches calls to the appropriate `Polynomial` / `Monomial` methods.
+pub struct PolyRingFacade {
+    pub ctx: Arc<FfPolyRingCtx>,
+}
+
+impl PolyRingFacade {
+    pub fn n_vars(&self) -> usize { self.ctx.n_vars }
+    pub fn indeterminate_count(&self) -> usize { self.ctx.n_vars }
+
+    pub fn var_names(&self) -> &[String] { &self.ctx.var_names }
+
+    pub fn base_ring(&self) -> &crate::ff::field::PrimeField { &self.ctx.field }
+
+    pub fn field(&self) -> &crate::ff::field::PrimeField { &self.ctx.field }
+
+    /// Build a polynomial holding a single term `coeff * monomial`.
+    pub fn create_term(&self, coeff: FfEl, mono: Monomial) -> Poly {
+        Polynomial::from_terms(vec![(mono, coeff)], &self.ctx)
+    }
+
+    /// Build a polynomial from an iterator of `(coeff, monomial)` pairs.
+    /// The resulting polynomial is canonicalised (terms summed/sorted).
+    pub fn from_terms<I>(&self, terms: I) -> Poly
+    where I: IntoIterator<Item = (FfEl, Monomial)>,
+    {
+        let v: Vec<(Monomial, FfEl)> = terms.into_iter().map(|(c, m)| (m, c)).collect();
+        Polynomial::from_terms(v, &self.ctx)
+    }
+
+    /// Single-variable monomial of degree 1.
+    pub fn indeterminate(&self, index: usize) -> Monomial {
+        let mut e = vec![0u16; self.ctx.n_vars];
+        e[index] = 1;
+        Monomial::from_exponents(e)
+    }
+
+    /// Build a monomial from an exponent slice (legacy callers pass
+    /// `Vec<usize>` — we cast down to `u16`).
+    pub fn create_monomial(&self, exps: impl IntoIterator<Item = usize>) -> Monomial {
+        Monomial::from_exponents(exps.into_iter().map(|e| e as u16).collect())
+    }
+
+    /// Iterator over the terms of `p` in descending order, yielding
+    /// `(coefficient, monomial)` pairs. The monomial is freshly cloned per
+    /// term (cheap; a small `Vec<u16>`).
+    pub fn terms<'a>(&'a self, p: &'a Poly) -> TermsIter<'a> {
+        TermsIter { poly: p, ctx: &self.ctx, idx: 0 }
+    }
+
+    /// Exponent of variable `var` in monomial `m`. Accepts both `&Monomial`
+    /// and `Monomial` (by-value) so callers iterating over `terms()` —
+    /// which yields owned `Monomial` values — can pass `m` directly.
+    pub fn exponent_at<M: std::borrow::Borrow<Monomial>>(&self, m: M, var: usize) -> usize {
+        m.borrow().exponent(var) as usize
+    }
+
+    /// Clone a monomial. Accepts either `&Monomial` or `Monomial`.
+    pub fn clone_monomial<M: std::borrow::Borrow<Monomial>>(&self, m: M) -> Monomial {
+        m.borrow().clone()
+    }
+
+    /// Variables that actually appear in `p`. Returned as a vector of
+    /// variable indices in ascending order. (The legacy feanor API returned
+    /// a vector of `(index, max_degree)` pairs; callers in our codebase
+    /// only ever use `.is_empty()` or iterate, so we return a simpler
+    /// shape — wrapped in a thin newtype to support both patterns.)
+    pub fn appearing_indeterminates(&self, p: &Poly) -> AppearingVars {
+        AppearingVars { vars: p.appearing_variables(&self.ctx) }
+    }
+
+    /// Coefficient of `m` inside `p`. Linear scan (used rarely; performance
+    /// non-critical).
+    pub fn coefficient_at(&self, p: &Poly, m: &Monomial) -> FfEl {
+        for t in p.terms(&self.ctx) {
+            if t.monomial() == *m {
+                return self.ctx.field.clone_el(t.coefficient());
+            }
+        }
+        self.ctx.field.zero()
+    }
+
+    pub fn add(&self, a: Poly, b: Poly) -> Poly { a.add(&b, &self.ctx) }
+    pub fn sub(&self, a: Poly, b: Poly) -> Poly { a.sub(&b, &self.ctx) }
+    pub fn mul(&self, a: Poly, b: Poly) -> Poly { a.mul(&b, &self.ctx) }
+    pub fn negate(&self, a: Poly) -> Poly { a.negate(&self.ctx) }
+    pub fn clone_el(&self, p: &Poly) -> Poly { p.clone_poly() }
+    pub fn is_zero(&self, p: &Poly) -> bool { p.is_zero() }
+    pub fn zero(&self) -> Poly { Polynomial::zero() }
+    pub fn one(&self) -> Poly { Polynomial::constant(self.ctx.field.one(), &self.ctx) }
+
+    /// `*acc += other`. Replaces `acc` in-place. Provided for compatibility
+    /// with feanor's `RingBase::add_assign`.
+    pub fn add_assign(&self, acc: &mut Poly, other: Poly) {
+        let new = std::mem::replace(acc, Polynomial::zero()).add(&other, &self.ctx);
+        *acc = new;
+    }
+
+    /// `*acc -= other`.
+    pub fn sub_assign(&self, acc: &mut Poly, other: Poly) {
+        let new = std::mem::replace(acc, Polynomial::zero()).sub(&other, &self.ctx);
+        *acc = new;
+    }
+}
+
+/// Iterator type returned by `PolyRingFacade::terms`. Each item is a
+/// `(coefficient_ref, monomial)` pair.
+pub struct TermsIter<'a> {
+    poly: &'a Poly,
+    ctx: &'a Arc<FfPolyRingCtx>,
+    idx: usize,
+}
+
+impl<'a> Iterator for TermsIter<'a> {
+    type Item = (&'a FfEl, Monomial);
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.idx >= self.poly.num_terms() { return None; }
+        let t = self.poly.term(self.idx, self.ctx);
+        let m = t.monomial();
+        // Coefficient is a stable reference into `poly`.
+        let c = t.coefficient();
+        // Erase the temporary lifetime of `t` and re-borrow `c` from the
+        // longer-lived `poly`. This is sound because `poly` outlives the
+        // iterator, and the coefficient slice is part of `poly`'s storage.
+        let c_long: &'a FfEl = unsafe { &*(c as *const FfEl) };
+        self.idx += 1;
+        Some((c_long, m))
+    }
+}
+
+/// Wrapper over the list of variables appearing in a polynomial. Supports
+/// both `.is_empty()` and iteration over `usize` variable indices.
+pub struct AppearingVars {
+    vars: Vec<(usize, u16)>,
+}
+
+impl AppearingVars {
+    pub fn is_empty(&self) -> bool { self.vars.is_empty() }
+    pub fn len(&self) -> usize { self.vars.len() }
+    pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        self.vars.iter().map(|(v, _)| *v)
+    }
+    pub fn into_iter(self) -> impl Iterator<Item = usize> {
+        self.vars.into_iter().map(|(v, _)| v)
+    }
+    /// Access the underlying `(var_index, max_degree)` pair at position `i`.
+    /// Provided for legacy `appearing[0]` indexing.
+    pub fn get(&self, i: usize) -> (usize, usize) {
+        let (v, d) = self.vars[i];
+        (v, d as usize)
+    }
+}
+
+impl std::ops::Index<usize> for AppearingVars {
+    type Output = (usize, u16);
+    fn index(&self, i: usize) -> &(usize, u16) { &self.vars[i] }
+}
+
+impl<'a> IntoIterator for &'a AppearingVars {
+    type Item = &'a (usize, u16);
+    type IntoIter = std::slice::Iter<'a, (usize, u16)>;
+    fn into_iter(self) -> Self::IntoIter { self.vars.iter() }
 }
 
 #[cfg(test)]
