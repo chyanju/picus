@@ -1,6 +1,6 @@
 //! Buchberger's algorithm and the Ideal abstraction.
 //!
-//! Implementation notes (matching CoCoA from the start, per Plan v3 findings):
+//! Implementation notes (designed to match CoCoA's strategy from the start):
 //!
 //! * **One-at-a-time S-pair processing** (D1) — pop the single lowest-sugar pair per iteration.
 //! * **`(sugar, lcm_deg, age)` ordering** for the priority queue.
@@ -11,10 +11,9 @@
 //! * **No restart heuristic** (D6) — never restart.
 //! * **DivMask** acceleration for fast divisibility rejection.
 //! * **Sugar degree** with running updates during reduction (GMNR style).
-//! * **Gebauer-Möller criteria** (chain + product) for S-pair pruning.
+//! * **Gebauer-Möller M-criterion + product criterion** for S-pair pruning at
+//!   pair-generation time (CoCoA `myGMInsert`, `myBuildNewPairs`).
 
-use std::collections::BinaryHeap;
-use std::cmp::Reverse;
 use std::sync::Arc;
 
 use crate::timeout::CancelToken;
@@ -217,13 +216,117 @@ impl Polynomial {
     }
 }
 
+// ──────────────────── S-pair queue helpers (GM, merge) ────────────────────
+
+/// Gebauer-Möller M-criterion insertion (CoCoA `myGMInsert`,
+/// TmpGReductor.C:448-482).
+///
+/// In the M-criterion a pair with a *smaller* lcm dominates pairs with
+/// larger lcms — `lcm(LT_a, LT_b)` dividing `lcm(LT_c, LT_d)` means the
+/// (a,b) pair makes (c,d) redundant. So:
+///   * If `LCM(existing) | LCM(P)`: existing dominates P, P is dropped.
+///     Special case (LCMs equal): if existing is non-coprime and P is
+///     coprime, replace existing with P. Coprime pairs get dropped by the
+///     product criterion downstream, so swapping a non-coprime owner for a
+///     coprime one for the same lcm eliminates the work entirely
+///     (CoCoA TmpGReductor.C:464-468).
+///   * Else if `LCM(P) | LCM(existing)`: P dominates existing, erase
+///     existing.
+///
+/// On exit the list is left in arbitrary order; callers sort it before
+/// merging.
+fn gm_insert(list: &mut Vec<SPair>, pair: SPair) {
+    let mut to_insert = Some(pair);
+    let mut dominated = false;
+    let mut idx = 0;
+    while idx < list.len() {
+        let p_ref = match &to_insert {
+            Some(p) => p,
+            None => break,
+        };
+        let existing = &list[idx];
+        // Existing dominates P iff LCM(existing) divides LCM(P).
+        let existing_dominates =
+            existing.lcm_divmask.divides_consistent_with(p_ref.lcm_divmask)
+                && existing.lcm.divides(&p_ref.lcm);
+        if existing_dominates {
+            let same_lcm = p_ref.lcm == existing.lcm;
+            if same_lcm && !existing.is_coprime && p_ref.is_coprime {
+                list[idx] = to_insert.take().unwrap();
+            }
+            dominated = true;
+            break;
+        }
+        // Otherwise check if P strictly dominates existing.
+        let p_dominates =
+            p_ref.lcm_divmask.divides_consistent_with(existing.lcm_divmask)
+                && p_ref.lcm.divides(&existing.lcm);
+        if p_dominates {
+            // P strictly dominates (equality was handled above). Erase
+            // existing without advancing idx — swap_remove brings a
+            // not-yet-checked element into position idx.
+            list.swap_remove(idx);
+            continue;
+        }
+        idx += 1;
+    }
+    if !dominated {
+        if let Some(p) = to_insert {
+            list.push(p);
+        }
+    }
+}
+
+/// Merge `incoming` (sorted descending) into `dst` (also sorted descending),
+/// preserving descending order. O(n + m).
+fn merge_sorted_descending(dst: &mut Vec<SPair>, incoming: Vec<SPair>) {
+    if incoming.is_empty() {
+        return;
+    }
+    if dst.is_empty() {
+        *dst = incoming;
+        return;
+    }
+    let mut out: Vec<SPair> = Vec::with_capacity(dst.len() + incoming.len());
+    let old = std::mem::take(dst);
+    let mut a = old.into_iter().peekable();
+    let mut b = incoming.into_iter().peekable();
+    loop {
+        match (a.peek(), b.peek()) {
+            (Some(x), Some(y)) => {
+                // descending: take the larger first
+                if x.cmp(y) == std::cmp::Ordering::Greater {
+                    out.push(a.next().unwrap());
+                } else {
+                    out.push(b.next().unwrap());
+                }
+            }
+            (Some(_), None) => {
+                out.extend(a);
+                break;
+            }
+            (None, Some(_)) => {
+                out.extend(b);
+                break;
+            }
+            (None, None) => break,
+        }
+    }
+    *dst = out;
+}
+
 // ────────────────────────────── Buchberger ─────────────────────────────────
 
 struct BuchbergerState {
     ring: Arc<PolyRing>,
     cfg: BuchbergerConfig,
     basis: Vec<BasisElement>,
-    open: BinaryHeap<Reverse<SPair>>,
+    /// Pending S-pairs sorted in **descending** `ordering_key` order so
+    /// `Vec::pop()` returns the smallest pair (lowest sugar, then lcm_deg,
+    /// then age). Held as a sorted vector — not a heap — because the GM
+    /// M-criterion needs to walk and mutate the list during pair insertion
+    /// (CoCoA's `GPairList`).
+    open: Vec<SPair>,
     age_counter: u64,
     generation: u32,
     /// True once a constant (nonzero) has entered the basis.
@@ -236,7 +339,7 @@ impl BuchbergerState {
             ring,
             cfg,
             basis: Vec::new(),
-            open: BinaryHeap::new(),
+            open: Vec::new(),
             age_counter: 0,
             generation: 0,
             trivial: false,
@@ -313,26 +416,32 @@ impl BuchbergerState {
     }
 
     fn generate_pairs_against(&mut self, new_idx: usize, new_lt: &Monomial, new_sugar: u32) {
+        // NOTE: We do NOT skip deactivated basis elements here. Non-strict
+        // deactivation means a deactivated element's leading term still
+        // contributes S-pair obligations: pending pairs against it must
+        // remain in the queue (handled at pop time), and *new* pairs
+        // generated when adding later elements are required for the GM
+        // criterion to be sound.
+        //
+        // Algorithm (mirrors CoCoA `myBuildNewPairs` / `myGMInsert` in
+        // TmpGReductor.C):
+        //   1. Build pairs (k, new) for every existing basis element, including
+        //      coprime pairs — the M-criterion uses them as dominators.
+        //   2. Apply GM M-criterion via `gm_insert` so a new pair is dropped
+        //      if any existing pair's LCM divides it (and vice versa).
+        //   3. After all pairs are GM-inserted, drop coprime pairs (Buchberger
+        //      product criterion: their S-poly reduces to zero by construction).
+        //   4. Merge the surviving sorted-descending into `self.open`.
+        let mut new_pairs: Vec<SPair> = Vec::with_capacity(new_idx);
         for k in 0..new_idx {
-            // NOTE: We do NOT skip deactivated basis elements here. Non-strict
-            // deactivation means a deactivated element's leading term still
-            // contributes S-pair obligations: pending pairs against it must
-            // remain in the queue (handled at pop time), and *new* pairs
-            // generated when adding later elements are required for the chain
-            // criterion to be sound. Skipping inactive elements here was a
-            // soundness bug: it caused the chain criterion at pop time to
-            // discard pairs that referenced an LT k whose own (i,k)/(j,k)
-            // S-pairs had never been generated, producing incomplete GBs.
-            // Product criterion: if the LMs are coprime, the S-pair reduces to zero.
-            if new_lt.is_coprime(&self.basis[k].lt) {
-                continue;
-            }
-            let lcm = new_lt.lcm(&self.basis[k].lt);
+            let basis_k_lt = &self.basis[k].lt;
+            let lcm = new_lt.lcm(basis_k_lt);
             let lcm_divmask = self.ring.divmask.compute(&lcm);
             let lcm_deg = lcm.total_degree();
+            let is_coprime = new_lt.is_coprime(basis_k_lt);
             // Sugar = max(sugar(new) + (lcm - new_lt), sugar(k) + (lcm - k_lt))
             let s_new = new_sugar + (lcm_deg - new_lt.total_degree());
-            let s_k = self.basis[k].sugar + (lcm_deg - self.basis[k].lt.total_degree());
+            let s_k = self.basis[k].sugar + (lcm_deg - basis_k_lt.total_degree());
             let sugar = s_new.max(s_k);
             self.age_counter += 1;
             let pair = SPair {
@@ -344,9 +453,17 @@ impl BuchbergerState {
                 lcm_deg,
                 age: self.age_counter,
                 generation: self.generation,
+                is_coprime,
             };
-            self.open.push(Reverse(pair));
+            gm_insert(&mut new_pairs, pair);
         }
+        // Coprime criterion: drop coprime pairs now that GM is done with them.
+        new_pairs.retain(|p| !p.is_coprime);
+        // Merge into self.open while keeping descending sort (so pop_back
+        // returns the smallest pair). new_pairs is currently in arbitrary
+        // order from `gm_insert`; sort it once, then merge.
+        new_pairs.sort_by(|a, b| b.cmp(a));
+        merge_sorted_descending(&mut self.open, new_pairs);
     }
 
     fn active_polys(&self) -> Vec<Polynomial> {
@@ -377,12 +494,11 @@ impl BuchbergerState {
     /// invariants — including `Checkpoint::active_snapshot` — remain stable
     /// because we never resize `self.basis`).
     ///
-    /// This is the periodic "interreduce-during-incremental-GB" hook that
-    /// Plan v4 Task 08 relies on: without it, the basis grows monotonically
-    /// across `add_generators` calls because D3 only deactivates strictly
-    /// dominated elements but does not shrink tail-redundancy in surviving
-    /// polynomials, which makes every subsequent `reduce_by_refs` quadratically
-    /// more expensive.
+    /// This is the periodic "interreduce-during-incremental-GB" hook:
+    /// without it, the basis grows monotonically across `add_generators`
+    /// calls because D3 only deactivates strictly dominated elements but
+    /// does not shrink tail-redundancy in surviving polynomials, which
+    /// makes every subsequent `reduce_by_refs` quadratically more expensive.
     fn tail_reduce_active(&mut self) {
         // Snapshot the active indices and clone their polys ONCE into a
         // workspace. We then reduce each workspace[i] by &workspace[j] for
@@ -447,29 +563,27 @@ impl BuchbergerState {
         // Periodic in-loop tail-reduction throttle: after every
         // INTERREDUCE_EVERY new basis additions, run `tail_reduce_active`.
         // This keeps the active basis "thin" so subsequent S-pair reductions
-        // in `reduce_by_refs` don't grow quadratically (Plan v4 Task 08).
+        // in `reduce_by_refs` don't grow quadratically.
         const INTERREDUCE_EVERY: usize = 32;
         let mut adds_since_interreduce: usize = 0;
-        while let Some(Reverse(pair)) = self.open.pop() {
+        // self.open is sorted descending — `pop()` returns the smallest pair
+        // (lowest sugar, then lcm_deg, then age).
+        while let Some(pair) = self.open.pop() {
             self.check_cancel()?;
 
             // Skip pairs from earlier generations (incremental support).
             if pair.generation < self.generation { continue; }
-            // Non-strict deactivation (D3): we still process pending S-pairs even
-            // if one of the basis elements was later deactivated, because those
-            // S-pairs were generated when the element was active and are still
-            // required for completeness.
-            // NOTE: Chain criterion (Buchberger's criterion 2) was removed:
-            // our previous implementation only checked `lt(k) | lcm(i,j)`
-            // without verifying that the substitute pairs (i,k) and (j,k)
-            // were actually present and discharged. With non-strict
-            // deactivation that prerequisite cannot be guaranteed cheaply,
-            // and the simplified version produced incomplete GBs (e.g.
-            // {ab-1, a-2, b-2} over GF(5) wrongly returned non-trivial).
-            // Product criterion alone is sound and is applied at generation
-            // time. Re-introducing a sound chain criterion (e.g. full
-            // Gebauer-Möller update) is left for a future change.
-            // if self.chain_criterion_skip(&pair) { continue; }
+            // Non-strict deactivation (D3): we still process pending S-pairs
+            // even if one of the basis elements was later deactivated.
+            // Product criterion + GM M-criterion are now applied at pair
+            // generation time (see `generate_pairs_against` /
+            // `gm_insert`), so coprime/dominated pairs never reach this loop.
+            // Chain criterion (Buchberger's 2nd) is still NOT applied here:
+            // a previous attempt produced incomplete GBs (it only checked
+            // `lt(k) | lcm(i,j)` without verifying the substitute pairs were
+            // discharged). Re-introducing a sound version would require
+            // CoCoA's `BCriterion` (TmpGReductor.C:`myApplyBCriterion`) and
+            // is left for a future plan.
 
             // Build the S-polynomial: (lcm/LT_i) * f_i - (lcm/LT_j) * f_j
             let bi = &self.basis[pair.i];
@@ -487,8 +601,8 @@ impl BuchbergerState {
 
             // Reduce against the current ACTIVE basis (one-at-a-time).
             // Use ref-based reduce to avoid cloning every active polynomial
-            // for each S-pair (this is the dominant cost on
-            // chunkedadd1-class benchmarks per profiler — Task 08).
+            // for each S-pair — this was the dominant per-call cost on
+            // dense-ideal benchmarks (e.g. chunkedadd1) under the profiler.
             let active_refs: Vec<&Polynomial> = self.basis.iter()
                 .filter(|e| e.active)
                 .map(|e| &e.poly)
@@ -555,9 +669,8 @@ impl BuchbergerState {
 
 // ──────────────────────────── Incremental GB ────────────────────────────────
 //
-// Provides push/pop semantics. Implementation is intentionally simple in this
-// task and refined in Task 06: each `push` records the basis length and S-pair
-// queue contents; `pop` truncates the basis and rebuilds the queue.
+// Provides push/pop semantics. Each `push` records the basis length and the
+// S-pair queue contents; `pop` truncates the basis and restores the queue.
 
 #[derive(Clone, Debug)]
 struct Checkpoint {
@@ -568,8 +681,10 @@ struct Checkpoint {
     active_snapshot: Vec<bool>,
     /// Generation at this level — bumped on `pop`.
     generation: u32,
-    /// Saved heap snapshot. Simple but correct; can be replaced with generation tagging in Task 06.
-    saved_open: Vec<Reverse<SPair>>,
+    /// Snapshot of the open S-pair queue (sorted descending, same convention
+    /// as `BuchbergerState::open`). Simple but correct; could be replaced
+    /// with generation tagging in a future plan.
+    saved_open: Vec<SPair>,
     age_counter: u64,
     trivial: bool,
 }
@@ -594,7 +709,7 @@ impl IncrementalGB {
         self.state.add_generators(polys, &mut obs)?;
         self.state.run(&mut obs)?;
         // Tail-reduce the active basis to prevent monotonic growth across
-        // successive `add_generators` calls (Task 08 hot path).
+        // successive `add_generators` calls (a hot path under profiling).
         if !self.state.trivial {
             self.state.tail_reduce_active();
         }
@@ -618,15 +733,15 @@ impl IncrementalGB {
         Ok(self.state.trivial)
     }
 
-    /// Save a checkpoint for backtracking. Cost: O(basis_len + open_len log open_len)
-    /// due to cloning the S-pair queue. Generation tagging would make this O(1).
+    /// Save a checkpoint for backtracking. Cost: O(basis_len + open_len)
+    /// (clones the S-pair vector — already sorted, no extra ordering work).
     pub fn push(&mut self) {
         let active_snapshot: Vec<bool> = self.state.basis.iter().map(|e| e.active).collect();
         self.trail.push(Checkpoint {
             basis_len: self.state.basis.len(),
             active_snapshot,
             generation: self.state.generation,
-            saved_open: self.state.open.clone().into_sorted_vec(),
+            saved_open: self.state.open.clone(),
             age_counter: self.state.age_counter,
             trivial: self.state.trivial,
         });
@@ -643,11 +758,8 @@ impl IncrementalGB {
                     self.state.basis[idx].active = was_active;
                 }
             }
-            // Restore S-pair queue.
-            self.state.open.clear();
-            for sp in cp.saved_open {
-                self.state.open.push(sp);
-            }
+            // Restore S-pair queue (already sorted descending).
+            self.state.open = cp.saved_open;
             self.state.age_counter = cp.age_counter;
             self.state.generation = cp.generation;
             self.state.trivial = cp.trivial;
@@ -974,5 +1086,79 @@ mod tests {
         // After pop, we should be back to the previous state.
         assert_eq!(igb.basis().len(), basis_pre);
         assert!(!igb.is_trivial());
+    }
+
+    fn mk_pair(lcm_exps: Vec<u16>, age: u64, is_coprime: bool, ring: &PolyRing) -> SPair {
+        let lcm = Monomial::from_exponents(lcm_exps);
+        let lcm_divmask = ring.divmask.compute(&lcm);
+        let lcm_deg = lcm.total_degree();
+        SPair {
+            i: 0,
+            j: 0,
+            sugar: lcm_deg,
+            lcm,
+            lcm_divmask,
+            lcm_deg,
+            age,
+            generation: 0,
+            is_coprime,
+        }
+    }
+
+    #[test]
+    fn gm_insert_smaller_lcm_dominates_larger() {
+        // (x*y) dominates (x*y*z) since x*y | x*y*z.
+        let r = ring(3);
+        let mut list: Vec<SPair> = Vec::new();
+        gm_insert(&mut list, mk_pair(vec![1, 1, 0], 1, false, &r));
+        // Inserting (x*y*z) — should be dominated and dropped.
+        gm_insert(&mut list, mk_pair(vec![1, 1, 1], 2, false, &r));
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].lcm.exponents(), &[1, 1, 0]);
+    }
+
+    #[test]
+    fn gm_insert_larger_lcm_evicted_by_smaller() {
+        // Insert (x*y*z) first, then (x*y) — the smaller dominates and evicts.
+        let r = ring(3);
+        let mut list: Vec<SPair> = Vec::new();
+        gm_insert(&mut list, mk_pair(vec![1, 1, 1], 1, false, &r));
+        gm_insert(&mut list, mk_pair(vec![1, 1, 0], 2, false, &r));
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].lcm.exponents(), &[1, 1, 0]);
+    }
+
+    #[test]
+    fn gm_insert_unrelated_lcms_both_kept() {
+        // (x*y) and (y*z) are incomparable — both should remain.
+        let r = ring(3);
+        let mut list: Vec<SPair> = Vec::new();
+        gm_insert(&mut list, mk_pair(vec![1, 1, 0], 1, false, &r));
+        gm_insert(&mut list, mk_pair(vec![0, 1, 1], 2, false, &r));
+        assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn gm_insert_equal_lcm_prefers_coprime() {
+        // Equal LCMs: existing non-coprime, P coprime → existing replaced by P.
+        let r = ring(3);
+        let mut list: Vec<SPair> = Vec::new();
+        gm_insert(&mut list, mk_pair(vec![1, 1, 0], 1, false, &r));
+        gm_insert(&mut list, mk_pair(vec![1, 1, 0], 2, true, &r));
+        assert_eq!(list.len(), 1);
+        // The coprime pair (age=2) should now occupy the slot.
+        assert_eq!(list[0].age, 2);
+        assert!(list[0].is_coprime);
+    }
+
+    #[test]
+    fn gm_insert_equal_lcm_keeps_existing_otherwise() {
+        // Equal LCMs but coprime conditions don't trigger replacement → P dropped.
+        let r = ring(3);
+        let mut list: Vec<SPair> = Vec::new();
+        gm_insert(&mut list, mk_pair(vec![1, 1, 0], 1, true, &r));
+        gm_insert(&mut list, mk_pair(vec![1, 1, 0], 2, false, &r));
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].age, 1);
     }
 }

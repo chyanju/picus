@@ -295,7 +295,7 @@ pub fn split_zero_extend<'r>(
 /// Uses an explicit stack instead of recursion to avoid stack overflow
 /// on deep searches (matching cvc5's iterative `splitZeroExtend`).
 ///
-/// CDCL-lite enhancements (Task 07):
+/// CDCL-lite enhancements:
 ///   * **Phase saving**: when a frame is popped, the partial assignment's
 ///     last-assigned `(var, val)` is remembered in `saved_phase`. When a
 ///     future `Brancher::Roots(v)` is constructed for the same variable,
@@ -562,9 +562,9 @@ pub fn split_zero_extend_cancel<'r>(
             };
             if lin_ideal.is_whole_ring() {
                 // Linear basis alone is UNSAT — record full partial assignment
-                // as nogood. (Task 07 #3 backjump/projection deferred — the
-                // IGB-driven variant regressed binadd1 due to per-candidate
-                // observer overhead and lost interreduction.)
+                // as a nogood. (Backjumping / projection deferred: an
+                // earlier IGB-driven variant regressed `binadd1` due to
+                // per-candidate observer overhead and lost interreduction.)
                 if nogoods.len() < MAX_NOGOODS {
                     nogoods.push(point_to_map(&new_r, &poly_ring.field));
                 }

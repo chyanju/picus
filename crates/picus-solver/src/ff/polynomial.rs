@@ -523,22 +523,131 @@ impl Polynomial {
         self.reduce_by_refs(&refs, ring)
     }
 
+    /// Fused merge of `self[cursor+1..]` with `divisor[1..] * (shift, neg_coeff)`.
+    ///
+    /// The leading terms cancel by construction (the divisor was chosen so that
+    /// `LT(divisor) * shift == LT(self[cursor])`), so both are skipped.
+    /// Only used by `reduce_by_refs_naive`, which is itself a cross-validation
+    /// reference for the geobucket-based `reduce_by_refs`.
+    ///
+    /// `shift[k] = lt_exps[k] - d_lt_exps[k]` (the monomial multiplier).
+    #[cfg(test)]
+    fn merge_sub_scaled_tail(
+        &self,
+        cursor: usize,
+        divisor: &Polynomial,
+        shift: &[u16],
+        neg_coeff: &FieldElem,
+        ring: &PolyRing,
+    ) -> Polynomial {
+        let n = ring.n_vars;
+        let self_start = cursor + 1;
+        let self_len = self.coeffs.len();
+        let div_len = divisor.coeffs.len();
+        // Divisor term 0 is the LT that cancels; iterate from term 1.
+        let div_start = 1usize;
+
+        let cap = (self_len - self_start) + (div_len - div_start);
+        let mut out_exps: Vec<u16> = Vec::with_capacity(cap * n);
+        let mut out_coeffs: Vec<FieldElem> = Vec::with_capacity(cap);
+        let mut out_degs: Vec<u32> = Vec::with_capacity(cap);
+
+        let shift_deg: u32 = shift.iter().map(|&e| e as u32).sum();
+
+        let mut si = self_start;
+        let mut di = div_start;
+
+        // Temporary buffer for shifted divisor exponents (reused across iterations).
+        let mut shifted = vec![0u16; n];
+
+        while si < self_len && di < div_len {
+            let se = &self.exponents[si * n..(si + 1) * n];
+            let sd = self.total_degs[si];
+
+            // Compute shifted divisor exponents inline.
+            let de_base = &divisor.exponents[di * n..(di + 1) * n];
+            let dd = divisor.total_degs[di] + shift_deg;
+            for k in 0..n {
+                shifted[k] = de_base[k] + shift[k];
+            }
+
+            match Self::cmp_term_at(se, sd, &shifted, dd, ring.order) {
+                Ordering::Greater => {
+                    out_exps.extend_from_slice(se);
+                    out_coeffs.push(self.coeffs[si].clone());
+                    out_degs.push(sd);
+                    si += 1;
+                }
+                Ordering::Less => {
+                    out_exps.extend_from_slice(&shifted);
+                    out_coeffs.push(ring.field.mul(&divisor.coeffs[di], neg_coeff));
+                    out_degs.push(dd);
+                    di += 1;
+                }
+                Ordering::Equal => {
+                    // Same monomial — add coefficients (self + neg_coeff * divisor).
+                    let dc = ring.field.mul(&divisor.coeffs[di], neg_coeff);
+                    let s = ring.field.add(&self.coeffs[si], &dc);
+                    if !ring.field.is_zero(&s) {
+                        out_exps.extend_from_slice(se);
+                        out_coeffs.push(s);
+                        out_degs.push(sd);
+                    }
+                    si += 1;
+                    di += 1;
+                }
+            }
+        }
+
+        // Drain remaining self terms.
+        while si < self_len {
+            let se = &self.exponents[si * n..(si + 1) * n];
+            out_exps.extend_from_slice(se);
+            out_coeffs.push(self.coeffs[si].clone());
+            out_degs.push(self.total_degs[si]);
+            si += 1;
+        }
+
+        // Drain remaining divisor terms (shifted + scaled).
+        while di < div_len {
+            let de_base = &divisor.exponents[di * n..(di + 1) * n];
+            let dd = divisor.total_degs[di] + shift_deg;
+            for k in 0..n {
+                shifted[k] = de_base[k] + shift[k];
+            }
+            out_exps.extend_from_slice(&shifted);
+            out_coeffs.push(ring.field.mul(&divisor.coeffs[di], neg_coeff));
+            out_degs.push(dd);
+            di += 1;
+        }
+
+        Polynomial { exponents: out_exps, coeffs: out_coeffs, total_degs: out_degs }
+    }
+
     /// Like `reduce_by` but takes references to divisors — avoids cloning
     /// the divisor list when the caller already holds polynomials inside
     /// some larger container (e.g. `BuchbergerState::basis`).
+    ///
+    /// Geobucket-based accumulator (Yan 1998), matching CoCoA's
+    /// `ChooseReductionCogGeobucket` strategy used in `myReduce` /
+    /// `myReduceTail`. Each reduction step is O(D × log(N/D)) where D is the
+    /// divisor length and N is the running tail size.
     pub fn reduce_by_refs(&self, divisors: &[&Polynomial], ring: &PolyRing) -> Polynomial {
         if self.is_zero() || divisors.is_empty() {
             return self.clone();
         }
+        self.reduce_by_refs_geobucket(divisors, ring)
+    }
+
+    /// Geobucket-based reduction. Public for testing — production code should
+    /// go through `reduce_by_refs` so the dispatch (currently always geobucket)
+    /// stays in one place.
+    pub(crate) fn reduce_by_refs_geobucket(
+        &self,
+        divisors: &[&Polynomial],
+        ring: &PolyRing,
+    ) -> Polynomial {
         let n = ring.n_vars;
-        let mut current = self.clone();
-        // Cursor into `current`: terms before `cursor` have been peeled off
-        // into `result_terms`. This avoids O(len) drain/remove(0) on every
-        // "no reducer found" step — advancing the cursor is O(1).
-        let mut cursor: usize = 0;
-        let mut result_exps: Vec<u16> = Vec::new();
-        let mut result_coeffs: Vec<FieldElem> = Vec::new();
-        let mut result_degs: Vec<u32> = Vec::new();
 
         // Precompute leading exponents/coeffs/divmasks for divisors.
         use super::divmask::DivMask;
@@ -555,12 +664,16 @@ impl Polynomial {
             })
             .collect();
 
-        while cursor < current.coeffs.len() {
-            let lt_exps: &[u16] = &current.exponents[cursor * n..(cursor + 1) * n];
-            let lt_deg = current.total_degs[cursor];
-            let cur_dm = ring.divmask.compute_from_slice(lt_exps);
+        let mut gb = super::geobucket::Geobucket::from_poly(self.clone(), ring);
+        let mut result_exps: Vec<u16> = Vec::new();
+        let mut result_coeffs: Vec<FieldElem> = Vec::new();
+        let mut result_degs: Vec<u32> = Vec::new();
+        let mut shift = vec![0u16; n];
 
-            // Find a divisor whose LM divides current's LM.
+        while let Some((lt_exps, lt_deg, lt_coeff)) = gb.pop_leading_term() {
+            let cur_dm = ring.divmask.compute_from_slice(&lt_exps);
+
+            // Find a divisor whose LM divides (lt_exps, lt_deg).
             let mut chosen: Option<usize> = None;
             for (di, lt_opt) in div_lt.iter().enumerate() {
                 if let Some((d_exps, d_deg, _, d_dm)) = lt_opt {
@@ -586,26 +699,98 @@ impl Polynomial {
 
             if let Some(di) = chosen {
                 let (d_exps, _d_deg, d_lc, _) = div_lt[di].as_ref().unwrap();
-                let lt_coeff = current.coeffs[cursor].clone();
                 let coeff_ratio = ring.field.div(&lt_coeff, d_lc).expect("nonzero divisor LC");
                 let neg_coeff = ring.field.neg(&coeff_ratio);
-                let mut mul_exps = vec![0u16; n];
+                // shift = lt_exps - d_exps (monomial multiplier).
                 for k in 0..n {
-                    mul_exps[k] = lt_exps[k] - d_exps[k];
+                    shift[k] = lt_exps[k] - d_exps[k];
                 }
-                let scaled = divisors[di].mul_term(&mul_exps, &neg_coeff, ring);
-                // Build a "tail" polynomial from cursor onward, add the scaled
-                // divisor, and replace current. The terms before cursor have
-                // already been moved to result_terms.
-                let tail = Polynomial::from_raw_sorted(
-                    current.exponents[cursor * n..].to_vec(),
-                    current.coeffs[cursor..].to_vec(),
-                    current.total_degs[cursor..].to_vec(),
+                // The leading term of `neg_coeff * x^shift * divisor` exactly
+                // cancels the leading term we just popped (by construction),
+                // so we only need to add divisor[1..] scaled by (shift, neg_coeff).
+                gb.sub_scaled_tail(&shift, &neg_coeff, divisors[di]);
+            } else {
+                // No reducer — leading term survives in the remainder.
+                result_exps.extend_from_slice(&lt_exps);
+                result_coeffs.push(lt_coeff);
+                result_degs.push(lt_deg);
+            }
+        }
+
+        Polynomial::from_raw_sorted(result_exps, result_coeffs, result_degs)
+    }
+
+    /// Single-vector reduction with fused `merge_sub_scaled_tail`. Retained
+    /// as the cross-validation reference for the geobucket-based
+    /// `reduce_by_refs`; only compiled under `cfg(test)`.
+    #[cfg(test)]
+    pub(crate) fn reduce_by_refs_naive(&self, divisors: &[&Polynomial], ring: &PolyRing) -> Polynomial {
+        if self.is_zero() || divisors.is_empty() {
+            return self.clone();
+        }
+        let n = ring.n_vars;
+        let mut current = self.clone();
+        let mut cursor: usize = 0;
+        let mut result_exps: Vec<u16> = Vec::new();
+        let mut result_coeffs: Vec<FieldElem> = Vec::new();
+        let mut result_degs: Vec<u32> = Vec::new();
+
+        use super::divmask::DivMask;
+        let div_lt: Vec<Option<(Vec<u16>, u32, FieldElem, DivMask)>> = divisors
+            .iter()
+            .map(|d| {
+                if let Some(lt) = d.leading_term(ring) {
+                    let mon = lt.monomial();
+                    let dm = ring.divmask.compute(&mon);
+                    Some((lt.exponents().to_vec(), lt.total_degree(), lt.coefficient().clone(), dm))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        while cursor < current.coeffs.len() {
+            let lt_exps: &[u16] = &current.exponents[cursor * n..(cursor + 1) * n];
+            let lt_deg = current.total_degs[cursor];
+            let cur_dm = ring.divmask.compute_from_slice(lt_exps);
+
+            let mut chosen: Option<usize> = None;
+            for (di, lt_opt) in div_lt.iter().enumerate() {
+                if let Some((d_exps, d_deg, _, d_dm)) = lt_opt {
+                    if *d_deg > lt_deg {
+                        continue;
+                    }
+                    if !d_dm.divides_consistent_with(cur_dm) {
+                        continue;
+                    }
+                    let mut divides = true;
+                    for k in 0..n {
+                        if d_exps[k] > lt_exps[k] {
+                            divides = false;
+                            break;
+                        }
+                    }
+                    if divides {
+                        chosen = Some(di);
+                        break;
+                    }
+                }
+            }
+
+            if let Some(di) = chosen {
+                let (d_exps, _d_deg, d_lc, _) = div_lt[di].as_ref().unwrap();
+                let lt_coeff = &current.coeffs[cursor];
+                let coeff_ratio = ring.field.div(lt_coeff, d_lc).expect("nonzero divisor LC");
+                let neg_coeff = ring.field.neg(&coeff_ratio);
+                let mut shift = vec![0u16; n];
+                for k in 0..n {
+                    shift[k] = lt_exps[k] - d_exps[k];
+                }
+                current = current.merge_sub_scaled_tail(
+                    cursor, divisors[di], &shift, &neg_coeff, ring,
                 );
-                current = tail.add(&scaled, ring);
                 cursor = 0;
             } else {
-                // No reducer — peel off the leading term to result (O(1)).
                 result_exps.extend_from_slice(&current.exponents[cursor * n..(cursor + 1) * n]);
                 result_coeffs.push(current.coeffs[cursor].clone());
                 result_degs.push(current.total_degs[cursor]);
@@ -718,6 +903,89 @@ mod tests {
         let lt = nf.leading_term(&r).unwrap();
         assert_eq!(lt.exponents(), &[1, 0, 0]);
         assert_eq!(*lt.coefficient(), f.from_u64(1));
+    }
+
+    #[test]
+    fn reduce_by_refs_geobucket_matches_naive() {
+        // Build a non-trivial reduction: a polynomial with multiple terms
+        // reducible by several divisors, requiring many reduction steps.
+        let r = small_ring();
+        let f = &r.field;
+        // Divisors: x^3 - 2*y, x*y - z, y^2 - 1
+        let d1 = Polynomial::from_terms(
+            vec![
+                (Monomial::from_exponents(vec![3, 0, 0]), f.from_u64(1)),
+                (Monomial::from_exponents(vec![0, 1, 0]), f.from_i64(-2)),
+            ],
+            &r,
+        );
+        let d2 = Polynomial::from_terms(
+            vec![
+                (Monomial::from_exponents(vec![1, 1, 0]), f.from_u64(1)),
+                (Monomial::from_exponents(vec![0, 0, 1]), f.from_i64(-1)),
+            ],
+            &r,
+        );
+        let d3 = Polynomial::from_terms(
+            vec![
+                (Monomial::from_exponents(vec![0, 2, 0]), f.from_u64(1)),
+                (Monomial::from_exponents(vec![0, 0, 0]), f.from_i64(-1)),
+            ],
+            &r,
+        );
+        // Subject: x^4*y^2 + 5*x^3*y + 7*x*y^2 + z + 11
+        let p = Polynomial::from_terms(
+            vec![
+                (Monomial::from_exponents(vec![4, 2, 0]), f.from_u64(1)),
+                (Monomial::from_exponents(vec![3, 1, 0]), f.from_u64(5)),
+                (Monomial::from_exponents(vec![1, 2, 0]), f.from_u64(7)),
+                (Monomial::from_exponents(vec![0, 0, 1]), f.from_u64(1)),
+                (Monomial::from_exponents(vec![0, 0, 0]), f.from_u64(11)),
+            ],
+            &r,
+        );
+        let divs: Vec<&Polynomial> = vec![&d1, &d2, &d3];
+        let geo = p.reduce_by_refs_geobucket(&divs, &r);
+        let naive = p.reduce_by_refs_naive(&divs, &r);
+        let dispatched = p.reduce_by_refs(&divs, &r);
+        assert_eq!(geo.num_terms(), naive.num_terms());
+        assert_eq!(dispatched.num_terms(), naive.num_terms());
+        for (a, b) in geo.terms(&r).zip(naive.terms(&r)) {
+            assert_eq!(a.exponents(), b.exponents());
+            assert_eq!(a.coefficient(), b.coefficient());
+        }
+        for (a, b) in dispatched.terms(&r).zip(naive.terms(&r)) {
+            assert_eq!(a.exponents(), b.exponents());
+            assert_eq!(a.coefficient(), b.coefficient());
+        }
+    }
+
+    #[test]
+    fn reduce_by_refs_geobucket_to_zero() {
+        // Polynomial that fully reduces to zero — exercises the cancellation
+        // path in pop_leading_term across many steps.
+        let r = small_ring();
+        let f = &r.field;
+        let d = Polynomial::from_terms(
+            vec![
+                (Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1)),
+                (Monomial::from_exponents(vec![0, 1, 0]), f.from_i64(-1)),
+            ],
+            &r,
+        );
+        // p = (x - y) * (x^2 + x*y + y^2) = x^3 - y^3
+        let p = Polynomial::from_terms(
+            vec![
+                (Monomial::from_exponents(vec![3, 0, 0]), f.from_u64(1)),
+                (Monomial::from_exponents(vec![0, 3, 0]), f.from_i64(-1)),
+            ],
+            &r,
+        );
+        // p reduced by (x - y): leading reductions cancel until 0.
+        let nf = p.reduce_by_refs_geobucket(&[&d], &r);
+        let nf_naive = p.reduce_by_refs_naive(&[&d], &r);
+        assert!(nf.is_zero(), "geobucket reduction should yield zero");
+        assert!(nf_naive.is_zero(), "naive reduction should also yield zero");
     }
 
     #[test]

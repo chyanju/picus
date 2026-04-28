@@ -12,6 +12,7 @@ pub mod field;
 pub mod monomial;
 pub mod divmask;
 pub mod polynomial;
+pub mod geobucket;
 pub mod spair;
 pub mod buchberger;
 pub mod univariate;

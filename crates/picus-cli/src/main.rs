@@ -69,7 +69,7 @@ enum Commands {
         #[arg(long, default_value = "none", value_parser = ["none", "wall"])]
         profile: String,
 
-        /// GB strategy (Sprint 2.5):
+        /// GB strategy:
         ///   off  — direct DegRevLex Buchberger on P (default, baseline);
         ///   on   — homogenize → GB on P[h] → dehom → interreduce (CoCoA myGBasisByHomog);
         ///   auto — pick `on` iff at least one input is non-homogeneous (cheap test).
