@@ -4,6 +4,74 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.11] - 2026-04-28
+
+This release closes the algorithmic alignment between picus's in-tree
+finite-field engine and CoCoA's Buchberger pipeline. Combined with the
+geobucket reduction and Gebauer-Möller M-criterion shipped in 1.7.10,
+the engine now matches CoCoA's `myDoGBasis` end-to-end for the
+non-homogeneous code path.
+
+### Added
+- **Buchberger B-criterion** at basis-add time, mirroring CoCoA's
+  `myApplyBCriterion` (`TmpGReductor.C:629-650`) and `GPair::BCriterion_OK`
+  (`TmpGPair.C:283-289`). When a new basis element is added, every pending
+  S-pair `(i, j)` is killed if all three conditions hold:
+  `new_lt | lcm(LT_i, LT_j)`, `lcm(LT_j, new_lt) ≠ lcm`, and
+  `lcm(LT_i, new_lt) ≠ lcm`. This is the missing companion to the
+  M-criterion; together they bring the open-queue size in line with
+  CoCoA's. The full three-condition form (rather than the simplified
+  "any-`k` divides lcm" form picus shipped buggy in 1.7.7) is what makes
+  it sound under non-strict deactivation.
+
+### Changed
+- **Skip inactive basis elements during S-pair generation**, mirroring
+  CoCoA's `myBuildNewPairs` `IsActive(*it)` filter
+  (`TmpGReductor.C:506`). Sound because any inactive `k` was deactivated
+  by some active `m` with `LT_m | LT_k`, so the pair `(m, new)` GM-dominates
+  `(k, new)` anyway. Reduces M-criterion walk size and pair-queue size on
+  dense-ideal benchmarks.
+- **Final interreduce is now a single pass** (mirroring `myFinalizeGBasis`
+  `TmpGReductor.C:1228-1280`) instead of an up-to-`2N`-pass fixed-point
+  loop. After divisible-LT pruning every surviving element's LT is
+  incomparable to every other's, so reducing each tail by the others
+  cannot re-introduce a monomial that another LT divides — one pass
+  suffices.
+- **Removed the periodic in-loop tail-reduce throttle**
+  (`INTERREDUCE_EVERY = 32`). CoCoA's `myDoGBasis` does not interreduce
+  inside the main loop for non-homogeneous inputs; cleanup happens once
+  at `myFinalizeGBasis`. With the M-criterion + B-criterion + skip-inactive
+  pair-pruning landing this release, the basis stays lean enough that the
+  throttle is no longer needed. An A/B comparison on the 17-bench KPI
+  showed throttle-off equal-or-better than `INTERREDUCE_EVERY=32` and
+  recovered `test-rollup-tx-states` to a healthy time.
+
+### Performance (17 hard circuits, 60 s timeout)
+- 1.7.9 baseline: 13/17 solved.
+- 1.7.10: 12/17 (M-criterion regression — its companion B-criterion was
+  missing, so its per-generation walk overhead was unamortized).
+- 1.7.11 (this release): **13/17 solved, no per-circuit regressions**.
+  `test-rollup-tx-states` recovers (timeout → safe ~40 s); `binadd1`
+  recovers from 21.7 s to ~13 s; `chunkedadd` and `VDBuggy` improve;
+  every previously-solved circuit remains solved. Four timeouts remain:
+  `Pedersen@pedersen` (cvc5 also times out), `chunkedadd1`,
+  `modulusagainst2p`, `inTest` — these are dense-ideal problems where the
+  remaining gap is architectural (F4/F5 batched reduction or
+  Montgomery-form arithmetic), not algorithm-alignment.
+
+### CLI / Settings
+- `--gb-by-homog {off,on,auto}` (introduced earlier as opt-in) was A/B-tested
+  on the 17-bench KPI; `auto` and `on` give the same solved count as `off`
+  but redistribute per-circuit timings. Default remains `off`. Users with
+  significant total-degree variance in their input may try `auto`.
+
+### Verified
+- 178 picus-solver unit tests pass (5 new B-criterion tests + 5 GM-insert tests
+  + 9 geobucket tests + the rest).
+- 0 compiler warnings across the workspace.
+- Correctness gate: 110 circuits, 107 agree (37 both-timeout), **0 verdict
+  mismatches** vs cvc5.
+
 ## [1.7.10] - 2026-04-28
 
 This release ports two of CoCoA's core Groebner-basis optimizations into the

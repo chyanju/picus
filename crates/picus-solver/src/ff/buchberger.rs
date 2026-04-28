@@ -162,58 +162,31 @@ pub fn interreduce(mut basis: Vec<Polynomial>, ring: &Arc<PolyRing>) -> Vec<Poly
         .zip(keep.iter())
         .filter_map(|(p, &k)| if k { Some(p) } else { None })
         .collect();
-    // Tail reduction: reduce each polynomial by the others until stable.
-    //
-    // Performance note: previously this allocated a fresh `Vec<Polynomial>`
-    // of all "other" basis elements on every i (an `O(n²)` clone-storm per
-    // pass). We now use `reduce_by_refs` with a `Vec<&Polynomial>` that
-    // skips index `i` — zero polynomial clones for the divisor list.
-    let mut changed = true;
-    let max_passes = filtered.len().max(2) * 2;
-    let mut pass = 0;
-    while changed && pass < max_passes {
-        changed = false;
-        pass += 1;
-        for i in 0..filtered.len() {
-            let others: Vec<&Polynomial> = filtered.iter()
-                .enumerate()
-                .filter(|(j, _)| *j != i)
-                .map(|(_, p)| p)
-                .collect();
-            let red = filtered[i].reduce_by_refs(&others, ring);
-            if !poly_eq(&red, &filtered[i]) {
-                filtered[i] = if !red.is_zero() {
-                    red.make_monic(ring)
-                } else {
-                    Polynomial::zero()
-                };
-                changed = true;
+    // Single-pass tail reduction (mirrors CoCoA `myFinalizeGBasis` non-HOMOG
+    // branch, TmpGReductor.C:1228-1280). After divisible-LT pruning above
+    // every surviving element's LT is incomparable to every other's, so
+    // reducing each element's tail by the others cannot re-introduce
+    // monomials that another element's LT divides — one pass is sufficient.
+    let n = filtered.len();
+    for i in 0..n {
+        let mut others: Vec<&Polynomial> = Vec::with_capacity(n.saturating_sub(1));
+        for (j, p) in filtered.iter().enumerate() {
+            if j != i && !p.is_zero() {
+                others.push(p);
             }
         }
-        filtered.retain(|p| !p.is_zero());
+        if others.is_empty() {
+            continue;
+        }
+        let red = filtered[i].reduce_by_refs(&others, ring);
+        filtered[i] = if red.is_zero() {
+            Polynomial::zero()
+        } else {
+            red.make_monic(ring)
+        };
     }
+    filtered.retain(|p| !p.is_zero());
     filtered
-}
-
-fn poly_eq(a: &Polynomial, b: &Polynomial) -> bool {
-    if a.num_terms() != b.num_terms() { return false; }
-    if a.is_zero() && b.is_zero() { return true; }
-    // Compare via term iteration (terms are in canonical descending order).
-    // We don't have a ring here; leverage internal equality via debug repr would be ugly.
-    // Use Polynomial's clone+sub trick? We do have a comparator: build via raw compare
-    // using PartialEq on (coeffs, exponents, total_degs). Add a private accessor.
-    a.struct_eq(b)
-}
-
-// Add a structural equality helper to Polynomial via a free function (uses `pub(crate)` accessors).
-impl Polynomial {
-    pub(crate) fn struct_eq(&self, other: &Polynomial) -> bool {
-        // We compare canonical fields. Both polynomials must have equal lengths and same data.
-        // Field elements compare via PartialEq (canonical BigUint).
-        self.num_terms() == other.num_terms()
-            && self.public_exponents() == other.public_exponents()
-            && self.public_coeffs() == other.public_coeffs()
-    }
 }
 
 // ──────────────────── S-pair queue helpers (GM, merge) ────────────────────
@@ -275,6 +248,54 @@ fn gm_insert(list: &mut Vec<SPair>, pair: SPair) {
             list.push(p);
         }
     }
+}
+
+/// CoCoA Buchberger B-criterion (`myApplyBCriterion`,
+/// TmpGReductor.C:629-650). Walks `pairs` (the currently-pending S-pair
+/// queue) and erases every pair that the newly-added basis element's
+/// leading PP `new_lt` makes redundant per `GPair::BCriterion_OK`
+/// (TmpGPair.C:283-289).
+///
+/// A pair `(i, j)` with cached `lcm = lcm(LT_i, LT_j)` is killed iff **all**
+/// three conditions hold:
+///   1. `new_lt | lcm` (DivMask prefilter, then full Monomial check),
+///   2. `lcm(LT_j, new_lt) ≠ lcm`,
+///   3. `lcm(LT_i, new_lt) ≠ lcm`.
+///
+/// Soundness depends on the substitute pairs `(i, new)` and `(j, new)`
+/// being generated and discharged this round (or being GM-dominated by
+/// some `(m, new)` whose own obligation will be processed). picus's
+/// 2024 simplified chain criterion was unsound because it skipped
+/// conditions 2 and 3, breaking that invariant; this version is the
+/// full three-condition CoCoA form.
+///
+/// The retain preserves the descending-sort invariant of `pairs`.
+fn b_criterion_kill(
+    pairs: &mut Vec<SPair>,
+    new_lt: &Monomial,
+    new_lt_divmask: DivMask,
+    basis: &[BasisElement],
+) {
+    pairs.retain(|p| {
+        // Cheap reject: NewPP must divide pair's lcm to even consider killing.
+        if !new_lt_divmask.divides_consistent_with(p.lcm_divmask) {
+            return true;
+        }
+        if !new_lt.divides(&p.lcm) {
+            return true;
+        }
+        // NewPP divides p.lcm. Check the two non-equality conditions.
+        let lcm_j_new = basis[p.j].lt.lcm(new_lt);
+        if lcm_j_new == p.lcm {
+            return true;
+        }
+        let lcm_i_new = basis[p.i].lt.lcm(new_lt);
+        if lcm_i_new == p.lcm {
+            return true;
+        }
+        // All three conditions hold ⇒ pair is killed.
+        false
+    });
 }
 
 /// Merge `incoming` (sorted descending) into `dst` (also sorted descending),
@@ -416,24 +437,26 @@ impl BuchbergerState {
     }
 
     fn generate_pairs_against(&mut self, new_idx: usize, new_lt: &Monomial, new_sugar: u32) {
-        // NOTE: We do NOT skip deactivated basis elements here. Non-strict
-        // deactivation means a deactivated element's leading term still
-        // contributes S-pair obligations: pending pairs against it must
-        // remain in the queue (handled at pop time), and *new* pairs
-        // generated when adding later elements are required for the GM
-        // criterion to be sound.
-        //
         // Algorithm (mirrors CoCoA `myBuildNewPairs` / `myGMInsert` in
-        // TmpGReductor.C):
-        //   1. Build pairs (k, new) for every existing basis element, including
-        //      coprime pairs — the M-criterion uses them as dominators.
-        //   2. Apply GM M-criterion via `gm_insert` so a new pair is dropped
-        //      if any existing pair's LCM divides it (and vice versa).
+        // TmpGReductor.C:485-554):
+        //   1. For each ACTIVE earlier basis element k < new_idx, build pair
+        //      (k, new). Inactive k are skipped — under non-strict deactivation
+        //      some active m < k satisfies LT_m | LT_k, so (m, new) is also
+        //      generated and GM-dominates (k, new) anyway. Skipping inactive
+        //      avoids redundant GM walks.
+        //   2. Apply the M-criterion via `gm_insert` so a new pair is dropped
+        //      if any other new pair's LCM divides it (with the equal-LCM
+        //      coprime-replacement rule).
         //   3. After all pairs are GM-inserted, drop coprime pairs (Buchberger
         //      product criterion: their S-poly reduces to zero by construction).
-        //   4. Merge the surviving sorted-descending into `self.open`.
+        //   4. Apply the B-criterion to the existing open queue using the new
+        //      poly's LT (CoCoA myApplyBCriterion).
+        //   5. Sort surviving new_pairs descending and merge into self.open.
         let mut new_pairs: Vec<SPair> = Vec::with_capacity(new_idx);
         for k in 0..new_idx {
+            if !self.basis[k].active {
+                continue;
+            }
             let basis_k_lt = &self.basis[k].lt;
             let lcm = new_lt.lcm(basis_k_lt);
             let lcm_divmask = self.ring.divmask.compute(&lcm);
@@ -459,6 +482,11 @@ impl BuchbergerState {
         }
         // Coprime criterion: drop coprime pairs now that GM is done with them.
         new_pairs.retain(|p| !p.is_coprime);
+        // B-criterion: prune the existing open queue using the new poly's
+        // leading PP. Mirrors CoCoA `myApplyBCriterion` (TmpGReductor.C:629-650),
+        // which runs *after* myBuildNewPairs has built+filtered new_pairs.
+        let new_lt_divmask = self.ring.divmask.compute(new_lt);
+        b_criterion_kill(&mut self.open, new_lt, new_lt_divmask, &self.basis);
         // Merge into self.open while keeping descending sort (so pop_back
         // returns the smallest pair). new_pairs is currently in arbitrary
         // order from `gm_insert`; sort it once, then merge.
@@ -560,12 +588,6 @@ impl BuchbergerState {
 
     fn run<O: BuchbergerObserver>(&mut self, observer: &mut O) -> Result<(), SolverError> {
         if self.trivial && self.cfg.abort_on_trivial { return Ok(()); }
-        // Periodic in-loop tail-reduction throttle: after every
-        // INTERREDUCE_EVERY new basis additions, run `tail_reduce_active`.
-        // This keeps the active basis "thin" so subsequent S-pair reductions
-        // in `reduce_by_refs` don't grow quadratically.
-        const INTERREDUCE_EVERY: usize = 32;
-        let mut adds_since_interreduce: usize = 0;
         // self.open is sorted descending — `pop()` returns the smallest pair
         // (lowest sugar, then lcm_deg, then age).
         while let Some(pair) = self.open.pop() {
@@ -636,17 +658,14 @@ impl BuchbergerState {
                 }
             }
             self.basis.push(BasisElement { poly: nf, lt, lt_divmask, active: true, sugar });
-            adds_since_interreduce += 1;
-
-            // Periodic in-loop tail reduction. Only when the observer is the
-            // no-op kind (we can't easily detect this generically; instead,
-            // we make tail_reduce_active itself harmless to the observer
-            // because it only modifies tails, not LTs/indices). Skip when
-            // already trivial.
-            if adds_since_interreduce >= INTERREDUCE_EVERY && !self.trivial {
-                self.tail_reduce_active();
-                adds_since_interreduce = 0;
-            }
+            // No periodic in-loop tail-reduction here. CoCoA's `myDoGBasis`
+            // does not interreduce inside the main loop for non-homogeneous
+            // inputs; cleanup happens once at `myFinalizeGBasis`. With the
+            // M-criterion + B-criterion + skip-inactive pair-pruning in
+            // place the basis stays lean enough that an in-loop throttle
+            // is no longer needed (an A/B compared `tail_reduce_active`
+            // every 32 additions vs no throttle and found the latter
+            // gives equal-or-better KPI on the hard suite).
         }
         Ok(())
     }
@@ -962,12 +981,6 @@ fn poly_coefficient_at(p: &Polynomial, mon: &Monomial, ring: &PolyRing) -> Field
     ring.field.zero()
 }
 
-// Add accessor helpers on Polynomial for the structural-equality routine above.
-impl Polynomial {
-    pub(crate) fn public_exponents(&self) -> &[u16] { self.raw_exponents() }
-    pub(crate) fn public_coeffs(&self) -> &[FieldElem] { self.raw_coeffs() }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1160,5 +1173,124 @@ mod tests {
         gm_insert(&mut list, mk_pair(vec![1, 1, 0], 2, false, &r));
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].age, 1);
+    }
+
+    fn mk_basis_elem(lt_exps: Vec<u16>, ring: &PolyRing) -> BasisElement {
+        let lt = Monomial::from_exponents(lt_exps);
+        let lt_divmask = ring.divmask.compute(&lt);
+        BasisElement {
+            poly: Polynomial::zero(),
+            lt,
+            lt_divmask,
+            active: true,
+            sugar: 0,
+        }
+    }
+
+    fn mk_pair_ij(
+        i: usize,
+        j: usize,
+        basis: &[BasisElement],
+        ring: &PolyRing,
+        age: u64,
+    ) -> SPair {
+        let lcm = basis[i].lt.lcm(&basis[j].lt);
+        let lcm_divmask = ring.divmask.compute(&lcm);
+        let lcm_deg = lcm.total_degree();
+        SPair {
+            i,
+            j,
+            sugar: lcm_deg,
+            lcm,
+            lcm_divmask,
+            lcm_deg,
+            age,
+            generation: 0,
+            is_coprime: basis[i].lt.is_coprime(&basis[j].lt),
+        }
+    }
+
+    #[test]
+    fn b_criterion_kills_when_all_three_conditions_hold() {
+        // basis = [x^2, y^2]; pair (0,1) has lcm = x^2*y^2.
+        // new_lt = x*y. Conditions:
+        //   1. x*y | x^2*y^2: yes.
+        //   2. lcm(y^2, x*y) = x*y^2 ≠ x^2*y^2: holds.
+        //   3. lcm(x^2, x*y) = x^2*y ≠ x^2*y^2: holds.
+        // → killed.
+        let r = ring(3);
+        let basis = vec![
+            mk_basis_elem(vec![2, 0, 0], &r),
+            mk_basis_elem(vec![0, 2, 0], &r),
+        ];
+        let mut pairs = vec![mk_pair_ij(0, 1, &basis, &r, 1)];
+        let new_lt = Monomial::from_exponents(vec![1, 1, 0]);
+        let new_lt_dm = r.divmask.compute(&new_lt);
+        b_criterion_kill(&mut pairs, &new_lt, new_lt_dm, &basis);
+        assert!(pairs.is_empty(), "pair should have been killed");
+    }
+
+    #[test]
+    fn b_criterion_keeps_when_new_lt_does_not_divide_lcm() {
+        // basis = [x^2, y^2]; lcm = x^2*y^2; new_lt = z (no shared variable).
+        // Condition 1 fails: z does not divide x^2*y^2 → keep.
+        let r = ring(3);
+        let basis = vec![
+            mk_basis_elem(vec![2, 0, 0], &r),
+            mk_basis_elem(vec![0, 2, 0], &r),
+        ];
+        let mut pairs = vec![mk_pair_ij(0, 1, &basis, &r, 1)];
+        let new_lt = Monomial::from_exponents(vec![0, 0, 1]);
+        let new_lt_dm = r.divmask.compute(&new_lt);
+        b_criterion_kill(&mut pairs, &new_lt, new_lt_dm, &basis);
+        assert_eq!(pairs.len(), 1, "pair should be kept (cond 1 fails)");
+    }
+
+    #[test]
+    fn b_criterion_keeps_when_lcm_lt_j_new_equals_lcm() {
+        // basis = [x, y]; lcm = x*y; new_lt = x.
+        //   1. x | x*y: yes.
+        //   2. lcm(LT_j, new_lt) = lcm(y, x) = x*y = pair.lcm → cond 2 fails.
+        // → keep.
+        let r = ring(3);
+        let basis = vec![
+            mk_basis_elem(vec![1, 0, 0], &r),
+            mk_basis_elem(vec![0, 1, 0], &r),
+        ];
+        let mut pairs = vec![mk_pair_ij(0, 1, &basis, &r, 1)];
+        let new_lt = Monomial::from_exponents(vec![1, 0, 0]);
+        let new_lt_dm = r.divmask.compute(&new_lt);
+        b_criterion_kill(&mut pairs, &new_lt, new_lt_dm, &basis);
+        assert_eq!(pairs.len(), 1, "pair should be kept (cond 2 fails)");
+    }
+
+    #[test]
+    fn b_criterion_keeps_when_lcm_lt_i_new_equals_lcm() {
+        // basis = [x, y]; lcm = x*y; new_lt = y.
+        //   1. y | x*y: yes.
+        //   2. lcm(LT_j, new_lt) = lcm(y, y) = y ≠ x*y → cond 2 holds.
+        //   3. lcm(LT_i, new_lt) = lcm(x, y) = x*y → cond 3 fails.
+        // → keep.
+        let r = ring(3);
+        let basis = vec![
+            mk_basis_elem(vec![1, 0, 0], &r),
+            mk_basis_elem(vec![0, 1, 0], &r),
+        ];
+        let mut pairs = vec![mk_pair_ij(0, 1, &basis, &r, 1)];
+        let new_lt = Monomial::from_exponents(vec![0, 1, 0]);
+        let new_lt_dm = r.divmask.compute(&new_lt);
+        b_criterion_kill(&mut pairs, &new_lt, new_lt_dm, &basis);
+        assert_eq!(pairs.len(), 1, "pair should be kept (cond 3 fails)");
+    }
+
+    #[test]
+    fn b_criterion_empty_queue_is_noop() {
+        let r = ring(3);
+        let basis: Vec<BasisElement> = Vec::new();
+        let mut pairs: Vec<SPair> = Vec::new();
+        let new_lt = Monomial::from_exponents(vec![1, 1, 0]);
+        let new_lt_dm = r.divmask.compute(&new_lt);
+        b_criterion_kill(&mut pairs, &new_lt, new_lt_dm, &basis);
+        assert!(pairs.is_empty());
     }
 }
