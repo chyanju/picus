@@ -1,4 +1,4 @@
-//! Sprint 2.5 T1 — Homogenization helper for GB computation.
+//! Homogenization helper for GB computation.
 //!
 //! This module provides the lift / homogenize / dehom primitives needed by
 //! [`crate::gb_homog::compute_gb_by_homog`], which mirrors CoCoA's

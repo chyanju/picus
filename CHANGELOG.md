@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.10] - 2026-04-28
+
+This release ports two of CoCoA's core Groebner-basis optimizations into the
+in-tree finite-field engine and lays the groundwork for further alignment.
+KPI on the 17-circuit hard suite shifted from 13/17 (1.7.9) to 12/17 — the
+geobucket reduction alone solves an additional circuit (`VDBuggy`), but the
+M-criterion's per-generation walk regresses two circuits because its
+companion B-criterion is not yet implemented. See "Performance" below.
+
+### Added
+- **Geobucket data structure** (`picus-solver/src/ff/geobucket.rs`) for polynomial accumulation, modeled on CoCoA's `geobucket.C`. Multi-bucket structure with geometric capacity growth (`BASE_CAPACITY=4`, `RATIO=4`, `MAX_BUCKETS=16`); per-bucket head cursors give O(1) leading-term pop; cross-bucket coefficient cancellation is resolved at pop time.
+- **Geobucket-based reduction** in `Polynomial::reduce_by_refs`. Each reduction step is now O(D · log(N/D)) instead of O(N + D), matching CoCoA's `myReduce` / `myReduceTail` which call `ChooseReductionCogGeobucket` unconditionally (no size dispatch). The previous fused-merge implementation is retained as `reduce_by_refs_naive` for cross-validation.
+- **Gebauer-Möller M-criterion** at S-pair generation time, mirroring CoCoA's `myGMInsert` (`TmpGReductor.C:448-482`). New pairs are pruned within `generate_pairs_against` whenever an existing pair's lcm divides the new pair's lcm (and vice versa), with the equal-lcm coprime-replacement rule.
+- **Coprime pairs participate in GM walks** before being filtered out of the open queue (matches CoCoA's `myBuildNewPairs` flow). `SPair` gains an `is_coprime` field.
+
+### Changed
+- **S-pair queue is now a sorted `Vec<SPair>`** (descending by `(sugar, lcm_deg, age)`, pop from back) instead of `BinaryHeap<Reverse<SPair>>`. Required for the M-criterion's in-place walk-and-mutate; matches CoCoA's `GPairList`. `IncrementalGB::push` / `pop` snapshot the vector directly.
+
+### Performance (17 hard circuits, 60 s timeout)
+- 1.7.9 baseline: 13/17 solved.
+- Geobucket reduction alone: 14/17 — `VDBuggy` newly solved.
+- Geobucket + M-criterion (this release): 12/17. The M-criterion further accelerates `VDBuggy` (36 s → 18 s) and `binadd1` (30 s → 22 s) where it finds many dominations, but regresses `chunkedadd1` and `test-rollup-tx-states` to timeout because the M-criterion's O(n²) per-generation walk is not yet amortized by a companion B-criterion (`myApplyBCriterion` in CoCoA, which prunes the existing open queue when a new basis element is added). Adding B-criterion is the natural next step.
+
+### Verified
+- 178 picus-solver unit tests pass (9 covering the new geobucket, 5 covering `gm_insert`, 2 cross-validating the new and previous reduction implementations).
+- Correctness gate: 110 circuits, 0 verdict mismatches against cvc5.
+
 ## [1.7.9] - 2026-04-27
 
 ### Fixed
@@ -39,7 +66,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **`tail_reduce_active` in `IncrementalGB`** every 32 basis adds (`INTERREDUCE_EVERY=32`). Mutates poly bodies only — never `lt`/`active`/`sugar`/indices — so it preserves all per-element invariants. Architecturally guards against basis bloat in long incremental runs; no KPI gain in isolation but kept as a correctness-preserving hedge.
 
 ### Fixed
-- **GB soundness bug in `ff::buchberger::chain_criterion_skip` (CRITICAL)**. The simplified "any-`k` divides lcm → skip" form of Buchberger's chain criterion was unsound: with non-strict deactivation (deactivated basis elements remain in `self.basis` and contribute LTs at index lookup) and `generate_pairs_against` previously skipping inactive elements when adding a new generator, the substitute pairs `(i,k)` and `(j,k)` were not guaranteed to have been generated and discharged. **Symptom**: trivially-UNSAT systems silently produced incomplete GBs; minimal repro `{ab-1, a-2, b-2}` over GF(5) returned **Unknown** instead of **Unsafe** (the constant `3` from S-pair `(0,1)` was being skipped, basis ended at 2 elements, `is_whole_ring()` returned false, model extraction produced a bogus assignment, validation rejected it). The correctness gate masked this for the entire plan-v4 cycle because the gate counted only safe↔unsafe disagreements — Unknown was implicitly "agree". **Fix** (`buchberger.rs`):
+- **GB soundness bug in `ff::buchberger::chain_criterion_skip` (CRITICAL)**. The simplified "any-`k` divides lcm → skip" form of Buchberger's chain criterion was unsound: with non-strict deactivation (deactivated basis elements remain in `self.basis` and contribute LTs at index lookup) and `generate_pairs_against` previously skipping inactive elements when adding a new generator, the substitute pairs `(i,k)` and `(j,k)` were not guaranteed to have been generated and discharged. **Symptom**: trivially-UNSAT systems silently produced incomplete GBs; minimal repro `{ab-1, a-2, b-2}` over GF(5) returned **Unknown** instead of **Unsafe** (the constant `3` from S-pair `(0,1)` was being skipped, basis ended at 2 elements, `is_whole_ring()` returned false, model extraction produced a bogus assignment, validation rejected it). The correctness gate masked this across the prior development cycle because the gate counted only safe↔unsafe disagreements — Unknown was implicitly "agree". **Fix** (`buchberger.rs`):
   1. `generate_pairs_against`: removed the `if !self.basis[k].active { continue; }` guard. Pairs against deactivated elements are now generated; their LTs are real S-pair obligations.
   2. `state.run`: removed the call to `chain_criterion_skip`. The (sound) product criterion at generation time remains. `chain_criterion_skip` is retained as `#[allow(dead_code)]` for future re-introduction with a properly sound Gebauer-Möller chain criterion (full `(i,k)`/`(j,k)` lcm comparison).
 - **`bn128_invariants` integration tests** now pass (`test_simple_unsat_gf5`, `test_is_zero_sound_bit_constraint` in `cvc5_regression`).
@@ -54,15 +81,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **Lib tests: 96/96 pass. Integration tests: 71/71 pass** (10 binaries, 0 ignored except 2 long-running probes). Builds clean on `cargo +nightly` (rustc 1.97.0-nightly, edition 2024). Zero warnings across the workspace.
 - **Cargo.lock contains 0 references to `feanor`.**
 - **circomlibex-cff5ab6 sweep (110 circuits, 15 s timeout): 105 agree (35 both-timeout), 0 mismatch vs cvc5.** (Was 106 agree pre-fix; the 1 lost agreement is a single Unknown vs solved on a circuit where no safe↔unsafe collision occurs.)
-- **17-bench KPI (60 s timeout): 12 / 17 solved** — net **+9 vs the 1.7.7 baseline (3/17)**, +2 vs the 1.7.6 baseline (3/17 stable). Plan v4's tracked CSV recorded 13/17 at sign-off; an independent re-measurement on 1.7.8 shipped code gives 12/17. The difference is `chunkedadd1`, which lives right at the wall-clock boundary (~62 s solve time vs the script's 65 s `timeout` wrapper after the chain-criterion fix); re-runs flap between solve and timeout. Net solves attributable to the in-tree `ff` engine + `reduce_by_refs` + chain-criterion fix: ~+9 over 1.7.7.
+- **17-bench KPI (60 s timeout): 12 / 17 solved** — net **+9 vs the 1.7.7 baseline (3/17)**, +2 vs the 1.7.6 baseline (3/17 stable). An earlier development snapshot recorded 13/17; an independent re-measurement on the 1.7.8 shipped code gives 12/17. The difference is `chunkedadd1`, which lives right at the wall-clock boundary (~62 s solve time vs the script's 65 s `timeout` wrapper after the chain-criterion fix); re-runs flap between solve and timeout. Net solves attributable to the in-tree `ff` engine + `reduce_by_refs` + chain-criterion fix: ~+9 over 1.7.7.
 
 ### Known limitations / trade-offs
 - **The chain-criterion fix slowed two previously-fast circuits**: `chunkedadd` 17.1 s → 44.1 s, `chunkedadd1` 24.9 s → 61.9 s. Their prior numbers had relied on the unsound criterion to prune real S-pair work; new times are correct. A sound Gebauer–Möller chain criterion (deferred to a future release) would recover this 2× cost; estimated at ~150 LoC with non-trivial correctness risk, deemed out of scope for 1.7.8.
 - **4 KPI timeouts remain**: `circomlib-cff5ab6/Pedersen@pedersen.r1cs`, `ed25519-099d19c-fixed/modulusagainst2p.r1cs`, `motivating/VDBuggy.r1cs`, `iden3-core-56a08f9/inTest.r1cs`. All are dense-ideal problems (e.g. Pedersen 2nd GB call: 1100 S-pairs in 20 s, 2100 in 116 s, final basis size 253 in both cases — work is dominated by reductions whose normal form is zero or already-known-redundant). Sequential Buchberger has no way to amortize this; literature solutions are F4/F5 (Macaulay matrix, batched symbolic preprocessing) or Montgomery-form arithmetic for BN128, both out of scope per the user directive ("research-grade solver, no multi-day rewrites").
-- **Correctness-gate masking**: the gate counts only safe↔unsafe disagreements; Unknown vs solved is implicitly "agree". This masked the 1.7.7 chain-criterion soundness bug for the full plan-v4 cycle. Future gates should additionally flag "picus Unknown but cvc5 solved" as a *suspicion* class.
+- **Correctness-gate masking**: the gate counts only safe↔unsafe disagreements; Unknown vs solved is implicitly "agree". This masked the 1.7.7 chain-criterion soundness bug across the prior development cycle. Future gates should additionally flag "picus Unknown but cvc5 solved" as a *suspicion* class.
 
 ### Internal
-- `chat/plan-4/` retro and progress artifacts shipped (215 + 109 LoC). Document the full design rationale, what worked (in-tree `ff`, slice-not-clone, `tail_reduce_active`, chain-criterion fix), and what did not (full Gebauer–Möller F+B at pair generation: 2-3× regression, reverted; M+F+P only: 2× regression, reverted).
 - Stale `examples/probe_*.rs` and `tests/probe.rs` ad-hoc reproducers removed.
 - Comments in `gb.rs`, `encoder.rs`, `picus-smt/src/backends/native_ff.rs` updated to reflect the in-tree engine (no present-tense feanor references remain in source).
 
@@ -111,7 +137,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - 17-bench KPI (60 s timeout): **3 / 17 solved** — `MontgomeryAdd@montgomery` unsafe, `Pedersen@pedersen_old` safe, `biglessthan_23` safe. Stable across consecutive runs (per-bench timing has high noise).
 
 ### Known limitations
-- The 17-bench KPI did not reach the projection in `chat/plan-v2/PLAN_v2.md` §4 (16-17/17). Profiling shows the bottleneck is **picus-solver's split-DFS top-level re-invocation count**, not per-call Buchberger work — all Plan v2 sprints targeted per-call optimisations and so hit a ceiling. An architectural refactor of the split-DFS loop is a candidate for a future cycle and is out of scope for v1.7.6. See `chat/plan-v2/STATUS.md` "Sprint 2.9 close-out" for full gap analysis.
+- The 17-bench KPI did not reach the earlier 16–17/17 projection. Profiling shows the bottleneck is **picus-solver's split-DFS top-level re-invocation count**, not per-call Buchberger work — the optimisations in this and previous releases all targeted per-call cost and so hit a ceiling. An architectural refactor of the split-DFS loop is a candidate for a future cycle and is out of scope for 1.7.6.
 
 ## [1.7.5] - 2026-04-23
 

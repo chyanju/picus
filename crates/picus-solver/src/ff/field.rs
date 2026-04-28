@@ -4,9 +4,10 @@
 //! in canonical (least non-negative) form in `[0, p)`.
 //!
 //! All arithmetic is performed using `BigUint` operations followed by reduction.
-//! This is sufficient: profiling in Plan v3 confirmed the bottleneck is branching
-//! strategy and polynomial arithmetic, not per-operation field-element cost.
-//! Montgomery form can be added later as a separate optimization (Task 08).
+//! This is sufficient: earlier profiling identified the dominant costs as
+//! branching strategy and polynomial arithmetic, not per-operation
+//! field-element cost. Montgomery form can be added later as a separate
+//! optimization.
 
 use num_bigint::BigUint;
 use num_integer::Integer;
