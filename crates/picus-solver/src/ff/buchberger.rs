@@ -93,8 +93,15 @@ pub fn groebner_basis(
 ) -> Result<GBasis, SolverError> {
     let mut state = BuchbergerState::new(ring.clone(), config.clone());
     let mut obs = NoObserver;
-    state.add_generators(generators, &mut obs)?;
-    state.run(&mut obs)?;
+    {
+        let _t = crate::profile::ScopedTimer::new("buchberger::add_generators");
+        state.add_generators(generators, &mut obs)?;
+    }
+    {
+        let _t = crate::profile::ScopedTimer::new("buchberger::run");
+        state.run(&mut obs)?;
+    }
+    let _t = crate::profile::ScopedTimer::new("buchberger::finalize_basis");
     let basis = state.finalize_basis();
     Ok(GBasis { basis, order: ring.order })
 }
@@ -694,10 +701,35 @@ impl BuchbergerState {
 
     fn run<O: BuchbergerObserver>(&mut self, observer: &mut O) -> Result<(), SolverError> {
         if self.trivial && self.cfg.abort_on_trivial { return Ok(()); }
+        // Plan v8: more granular instrumentation so we can see where time
+        // goes inside the main loop on dense circuits like `inTest`.
+        let stats_on = crate::profile::gb_stats_enabled();
+        let mut t_spoly_ns: u64 = 0;
+        let mut t_reduce_ns: u64 = 0;
+        let mut t_genpairs_ns: u64 = 0;
+        let initial_open_size = self.open.len();
+        let run_start = std::time::Instant::now();
         // self.open is sorted descending — `pop()` returns the smallest pair
         // (lowest sugar, then lcm_deg, then age).
         while let Some(pair) = self.open.pop() {
-            self.check_cancel()?;
+            if let Err(e) = self.check_cancel() {
+                if stats_on {
+                    let s = &self.stats;
+                    let total_ns = run_start.elapsed().as_nanos() as u64;
+                    let active_count = self.basis.iter().filter(|e| e.active).count();
+                    eprintln!(
+                        "[picus-gb-stats CANCELLED] pairs={} cop={} gm={} b={} red={} useful={} useless={} initial_open={} remaining_open={} basis_size={} active={} time_run_ms={:.2} time_spoly_ms={:.2} time_reduce_ms={:.2} time_genpairs_ms={:.2}",
+                        s.pairs_generated, s.pairs_killed_coprime, s.pairs_killed_gm, s.pairs_killed_b,
+                        s.reductions_total, s.reductions_useful, s.reductions_useless,
+                        initial_open_size, self.open.len(), self.basis.len(), active_count,
+                        total_ns as f64 / 1e6,
+                        t_spoly_ns as f64 / 1e6,
+                        t_reduce_ns as f64 / 1e6,
+                        t_genpairs_ns as f64 / 1e6,
+                    );
+                }
+                return Err(e);
+            }
 
             // Skip pairs from earlier generations (incremental support).
             if pair.generation < self.generation { continue; }
@@ -713,6 +745,7 @@ impl BuchbergerState {
             // CoCoA's `BCriterion` (TmpGReductor.C:`myApplyBCriterion`) and
             // is deferred to future work.
 
+            let t_spoly_start = if stats_on { Some(std::time::Instant::now()) } else { None };
             // Build the S-polynomial: (lcm/LT_i) * f_i - (lcm/LT_j) * f_j
             let bi = &self.basis[pair.i];
             let bj = &self.basis[pair.j];
@@ -726,6 +759,9 @@ impl BuchbergerState {
             let part_i = bi.poly.mul_term(mul_i.exponents(), &term_i, &self.ring);
             let part_j = bj.poly.mul_term(mul_j.exponents(), &scale_j, &self.ring);
             let s_poly = part_i.sub(&part_j, &self.ring);
+            if let Some(t0) = t_spoly_start {
+                t_spoly_ns += t0.elapsed().as_nanos() as u64;
+            }
 
             // Reduce against the current ACTIVE basis (one-at-a-time).
             // Use ref-based reduce to avoid cloning every active polynomial
@@ -736,6 +772,7 @@ impl BuchbergerState {
             // `modulusagainst2p`: a 30 s budget could overrun by 10×+
             // because no cancel point existed inside the reducer's
             // `pop_leading_term` loop).
+            let t_red_start = if stats_on { Some(std::time::Instant::now()) } else { None };
             let active_refs: Vec<&Polynomial> = self.basis.iter()
                 .filter(|e| e.active)
                 .map(|e| &e.poly)
@@ -744,8 +781,26 @@ impl BuchbergerState {
                 Some(c) => s_poly.reduce_by_refs_cancel(&active_refs, &self.ring, c),
                 None => s_poly.reduce_by_refs(&active_refs, &self.ring),
             };
+            if let Some(t0) = t_red_start {
+                t_reduce_ns += t0.elapsed().as_nanos() as u64;
+            }
             if let Some(c) = &self.cfg.cancel_token {
                 if c.is_cancelled() {
+                    if stats_on {
+                        let s = &self.stats;
+                        let total_ns = run_start.elapsed().as_nanos() as u64;
+                        let active_count = self.basis.iter().filter(|e| e.active).count();
+                        eprintln!(
+                            "[picus-gb-stats CANCELLED-MIDLOOP] pairs={} cop={} gm={} b={} red={} useful={} useless={} initial_open={} remaining_open={} basis_size={} active={} time_run_ms={:.2} time_spoly_ms={:.2} time_reduce_ms={:.2} time_genpairs_ms={:.2}",
+                            s.pairs_generated, s.pairs_killed_coprime, s.pairs_killed_gm, s.pairs_killed_b,
+                            s.reductions_total, s.reductions_useful, s.reductions_useless,
+                            initial_open_size, self.open.len(), self.basis.len(), active_count,
+                            total_ns as f64 / 1e6,
+                            t_spoly_ns as f64 / 1e6,
+                            t_reduce_ns as f64 / 1e6,
+                            t_genpairs_ns as f64 / 1e6,
+                        );
+                    }
                     return Err(SolverError::Timeout);
                 }
             }
@@ -787,7 +842,11 @@ impl BuchbergerState {
             // Non-strict deactivation.
             // Generate new pairs FIRST, so we don't drop pairs against
             // elements about to be deactivated.
+            let t_genpairs_start = if stats_on { Some(std::time::Instant::now()) } else { None };
             self.generate_pairs_against(new_idx, &lt, sugar);
+            if let Some(t0) = t_genpairs_start {
+                t_genpairs_ns += t0.elapsed().as_nanos() as u64;
+            }
             for k in 0..new_idx {
                 if self.basis[k].active && lt.divides(&self.basis[k].lt) {
                     self.basis[k].active = false;
@@ -808,8 +867,10 @@ impl BuchbergerState {
         // pattern; default-build behavior is unchanged.
         if std::env::var_os("PICUS_GB_STATS").is_some() {
             let s = &self.stats;
+            let total_ns = run_start.elapsed().as_nanos() as u64;
+            let active_count = self.basis.iter().filter(|e| e.active).count();
             eprintln!(
-                "[picus-gb-stats] pairs={} cop={} gm={} b={} red={} useful={} useless={} interreduces={}",
+                "[picus-gb-stats] pairs={} cop={} gm={} b={} red={} useful={} useless={} interreduces={} basis_size={} active={} initial_open={} time_run_ms={:.2} time_spoly_ms={:.2} time_reduce_ms={:.2} time_genpairs_ms={:.2}",
                 s.pairs_generated,
                 s.pairs_killed_coprime,
                 s.pairs_killed_gm,
@@ -818,6 +879,13 @@ impl BuchbergerState {
                 s.reductions_useful,
                 s.reductions_useless,
                 s.interreduces_run,
+                self.basis.len(),
+                active_count,
+                initial_open_size,
+                total_ns as f64 / 1e6,
+                t_spoly_ns as f64 / 1e6,
+                t_reduce_ns as f64 / 1e6,
+                t_genpairs_ns as f64 / 1e6,
             );
         }
         Ok(())

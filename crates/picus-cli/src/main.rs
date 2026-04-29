@@ -130,6 +130,7 @@ fn main() {
             format,
         } => cmd_info(r1cs, constraints, format),    }
     picus_solver::profile::dump_to_stderr("cli");
+    picus_solver::profile::dump_split_stats_to_stderr();
 }
 
 // ============================================================
@@ -232,6 +233,7 @@ fn install_profile_signal_handler() {
     std::thread::spawn(move || {
         for sig in signals.forever() {
             picus_solver::profile::dump_to_stderr(&format!("signal={}", sig));
+            picus_solver::profile::dump_split_stats_to_stderr();
             // Re-raise default behavior: exit with conventional code.
             std::process::exit(128 + sig);
         }

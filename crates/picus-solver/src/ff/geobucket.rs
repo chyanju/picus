@@ -138,9 +138,13 @@ impl<'r> Geobucket<'r> {
                 continue;
             }
             // Take ownership of bucket[idx]'s live tail and merge with `cur`.
-            // No clone needed when head == 0 (the common case).
+            // Plan v8: both `live` and `cur` are owned, so the move-based
+            // `merge_owned` recycles their `FieldElem` allocations into
+            // the output instead of cloning each — eliminates ~2 GMP
+            // `Integer` allocations per merged term. Profiled as the
+            // dominant cost on `inTest`'s dense reductions.
             let live = self.take_bucket_live(idx);
-            let merged = live.add(&cur, self.ring);
+            let merged = live.merge_owned(cur, self.ring, false);
             let merged_len = merged.num_terms();
             if merged_len == 0 {
                 return;
@@ -179,14 +183,11 @@ impl<'r> Geobucket<'r> {
         if div_len <= 1 || self.ring.field.is_zero(neg_coeff) {
             return;
         }
+        let stats_on = crate::profile::gb_stats_enabled();
+        let setup_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
         let n = self.ring.n_vars;
         let mul_deg: u32 = mul_exps.iter().map(|&e| e as u32).sum();
         let tail_len = div_len - 1;
-        // Reuse Geobucket's scratch. `clear()` resets length to 0 but
-        // preserves capacity AND drops existing `FieldElem`s — the latter
-        // is harmless because we'd be overwriting them anyway. The next
-        // `push` reallocates capacity only when growing past previous
-        // high-water mark.
         self.scratch_exps.clear();
         self.scratch_coeffs.clear();
         self.scratch_degs.clear();
@@ -206,23 +207,21 @@ impl<'r> Geobucket<'r> {
             self.scratch_coeffs.push(self.ring.field.mul(&d_coeffs[i], neg_coeff));
             self.scratch_degs.push(d_degs[i] + mul_deg);
         }
-        // Move the scratch contents into the Polynomial via `mem::take`.
-        // This sets the scratch back to empty Vecs (capacity dropped to 0),
-        // so the *next* call's `reserve()` re-allocates from scratch. To
-        // preserve capacity across calls, we'd need an alternative
-        // construction path that *copies* rather than moves; profiling
-        // showed that on BN128 the FieldElem-allocation savings of a copy
-        // path didn't outweigh the per-element copy, so we keep the move
-        // form. The wins here are: (1) one centralized buffer instead of
-        // three with_capacity heap allocs scattered across call sites,
-        // (2) trivially extends to a copy-based path if a future profile
-        // says it's worth it.
         let scaled_tail = Polynomial::from_raw_sorted(
             std::mem::take(&mut self.scratch_exps),
             std::mem::take(&mut self.scratch_coeffs),
             std::mem::take(&mut self.scratch_degs),
         );
+        if let Some(t0) = setup_t0 {
+            crate::profile::SPLIT_GB.time_sub_scaled_setup_ns
+                .fetch_add(t0.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+        let add_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
         self.add_poly(scaled_tail);
+        if let Some(t0) = add_t0 {
+            crate::profile::SPLIT_GB.time_sub_scaled_addpoly_ns
+                .fetch_add(t0.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     pub fn is_zero(&self) -> bool {
