@@ -126,7 +126,17 @@ pub fn groebner_basis_incremental(
 }
 
 /// Inter-reduce a basis (make every element's tail reduced w.r.t. all others; make monic).
-pub fn interreduce(mut basis: Vec<Polynomial>, ring: &Arc<PolyRing>) -> Vec<Polynomial> {
+pub fn interreduce(basis: Vec<Polynomial>, ring: &Arc<PolyRing>) -> Vec<Polynomial> {
+    interreduce_with_cancel(basis, ring, None)
+}
+
+/// Inter-reduce with cooperative cancellation. Returns the partially-reduced
+/// basis (still valid generators, just not yet inter-reduced) on cancel.
+pub fn interreduce_with_cancel(
+    mut basis: Vec<Polynomial>,
+    ring: &Arc<PolyRing>,
+    cancel: Option<&crate::timeout::CancelToken>,
+) -> Vec<Polynomial> {
     // Drop zeros and constants > 0 collapse to {1}.
     basis.retain(|p| !p.is_zero());
     // If any constant is present, the ideal is the whole ring.
@@ -169,6 +179,15 @@ pub fn interreduce(mut basis: Vec<Polynomial>, ring: &Arc<PolyRing>) -> Vec<Poly
     // monomials that another element's LT divides — one pass is sufficient.
     let n = filtered.len();
     for i in 0..n {
+        // Cancel check between elements: dense bases can have tens of
+        // elements and each reduce_by_refs may itself be slow on dense
+        // polynomials, so this loop was a hot leak point for `--timeout`
+        // on circuits like `modulusagainst2p`. Surfaces the partially-
+        // interreduced basis on cancel; still valid generators of the
+        // same ideal.
+        if let Some(c) = cancel {
+            if c.is_cancelled() { break; }
+        }
         let mut others: Vec<&Polynomial> = Vec::with_capacity(n.saturating_sub(1));
         for (j, p) in filtered.iter().enumerate() {
             if j != i && !p.is_zero() {
@@ -178,7 +197,10 @@ pub fn interreduce(mut basis: Vec<Polynomial>, ring: &Arc<PolyRing>) -> Vec<Poly
         if others.is_empty() {
             continue;
         }
-        let red = filtered[i].reduce_by_refs(&others, ring);
+        let red = match cancel {
+            Some(c) => filtered[i].reduce_by_refs_cancel(&others, ring, c),
+            None => filtered[i].reduce_by_refs(&others, ring),
+        };
         filtered[i] = if red.is_zero() {
             Polynomial::zero()
         } else {
@@ -338,6 +360,22 @@ fn merge_sorted_descending(dst: &mut Vec<SPair>, incoming: Vec<SPair>) {
 
 // ────────────────────────────── Buchberger ─────────────────────────────────
 
+/// Opt-in counter struct mirroring CoCoA's `myStat` (TmpGReductor.C:373).
+/// Filled unconditionally during a GB run; printed to stderr at the end of
+/// `BuchbergerState::run` only when the `PICUS_GB_STATS` environment
+/// variable is set, in the style of `PICUS_PROFILE`.
+#[derive(Clone, Debug, Default)]
+pub struct GbEngineStats {
+    pub pairs_generated: u64,
+    pub pairs_killed_coprime: u64,
+    pub pairs_killed_gm: u64,
+    pub pairs_killed_b: u64,
+    pub reductions_total: u64,
+    pub reductions_useful: u64,
+    pub reductions_useless: u64,
+    pub interreduces_run: u64,
+}
+
 struct BuchbergerState {
     ring: Arc<PolyRing>,
     cfg: BuchbergerConfig,
@@ -352,6 +390,9 @@ struct BuchbergerState {
     generation: u32,
     /// True once a constant (nonzero) has entered the basis.
     trivial: bool,
+    /// GB-engine counters; written unconditionally, printed only on
+    /// `PICUS_GB_STATS=1`.
+    stats: GbEngineStats,
 }
 
 impl BuchbergerState {
@@ -364,6 +405,7 @@ impl BuchbergerState {
             age_counter: 0,
             generation: 0,
             trivial: false,
+            stats: GbEngineStats::default(),
         }
     }
 
@@ -374,6 +416,51 @@ impl BuchbergerState {
             }
         }
         Ok(())
+    }
+
+    /// Seed the Buchberger state with a polynomials known to already be a
+    /// **reduced GB** under the current ring order. Bypasses S-pair
+    /// generation entirely: no `generate_pairs_against` is called, so
+    /// the `O(n²)` pairs (and their downstream `O(n)` GM walks each)
+    /// that `add_generators` would have produced are skipped.
+    ///
+    /// This is the fast path used by `compute_gb_incremental_with_order`
+    /// to install a previously-computed reduced GB without paying the
+    /// pair-generation cost — those pairs are guaranteed to reduce to
+    /// zero by Buchberger's criterion (an already-reduced GB has no
+    /// open obligations among its own elements), so generating them
+    /// only to filter them out is pure overhead.
+    ///
+    /// Caller responsibilities: the input must already be a reduced GB
+    /// in `self.ring.order`. No validation is performed.
+    fn seed_with_reduced_basis(&mut self, basis: Vec<Polynomial>) {
+        for poly in basis {
+            if poly.is_zero() {
+                continue;
+            }
+            let lt = match poly.leading_monomial(&self.ring) {
+                Some(lt) => lt,
+                None => continue,
+            };
+            let lt_divmask = self.ring.divmask.compute(&lt);
+            let sugar = lt.total_degree();
+            // Apply the same non-strict-deactivation rule that
+            // `add_generators` does, so the seeded basis matches what
+            // sequential `add_generators` would have produced.
+            let new_idx = self.basis.len();
+            for k in 0..new_idx {
+                if self.basis[k].active && lt.divides(&self.basis[k].lt) {
+                    self.basis[k].active = false;
+                }
+            }
+            self.basis.push(BasisElement {
+                poly,
+                lt,
+                lt_divmask,
+                active: true,
+                sugar,
+            });
+        }
     }
 
     fn add_generators<O: BuchbergerObserver>(
@@ -391,7 +478,15 @@ impl BuchbergerState {
                 .map(|e| &e.poly)
                 .collect();
             let active_idxs = self.active_indices();
-            let mut g_red = g.reduce_by_refs(&active_refs, &self.ring);
+            let mut g_red = match &self.cfg.cancel_token {
+                Some(c) => g.reduce_by_refs_cancel(&active_refs, &self.ring, c),
+                None => g.reduce_by_refs(&active_refs, &self.ring),
+            };
+            if let Some(c) = &self.cfg.cancel_token {
+                if c.is_cancelled() {
+                    return Err(SolverError::Timeout);
+                }
+            }
             if g_red.is_zero() { continue; }
             g_red = g_red.make_monic(&self.ring);
             if g_red.is_constant() {
@@ -453,10 +548,12 @@ impl BuchbergerState {
         //      poly's LT (CoCoA myApplyBCriterion).
         //   5. Sort surviving new_pairs descending and merge into self.open.
         let mut new_pairs: Vec<SPair> = Vec::with_capacity(new_idx);
+        let mut pairs_built: u64 = 0;
         for k in 0..new_idx {
             if !self.basis[k].active {
                 continue;
             }
+            pairs_built += 1;
             let basis_k_lt = &self.basis[k].lt;
             let lcm = new_lt.lcm(basis_k_lt);
             let lcm_divmask = self.ring.divmask.compute(&lcm);
@@ -480,13 +577,21 @@ impl BuchbergerState {
             };
             gm_insert(&mut new_pairs, pair);
         }
+        self.stats.pairs_generated += pairs_built;
+        let after_gm = new_pairs.len() as u64;
+        self.stats.pairs_killed_gm += pairs_built.saturating_sub(after_gm);
         // Coprime criterion: drop coprime pairs now that GM is done with them.
         new_pairs.retain(|p| !p.is_coprime);
+        let after_coprime = new_pairs.len() as u64;
+        self.stats.pairs_killed_coprime += after_gm.saturating_sub(after_coprime);
         // B-criterion: prune the existing open queue using the new poly's
         // leading PP. Mirrors CoCoA `myApplyBCriterion` (TmpGReductor.C:629-650),
         // which runs *after* myBuildNewPairs has built+filtered new_pairs.
         let new_lt_divmask = self.ring.divmask.compute(new_lt);
+        let open_before_b = self.open.len() as u64;
         b_criterion_kill(&mut self.open, new_lt, new_lt_divmask, &self.basis);
+        let open_after_b = self.open.len() as u64;
+        self.stats.pairs_killed_b += open_before_b.saturating_sub(open_after_b);
         // Merge into self.open while keeping descending sort (so pop_back
         // returns the smallest pair). new_pairs is currently in arbitrary
         // order from `gm_insert`; sort it once, then merge.
@@ -533,6 +638,7 @@ impl BuchbergerState {
         // j ≠ i with `reduce_by_refs`. Repeating to a fixed point isn't
         // necessary because tail reduction is monotone (each pass strictly
         // shrinks tails or leaves them unchanged).
+        self.stats.interreduces_run += 1;
         let active_idx: Vec<usize> = self.basis.iter()
             .enumerate()
             .filter(|(_, e)| e.active)
@@ -605,7 +711,7 @@ impl BuchbergerState {
             // `lt(k) | lcm(i,j)` without verifying the substitute pairs were
             // discharged). Re-introducing a sound version would require
             // CoCoA's `BCriterion` (TmpGReductor.C:`myApplyBCriterion`) and
-            // is left for a future plan.
+            // is deferred to future work.
 
             // Build the S-polynomial: (lcm/LT_i) * f_i - (lcm/LT_j) * f_j
             let bi = &self.basis[pair.i];
@@ -625,19 +731,49 @@ impl BuchbergerState {
             // Use ref-based reduce to avoid cloning every active polynomial
             // for each S-pair — this was the dominant per-call cost on
             // dense-ideal benchmarks (e.g. chunkedadd1) under the profiler.
+            // Cancel-aware variant so a single dense reduction doesn't
+            // blow past the user's `--timeout` (was a real bug on
+            // `modulusagainst2p`: a 30 s budget could overrun by 10×+
+            // because no cancel point existed inside the reducer's
+            // `pop_leading_term` loop).
             let active_refs: Vec<&Polynomial> = self.basis.iter()
                 .filter(|e| e.active)
                 .map(|e| &e.poly)
                 .collect();
-            let mut nf = s_poly.reduce_by_refs(&active_refs, &self.ring);
-            if nf.is_zero() { continue; }
+            let mut nf = match &self.cfg.cancel_token {
+                Some(c) => s_poly.reduce_by_refs_cancel(&active_refs, &self.ring, c),
+                None => s_poly.reduce_by_refs(&active_refs, &self.ring),
+            };
+            if let Some(c) = &self.cfg.cancel_token {
+                if c.is_cancelled() {
+                    return Err(SolverError::Timeout);
+                }
+            }
+            self.stats.reductions_total += 1;
+            if nf.is_zero() {
+                self.stats.reductions_useless += 1;
+                continue;
+            }
+            self.stats.reductions_useful += 1;
 
             nf = nf.make_monic(&self.ring);
 
             let new_idx = self.basis.len();
             let lt = nf.leading_monomial(&self.ring).unwrap();
             let lt_divmask = self.ring.divmask.compute(&lt);
-            let sugar = pair.sugar.max(lt.total_degree());
+            // Sugar update: tighter CoCoA-aligned formula. The pair sugar
+            // (computed at pair generation) is already an upper bound on
+            // the new poly's sugar — it equals
+            // max(deg(lcm/LT_i) + sugar(f_i), deg(lcm/LT_j) + sugar(f_j)),
+            // and reduction is degree-non-increasing on the leading term.
+            // Mirrors CoCoA `myAssignSPoly` (TmpGPoly.C:316) /
+            // `NewSugar` (TmpGPair.C:36-44).
+            debug_assert!(
+                lt.total_degree() <= pair.sugar,
+                "sugar invariant violated: LT total_degree {} > pair.sugar {}",
+                lt.total_degree(), pair.sugar
+            );
+            let sugar = pair.sugar;
             observer.on_new_poly(new_idx, &nf, (pair.i, pair.j));
 
             // Trivial-ideal short-circuit.
@@ -666,6 +802,23 @@ impl BuchbergerState {
             // is no longer needed (an A/B compared `tail_reduce_active`
             // every 32 additions vs no throttle and found the latter
             // gives equal-or-better KPI on the hard suite).
+        }
+        // Optional GB-engine telemetry: only emit when the user opts in
+        // via `PICUS_GB_STATS=1`. Mirrors the existing `PICUS_PROFILE`
+        // pattern; default-build behavior is unchanged.
+        if std::env::var_os("PICUS_GB_STATS").is_some() {
+            let s = &self.stats;
+            eprintln!(
+                "[picus-gb-stats] pairs={} cop={} gm={} b={} red={} useful={} useless={} interreduces={}",
+                s.pairs_generated,
+                s.pairs_killed_coprime,
+                s.pairs_killed_gm,
+                s.pairs_killed_b,
+                s.reductions_total,
+                s.reductions_useful,
+                s.reductions_useless,
+                s.interreduces_run,
+            );
         }
         Ok(())
     }
@@ -702,7 +855,7 @@ struct Checkpoint {
     generation: u32,
     /// Snapshot of the open S-pair queue (sorted descending, same convention
     /// as `BuchbergerState::open`). Simple but correct; could be replaced
-    /// with generation tagging in a future plan.
+    /// with generation tagging in future work.
     saved_open: Vec<SPair>,
     age_counter: u64,
     trivial: bool,
@@ -722,6 +875,18 @@ impl IncrementalGB {
     }
 
     pub fn ring(&self) -> &Arc<PolyRing> { &self.state.ring }
+
+    /// Seed the engine with a polynomial set that is **already a reduced
+    /// GB** in the engine's order. Skips S-pair generation among these
+    /// inputs entirely — the caller asserts the seeded set has no open
+    /// obligations.
+    ///
+    /// Used by `compute_gb_incremental_with_order` to avoid the
+    /// O(n²) pair-generation + O(n) GM-walk-per-pair overhead that
+    /// `add_generators` would otherwise pay during seeding.
+    pub fn seed_reduced_basis(&mut self, basis: Vec<Polynomial>) {
+        self.state.seed_with_reduced_basis(basis);
+    }
 
     pub fn add_generators(&mut self, polys: Vec<Polynomial>) -> Result<bool, SolverError> {
         let mut obs = NoObserver;

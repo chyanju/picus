@@ -233,3 +233,110 @@ fn normalize_poly(pr: &FfPolyRing, p: Poly) -> Poly {
     let inv_poly = pr.constant(inv);
     ring.mul(inv_poly, p)
 }
+
+#[cfg(test)]
+mod tests {
+    //! Encoder equivalence tests against cvc5's `theory_ff_rewriter.cpp`
+    //! pre-encode rewrites. These verify that picus's polynomial-level
+    //! algebraic merging achieves the same canonical form as cvc5's
+    //! AST-level rewriting, even though the merging happens at a
+    //! different stage of the pipeline.
+    //!
+    //! Each test is a counter-example to the hypothesis that picus
+    //! is missing a rewrite cvc5 has. If any of these fail in the
+    //! future, picus's encoder genuinely diverges from cvc5's output.
+    use super::*;
+    use num_bigint::BigUint;
+
+    fn small_sys(prime: u32) -> ConstraintSystem {
+        ConstraintSystem {
+            prime: BigUint::from(prime),
+            equalities: vec![],
+            disequalities: vec![],
+            assignments: vec![],
+            add_field_polys: false,
+            bitsums: vec![],
+        }
+    }
+
+    fn term(coeff: u64, vars: &[&str]) -> PolyTerm {
+        PolyTerm {
+            coeff: BigUint::from(coeff),
+            vars: vars.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// `c1*x + c2*x` (within one equality) should encode to a single
+    /// `(c1+c2)*x` polynomial term, matching cvc5's
+    /// `postRewriteFfAdd:98-106` repeated-subterm merge.
+    #[test]
+    fn merge_repeated_monomial_within_equality() {
+        // 2*x + 3*x = 0 over GF(101) should produce a poly with a
+        // single term of coefficient 5 on monomial x.
+        let mut sys = small_sys(101);
+        sys.equalities.push(vec![term(2, &["x"]), term(3, &["x"])]);
+        let enc = encode(&sys).unwrap();
+        // The lone polynomial should have exactly 1 term: 5*x (or
+        // its monic rescale, since `normalize_poly` divides by LC).
+        // After normalization 5*x → x, so the polynomial is just `x`.
+        let p = &enc.polynomials[0];
+        assert_eq!(p.num_terms(), 1, "expected single term, got {} terms", p.num_terms());
+    }
+
+    /// `c1 + c2` (constant terms, within one equality) should merge to
+    /// a single constant, matching cvc5's `postRewriteFfAdd:83-114`
+    /// constant-merging rewrite.
+    #[test]
+    fn merge_constant_terms_within_equality() {
+        // 2 + 3 + 7 = 0 mod 11 → 12 = 0 mod 11 → 1 = 0 (so the
+        // equality is unsatisfiable; we just check the polynomial
+        // form here).
+        let mut sys = small_sys(11);
+        sys.equalities.push(vec![term(2, &[]), term(3, &[]), term(7, &[])]);
+        let enc = encode(&sys).unwrap();
+        // 12 mod 11 = 1 ≠ 0, so the polynomial is the constant 1.
+        // After normalize_poly divides by LC=1, still 1.
+        assert_eq!(enc.polynomials.len(), 1);
+        assert_eq!(enc.polynomials[0].num_terms(), 1);
+    }
+
+    /// Constants and a variable term mix: `(2 + 3) + 4*x` should
+    /// produce a polynomial with two terms (5 + 4*x), not three
+    /// (2 + 3 + 4*x). cvc5 merges constants in
+    /// `postRewriteFfAdd:83-114`.
+    #[test]
+    fn merge_constants_with_variable_term() {
+        let mut sys = small_sys(101);
+        sys.equalities.push(vec![term(2, &[]), term(3, &[]), term(4, &["x"])]);
+        let enc = encode(&sys).unwrap();
+        let p = &enc.polynomials[0];
+        // 4*x + 5 = 0; after normalize_poly (divide by 4): x + (5/4)
+        assert_eq!(p.num_terms(), 2, "expected 2 terms (x + const), got {}", p.num_terms());
+    }
+
+    /// `c*x + (-c)*x` cancels to zero. picus's polynomial-level merge
+    /// drops the equality entirely (the encoder skips zero polynomials).
+    #[test]
+    fn merge_cancellation_drops_equality() {
+        // Over GF(101): 7*x + 94*x = (7 + 94)*x = 101*x = 0.
+        let mut sys = small_sys(101);
+        sys.equalities.push(vec![term(7, &["x"]), term(94, &["x"])]);
+        let enc = encode(&sys).unwrap();
+        assert!(enc.polynomials.is_empty(),
+            "cancelled equality should produce no polynomial; got {} polys",
+            enc.polynomials.len());
+    }
+
+    /// Repeated monomial with multiple variables: `c1*x*y + c2*y*x`
+    /// (commutative, same monomial) should merge.
+    #[test]
+    fn merge_commutative_product() {
+        // 2*x*y + 3*y*x = 5*x*y over GF(101).
+        let mut sys = small_sys(101);
+        sys.equalities.push(vec![term(2, &["x", "y"]), term(3, &["y", "x"])]);
+        let enc = encode(&sys).unwrap();
+        let p = &enc.polynomials[0];
+        // After normalize_poly divides by 5: just x*y.
+        assert_eq!(p.num_terms(), 1, "expected single x*y term, got {} terms", p.num_terms());
+    }
+}

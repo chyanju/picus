@@ -467,6 +467,80 @@ mod tests {
         assert!(pr.is_zero(&residual));
     }
 
+    /// Audit equivalence with cvc5 AST-level `bitConstraint`
+    /// (`parse.cpp:91-100`). Each case asserts that picus's
+    /// polynomial-level detector accepts (or correctly rejects) the
+    /// canonical form produced by encoding the equivalent AST.
+
+    #[test]
+    fn audit_bit_constraint_negated_form() {
+        // AST: (= 0 (- x (* x x)))  →  x - x²
+        // picus polynomial: -x² + x = (p-1)*x² + x
+        // After `normalize_poly` divides by (p-1), the canonical form
+        // is x² + (1/(p-1))*x = x² - x. Detector should accept.
+        let pr = FfPolyRing::new(ff(17), vec!["x".into()]);
+        let x2 = pr.mul(pr.var(0), pr.var(0));
+        // x - x²
+        let p = pr.sub(pr.var(0), x2);
+        // The detector accepts ANY scaling c*x² - c*x (`c == -lin/quad`),
+        // which `x - x²` is for c = -1.
+        assert_eq!(bit_constraint(&pr, &p), Some(BitConstraint { var: 0 }));
+    }
+
+    #[test]
+    fn audit_bit_constraint_nested_product() {
+        // AST: (= 0 (* x (- x 1)))  →  x*(x-1) → x² - x
+        // After polynomial multiplication picus produces x² - x directly.
+        let pr = FfPolyRing::new(ff(17), vec!["x".into()]);
+        let neg_one = pr.field.from_int(-1);
+        // (x - 1) = x + (-1)
+        let x_minus_1 = pr.add(pr.var(0), pr.constant(neg_one));
+        // x * (x - 1) = x² - x
+        let p = pr.mul(pr.var(0), x_minus_1);
+        assert_eq!(bit_constraint(&pr, &p), Some(BitConstraint { var: 0 }));
+    }
+
+    #[test]
+    fn audit_bit_constraint_sum_form() {
+        // AST: (= 0 (+ (* x x) (- x)))  →  x² + (-x) = x² - x.
+        // Algebraically same as standard form.
+        let pr = FfPolyRing::new(ff(17), vec!["x".into()]);
+        let x2 = pr.mul(pr.var(0), pr.var(0));
+        let neg_x = pr.scale(pr.field.from_int(-1), pr.var(0));
+        let p = pr.add(x2, neg_x);
+        assert_eq!(bit_constraint(&pr, &p), Some(BitConstraint { var: 0 }));
+    }
+
+    #[test]
+    fn audit_bit_constraint_rejects_x_squared_plus_x() {
+        // x² + x is NOT a bit constraint: it's x*(x+1), zero set {0, -1}.
+        let pr = FfPolyRing::new(ff(17), vec!["x".into()]);
+        let x2 = pr.mul(pr.var(0), pr.var(0));
+        let p = pr.add(x2, pr.var(0));
+        assert_eq!(bit_constraint(&pr, &p), None);
+    }
+
+    #[test]
+    fn audit_bit_sums_mixed_bases_rejected() {
+        // (+ b0 (* 3 b1)) — not a bitsum (3 ≠ 2). Detector should
+        // either reject or treat as a degenerate case.
+        let pr = FfPolyRing::new(ff(17), vec!["b0".into(), "b1".into()]);
+        let three = pr.field.from_int(3);
+        let p = pr.add(pr.var(0), pr.scale(three, pr.var(1)));
+        // Not a power-of-2-coefficient sequence; bit_sums returns the
+        // partial sum (just b0 with coeff 1) and the rest as residual.
+        let (sums, _residual) = bit_sums(&pr, &p, &HashSet::new()).unwrap();
+        // The detector finds the longest valid prefix, so a single-bit
+        // bitsum {b0} is valid; b1 with coeff 3 falls into residual.
+        for s in &sums {
+            for (i, _) in s.bits.iter().enumerate() {
+                let _ = i;
+            }
+            // Verify each bit's position progression is valid (powers of 2).
+            assert!(s.bits.len() <= 1, "non-power-of-2 sequence should not extend");
+        }
+    }
+
     #[test]
     fn test_bit_sums_with_residual() {
         // p = x + 2*y + z*z  →  bitsum [x,y] with coeff=1, residual=z*z

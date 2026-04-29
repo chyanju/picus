@@ -422,8 +422,9 @@ pub fn find_roots(poly: &UnivariatePoly, field: &PrimeField) -> Vec<FieldElem> {
             roots.push(r);
         }
     }
-    // Sort for determinism.
-    roots.sort_by(|a, b| a.as_biguint().cmp(b.as_biguint()));
+    // Sort for determinism. Use the underlying rug::Integer comparison
+    // (no allocation) rather than going through BigUint.
+    roots.sort_by(|a, b| a.as_integer().cmp(b.as_integer()));
     roots.dedup_by(|a, b| field.eq(a, b));
     roots
 }
@@ -454,7 +455,7 @@ mod tests {
         let p = poly_from_ints(&[1, 3, 2], &f);
         // p(5) = 50 + 15 + 1 = 66
         let v = p.evaluate(&f.from_u64(5), &f);
-        assert_eq!(v.as_biguint(), &BigUint::from(66u32));
+        assert_eq!(v.as_biguint(), BigUint::from(66u32));
     }
 
     #[test]
@@ -464,21 +465,21 @@ mod tests {
         let b = poly_from_ints(&[4, 5], &f);    // 5x + 4
         let s = a.add(&b, &f);
         // (3x^2 + 2x + 1) + (5x + 4) = 3x^2 + 7x + 5
-        assert_eq!(s.coeffs[0].as_biguint(), &BigUint::from(5u32));
-        assert_eq!(s.coeffs[1].as_biguint(), &BigUint::from(7u32));
-        assert_eq!(s.coeffs[2].as_biguint(), &BigUint::from(3u32));
+        assert_eq!(s.coeffs[0].as_biguint(), BigUint::from(5u32));
+        assert_eq!(s.coeffs[1].as_biguint(), BigUint::from(7u32));
+        assert_eq!(s.coeffs[2].as_biguint(), BigUint::from(3u32));
         let d = a.sub(&b, &f);
         // (3x^2 + 2x + 1) - (5x + 4) = 3x^2 - 3x - 3 = 3x^2 + 98x + 98 mod 101
-        assert_eq!(d.coeffs[0].as_biguint(), &BigUint::from(98u32));
-        assert_eq!(d.coeffs[1].as_biguint(), &BigUint::from(98u32));
-        assert_eq!(d.coeffs[2].as_biguint(), &BigUint::from(3u32));
+        assert_eq!(d.coeffs[0].as_biguint(), BigUint::from(98u32));
+        assert_eq!(d.coeffs[1].as_biguint(), BigUint::from(98u32));
+        assert_eq!(d.coeffs[2].as_biguint(), BigUint::from(3u32));
         let m = a.mul(&b, &f);
         // (3x^2 + 2x + 1) * (5x + 4) = 15x^3 + 12x^2 + 10x^2 + 8x + 5x + 4
         //                           = 15x^3 + 22x^2 + 13x + 4
-        assert_eq!(m.coeffs[0].as_biguint(), &BigUint::from(4u32));
-        assert_eq!(m.coeffs[1].as_biguint(), &BigUint::from(13u32));
-        assert_eq!(m.coeffs[2].as_biguint(), &BigUint::from(22u32));
-        assert_eq!(m.coeffs[3].as_biguint(), &BigUint::from(15u32));
+        assert_eq!(m.coeffs[0].as_biguint(), BigUint::from(4u32));
+        assert_eq!(m.coeffs[1].as_biguint(), BigUint::from(13u32));
+        assert_eq!(m.coeffs[2].as_biguint(), BigUint::from(22u32));
+        assert_eq!(m.coeffs[3].as_biguint(), BigUint::from(15u32));
     }
 
     #[test]
@@ -490,9 +491,9 @@ mod tests {
         let (q, r) = num.div_rem(&den, &f);
         assert!(r.is_zero());
         assert_eq!(q.coeffs.len(), 3);
-        assert_eq!(q.coeffs[0].as_biguint(), &BigUint::from(1u32));
-        assert_eq!(q.coeffs[1].as_biguint(), &BigUint::from(1u32));
-        assert_eq!(q.coeffs[2].as_biguint(), &BigUint::from(1u32));
+        assert_eq!(q.coeffs[0].as_biguint(), BigUint::from(1u32));
+        assert_eq!(q.coeffs[1].as_biguint(), BigUint::from(1u32));
+        assert_eq!(q.coeffs[2].as_biguint(), BigUint::from(1u32));
     }
 
     #[test]
@@ -503,9 +504,9 @@ mod tests {
         let b = poly_from_ints(&[-1, 1], &f);
         let g = a.gcd(&b, &f);
         assert_eq!(g.degree(), Some(1));
-        assert_eq!(g.leading_coefficient().unwrap().as_biguint(), &BigUint::from(1u32));
+        assert_eq!(g.leading_coefficient().unwrap().as_biguint(), BigUint::from(1u32));
         // Should be (x - 1).
-        assert_eq!(g.coeffs[0].as_biguint(), &BigUint::from(100u32)); // -1 mod 101
+        assert_eq!(g.coeffs[0].as_biguint(), BigUint::from(100u32)); // -1 mod 101
     }
 
     #[test]
@@ -517,8 +518,8 @@ mod tests {
         let modulus = poly_from_ints(&[-1, 0, 1], &f);
         let r = x.pow_mod(&BigUint::from(5u32), &modulus, &f);
         assert_eq!(r.degree(), Some(1));
-        assert_eq!(r.coeffs[0].as_biguint(), &BigUint::from(0u32));
-        assert_eq!(r.coeffs[1].as_biguint(), &BigUint::from(1u32));
+        assert_eq!(r.coeffs[0].as_biguint(), BigUint::from(0u32));
+        assert_eq!(r.coeffs[1].as_biguint(), BigUint::from(1u32));
     }
 
     #[test]
@@ -546,7 +547,7 @@ mod tests {
             let v = f.from_u64(cand);
             let exp = (BigUint::from(101u32) - BigUint::one()) / BigUint::from(2u32);
             let pw = f.pow(&v, &exp);
-            if pw.as_biguint() == &(BigUint::from(101u32) - BigUint::one()) {
+            if pw.as_biguint() == (BigUint::from(101u32) - BigUint::one()) {
                 nonqr = Some(cand);
                 break;
             }
@@ -592,7 +593,7 @@ mod tests {
         let p = poly_from_ints(&[-6, 3], &f);
         let roots = find_roots(&p, &f);
         assert_eq!(roots.len(), 1);
-        assert_eq!(roots[0].as_biguint(), &BigUint::from(2u32));
+        assert_eq!(roots[0].as_biguint(), BigUint::from(2u32));
     }
 
     #[test]

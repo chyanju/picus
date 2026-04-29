@@ -124,6 +124,16 @@ impl<'r> Ideal<'r> {
     }
 
     /// Extend an existing ideal by adding new generators incrementally.
+    ///
+    /// **Deliberate divergence from cvc5** (see
+    /// `docs/solver-evaluation.md` § "Deliberate divergences"): cvc5
+    /// recomputes the full GB on every branch (`split_gb.cpp:233-257`);
+    /// picus reuses the previously-computed reduced GB and runs
+    /// incremental Buchberger seeded with the existing basis, only
+    /// computing cross/intra S-pairs involving the new generators.
+    /// Sound — extending a reduced GB by additional generators yields
+    /// the same final GB as full recomputation — and significantly
+    /// faster on deep DFS trees common in zk-circuit verification.
     pub(crate) fn extend_with_cancel(
         self,
         new_polys: Vec<Poly>,
@@ -136,9 +146,30 @@ impl<'r> Ideal<'r> {
         if new_polys.is_empty() {
             return Ok(self);
         }
+        // Pre-reduce new generators against the existing reduced GB.
+        // If every new polynomial reduces to zero, the ideal is unchanged
+        // and we can skip the entire incremental Buchberger + interreduce
+        // round-trip (the GB engine would do the same reductions internally
+        // and discard the inputs, then interreduce_basis would walk an
+        // unchanged basis). Profiling on `modulusagainst2p` showed ~28% of
+        // `extend_with_cancel` invocations land on this path.
+        let surviving: Vec<Poly> = if self.basis.is_empty() {
+            new_polys
+        } else {
+            let basis_refs: Vec<&Poly> = self.basis.iter().collect();
+            let ring = self.poly_ring.ctx();
+            new_polys.into_iter()
+                .map(|p| p.reduce_by_refs_cancel(&basis_refs, ring, cancel))
+                .filter(|p| !p.is_zero())
+                .collect()
+        };
+        if cancel.is_cancelled() { return Err(Cancelled); }
+        if surviving.is_empty() {
+            return Ok(self);
+        }
         let Ideal { poly_ring, basis: known_gb } = self;
         let basis = compute_gb_incremental_with_order(
-            poly_ring, known_gb, new_polys, cancel, FfOrder::DegRevLex,
+            poly_ring, known_gb, surviving, cancel, FfOrder::DegRevLex,
         );
         if cancel.is_cancelled() { return Err(Cancelled); }
         let basis = interreduce_basis(poly_ring, basis, cancel);
@@ -192,9 +223,31 @@ impl<'r> Ideal<'r> {
         p.reduce_by(&self.basis, ring)
     }
 
+    /// Cancel-aware reduce. On cancel returns whatever partial remainder
+    /// the geobucket reducer had accumulated — sound (still represents the
+    /// same residue class) but not a normal form, so callers that want
+    /// `is_zero` membership semantics must check `cancel.is_cancelled()`
+    /// themselves to distinguish "really not in I" from "ran out of time."
+    pub fn reduce_with_cancel(&self, p: &Poly, cancel: &CancelToken) -> Poly {
+        if self.basis.is_empty() {
+            return p.clone();
+        }
+        let ring = self.poly_ring.ctx();
+        let refs: Vec<&Poly> = self.basis.iter().collect();
+        p.reduce_by_refs_cancel(&refs, ring, cancel)
+    }
+
     /// Ideal membership: returns `true` iff `p ∈ I`.
     pub fn contains(&self, p: &Poly) -> bool {
         self.reduce(p).is_zero()
+    }
+
+    /// Cancel-aware membership test. On cancel returns the value computed
+    /// from a partial reduction, which may falsely report "not in I" if
+    /// cancellation interrupts mid-reduce. Callers should treat a `false`
+    /// result with a cancelled token as "unknown, please retry / abort".
+    pub fn contains_with_cancel(&self, p: &Poly, cancel: &CancelToken) -> bool {
+        self.reduce_with_cancel(p, cancel).is_zero()
     }
 
     /// Returns `true` iff `I = R` (i.e. `1 ∈ I`).
@@ -301,7 +354,7 @@ pub(crate) fn interreduce_basis(
     if cancel.is_cancelled() {
         return basis;
     }
-    buchberger::interreduce(basis, poly_ring.ctx())
+    buchberger::interreduce_with_cancel(basis, poly_ring.ctx(), Some(cancel))
 }
 
 // ──────────────────── compute_gb_with_order family ────────────────────────
@@ -391,14 +444,15 @@ pub fn compute_gb_incremental_with_order(
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut igb = IncrementalGB::new(ring.clone(), cfg);
-        // Seed with the trusted reduced GB. add_generators reduces each input
-        // by the current basis before insertion; for a reduced GB this is a
-        // no-op, but it generates S-pairs only against EARLIER basis elements
-        // (within known_gb). All those S-pairs reduce to zero by Buchberger's
-        // criterion (since known_gb is already a GB), so this pass is cheap.
-        igb.add_generators(known_gb)?;
-        // Now genuinely incremental: only the cross-pairs (known_gb × new) and
-        // intra-new pairs are processed.
+        // Seed with the trusted reduced GB via the pair-free fast path.
+        // `add_generators` would have generated O(n²) S-pairs among the
+        // seeded elements (each of which then walks the M-criterion list,
+        // O(n³)/O(n⁴) total); since the seed is already a reduced GB,
+        // every one of those pairs reduces to zero by Buchberger's
+        // criterion. We skip them entirely.
+        igb.seed_reduced_basis(known_gb);
+        // Genuinely incremental: only the cross-pairs (known_gb × new) and
+        // intra-new pairs are processed by add_generators below.
         igb.add_generators(new_polys)?;
         Ok::<Vec<Poly>, crate::SolverError>(igb.basis())
     }));

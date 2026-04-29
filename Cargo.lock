@@ -74,6 +74,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "az"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be5eb007b7cacc6c660343e96f650fedf4b5a77512399eb952ca6642cf8d13f7"
+
+[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -385,6 +391,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
+name = "gmp-mpfr-sys"
+version = "1.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7db155b537cb791b133341f99f68371d86ee7fa4c79aacfbc376d72d23c70531"
+dependencies = [
+ "libc",
+ "windows-sys",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -515,6 +531,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "libm"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
 name = "log"
 version = "0.4.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -596,7 +618,7 @@ checksum = "d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d"
 
 [[package]]
 name = "picus"
-version = "1.7.11"
+version = "1.7.12"
 dependencies = [
  "num-bigint",
  "picus-analysis",
@@ -607,7 +629,7 @@ dependencies = [
 
 [[package]]
 name = "picus-analysis"
-version = "1.7.11"
+version = "1.7.12"
 dependencies = [
  "log",
  "num-bigint",
@@ -619,7 +641,7 @@ dependencies = [
 
 [[package]]
 name = "picus-cli"
-version = "1.7.11"
+version = "1.7.12"
 dependencies = [
  "anstream",
  "clap",
@@ -635,7 +657,7 @@ dependencies = [
 
 [[package]]
 name = "picus-r1cs"
-version = "1.7.11"
+version = "1.7.12"
 dependencies = [
  "byteorder",
  "num-bigint",
@@ -644,7 +666,7 @@ dependencies = [
 
 [[package]]
 name = "picus-smt"
-version = "1.7.11"
+version = "1.7.12"
 dependencies = [
  "cvc5-ff",
  "log",
@@ -658,7 +680,7 @@ dependencies = [
 
 [[package]]
 name = "picus-solver"
-version = "1.7.11"
+version = "1.7.12"
 dependencies = [
  "criterion",
  "env_logger",
@@ -667,6 +689,7 @@ dependencies = [
  "num-integer",
  "num-traits",
  "oorandom",
+ "rug",
  "thiserror",
 ]
 
@@ -785,6 +808,18 @@ name = "regex-syntax"
 version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
+
+[[package]]
+name = "rug"
+version = "1.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07a8857882aec59d27254b02481c709327c13de6fad1da60bfc4f9783eaaa61e"
+dependencies = [
+ "az",
+ "gmp-mpfr-sys",
+ "libc",
+ "libm",
+]
 
 [[package]]
 name = "rustc-hash"

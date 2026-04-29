@@ -21,6 +21,7 @@ use num_traits::Zero;
 use crate::field::FfEl;
 use crate::ideal::Ideal;
 use crate::poly::{FfPolyRing, Poly};
+use crate::timeout::CancelToken;
 
 /// State for bit propagation across multiple GBs.
 pub struct BitProp<'r> {
@@ -68,6 +69,17 @@ impl<'r> BitProp<'r> {
     /// from the structure of the bitsums and the current GB.  See cvc5's
     /// `BitProp::getBitEqualities` for the original algorithm.
     pub fn get_bit_equalities(&mut self, split_basis: &[Ideal<'r>]) -> Vec<Poly> {
+        self.get_bit_equalities_with_cancel(split_basis, None)
+    }
+
+    /// Cancel-aware variant. Returns whatever propagated equalities were
+    /// derived before cancellation; partial output is still sound (every
+    /// emitted poly is a valid consequence of the basis).
+    pub fn get_bit_equalities_with_cancel(
+        &mut self,
+        split_basis: &[Ideal<'r>],
+        cancel: Option<&CancelToken>,
+    ) -> Vec<Poly> {
         let _t = crate::profile::ScopedTimer::new("bitprop::get_bit_equalities");
         let pr = self.poly_ring;
         let ring = &pr.ring;
@@ -80,11 +92,17 @@ impl<'r> BitProp<'r> {
 
         // Phase 1: bitsums that reduce to a constant in some basis.
         for bs in &bitsums {
+            if let Some(c) = cancel {
+                if c.is_cancelled() { return output; }
+            }
             // Build the polynomial b_0 + 2*b_1 + ... + 2^k*b_k.
             let bs_poly = bitsum_poly(pr, bs);
             let mut handled = false;
             for basis in split_basis {
-                let nf = basis.reduce(&bs_poly);
+                let nf = match cancel {
+                    Some(c) => basis.reduce_with_cancel(&bs_poly, c),
+                    None => basis.reduce(&bs_poly),
+                };
                 // is normal form a constant?
                 let appearing = ring.appearing_indeterminates(&nf);
                 if !appearing.is_empty() {
@@ -123,13 +141,19 @@ impl<'r> BitProp<'r> {
         // Phase 2: pairs of non-constant bitsums known to be equal.
         let n = non_constant_bitsums.len();
         for i in 0..n {
+            if let Some(c) = cancel {
+                if c.is_cancelled() { return output; }
+            }
             for j in 0..i {
                 let a = &non_constant_bitsums[i];
                 let b = &non_constant_bitsums[j];
                 let a_poly = bitsum_poly(pr, a);
                 let b_poly = bitsum_poly(pr, b);
                 let diff = pr.sub(a_poly, b_poly);
-                let any_contains = split_basis.iter().any(|bs| bs.contains(&diff));
+                let any_contains = match cancel {
+                    Some(c) => split_basis.iter().any(|bs| bs.contains_with_cancel(&diff, c)),
+                    None => split_basis.iter().any(|bs| bs.contains(&diff)),
+                };
                 if !any_contains { continue; }
 
                 let min = a.len().min(b.len());

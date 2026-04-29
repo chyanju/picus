@@ -33,13 +33,22 @@ pub enum SolverMode {
 }
 
 /// Outcome of the core solver.
+///
+/// Three-valued result is a **deliberate divergence from cvc5** (see
+/// `docs/solver-evaluation.md` § "Deliberate divergences"). cvc5's
+/// `findZero` returns an empty vector both when no model exists and
+/// when bounded search ran out without finding one; picus distinguishes
+/// the two via `Unsat` vs `Unknown`. More-honest reporting; allows
+/// downstream callers to retry with relaxed bounds rather than treating
+/// bounded-no-model as definitive UNSAT.
 #[derive(Debug, Clone)]
 pub enum SolveOutcome {
     /// SAT — a model assigning every variable a field element (as BigUint).
     Sat(HashMap<String, BigUint>),
     /// UNSAT, with a (trivial) UNSAT core: indices of input facts.
     Unsat(UnsatCore),
-    /// Unknown — the solver was cancelled before reaching a conclusion.
+    /// Unknown — the solver was cancelled, or bounded search exhausted
+    /// without proving a definite verdict. Distinct from `Unsat`.
     Unknown,
 }
 
