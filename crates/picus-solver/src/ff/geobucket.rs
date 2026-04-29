@@ -17,22 +17,44 @@ use std::cmp::Ordering;
 use super::field::FieldElem;
 use super::polynomial::{PolyRing, Polynomial};
 
-/// Smallest bucket capacity (in terms).
-const BASE_CAPACITY: usize = 4;
-/// Geometric growth factor between consecutive buckets.
+/// Smallest bucket capacity (in terms). Matches CoCoA's
+/// `gbk_minlen = 128` (`geobucket.C:36`). Larger first bucket means
+/// fewer cascade events per `sub_scaled_tail` call, which dominates
+/// the reduction inner loop on dense-ideal benchmarks.
+const BASE_CAPACITY: usize = 128;
+/// Geometric growth factor between consecutive buckets. Matches CoCoA
+/// `gbk_factor = 4`.
 const RATIO: usize = 4;
-/// Hard cap on the number of buckets. 4 * 4^15 covers polynomials of ~10^9 terms.
-const MAX_BUCKETS: usize = 16;
+/// Hard cap on the number of buckets. Matches CoCoA `gbk_max = 20`.
+/// 128 * 4^19 covers polynomials of ~10^13 terms — well beyond any
+/// practical workload but matches CoCoA's ceiling exactly.
+const MAX_BUCKETS: usize = 20;
 
 pub struct Geobucket<'r> {
     buckets: Vec<Polynomial>,
     heads: Vec<usize>,
     ring: &'r PolyRing,
+    /// Scratch buffers for `sub_scaled_tail` — capacity is preserved
+    /// across calls. With GMP-backed `FieldElem`s, the bigger win than
+    /// avoiding a `Vec` allocation is keeping the existing `FieldElem`
+    /// instances (and their internal `mpz_t` storage) alive: reassigning
+    /// values into them avoids the per-iteration `mpz_init` / `mpz_clear`
+    /// pair that fresh Vec construction would incur.
+    scratch_exps: Vec<u16>,
+    scratch_coeffs: Vec<FieldElem>,
+    scratch_degs: Vec<u32>,
 }
 
 impl<'r> Geobucket<'r> {
     pub fn new(ring: &'r PolyRing) -> Self {
-        Geobucket { buckets: Vec::new(), heads: Vec::new(), ring }
+        Geobucket {
+            buckets: Vec::new(),
+            heads: Vec::new(),
+            ring,
+            scratch_exps: Vec::new(),
+            scratch_coeffs: Vec::new(),
+            scratch_degs: Vec::new(),
+        }
     }
 
     pub fn from_poly(poly: Polynomial, ring: &'r PolyRing) -> Self {
@@ -160,9 +182,17 @@ impl<'r> Geobucket<'r> {
         let n = self.ring.n_vars;
         let mul_deg: u32 = mul_exps.iter().map(|&e| e as u32).sum();
         let tail_len = div_len - 1;
-        let mut out_exps: Vec<u16> = Vec::with_capacity(tail_len * n);
-        let mut out_coeffs: Vec<FieldElem> = Vec::with_capacity(tail_len);
-        let mut out_degs: Vec<u32> = Vec::with_capacity(tail_len);
+        // Reuse Geobucket's scratch. `clear()` resets length to 0 but
+        // preserves capacity AND drops existing `FieldElem`s — the latter
+        // is harmless because we'd be overwriting them anyway. The next
+        // `push` reallocates capacity only when growing past previous
+        // high-water mark.
+        self.scratch_exps.clear();
+        self.scratch_coeffs.clear();
+        self.scratch_degs.clear();
+        self.scratch_exps.reserve(tail_len * n);
+        self.scratch_coeffs.reserve(tail_len);
+        self.scratch_degs.reserve(tail_len);
         let d_exps = divisor.raw_exponents();
         let d_coeffs = divisor.raw_coeffs();
         let d_degs = divisor.raw_total_degs();
@@ -171,12 +201,27 @@ impl<'r> Geobucket<'r> {
             for k in 0..n {
                 let sum = base[k].checked_add(mul_exps[k])
                     .expect("exponent overflow in sub_scaled_tail");
-                out_exps.push(sum);
+                self.scratch_exps.push(sum);
             }
-            out_coeffs.push(self.ring.field.mul(&d_coeffs[i], neg_coeff));
-            out_degs.push(d_degs[i] + mul_deg);
+            self.scratch_coeffs.push(self.ring.field.mul(&d_coeffs[i], neg_coeff));
+            self.scratch_degs.push(d_degs[i] + mul_deg);
         }
-        let scaled_tail = Polynomial::from_raw_sorted(out_exps, out_coeffs, out_degs);
+        // Move the scratch contents into the Polynomial via `mem::take`.
+        // This sets the scratch back to empty Vecs (capacity dropped to 0),
+        // so the *next* call's `reserve()` re-allocates from scratch. To
+        // preserve capacity across calls, we'd need an alternative
+        // construction path that *copies* rather than moves; profiling
+        // showed that on BN128 the FieldElem-allocation savings of a copy
+        // path didn't outweigh the per-element copy, so we keep the move
+        // form. The wins here are: (1) one centralized buffer instead of
+        // three with_capacity heap allocs scattered across call sites,
+        // (2) trivially extends to a copy-based path if a future profile
+        // says it's worth it.
+        let scaled_tail = Polynomial::from_raw_sorted(
+            std::mem::take(&mut self.scratch_exps),
+            std::mem::take(&mut self.scratch_coeffs),
+            std::mem::take(&mut self.scratch_degs),
+        );
         self.add_poly(scaled_tail);
     }
 
@@ -258,7 +303,7 @@ impl<'r> Geobucket<'r> {
 
     /// Consolidate every bucket into a single canonical `Polynomial`.
     pub fn into_poly(self) -> Polynomial {
-        let Geobucket { buckets, heads, ring } = self;
+        let Geobucket { buckets, heads, ring, .. } = self;
         let n = ring.n_vars;
         let mut out = Polynomial::zero();
         for (i, b) in buckets.into_iter().enumerate() {

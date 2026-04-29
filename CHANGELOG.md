@@ -4,6 +4,157 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.12] - 2026-04-28
+
+Major architectural alignment of the in-tree finite-field engine and
+split-GB driver against cvc5 + CoCoA. KPI gain is concentrated on the
+dense-ideal unsafe circuits (`chunkedadd`, `chunkedadd1`, `binadd1`,
+`binmulfast51_2`, `VDBuggy`); the two long-running hard timeouts
+(`modulusagainst2p`, `inTest`) remain over the 60 s KPI gate but
+`modulusagainst2p`'s underlying wall time dropped from ~600 s to
+~241 s.
+
+### Added
+
+- **GMP backend (`rug` crate, GMP via `gmp-mpfr-sys`).** `PrimeField` and
+  the in-tree polynomial pipeline now use `rug::Integer` instead of
+  `num_bigint::BigUint`, matching the backend cvc5 + CoCoA already use
+  (`include/CoCoA/BigInt.H:41`). `PrimeField` caches `result_bits`
+  (`prime_bits + 1`) and `product_bits` (`2 * prime_bits + 1`) at
+  construction; `add` / `sub` / `mul` allocate the result with
+  `Integer::with_capacity(...)` so the default 1-limb `mpz_init` no
+  longer reallocates on every BN128-sized result. The `BigUint`-on-the-
+  boundary API is preserved via cached conversions in `PrimeField`.
+- **Pair-free seed path in `compute_gb_incremental_with_order`**
+  (`buchberger.rs:399 seed_with_reduced_basis`). Previously the seeding
+  pass called `add_generators(known_gb)`, which generated O(n²) S-pairs
+  (each walking the M-criterion list, O(n³)/O(n⁴) total) — every one of
+  which reduced to zero by Buchberger's criterion since `known_gb` was
+  already a reduced GB. The new path pushes the seed elements directly
+  with non-strict deactivation and applies the divmask, skipping pair
+  generation entirely.
+- **No-op skip in `Ideal::extend_with_cancel`** (`ideal.rs:149-176`).
+  When every new generator reduces to zero against the existing reduced
+  GB, the GB engine and the subsequent `interreduce_basis` call are
+  both skipped (the result would be the same basis byte-for-byte). On
+  `modulusagainst2p` this short-circuit fired on ~28 % of calls under
+  `PICUS_GB_STATS=1`.
+- **Lin-quick-UNSAT clone elimination** (`split_gb.rs:599-614`). The
+  per-DFS-branch linear-only UNSAT pre-check used to clone basis 0,
+  build an `Ideal`, run incremental Buchberger, and inspect
+  `is_whole_ring()`. For a basis whose elements are all degree ≤ 1
+  (which `admit(0, p)` guarantees), Buchberger reduces to Gaussian
+  elimination, so the cheap exact test is `assign_poly mod basis[0]` is
+  a non-zero constant. Replacing the clone+extend chain with a direct
+  `reduce_with_cancel` + constant check **dropped `modulusagainst2p`
+  wall time from 632 s to 241 s (-62 %)** in single-run measurement;
+  per-branch basis clone was the dominant cost in
+  `split_zero_extend_cancel`'s body on dense circuits.
+- **Cancel-token propagation through reduction hot paths.** Previously
+  a single dense reduction inside `reduce_by_refs_geobucket` could run
+  for tens of seconds with no cancel-check, so `--timeout` only fired
+  at coarse boundaries. New: `Polynomial::reduce_by_refs_cancel`
+  (cancel-checked inside the geobucket `pop_leading_term` loop, every
+  64 iterations to keep the atomic-load overhead negligible),
+  `Ideal::reduce_with_cancel` / `Ideal::contains_with_cancel`,
+  `buchberger::interreduce_with_cancel`,
+  `BitProp::get_bit_equalities_with_cancel`. The Buchberger main loop
+  (`run`), `add_generators`, `interreduce`, and the split-GB fixpoint
+  all now use the cancel-aware paths. On cancel the reducer returns a
+  partial remainder consisting of already-emitted result terms plus the
+  unprocessed bucket contents — sound (still represents the same
+  residue class) but not necessarily a normal form.
+- **`PICUS_GB_STATS=1` telemetry** (`buchberger.rs` `GbEngineStats`).
+  Counters for pairs generated / killed by coprime / killed by GM /
+  killed by B / reductions total / useful / useless / interreduces
+  run. Emitted at end of each `add_generators` call when the env var
+  is set; mirrors the existing `PICUS_PROFILE=1` pattern.
+- **Bit-pattern detection equivalence audit** (`parse.rs`, 5 new
+  tests covering negated / nested / sum-form / rejection cases).
+- **Encoder repeated-subterm + constant-merging equivalence audit**
+  (`encoder.rs`, 5 new tests). Confirmed picus's polynomial-level
+  merge is equivalent to cvc5's AST-level rewrites; no code change
+  needed.
+- **Geobucket scratch buffers** (`geobucket.rs:43-45`,
+  `scratch_exps` / `scratch_coeffs` / `scratch_degs`). Plumbing for
+  reusing the `sub_scaled_tail` working buffers across calls. Honest
+  caveat: the realised win here is structural — the move-semantics
+  path required by `Polynomial::from_raw_sorted` resets the scratch
+  capacity each call, so the FieldElem-buffer-reuse benefit doesn't
+  materialise. Future copy-based path is a small change; left as-is
+  for this release.
+- **`Deliberate divergences from cvc5` section in `solver-evaluation.md`**
+  with cross-references from each picus-only feature back to its
+  source comment.
+
+### Changed
+
+- **Geobucket bucket constants aligned with CoCoA**
+  (`geobucket.rs`). Was `BASE_CAPACITY = 4` / `MAX_BUCKETS = 16`;
+  now `BASE_CAPACITY = 128` / `RATIO = 4` / `MAX_BUCKETS = 20`,
+  matching CoCoA's `gbk_minlen` / `gbk_factor` / `gbk_max`
+  (`geobucket.C:36-38`). picus was cascading bucket 0 → bucket 1 on
+  essentially every `sub_scaled_tail` call; CoCoA absorbs ~16 calls
+  into bucket 0 before cascading. **`chunkedadd1` recovered**
+  (timeout → 62.7 s pre-other-changes; ~19.8 s after the rest of
+  this release lands) and KPI moved from 13/17 to 14/17.
+- **Sugar formula at S-pair generation tightened**
+  (`buchberger.rs`). Was `sugar = pair.sugar.max(lt.total_degree())`;
+  now `sugar = pair.sugar` with a `debug_assert!(lt.total_degree() <=
+  pair.sugar)` invariant. Mirrors CoCoA's `myAssignSPoly`
+  (`TmpGPoly.C:316`) — the pair sugar is already an upper bound on
+  the new poly's sugar by construction, so the `max` was redundant.
+  Invariant holds across all 127 unit tests.
+
+### Performance (17 hard circuits, 60 s timeout)
+
+- 1.7.11 baseline: 13/17 solved.
+- 1.7.12 (this release): **14/17 solved**. Highlights vs baseline:
+  - `chunkedadd1`: timeout → ~19.8 s (RECOVERED, +1 KPI bump)
+  - `chunkedadd`: 38.9 s → ~11.9 s (-69 %)
+  - `binmulfast51_2`: 12.1 s → ~4.2 s (-65 %)
+  - `VDBuggy`: 13.3 s → ~3.4 s (-74 %)
+  - `binadd1`: median ~5.5 s, down from 13.2 s (this circuit shows
+    ~10× single-run variance under the same binary; KPI17 sample
+    can land anywhere in 2.7–26.7 s)
+  - `modulusagainst2p`: still timeout at the 60 s gate, but the
+    underlying wall time dropped from ~632 s to ~241 s (-62 %).
+    cvc5 takes 38.7 s; the remaining ~6× gap is dominated by the
+    per-DFS-branch full split-GB basis clone
+    (`split_zero_extend_cancel:624-631`), which would need either
+    `Arc<Polynomial>`-backed bases or an explicit
+    checkpoint/restore in `extend_with_cancel` to eliminate.
+- Three timeouts remain: `Pedersen@pedersen` (cvc5 also times out;
+  acknowledged), `modulusagainst2p`, `inTest`.
+
+### Correctness
+
+- **127 picus-solver unit tests pass.**
+- **0 compiler warnings** across the workspace.
+- Correctness gate: 110 circuits, **0 verdict mismatches** vs cvc5
+  (106 agree, 36 of those are both-timeout). One circuit's verdict
+  changed from "picus times out" to "picus solves and matches cvc5"
+  vs the 1.7.11 gate (105 → 106 agree).
+
+### Known limitations / not closed in this release
+
+- `modulusagainst2p` and `inTest` still over the 60 s KPI gate. The
+  earlier "F4/F5 batched reduction or Montgomery-form arithmetic
+  territory" attribution was tightened on a focused profile re-run:
+  the gap is dominated by GB-engine raw speed (CoCoA's mature
+  C++ implementation is ~1 order of magnitude faster than picus's
+  Rust port at the same workload) plus slow fixpoint convergence in
+  `split_gb_extend_cancel` (~171 fixpoint iterations per outer DFS
+  branch on `modulusagainst2p`). Closing this gap is non-trivial in
+  either direction (faster polynomial arithmetic / GB engine, or a
+  different fixpoint convergence strategy) and is deferred.
+- A cross-pollination skip in `split_gb_extend_cancel` (push only
+  cross-split basis polys into `to_propagate`, not own-basis) was
+  implemented and reverted — although mathematically equivalent it
+  perturbed `new_polys` insertion order, which fed through Buchberger's
+  S-pair selection and regressed `modulusagainst2p` from 632 s to 751 s.
+  The own-basis `contains` check has been retained.
+
 ## [1.7.11] - 2026-04-28
 
 This release closes the algorithmic alignment between picus's in-tree

@@ -636,7 +636,24 @@ impl Polynomial {
         if self.is_zero() || divisors.is_empty() {
             return self.clone();
         }
-        self.reduce_by_refs_geobucket(divisors, ring)
+        self.reduce_by_refs_geobucket(divisors, ring, None)
+    }
+
+    /// Cancel-aware variant of `reduce_by_refs`. Returns the partial
+    /// remainder accumulated so far on cancel — sound but not necessarily
+    /// fully reduced. Hot paths (Buchberger main loop, interreduce, bit-prop
+    /// `contains`) should prefer this over `reduce_by_refs` to keep
+    /// `--timeout` honest on dense polynomials.
+    pub fn reduce_by_refs_cancel(
+        &self,
+        divisors: &[&Polynomial],
+        ring: &PolyRing,
+        cancel: &crate::timeout::CancelToken,
+    ) -> Polynomial {
+        if self.is_zero() || divisors.is_empty() {
+            return self.clone();
+        }
+        self.reduce_by_refs_geobucket(divisors, ring, Some(cancel))
     }
 
     /// Geobucket-based reduction. Public for testing — production code should
@@ -646,6 +663,7 @@ impl Polynomial {
         &self,
         divisors: &[&Polynomial],
         ring: &PolyRing,
+        cancel: Option<&crate::timeout::CancelToken>,
     ) -> Polynomial {
         let n = ring.n_vars;
 
@@ -670,7 +688,38 @@ impl Polynomial {
         let mut result_degs: Vec<u32> = Vec::new();
         let mut shift = vec![0u16; n];
 
+        // Throttle the cancel check very coarsely: an atomic load is
+        // ~1 ns, but the `match`/branch on every iteration measurably
+        // regressed `binadd1` from 5 s to 15 s in benchmarking. With
+        // 4096 we stay responsive for any user-facing `--timeout` (~ms
+        // resolution would still be O(thousands of S-pairs/ms) latency
+        // ceiling on cancel) while making the per-iteration overhead
+        // unmeasurable.
+        let mut iter_counter: u32 = 0;
+        const CANCEL_CHECK_PERIOD: u32 = 4096;
+        // Bind the cancel reference outside the loop so the per-iteration
+        // path doesn't re-pattern-match the Option.
+        let cancel_ref = cancel;
         while let Some((lt_exps, lt_deg, lt_coeff)) = gb.pop_leading_term() {
+            iter_counter = iter_counter.wrapping_add(1);
+            if iter_counter & (CANCEL_CHECK_PERIOD - 1) == 0 {
+                if let Some(c) = cancel_ref {
+                    if c.is_cancelled() {
+                        // Surface the partial remainder we have so far,
+                        // PLUS the unprocessed portion still in the geobucket
+                        // (so callers don't get a misleadingly small result).
+                        // Soundness: at any pop_leading_term boundary the
+                        // sum of `result_*` and the geobucket equals the
+                        // original poly modulo the divisors processed.
+                        while let Some((e, d, c2)) = gb.pop_leading_term() {
+                            result_exps.extend_from_slice(&e);
+                            result_coeffs.push(c2);
+                            result_degs.push(d);
+                        }
+                        return Polynomial::from_raw_sorted(result_exps, result_coeffs, result_degs);
+                    }
+                }
+            }
             let cur_dm = ring.divmask.compute_from_slice(&lt_exps);
 
             // Find a divisor whose LM divides (lt_exps, lt_deg).
@@ -945,7 +994,7 @@ mod tests {
             &r,
         );
         let divs: Vec<&Polynomial> = vec![&d1, &d2, &d3];
-        let geo = p.reduce_by_refs_geobucket(&divs, &r);
+        let geo = p.reduce_by_refs_geobucket(&divs, &r, None);
         let naive = p.reduce_by_refs_naive(&divs, &r);
         let dispatched = p.reduce_by_refs(&divs, &r);
         assert_eq!(geo.num_terms(), naive.num_terms());
@@ -982,7 +1031,7 @@ mod tests {
             &r,
         );
         // p reduced by (x - y): leading reductions cancel until 0.
-        let nf = p.reduce_by_refs_geobucket(&[&d], &r);
+        let nf = p.reduce_by_refs_geobucket(&[&d], &r, None);
         let nf_naive = p.reduce_by_refs_naive(&[&d], &r);
         assert!(nf.is_zero(), "geobucket reduction should yield zero");
         assert!(nf_naive.is_zero(), "naive reduction should also yield zero");

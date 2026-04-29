@@ -11,6 +11,7 @@ description = "Pure Rust finite field SMT solver for Picus"
 num-bigint.workspace = true
 num-traits.workspace = true
 num-integer.workspace = true
+rug.workspace = true
 log.workspace = true
 thiserror.workspace = true
 oorandom = "11.1"

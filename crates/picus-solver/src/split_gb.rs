@@ -88,6 +88,10 @@ pub fn split_gb_cancel<'r>(
         .map(|_| Ideal::from_gb(poly_ring, Vec::new()))
         .collect();
 
+    // **Deliberate divergence from cvc5** (see `docs/solver-evaluation.md`
+    // § "Deliberate divergences"): cvc5 has no explicit fixpoint cap — it
+    // relies on the caller's timeout. picus adds a safety bound to prevent
+    // pathological propagation loops on degenerate inputs.
     let max_fixpoint_iters = (k * 64).max(256);
     let mut fixpoint_iter = 0;
 
@@ -122,7 +126,9 @@ pub fn split_gb_cancel<'r>(
             break;
         }
 
-        let mut to_propagate = bit_prop.get_bit_equalities(&split_basis);
+        let mut to_propagate =
+            bit_prop.get_bit_equalities_with_cancel(&split_basis, Some(cancel));
+        if cancel.is_cancelled() { return Err(Cancelled); }
         for b in &split_basis {
             for p in &b.basis {
                 to_propagate.push(poly_ring.ring.clone_el(p));
@@ -131,8 +137,16 @@ pub fn split_gb_cancel<'r>(
 
         let mut any_new = false;
         for p in &to_propagate {
+            // Cancel check between propagation candidates: each `contains`
+            // is a full reduce, and dense bases on circuits like
+            // `modulusagainst2p` made this loop a primary `--timeout` leak
+            // point. Coarse-grained — a single in-progress `contains` call
+            // can still overshoot — but breaks the per-iteration ceiling.
+            if cancel.is_cancelled() { return Err(Cancelled); }
             for j in 0..k {
-                if admit(poly_ring, j, p) && !split_basis[j].contains(p) {
+                if admit(poly_ring, j, p)
+                    && !split_basis[j].contains_with_cancel(p, cancel)
+                {
                     new_polys[j].push(poly_ring.ring.clone_el(p));
                     any_new = true;
                 }
@@ -163,6 +177,16 @@ pub fn split_gb_cancel<'r>(
 /// GB and only one new generator is being added.  Using
 /// `split_gb_extend_cancel` from that hot path lets each ideal grow
 /// incrementally.
+/// Extend an existing reduced split-GB by additional generators
+/// **without** recomputing each basis from scratch.
+///
+/// **Deliberate divergence from cvc5** (see `docs/solver-evaluation.md`
+/// § "Deliberate divergences"): cvc5 recomputes the full GB on each
+/// branch (`split_gb.cpp:233-257`); picus reuses the existing reduced
+/// GB and runs incremental Buchberger via `Ideal::extend_with_cancel`.
+/// Sound — extending a reduced GB by additional generators and
+/// re-running Buchberger yields the same final GB as full recomputation
+/// — and significantly faster on deep DFS trees.
 pub(crate) fn split_gb_extend_cancel<'r>(
     poly_ring: &'r FfPolyRing,
     starting: SplitGb<'r>,
@@ -204,7 +228,9 @@ pub(crate) fn split_gb_extend_cancel<'r>(
             break;
         }
 
-        let mut to_propagate = bit_prop.get_bit_equalities(&split_basis);
+        let mut to_propagate =
+            bit_prop.get_bit_equalities_with_cancel(&split_basis, Some(cancel));
+        if cancel.is_cancelled() { return Err(Cancelled); }
         for b in &split_basis {
             for p in &b.basis {
                 to_propagate.push(poly_ring.ring.clone_el(p));
@@ -213,8 +239,16 @@ pub(crate) fn split_gb_extend_cancel<'r>(
 
         let mut any_new = false;
         for p in &to_propagate {
+            // Cancel check between propagation candidates: each `contains`
+            // is a full reduce, and dense bases on circuits like
+            // `modulusagainst2p` made this loop a primary `--timeout` leak
+            // point. Coarse-grained — a single in-progress `contains` call
+            // can still overshoot — but breaks the per-iteration ceiling.
+            if cancel.is_cancelled() { return Err(Cancelled); }
             for j in 0..k {
-                if admit(poly_ring, j, p) && !split_basis[j].contains(p) {
+                if admit(poly_ring, j, p)
+                    && !split_basis[j].contains_with_cancel(p, cancel)
+                {
                     new_polys[j].push(poly_ring.ring.clone_el(p));
                     any_new = true;
                 }
@@ -292,8 +326,10 @@ pub fn split_zero_extend<'r>(
 
 /// Cancel-aware version of `split_zero_extend`.
 ///
-/// Uses an explicit stack instead of recursion to avoid stack overflow
-/// on deep searches (matching cvc5's iterative `splitZeroExtend`).
+/// **Deliberate divergence from cvc5** (see `docs/solver-evaluation.md`
+/// § "Deliberate divergences"): uses an explicit stack instead of
+/// recursion to avoid stack overflow on deep searches. cvc5's
+/// `splitZeroExtend` (`split_gb.cpp:156-264`) is recursive.
 ///
 /// CDCL-lite enhancements:
 ///   * **Phase saving**: when a frame is popped, the partial assignment's
@@ -329,6 +365,13 @@ pub fn split_zero_extend_cancel<'r>(
     }
 
     // ─── CDCL-lite: phase saving + nogood cache ───────────────────────────
+    //
+    // **Deliberate divergence from cvc5** (see `docs/solver-evaluation.md`
+    // § "Deliberate divergences"): cvc5's `splitZeroExtend` does no phase
+    // saving and no nogood caching. picus adds both as standalone-search
+    // optimizations that exploit the standalone uniqueness-checker
+    // setting, where there is no SAT/DPLL(T) layer above to absorb these
+    // duties.
     //
     // `saved_phase[v]` is the most recently popped value of variable `v`
     // (across the whole search). When a future Brancher::Roots produces
@@ -542,29 +585,27 @@ pub fn split_zero_extend_cancel<'r>(
             continue; // backtrack to next candidate
         }
 
-        // Optimization: first check if adding the assignment to the linear
-        // basis (basis 0) alone makes it the whole ring.  This is cheap
-        // (~1ms) and eliminates UNSAT branches without the expensive
-        // nonlinear basis recomputation (~12ms).
+        // **Deliberate divergence from cvc5** (see
+        // `docs/solver-evaluation.md` § "Deliberate divergences"):
+        // linear-only quick UNSAT pre-check.  Before the full split-GB
+        // extension on a candidate, test if adding the assignment to the
+        // linear basis (basis 0) alone makes it whole-ring. cvc5 does
+        // not have this optimization.
         //
-        // Uses `extend_with_cancel` (incremental Buchberger seeded
-        // from the parent frame's reduced GB) to avoid recomputing the
-        // linear basis from scratch on every branching candidate.
+        // Earlier this used `extend_with_cancel`, which cloned the
+        // linear basis and ran incremental Buchberger. For a linear
+        // basis (every element has degree ≤ 1), Buchberger reduces to
+        // Gaussian elimination, so the cheap test is exact:
+        // `assign_poly mod lin_basis` is a non-zero constant ⇔ the
+        // augmented ideal is the whole ring. Saves the per-candidate
+        // basis clone, which on dense circuits like `modulusagainst2p`
+        // was the dominant cost in `split_zero_extend_cancel`'s body.
         if !stack[frame_idx].bases.is_empty() {
-            let cloned_basis: Vec<Poly> = stack[frame_idx].bases[0].basis.iter()
-                .map(|p| poly_ring.ring.clone_el(p)).collect();
-            let lin_ideal_seed = Ideal::from_gb(poly_ring, cloned_basis);
-            let lin_ideal = match lin_ideal_seed.extend_with_cancel(
-                vec![poly_ring.ring.clone_el(&assign_poly)], cancel,
-            ) {
-                Ok(i) => i,
-                Err(_) => return ZeroExtendResult::Cancelled,
-            };
-            if lin_ideal.is_whole_ring() {
-                // Linear basis alone is UNSAT — record full partial assignment
-                // as a nogood. (Backjumping / projection deferred: an
-                // earlier IGB-driven variant regressed `binadd1` due to
-                // per-candidate observer overhead and lost interreduction.)
+            let nf = stack[frame_idx].bases[0]
+                .reduce_with_cancel(&assign_poly, cancel);
+            if cancel.is_cancelled() { return ZeroExtendResult::Cancelled; }
+            if !nf.is_zero() && nf.is_constant() {
+                // Linear basis ∪ {assign_poly} ⊇ {1} → whole ring → UNSAT.
                 if nogoods.len() < MAX_NOGOODS {
                     nogoods.push(point_to_map(&new_r, &poly_ring.field));
                 }
@@ -645,8 +686,13 @@ pub fn split_zero_extend_cancel<'r>(
 }
 
 /// Like `apply_rule` but checks ALL bases for univariate/zero-dim structure.
-/// cvc5 only checks basis[0], but checking all bases can avoid expensive
-/// round-robin by finding structure in the nonlinear basis.
+///
+/// **Deliberate divergence from cvc5** (see `docs/solver-evaluation.md`
+/// § "Deliberate divergences"): cvc5's `applyRule` (`multi_roots.cpp:164-196`)
+/// only inspects basis 0; picus iterates over all bases. Sound — the
+/// branching structure detected is mathematically valid in either basis —
+/// and avoids round-robin fallback when the nonlinear basis exposes
+/// usable structure after bit-propagation.
 fn apply_rule_multi<'r>(
     poly_ring: &'r FfPolyRing,
     bases: &[Ideal<'r>],

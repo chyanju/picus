@@ -1,36 +1,62 @@
-//! Prime field GF(p) for arbitrary primes (sized for BN128 ~254 bits).
+//! Prime field GF(p) backed by GMP via the `rug` crate.
 //!
-//! Internal representation is `num_bigint::BigUint`. Field elements are stored
-//! in canonical (least non-negative) form in `[0, p)`.
+//! Field elements are stored in canonical (least non-negative) form in
+//! `[0, p)`. All arithmetic dispatches to GMP (`mpz_add`, `mpz_mul`,
+//! `mpz_mod`, `mpz_invert`, ...) for Karatsuba/Toom-Cook multiplication
+//! and platform-specific assembly. This is the same arithmetic backend
+//! cvc5+CoCoA uses (`include/CoCoA/BigInt.H:41`).
 //!
-//! All arithmetic is performed using `BigUint` operations followed by reduction.
-//! This is sufficient: earlier profiling identified the dominant costs as
-//! branching strategy and polynomial arithmetic, not per-operation
-//! field-element cost. Montgomery form can be added later as a separate
-//! optimization.
+//! The public API still exchanges `num_bigint::BigUint` at the boundary
+//! (encoder input, model output) for compatibility with the rest of the
+//! picus workspace. Conversions go through byte order via
+//! `to_bytes_le` / `from_bytes_le`.
 
 use num_bigint::BigUint;
-use num_integer::Integer;
-use num_traits::{One, Zero};
+use rug::Integer;
 use std::sync::Arc;
+
+// ─────────────────────────── BigUint ↔ Integer ───────────────────────────
+
+/// Convert a `BigUint` to a `rug::Integer`. Used at the picus-solver API
+/// boundary; not on the hot reduction path.
+#[inline]
+fn biguint_to_integer(b: &BigUint) -> Integer {
+    let bytes = b.to_bytes_le();
+    Integer::from_digits(&bytes, rug::integer::Order::Lsf)
+}
+
+/// Convert a `rug::Integer` (assumed non-negative) to a `BigUint`.
+#[inline]
+fn integer_to_biguint(i: &Integer) -> BigUint {
+    let bytes: Vec<u8> = i.to_digits::<u8>(rug::integer::Order::Lsf);
+    BigUint::from_bytes_le(&bytes)
+}
+
+// ───────────────────────────── FieldElem ────────────────────────────────
 
 /// An element of GF(p). Always stored in canonical form `0 <= value < p`.
 #[derive(Clone, Debug)]
 pub struct FieldElem {
-    pub(crate) value: BigUint,
+    pub(crate) value: Integer,
 }
 
 impl FieldElem {
-    /// Direct constructor; caller must ensure `value < p`.
+    /// Direct constructor; caller must ensure `0 <= value < p`.
     #[inline]
-    pub(crate) fn new_unchecked(value: BigUint) -> Self {
+    pub(crate) fn new_unchecked(value: Integer) -> Self {
         FieldElem { value }
     }
 
-    /// Borrow the underlying canonical representative.
+    /// Borrow the underlying `rug::Integer`. Internal hot-path access.
     #[inline]
-    pub fn as_biguint(&self) -> &BigUint {
+    pub fn as_integer(&self) -> &Integer {
         &self.value
+    }
+
+    /// Boundary conversion: produce a `BigUint` copy of the value. Allocates;
+    /// keep off the hot path.
+    pub fn as_biguint(&self) -> BigUint {
+        integer_to_biguint(&self.value)
     }
 }
 
@@ -44,77 +70,113 @@ impl Eq for FieldElem {}
 
 impl std::hash::Hash for FieldElem {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.value.hash(state)
+        // Hash via byte representation for stability across platforms.
+        let bytes: Vec<u8> = self.value.to_digits::<u8>(rug::integer::Order::Lsf);
+        bytes.hash(state)
     }
 }
 
+// ──────────────────────────── PrimeField ────────────────────────────────
+
 /// A prime field GF(p). Cheaply cloneable (shares the prime via `Arc`).
+///
+/// We carry both the `rug::Integer` form (for hot-path arithmetic) and
+/// the `BigUint` form (for the public boundary API `prime() -> &BigUint`).
+/// The prime is constructed once per solve so the duplication cost is
+/// negligible.
 #[derive(Clone, Debug)]
 pub struct PrimeField {
-    prime: Arc<BigUint>,
+    prime: Arc<Integer>,
+    prime_bu: Arc<BigUint>,
+    /// Bit width of the prime, cached at construction. Used to size GMP
+    /// `Integer` allocations so arithmetic operations (`add`, `sub`,
+    /// `mul`, `neg`) produce results that fit without an `mpz_realloc`
+    /// — for BN128 (254 bits = 4 limbs) the default `mpz_init` capacity
+    /// is one limb and every fresh result paid a realloc.
+    result_bits: usize,
+    /// Bit width sufficient to hold a product of two prime-sized integers
+    /// (`2 * prime_bits + a small margin`). Used by `mul` before the
+    /// `% prime` reduction.
+    product_bits: usize,
 }
 
 impl PrimeField {
-    /// Construct a new prime field. Caller is responsible for ensuring `prime`
-    /// is actually prime — this constructor does not test primality.
+    /// Construct a new prime field. Caller is responsible for ensuring
+    /// `prime` is actually prime — this constructor does not test
+    /// primality.
     pub fn new(prime: BigUint) -> Self {
-        assert!(prime > BigUint::one(), "prime must be > 1");
-        PrimeField { prime: Arc::new(prime) }
+        assert!(prime > BigUint::from(1u32), "prime must be > 1");
+        let prime_int = biguint_to_integer(&prime);
+        let result_bits = prime_int.significant_bits() as usize + 1;
+        let product_bits = 2 * (prime_int.significant_bits() as usize) + 1;
+        PrimeField {
+            prime: Arc::new(prime_int),
+            prime_bu: Arc::new(prime),
+            result_bits,
+            product_bits,
+        }
     }
 
-    /// The prime modulus.
+    /// The prime modulus (boundary view). Returns the cached `BigUint`
+    /// form — no allocation.
     #[inline]
     pub fn prime(&self) -> &BigUint {
-        &self.prime
+        &self.prime_bu
     }
 
-    /// Same as `prime`; provided for API parity with feanor-math `Field` trait.
+    /// Same as `prime`; provided for API parity.
     #[inline]
     pub fn characteristic(&self) -> &BigUint {
+        &self.prime_bu
+    }
+
+    /// Internal hot-path access to the prime in `rug::Integer` form.
+    #[allow(dead_code)]
+    #[inline]
+    pub(crate) fn prime_integer(&self) -> &Integer {
         &self.prime
     }
 
     #[inline]
     pub fn zero(&self) -> FieldElem {
-        FieldElem::new_unchecked(BigUint::zero())
+        FieldElem::new_unchecked(Integer::new())
     }
 
     #[inline]
     pub fn one(&self) -> FieldElem {
-        FieldElem::new_unchecked(BigUint::one())
+        FieldElem::new_unchecked(Integer::from(1))
     }
 
     pub fn from_u64(&self, v: u64) -> FieldElem {
-        let val = BigUint::from(v);
-        FieldElem::new_unchecked(val % &*self.prime)
+        let mut val = Integer::from(v);
+        val %= &*self.prime;
+        FieldElem::new_unchecked(val)
     }
 
     /// Map a signed integer into the field (negatives become `p - |v|`).
     pub fn from_i64(&self, v: i64) -> FieldElem {
-        if v >= 0 {
-            self.from_u64(v as u64)
-        } else {
-            let abs_val = BigUint::from(v.unsigned_abs());
-            let r = &*self.prime - (abs_val % &*self.prime);
-            if r == *self.prime {
-                self.zero()
-            } else {
-                FieldElem::new_unchecked(r)
-            }
+        let mut val = Integer::from(v);
+        val %= &*self.prime;
+        if val.cmp0() == std::cmp::Ordering::Less {
+            val += &*self.prime;
         }
+        FieldElem::new_unchecked(val)
     }
 
     pub fn from_biguint(&self, v: &BigUint) -> FieldElem {
-        FieldElem::new_unchecked(v % &*self.prime)
+        let mut val = biguint_to_integer(v);
+        val %= &*self.prime;
+        FieldElem::new_unchecked(val)
     }
 
     #[inline]
     pub fn to_biguint(&self, e: &FieldElem) -> BigUint {
-        e.value.clone()
+        integer_to_biguint(&e.value)
     }
 
     pub fn add(&self, a: &FieldElem, b: &FieldElem) -> FieldElem {
-        let mut s = &a.value + &b.value;
+        let mut s = Integer::with_capacity(self.result_bits);
+        s.assign(&a.value + &b.value);
         if s >= *self.prime {
             s -= &*self.prime;
         }
@@ -135,61 +197,52 @@ impl PrimeField {
     }
 
     pub fn sub(&self, a: &FieldElem, b: &FieldElem) -> FieldElem {
-        if a.value >= b.value {
-            FieldElem::new_unchecked(&a.value - &b.value)
-        } else {
-            FieldElem::new_unchecked(&*self.prime - (&b.value - &a.value))
+        let mut r = Integer::with_capacity(self.result_bits);
+        r.assign(&a.value - &b.value);
+        if r.cmp0() == std::cmp::Ordering::Less {
+            r += &*self.prime;
         }
+        FieldElem::new_unchecked(r)
     }
 
     pub fn sub_assign(&self, a: &mut FieldElem, b: &FieldElem) {
-        if a.value >= b.value {
-            a.value -= &b.value;
-        } else {
-            // a < b => result = p - (b - a)
-            let diff = &b.value - &a.value;
-            a.value = &*self.prime - diff;
+        a.value -= &b.value;
+        if a.value.cmp0() == std::cmp::Ordering::Less {
+            a.value += &*self.prime;
         }
     }
 
     pub fn mul(&self, a: &FieldElem, b: &FieldElem) -> FieldElem {
-        FieldElem::new_unchecked((&a.value * &b.value) % &*self.prime)
+        let mut p = Integer::with_capacity(self.product_bits);
+        p.assign(&a.value * &b.value);
+        p %= &*self.prime;
+        FieldElem::new_unchecked(p)
     }
 
     pub fn mul_assign(&self, a: &mut FieldElem, b: &FieldElem) {
-        a.value = (&a.value * &b.value) % &*self.prime;
+        a.value *= &b.value;
+        a.value %= &*self.prime;
     }
 
     pub fn neg(&self, a: &FieldElem) -> FieldElem {
-        if a.value.is_zero() {
+        if a.value.cmp0() == std::cmp::Ordering::Equal {
             self.zero()
         } else {
-            FieldElem::new_unchecked(&*self.prime - &a.value)
+            FieldElem::new_unchecked(Integer::from(&*self.prime - &a.value))
         }
     }
 
-    /// Multiplicative inverse via the extended Euclidean algorithm.
-    /// Returns `None` if `a` is zero.
+    /// Multiplicative inverse via GMP's `mpz_invert`. Returns `None` if
+    /// `a` is zero (or if for any reason gcd(a, p) ≠ 1, which should not
+    /// happen for a prime modulus and nonzero input).
     pub fn inv(&self, a: &FieldElem) -> Option<FieldElem> {
-        if a.value.is_zero() {
+        if a.value.cmp0() == std::cmp::Ordering::Equal {
             return None;
         }
-        // Use signed extended GCD on BigInts.
-        use num_bigint::BigInt;
-        let p_int: BigInt = (*self.prime).clone().into();
-        let a_int: BigInt = a.value.clone().into();
-        let egcd = a_int.extended_gcd(&p_int);
-        if egcd.gcd != BigInt::one() {
-            // Should not happen for a prime modulus & nonzero a.
-            return None;
+        match a.value.clone().invert(&self.prime) {
+            Ok(v) => Some(FieldElem::new_unchecked(v)),
+            Err(_) => None,
         }
-        // Reduce x mod p to canonical positive.
-        let mut x = egcd.x % &p_int;
-        if x.sign() == num_bigint::Sign::Minus {
-            x += &p_int;
-        }
-        let (_, mag) = x.into_parts();
-        Some(FieldElem::new_unchecked(mag))
     }
 
     pub fn div(&self, a: &FieldElem, b: &FieldElem) -> Option<FieldElem> {
@@ -199,12 +252,12 @@ impl PrimeField {
 
     #[inline]
     pub fn is_zero(&self, a: &FieldElem) -> bool {
-        a.value.is_zero()
+        a.value.cmp0() == std::cmp::Ordering::Equal
     }
 
     #[inline]
     pub fn is_one(&self, a: &FieldElem) -> bool {
-        a.value.is_one()
+        a.value == 1
     }
 
     #[inline]
@@ -212,22 +265,42 @@ impl PrimeField {
         a.value == b.value
     }
 
-    /// Modular exponentiation `a^exp mod p` (square-and-multiply).
+    /// Modular exponentiation `a^exp mod p` via GMP's `mpz_powm`.
     pub fn pow(&self, a: &FieldElem, exp: &BigUint) -> FieldElem {
-        if exp.is_zero() {
+        if exp == &BigUint::from(0u32) {
             return self.one();
         }
-        let v = a.value.modpow(exp, &*self.prime);
-        FieldElem::new_unchecked(v)
+        let exp_int = biguint_to_integer(exp);
+        let mut out = Integer::new();
+        out.assign(a.value.pow_mod_ref(&exp_int, &self.prime).unwrap());
+        FieldElem::new_unchecked(out)
     }
 
     /// Modular exponentiation by a `u64` exponent.
     pub fn pow_u64(&self, a: &FieldElem, exp: u64) -> FieldElem {
-        let e = BigUint::from(exp);
-        self.pow(a, &e)
+        if exp == 0 {
+            return self.one();
+        }
+        let exp_int = Integer::from(exp);
+        let mut out = Integer::new();
+        out.assign(a.value.pow_mod_ref(&exp_int, &self.prime).unwrap());
+        FieldElem::new_unchecked(out)
     }
 
-    /// Clone an element. Provided for API parity with feanor-math style.
+    /// Modular exponentiation by a `rug::Integer` exponent — internal
+    /// hot path (avoids BigUint conversion when the caller already has
+    /// the exponent in `Integer` form).
+    #[allow(dead_code)]
+    pub(crate) fn pow_integer(&self, a: &FieldElem, exp: &Integer) -> FieldElem {
+        if exp.cmp0() == std::cmp::Ordering::Equal {
+            return self.one();
+        }
+        let mut out = Integer::new();
+        out.assign(a.value.pow_mod_ref(exp, &self.prime).unwrap());
+        FieldElem::new_unchecked(out)
+    }
+
+    /// Clone an element. Provided for API parity.
     #[inline]
     pub fn clone_el(&self, a: &FieldElem) -> FieldElem {
         a.clone()
@@ -275,12 +348,13 @@ impl PrimeField {
     }
 
     /// Returns a homomorphism object whose `.map(n)` constructs `n` in the field.
-    /// Provided for compatibility with `field.int_hom().map(2)` calling style.
     #[inline]
     pub fn int_hom(&self) -> IntHom<'_> {
         IntHom { field: self }
     }
 }
+
+use rug::Assign;
 
 /// Helper for `field.int_hom().map(n)` ergonomics (mirrors feanor's `IntHom`).
 pub struct IntHom<'a> {
@@ -348,9 +422,9 @@ mod tests {
     #[test]
     fn from_i64_negative() {
         let f = PrimeField::new(BigUint::from(7u32));
-        assert_eq!(f.from_i64(-1).value, BigUint::from(6u32));
-        assert_eq!(f.from_i64(-7).value, BigUint::from(0u32));
-        assert_eq!(f.from_i64(-8).value, BigUint::from(6u32));
+        assert_eq!(f.to_biguint(&f.from_i64(-1)), BigUint::from(6u32));
+        assert_eq!(f.to_biguint(&f.from_i64(-7)), BigUint::from(0u32));
+        assert_eq!(f.to_biguint(&f.from_i64(-8)), BigUint::from(6u32));
     }
 
     #[test]
@@ -358,7 +432,7 @@ mod tests {
         let f = PrimeField::new(BigUint::from(7u32));
         let a = f.from_u64(3);
         let na = f.neg(&a);
-        assert_eq!(na.value, BigUint::from(4u32));
+        assert_eq!(f.to_biguint(&na), BigUint::from(4u32));
         assert!(f.is_zero(&f.add(&a, &na)));
         assert!(f.is_zero(&f.neg(&f.zero())));
     }
@@ -369,7 +443,7 @@ mod tests {
         let f = PrimeField::new(p.clone());
         // a^(p-1) = 1 for any a != 0
         let a = f.from_u64(2);
-        let exp = &p - BigUint::one();
+        let exp = &p - BigUint::from(1u32);
         let res = f.pow(&a, &exp);
         assert!(f.is_one(&res));
     }
