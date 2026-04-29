@@ -224,6 +224,39 @@ impl PrimeField {
         a.value %= &*self.prime;
     }
 
+    /// Plan v8: in-place add-and-consume that recycles `a`'s mpz buffer.
+    /// Used by `Polynomial::merge_owned` to eliminate one `Integer`
+    /// allocation per merged-term in geobucket cascades — that path was
+    /// the dominant cost on `inTest`'s dense reductions (26.7 s of
+    /// `add_poly` cascade per ~30 s reduction).
+    #[inline]
+    pub fn add_owned(&self, mut a: FieldElem, b: FieldElem) -> FieldElem {
+        a.value += b.value;
+        if a.value >= *self.prime {
+            a.value -= &*self.prime;
+        }
+        a
+    }
+
+    #[inline]
+    pub fn sub_owned(&self, mut a: FieldElem, b: FieldElem) -> FieldElem {
+        a.value -= b.value;
+        if a.value.cmp0() == std::cmp::Ordering::Less {
+            a.value += &*self.prime;
+        }
+        a
+    }
+
+    /// Negate in place, reusing the buffer.
+    #[inline]
+    pub fn neg_owned(&self, mut a: FieldElem) -> FieldElem {
+        if a.value.cmp0() != std::cmp::Ordering::Equal {
+            // a = prime - a (in place)
+            a.value = &*self.prime - a.value;
+        }
+        a
+    }
+
     pub fn neg(&self, a: &FieldElem) -> FieldElem {
         if a.value.cmp0() == std::cmp::Ordering::Equal {
             self.zero()

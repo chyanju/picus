@@ -33,6 +33,257 @@ static INIT: OnceLock<()> = OnceLock::new();
 /// Monotonic id for active timers.
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+// ────────────────── Plan v8 phase 1 instrumentation ─────────────────────────
+// Lightweight global counters for the split-GB driver and DFS, gated by
+// `PICUS_GB_STATS=1`. Independent from the `ScopedTimer` table; mirrors the
+// existing `GbEngineStats` style at the Buchberger layer. All counters are
+// `AtomicU64` so updates are wait-free and thread-safe.
+
+#[derive(Default)]
+pub struct SplitDfsCounters {
+    pub branches_tried: AtomicU64,
+    pub quick_eval_unsat_hits: AtomicU64,
+    pub linear_quick_unsat_hits: AtomicU64,
+    pub nogood_subsumption_hits: AtomicU64,
+    pub branches_to_full_extend: AtomicU64,
+    pub conflicts_returned: AtomicU64,
+    pub max_dfs_depth: AtomicU64,
+    pub time_in_basis_clone_ns: AtomicU64,
+    pub time_in_split_gb_extend_ns: AtomicU64,
+    pub time_in_quick_eval_unsat_ns: AtomicU64,
+    pub time_in_linear_quick_unsat_ns: AtomicU64,
+    pub points_returned: AtomicU64,
+    pub split_zero_extend_calls: AtomicU64,
+}
+
+#[derive(Default)]
+pub struct SplitGbCounters {
+    pub split_gb_extend_calls: AtomicU64,
+    pub fixpoint_iters_total: AtomicU64,
+    pub fixpoint_iters_per_call_max: AtomicU64,
+    pub propagate_candidates_total: AtomicU64,
+    pub propagate_admit_passes: AtomicU64,
+    pub propagate_contains_calls: AtomicU64,
+    pub propagate_contains_true: AtomicU64,
+    pub propagate_contains_false: AtomicU64,
+    pub propagate_memo_hits: AtomicU64,
+    pub new_polys_added_total: AtomicU64,
+    pub new_polys_per_iter_max: AtomicU64,
+    pub bit_eq_emitted_total: AtomicU64,
+    pub time_in_extend_with_cancel_ns: AtomicU64,
+    pub time_in_contains_ns: AtomicU64,
+    pub time_in_bit_eq_ns: AtomicU64,
+    pub basis_size_max: AtomicU64,
+    pub basis_size_total_terms_max: AtomicU64,
+    pub extend_with_cancel_calls: AtomicU64,
+    pub extend_no_op_skips: AtomicU64,
+    /// Plan v8 phase 2 — fine-grained reducer timers used to diagnose
+    /// `inTest`'s 169 ms/reduction cost on the dense BN128 basis.
+    pub reduce_calls: AtomicU64,
+    pub reduce_lt_pops: AtomicU64,
+    pub reduce_div_lookups: AtomicU64,
+    pub reduce_sub_scaled_calls: AtomicU64,
+    pub time_div_lt_setup_ns: AtomicU64,
+    pub time_pop_lt_ns: AtomicU64,
+    pub time_div_lookup_ns: AtomicU64,
+    pub time_sub_scaled_ns: AtomicU64,
+    pub time_sub_scaled_setup_ns: AtomicU64,
+    pub time_sub_scaled_addpoly_ns: AtomicU64,
+    pub time_finalize_ns: AtomicU64,
+    pub merge_owned_calls: AtomicU64,
+    pub merge_owned_terms_total: AtomicU64,
+}
+
+pub static SPLIT_DFS: SplitDfsCounters = SplitDfsCounters::new_const();
+pub static SPLIT_GB: SplitGbCounters = SplitGbCounters::new_const();
+
+impl SplitDfsCounters {
+    pub const fn new_const() -> Self {
+        Self {
+            branches_tried: AtomicU64::new(0),
+            quick_eval_unsat_hits: AtomicU64::new(0),
+            linear_quick_unsat_hits: AtomicU64::new(0),
+            nogood_subsumption_hits: AtomicU64::new(0),
+            branches_to_full_extend: AtomicU64::new(0),
+            conflicts_returned: AtomicU64::new(0),
+            max_dfs_depth: AtomicU64::new(0),
+            time_in_basis_clone_ns: AtomicU64::new(0),
+            time_in_split_gb_extend_ns: AtomicU64::new(0),
+            time_in_quick_eval_unsat_ns: AtomicU64::new(0),
+            time_in_linear_quick_unsat_ns: AtomicU64::new(0),
+            points_returned: AtomicU64::new(0),
+            split_zero_extend_calls: AtomicU64::new(0),
+        }
+    }
+    pub fn observe_max_depth(&self, d: u64) {
+        let mut cur = self.max_dfs_depth.load(Ordering::Relaxed);
+        while d > cur {
+            match self.max_dfs_depth.compare_exchange_weak(cur, d, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(now) => cur = now,
+            }
+        }
+    }
+}
+
+impl SplitGbCounters {
+    pub const fn new_const() -> Self {
+        Self {
+            split_gb_extend_calls: AtomicU64::new(0),
+            fixpoint_iters_total: AtomicU64::new(0),
+            fixpoint_iters_per_call_max: AtomicU64::new(0),
+            propagate_candidates_total: AtomicU64::new(0),
+            propagate_admit_passes: AtomicU64::new(0),
+            propagate_contains_calls: AtomicU64::new(0),
+            propagate_contains_true: AtomicU64::new(0),
+            propagate_contains_false: AtomicU64::new(0),
+            propagate_memo_hits: AtomicU64::new(0),
+            new_polys_added_total: AtomicU64::new(0),
+            new_polys_per_iter_max: AtomicU64::new(0),
+            bit_eq_emitted_total: AtomicU64::new(0),
+            time_in_extend_with_cancel_ns: AtomicU64::new(0),
+            time_in_contains_ns: AtomicU64::new(0),
+            time_in_bit_eq_ns: AtomicU64::new(0),
+            basis_size_max: AtomicU64::new(0),
+            basis_size_total_terms_max: AtomicU64::new(0),
+            extend_with_cancel_calls: AtomicU64::new(0),
+            extend_no_op_skips: AtomicU64::new(0),
+            reduce_calls: AtomicU64::new(0),
+            reduce_lt_pops: AtomicU64::new(0),
+            reduce_div_lookups: AtomicU64::new(0),
+            reduce_sub_scaled_calls: AtomicU64::new(0),
+            time_div_lt_setup_ns: AtomicU64::new(0),
+            time_pop_lt_ns: AtomicU64::new(0),
+            time_div_lookup_ns: AtomicU64::new(0),
+            time_sub_scaled_ns: AtomicU64::new(0),
+            time_sub_scaled_setup_ns: AtomicU64::new(0),
+            time_sub_scaled_addpoly_ns: AtomicU64::new(0),
+            time_finalize_ns: AtomicU64::new(0),
+            merge_owned_calls: AtomicU64::new(0),
+            merge_owned_terms_total: AtomicU64::new(0),
+        }
+    }
+    pub fn observe_iters_max(&self, v: u64) { observe_max(&self.fixpoint_iters_per_call_max, v); }
+    pub fn observe_polys_per_iter_max(&self, v: u64) { observe_max(&self.new_polys_per_iter_max, v); }
+    pub fn observe_basis_size_max(&self, v: u64) { observe_max(&self.basis_size_max, v); }
+    pub fn observe_basis_terms_max(&self, v: u64) { observe_max(&self.basis_size_total_terms_max, v); }
+}
+
+fn observe_max(slot: &AtomicU64, v: u64) {
+    let mut cur = slot.load(Ordering::Relaxed);
+    while v > cur {
+        match slot.compare_exchange_weak(cur, v, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(now) => cur = now,
+        }
+    }
+}
+
+#[inline]
+pub fn gb_stats_enabled() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var_os("PICUS_GB_STATS").is_some())
+}
+
+#[inline]
+pub fn gb_trace_enabled() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var_os("PICUS_GB_TRACE").is_some())
+}
+
+/// Print SplitDfs/SplitGb counters to stderr. Called from the top-level
+/// `solve_encoded` (or `picus-cli`) at termination when `PICUS_GB_STATS=1`.
+pub fn dump_split_stats_to_stderr() {
+    if !gb_stats_enabled() { return; }
+    let d = &SPLIT_DFS;
+    let g = &SPLIT_GB;
+    let load = |a: &AtomicU64| a.load(Ordering::Relaxed);
+    eprintln!("\n=== picus split-GB driver stats (Plan v8 phase 1) ===");
+    eprintln!("[split-dfs] split_zero_extend_calls={} branches_tried={} quick_eval_unsat={} lin_quick_unsat={} nogood_hits={} branches_to_full_extend={} conflicts={} points={} max_depth={}",
+        load(&d.split_zero_extend_calls),
+        load(&d.branches_tried),
+        load(&d.quick_eval_unsat_hits),
+        load(&d.linear_quick_unsat_hits),
+        load(&d.nogood_subsumption_hits),
+        load(&d.branches_to_full_extend),
+        load(&d.conflicts_returned),
+        load(&d.points_returned),
+        load(&d.max_dfs_depth),
+    );
+    eprintln!("[split-dfs-time-ms] basis_clone={:.2} split_gb_extend={:.2} quick_eval_unsat={:.2} lin_quick_unsat={:.2}",
+        load(&d.time_in_basis_clone_ns) as f64 / 1e6,
+        load(&d.time_in_split_gb_extend_ns) as f64 / 1e6,
+        load(&d.time_in_quick_eval_unsat_ns) as f64 / 1e6,
+        load(&d.time_in_linear_quick_unsat_ns) as f64 / 1e6,
+    );
+    eprintln!("[split-gb] calls={} fixpoint_iters_total={} fixpoint_iters_per_call_max={} new_polys_added_total={} new_polys_per_iter_max={} bit_eqs_total={} basis_size_max={} basis_terms_max={}",
+        load(&g.split_gb_extend_calls),
+        load(&g.fixpoint_iters_total),
+        load(&g.fixpoint_iters_per_call_max),
+        load(&g.new_polys_added_total),
+        load(&g.new_polys_per_iter_max),
+        load(&g.bit_eq_emitted_total),
+        load(&g.basis_size_max),
+        load(&g.basis_size_total_terms_max),
+    );
+    let calls = load(&g.propagate_contains_calls);
+    let trues = load(&g.propagate_contains_true);
+    let falses = load(&g.propagate_contains_false);
+    let true_pct = if calls > 0 { (trues as f64 * 100.0) / calls as f64 } else { 0.0 };
+    let memo_hits = load(&g.propagate_memo_hits);
+    let admit = load(&g.propagate_admit_passes);
+    let memo_hit_pct = if admit > 0 { (memo_hits as f64 * 100.0) / admit as f64 } else { 0.0 };
+    eprintln!("[split-gb-propagate] candidates={} admit_passes={} memo_hits={} memo_hit_rate={:.1}% contains_calls={} contains_true={} contains_false={} contains_true_rate={:.1}%",
+        load(&g.propagate_candidates_total),
+        admit,
+        memo_hits,
+        memo_hit_pct,
+        calls,
+        trues,
+        falses,
+        true_pct,
+    );
+    eprintln!("[split-gb-time-ms] extend_with_cancel={:.2} contains={:.2} bit_eq={:.2}",
+        load(&g.time_in_extend_with_cancel_ns) as f64 / 1e6,
+        load(&g.time_in_contains_ns) as f64 / 1e6,
+        load(&g.time_in_bit_eq_ns) as f64 / 1e6,
+    );
+    eprintln!("[split-gb-extend] calls={} no_op_skips={}",
+        load(&g.extend_with_cancel_calls),
+        load(&g.extend_no_op_skips),
+    );
+    let r_calls = load(&g.reduce_calls);
+    if r_calls > 0 {
+        let avg_pops = load(&g.reduce_lt_pops) as f64 / r_calls as f64;
+        let avg_lookups = load(&g.reduce_div_lookups) as f64 / r_calls as f64;
+        eprintln!(
+            "[reducer] calls={} avg_lt_pops={:.1} avg_div_lookups={:.1} sub_scaled_calls={}",
+            r_calls, avg_pops, avg_lookups,
+            load(&g.reduce_sub_scaled_calls),
+        );
+        eprintln!(
+            "[reducer-time-ms] div_lt_setup={:.2} pop_lt={:.2} div_lookup={:.2} sub_scaled={:.2} (setup={:.2} addpoly={:.2}) finalize={:.2}",
+            load(&g.time_div_lt_setup_ns) as f64 / 1e6,
+            load(&g.time_pop_lt_ns) as f64 / 1e6,
+            load(&g.time_div_lookup_ns) as f64 / 1e6,
+            load(&g.time_sub_scaled_ns) as f64 / 1e6,
+            load(&g.time_sub_scaled_setup_ns) as f64 / 1e6,
+            load(&g.time_sub_scaled_addpoly_ns) as f64 / 1e6,
+            load(&g.time_finalize_ns) as f64 / 1e6,
+        );
+    }
+    let mo_calls = load(&g.merge_owned_calls);
+    if mo_calls > 0 {
+        eprintln!(
+            "[merge-owned] calls={} terms_total={} avg_terms={:.1}",
+            mo_calls,
+            load(&g.merge_owned_terms_total),
+            load(&g.merge_owned_terms_total) as f64 / mo_calls as f64,
+        );
+    }
+    eprintln!("=== end split-GB stats ===\n");
+}
+
 fn init_from_env() {
     INIT.get_or_init(|| {
         if std::env::var_os("PICUS_PROFILE").is_some() {

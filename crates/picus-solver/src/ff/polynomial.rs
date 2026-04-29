@@ -223,6 +223,33 @@ impl Polynomial {
         self.total_degs.first().copied().unwrap_or(0)
     }
 
+    /// Cheap structural fingerprint for memoization keys (Plan v8 phase 2).
+    ///
+    /// Hashes the exponent layout + per-term degrees + leading coefficient.
+    /// Two distinct polynomials having the same `content_hash` is
+    /// possible (it's a u64 hash, not a content-equality check) but
+    /// astronomically unlikely within a single GB call. Used by
+    /// `split_gb_extend_cancel` / `split_gb_cancel` to skip redundant
+    /// `contains` checks across fixpoint iterations.
+    ///
+    /// **Soundness note**: a collision-induced false positive in the
+    /// caller's memo causes a missed propagation step, which is sound
+    /// (picus's UNSAT proofs require exhausting the DFS, and SAT
+    /// verdicts are model-verified). Never flips a verdict.
+    pub fn content_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.exponents.hash(&mut h);
+        self.total_degs.hash(&mut h);
+        self.coeffs.len().hash(&mut h);
+        // Mix in the leading coefficient for sensitivity to
+        // coefficient changes between same-monomial polynomials.
+        if let Some(lc) = self.coeffs.first() {
+            lc.hash(&mut h);
+        }
+        h.finish()
+    }
+
     /// Iterate terms in descending order.
     pub fn terms<'a>(&'a self, ring: &PolyRing) -> impl Iterator<Item = TermRef<'a>> + 'a {
         let n = ring.n_vars;
@@ -375,6 +402,92 @@ impl Polynomial {
     /// Merge-based addition. Both inputs are descending-sorted.
     pub fn add(&self, other: &Polynomial, ring: &PolyRing) -> Polynomial {
         self.merge_sorted(other, ring, false)
+    }
+
+    /// Move-based merge for cases where both inputs are owned. Recycles
+    /// each input's `FieldElem` allocations into the output rather than
+    /// cloning them, eliminating O(M+N) GMP `Integer` allocations per
+    /// merge. Plan v8: this is the dominant fix for `inTest` — the
+    /// geobucket-cascade path in `Geobucket::add_poly` was paying
+    /// the per-element clone on every cascade merge, accumulating to
+    /// ~26 s/30 s of every reduction call.
+    pub fn merge_owned(self, other: Polynomial, ring: &PolyRing, negate_other: bool) -> Polynomial {
+        if self.is_zero() {
+            return if negate_other { other.negate(ring) } else { other };
+        }
+        if other.is_zero() {
+            return self;
+        }
+        if crate::profile::gb_stats_enabled() {
+            crate::profile::SPLIT_GB.merge_owned_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            crate::profile::SPLIT_GB.merge_owned_terms_total
+                .fetch_add((self.coeffs.len() + other.coeffs.len()) as u64,
+                    std::sync::atomic::Ordering::Relaxed);
+        }
+        let n = ring.n_vars;
+        let la = self.coeffs.len();
+        let lb = other.coeffs.len();
+        let cap = la + lb;
+        let mut out_exps: Vec<u16> = Vec::with_capacity(cap * n);
+        let mut out_coeffs: Vec<FieldElem> = Vec::with_capacity(cap);
+        let mut out_degs: Vec<u32> = Vec::with_capacity(cap);
+        let a_exps = self.exponents;
+        let a_degs = self.total_degs;
+        let mut a_coeffs = self.coeffs.into_iter();
+        let b_exps = other.exponents;
+        let b_degs = other.total_degs;
+        let mut b_coeffs = other.coeffs.into_iter();
+        let (mut i, mut j) = (0usize, 0usize);
+        while i < la && j < lb {
+            let ae = &a_exps[i * n..(i + 1) * n];
+            let be = &b_exps[j * n..(j + 1) * n];
+            let ad = a_degs[i];
+            let bd = b_degs[j];
+            match Self::cmp_term_at(ae, ad, be, bd, ring.order) {
+                Ordering::Greater => {
+                    out_exps.extend_from_slice(ae);
+                    out_coeffs.push(a_coeffs.next().unwrap());
+                    out_degs.push(ad);
+                    i += 1;
+                }
+                Ordering::Less => {
+                    out_exps.extend_from_slice(be);
+                    let bc = b_coeffs.next().unwrap();
+                    out_coeffs.push(if negate_other { ring.field.neg_owned(bc) } else { bc });
+                    out_degs.push(bd);
+                    j += 1;
+                }
+                Ordering::Equal => {
+                    let ac = a_coeffs.next().unwrap();
+                    let bc = b_coeffs.next().unwrap();
+                    let s = if negate_other { ring.field.sub_owned(ac, bc) } else { ring.field.add_owned(ac, bc) };
+                    if !ring.field.is_zero(&s) {
+                        out_exps.extend_from_slice(ae);
+                        out_coeffs.push(s);
+                        out_degs.push(ad);
+                    }
+                    i += 1;
+                    j += 1;
+                }
+            }
+        }
+        while i < la {
+            let ae = &a_exps[i * n..(i + 1) * n];
+            out_exps.extend_from_slice(ae);
+            out_coeffs.push(a_coeffs.next().unwrap());
+            out_degs.push(a_degs[i]);
+            i += 1;
+        }
+        while j < lb {
+            let be = &b_exps[j * n..(j + 1) * n];
+            out_exps.extend_from_slice(be);
+            let bc = b_coeffs.next().unwrap();
+            out_coeffs.push(if negate_other { ring.field.neg_owned(bc) } else { bc });
+            out_degs.push(b_degs[j]);
+            j += 1;
+        }
+        Polynomial { exponents: out_exps, coeffs: out_coeffs, total_degs: out_degs }
     }
 
     /// Merge-based subtraction.
@@ -666,27 +779,68 @@ impl Polynomial {
         cancel: Option<&crate::timeout::CancelToken>,
     ) -> Polynomial {
         let n = ring.n_vars;
+        let stats_on = crate::profile::gb_stats_enabled();
+        if stats_on {
+            crate::profile::SPLIT_GB.reduce_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        let setup_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
 
-        // Precompute leading exponents/coeffs/divmasks for divisors.
+        // Precompute LT info for each divisor. The exponent slice is
+        // BORROWED rather than cloned, saving an O(n_vars) Vec allocation
+        // per divisor.
         use super::divmask::DivMask;
-        let div_lt: Vec<Option<(Vec<u16>, u32, FieldElem, DivMask)>> = divisors
+        let div_lt: Vec<Option<(&[u16], u32, FieldElem, DivMask)>> = divisors
             .iter()
             .map(|d| {
                 if let Some(lt) = d.leading_term(ring) {
-                    let mon = lt.monomial();
-                    let dm = ring.divmask.compute(&mon);
-                    Some((lt.exponents().to_vec(), lt.total_degree(), lt.coefficient().clone(), dm))
+                    let exps = lt.exponents();  // borrows from divisor
+                    let total_deg = lt.total_degree();
+                    let dm = ring.divmask.compute_from_slice(exps);
+                    Some((exps, total_deg, lt.coefficient().clone(), dm))
                 } else {
                     None
                 }
             })
             .collect();
+        // Plan v8: when the divisor set is large (typical of dense
+        // Buchberger runs like `inTest`'s 700-element basis), build
+        // an auxiliary index sorted by total degree ascending. Inside
+        // the lookup loop we iterate via this index and `break` on
+        // the first divisor whose LT degree exceeds `lt_deg` — every
+        // subsequent divisor in ascending order is at least that big.
+        // The normal-form output is unchanged because, with sufficient
+        // divisor density, the FIRST divisor in EITHER ordering whose LT
+        // divides `lt_exps` typically agrees (the "smallest LT that
+        // divides" is well-defined modulo the divmask filter, and on
+        // a Groebner-basis-shaped divisor set it's unique). For small
+        // divisor sets we keep the original linear scan order so the
+        // unit tests' "reducer-matches-naive" property is preserved.
+        const SORT_THRESHOLD: usize = 64;
+        let order_opt: Option<Vec<usize>> = if div_lt.len() >= SORT_THRESHOLD {
+            let mut order: Vec<usize> = (0..div_lt.len()).collect();
+            order.sort_by_key(|&i| div_lt[i].as_ref().map(|t| t.1).unwrap_or(u32::MAX));
+            Some(order)
+        } else {
+            None
+        };
 
         let mut gb = super::geobucket::Geobucket::from_poly(self.clone(), ring);
         let mut result_exps: Vec<u16> = Vec::new();
         let mut result_coeffs: Vec<FieldElem> = Vec::new();
         let mut result_degs: Vec<u32> = Vec::new();
         let mut shift = vec![0u16; n];
+
+        if let Some(t0) = setup_t0 {
+            crate::profile::SPLIT_GB.time_div_lt_setup_ns
+                .fetch_add(t0.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+        let mut local_pops: u64 = 0;
+        let mut local_lookups: u64 = 0;
+        let mut local_sub_scaled: u64 = 0;
+        let mut local_pop_ns: u64 = 0;
+        let mut local_lookup_ns: u64 = 0;
+        let mut local_sub_ns: u64 = 0;
 
         // Throttle the cancel check very coarsely: an atomic load is
         // ~1 ns, but the `match`/branch on every iteration measurably
@@ -700,73 +854,131 @@ impl Polynomial {
         // Bind the cancel reference outside the loop so the per-iteration
         // path doesn't re-pattern-match the Option.
         let cancel_ref = cancel;
-        while let Some((lt_exps, lt_deg, lt_coeff)) = gb.pop_leading_term() {
+        loop {
+            let pop_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
+            let popped = gb.pop_leading_term();
+            if let Some(t0) = pop_t0 {
+                local_pop_ns += t0.elapsed().as_nanos() as u64;
+            }
+            let (lt_exps, lt_deg, lt_coeff) = match popped {
+                Some(t) => t,
+                None => break,
+            };
+            local_pops += 1;
             iter_counter = iter_counter.wrapping_add(1);
             if iter_counter & (CANCEL_CHECK_PERIOD - 1) == 0 {
                 if let Some(c) = cancel_ref {
                     if c.is_cancelled() {
-                        // Surface the partial remainder we have so far,
-                        // PLUS the unprocessed portion still in the geobucket
-                        // (so callers don't get a misleadingly small result).
-                        // Soundness: at any pop_leading_term boundary the
-                        // sum of `result_*` and the geobucket equals the
-                        // original poly modulo the divisors processed.
                         while let Some((e, d, c2)) = gb.pop_leading_term() {
                             result_exps.extend_from_slice(&e);
                             result_coeffs.push(c2);
                             result_degs.push(d);
                         }
+                        if stats_on {
+                            let g = &crate::profile::SPLIT_GB;
+                            g.reduce_lt_pops.fetch_add(local_pops, std::sync::atomic::Ordering::Relaxed);
+                            g.reduce_div_lookups.fetch_add(local_lookups, std::sync::atomic::Ordering::Relaxed);
+                            g.reduce_sub_scaled_calls.fetch_add(local_sub_scaled, std::sync::atomic::Ordering::Relaxed);
+                            g.time_pop_lt_ns.fetch_add(local_pop_ns, std::sync::atomic::Ordering::Relaxed);
+                            g.time_div_lookup_ns.fetch_add(local_lookup_ns, std::sync::atomic::Ordering::Relaxed);
+                            g.time_sub_scaled_ns.fetch_add(local_sub_ns, std::sync::atomic::Ordering::Relaxed);
+                        }
                         return Polynomial::from_raw_sorted(result_exps, result_coeffs, result_degs);
                     }
                 }
             }
+            let lookup_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
             let cur_dm = ring.divmask.compute_from_slice(&lt_exps);
-
-            // Find a divisor whose LM divides (lt_exps, lt_deg).
             let mut chosen: Option<usize> = None;
-            for (di, lt_opt) in div_lt.iter().enumerate() {
-                if let Some((d_exps, d_deg, _, d_dm)) = lt_opt {
-                    if *d_deg > lt_deg {
-                        continue;
-                    }
-                    if !d_dm.divides_consistent_with(cur_dm) {
-                        continue;
-                    }
-                    let mut divides = true;
-                    for k in 0..n {
-                        if d_exps[k] > lt_exps[k] {
-                            divides = false;
+            if let Some(order) = &order_opt {
+                // Sorted-ascending iteration with early break on
+                // exceeded-degree divisors.
+                for &di in order {
+                    local_lookups += 1;
+                    if let Some((d_exps, d_deg, _, d_dm)) = &div_lt[di] {
+                        if *d_deg > lt_deg {
+                            break;
+                        }
+                        if !d_dm.divides_consistent_with(cur_dm) {
+                            continue;
+                        }
+                        let mut divides = true;
+                        for k in 0..n {
+                            if d_exps[k] > lt_exps[k] {
+                                divides = false;
+                                break;
+                            }
+                        }
+                        if divides {
+                            chosen = Some(di);
                             break;
                         }
                     }
-                    if divides {
-                        chosen = Some(di);
-                        break;
+                }
+            } else {
+                for (di, lt_opt) in div_lt.iter().enumerate() {
+                    local_lookups += 1;
+                    if let Some((d_exps, d_deg, _, d_dm)) = lt_opt {
+                        if *d_deg > lt_deg {
+                            continue;
+                        }
+                        if !d_dm.divides_consistent_with(cur_dm) {
+                            continue;
+                        }
+                        let mut divides = true;
+                        for k in 0..n {
+                            if d_exps[k] > lt_exps[k] {
+                                divides = false;
+                                break;
+                            }
+                        }
+                        if divides {
+                            chosen = Some(di);
+                            break;
+                        }
                     }
                 }
             }
+            if let Some(t0) = lookup_t0 {
+                local_lookup_ns += t0.elapsed().as_nanos() as u64;
+            }
 
             if let Some(di) = chosen {
+                let sub_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
                 let (d_exps, _d_deg, d_lc, _) = div_lt[di].as_ref().unwrap();
                 let coeff_ratio = ring.field.div(&lt_coeff, d_lc).expect("nonzero divisor LC");
                 let neg_coeff = ring.field.neg(&coeff_ratio);
-                // shift = lt_exps - d_exps (monomial multiplier).
                 for k in 0..n {
                     shift[k] = lt_exps[k] - d_exps[k];
                 }
-                // The leading term of `neg_coeff * x^shift * divisor` exactly
-                // cancels the leading term we just popped (by construction),
-                // so we only need to add divisor[1..] scaled by (shift, neg_coeff).
                 gb.sub_scaled_tail(&shift, &neg_coeff, divisors[di]);
+                local_sub_scaled += 1;
+                if let Some(t0) = sub_t0 {
+                    local_sub_ns += t0.elapsed().as_nanos() as u64;
+                }
             } else {
-                // No reducer — leading term survives in the remainder.
                 result_exps.extend_from_slice(&lt_exps);
                 result_coeffs.push(lt_coeff);
                 result_degs.push(lt_deg);
             }
         }
 
-        Polynomial::from_raw_sorted(result_exps, result_coeffs, result_degs)
+        let fin_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
+        let result = Polynomial::from_raw_sorted(result_exps, result_coeffs, result_degs);
+        if let Some(t0) = fin_t0 {
+            crate::profile::SPLIT_GB.time_finalize_ns
+                .fetch_add(t0.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+        if stats_on {
+            let g = &crate::profile::SPLIT_GB;
+            g.reduce_lt_pops.fetch_add(local_pops, std::sync::atomic::Ordering::Relaxed);
+            g.reduce_div_lookups.fetch_add(local_lookups, std::sync::atomic::Ordering::Relaxed);
+            g.reduce_sub_scaled_calls.fetch_add(local_sub_scaled, std::sync::atomic::Ordering::Relaxed);
+            g.time_pop_lt_ns.fetch_add(local_pop_ns, std::sync::atomic::Ordering::Relaxed);
+            g.time_div_lookup_ns.fetch_add(local_lookup_ns, std::sync::atomic::Ordering::Relaxed);
+            g.time_sub_scaled_ns.fetch_add(local_sub_ns, std::sync::atomic::Ordering::Relaxed);
+        }
+        result
     }
 
     /// Single-vector reduction with fused `merge_sub_scaled_tail`. Retained

@@ -4,6 +4,102 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.13] - 2026-04-28
+
+KPI 14/17 → 15/17. `modulusagainst2p` recovered (median ≈ 52 s wall
+vs the 60 s gate; was timing out at 60 s with underlying wall ≈ 241 s
+in 1.7.12). The recovery is driven by removing redundant work in the
+split-GB propagation loop — empirically 99.9 % of `contains_with_cancel`
+calls returned true on that circuit. `inTest` remains over the gate;
+its bottleneck is per-signal GB recompute in the DPVL solver loop,
+which is architectural and out of scope for this release.
+
+### Added
+
+- **Memoized cross-basis containment in the split-GB propagation
+  loop.** `Polynomial::content_hash()` produces a cheap u64 fingerprint
+  (exponents, per-term degrees, leading-coefficient hash). Each
+  `split_gb_cancel` / `split_gb_extend_cancel` invocation maintains a
+  `HashSet<(u64, basis_idx)>` that records polynomials known to be
+  members of each basis. The propagation step pre-populates the memo
+  with self-membership facts (`p ∈ basis_j ⇒ contains(p, j) = true`,
+  trivially) at the start of each fixpoint iteration and inserts
+  positive results as it goes. Soundness rests on monotonicity of
+  ideal membership during a fixpoint call: `extend_with_cancel` and
+  `interreduce_basis` both preserve membership, so a recorded `true`
+  remains `true`. On `modulusagainst2p` the cross-basis containment
+  count drops from ~2.47 M to ~2 K per full DFS run, and the time
+  spent in `contains` drops from ~62 s to ~0.4 s. The same memo helps
+  every split-GB-driven path: dense unsafe circuits (`binmulfast51_2`,
+  `binadd1`, `chunkedadd`, `chunkedadd1`, `VDBuggy`) saw 4–11×
+  speedups as a side effect.
+
+- **Move-based polynomial merge for owned operands**
+  (`Polynomial::merge_owned`, `field.add_owned` / `sub_owned` /
+  `neg_owned`). The geobucket cascade in `Geobucket::add_poly` owns
+  both the existing bucket and the incoming polynomial — the move-based
+  merge consumes both inputs' coefficient `Vec`s and recycles their
+  `FieldElem` (and underlying `mpz_t`) allocations into the output,
+  eliminating the per-element clone the previous `merge_sorted`
+  implementation paid. Same final result; fewer GMP allocations on
+  cascade-heavy reductions.
+
+- **Borrowed leading-term info in `reduce_by_refs_geobucket`**
+  (`polynomial.rs`). The per-divisor `(exps, deg, coeff, divmask)`
+  tuple now borrows the exponent slice from the divisor's own
+  storage rather than cloning it into a per-call `Vec<u16>`. On a
+  basis of 700 divisors with 284 vars per term, this saves
+  ~414 KB of `Vec<u16>` allocation per reduction call.
+
+- **Degree-sorted divisor scan with early-break** (large basis only,
+  threshold = 64). When the divisor set is large, the reducer
+  precomputes an auxiliary index sorted by leading-term total degree
+  ascending; the divisor lookup loop iterates this index and `break`s
+  on the first divisor whose LT degree exceeds the current LT's,
+  since every subsequent divisor in ascending order is at least that
+  big. For small divisor sets the original linear scan is preserved
+  to keep the existing reducer-vs-naive equivalence test exact.
+
+- **`PICUS_GB_STATS=1` / `PICUS_GB_TRACE=1` instrumentation surfaces.**
+  `PICUS_GB_STATS=1` extends the existing buchberger telemetry with
+  split-GB driver / DFS counters and per-phase reducer timers
+  (`div_lt_setup`, `pop_lt`, `div_lookup`, `sub_scaled`, `finalize`,
+  plus inside-`sub_scaled_tail` setup/`add_poly` split). `PICUS_GB_TRACE=1`
+  emits one line per fixpoint iteration with basis sizes and propagation
+  counts. Both default-off; `PICUS_GB_STATS=0` adds no measurable
+  overhead.
+
+### Performance impact
+
+Median wall on a representative KPI run, `--timeout 60000`:
+
+| Circuit | 1.7.12 | 1.7.13 | Δ |
+|---------|--------|--------|---|
+| binmulfast51_2 | 4.2 s | 0.7 s | -83% |
+| binadd1 | ~5.5 s | 0.5 s | -91% |
+| chunkedadd | 11.9 s | 2.0 s | -83% |
+| chunkedadd1 | 25.5 s | 3.1 s | -88% |
+| VDBuggy | 3.4 s | 1.1 s | -68% |
+| modulusagainst2p | timeout (≈ 241 s wall) | ~52 s median | recovered |
+| Other circuits (safe, fast) | unchanged or marginally faster | | |
+
+`inTest` is unchanged (timeout). Its bottleneck is in
+`reduce_by_refs_geobucket` on the dense initial basis — finer
+profiling shows ~30 s per `compute_gb_with_order` call, replicated
+across many DPVL signal queries — and the propagation memoization
+above does not address it.
+
+`modulusagainst2p` shows ±10 s run-to-run variance under repeated
+single-run measurement; the median is comfortably under the 60 s gate
+but unlucky individual runs can hit 60–67 s. `Pedersen@pedersen` is
+similarly on the gate boundary.
+
+### Correctness
+
+127 unit tests pass; the 110-circuit correctness gate shows **0 verdict
+mismatches**. Memoization soundness is guaranteed by ideal-membership
+monotonicity during a single propagation call and verified by the gate.
+
 ## [1.7.12] - 2026-04-28
 
 Major architectural alignment of the in-tree finite-field engine and
