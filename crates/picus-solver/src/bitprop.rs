@@ -34,6 +34,15 @@ pub struct BitProp<'r> {
     pub bitsums: Vec<Vec<usize>>,
 }
 
+/// Plan v9: owned snapshot of `BitProp`'s logical state, for cache
+/// persistence. `BitProp<'r>` borrows the poly_ring; this owned form
+/// reconstitutes via `BitProp::from_state(&poly_ring, state.clone())`.
+#[derive(Clone, Default, Debug)]
+pub struct BitPropState {
+    pub bits: HashSet<usize>,
+    pub bitsums: Vec<Vec<usize>>,
+}
+
 impl<'r> BitProp<'r> {
     pub fn new(poly_ring: &'r FfPolyRing) -> Self {
         BitProp { poly_ring, bits: HashSet::new(), bitsums: Vec::new() }
@@ -44,6 +53,23 @@ impl<'r> BitProp<'r> {
 
     /// Register a known bitsum (variable indices, lowest bit first).
     pub fn add_bitsum(&mut self, bits: Vec<usize>) { self.bitsums.push(bits); }
+
+    /// Snapshot the logical state into an owned form (for caching).
+    pub fn to_state(&self) -> BitPropState {
+        BitPropState {
+            bits: self.bits.clone(),
+            bitsums: self.bitsums.clone(),
+        }
+    }
+
+    /// Reconstruct a `BitProp` from a saved state and a poly_ring borrow.
+    pub fn from_state(poly_ring: &'r FfPolyRing, state: BitPropState) -> Self {
+        BitProp {
+            poly_ring,
+            bits: state.bits,
+            bitsums: state.bitsums,
+        }
+    }
 
     /// Test whether `var` is bit-constrained, either via the prior set
     /// `self.bits` or because some basis in `split_basis` proves

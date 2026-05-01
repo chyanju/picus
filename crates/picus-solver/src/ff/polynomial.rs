@@ -825,6 +825,32 @@ impl Polynomial {
             None
         };
 
+        // Plan v9 task 06: alignment with CoCoA's `Reductors` divisor index.
+        // CoCoA's `TmpGReductor.H:65-100` holds the active basis in a
+        // structure that admits fast LT-divides-LT lookup. Picus's prior
+        // implementation linearly scanned every divisor per LT pop. Here
+        // we group divisors by `DivMask` bits so that the lookup loop
+        // skips entire groups whose mask has bits the current LT's mask
+        // doesn't (those divisors' LTs cannot divide).
+        //
+        // Gate at the same large-basis threshold as the sort: small
+        // divisor sets keep the original linear scan to preserve the
+        // unit test `reduce_by_refs_geobucket_matches_naive`'s exact
+        // first-match semantics.
+        let bucket_index_opt: Option<std::collections::HashMap<u32, Vec<usize>>> =
+            if div_lt.len() >= SORT_THRESHOLD {
+                let mut buckets: std::collections::HashMap<u32, Vec<usize>> =
+                    std::collections::HashMap::new();
+                for (i, lt_opt) in div_lt.iter().enumerate() {
+                    if let Some((_, _, _, dm)) = lt_opt {
+                        buckets.entry(dm.0).or_default().push(i);
+                    }
+                }
+                Some(buckets)
+            } else {
+                None
+            };
+
         let mut gb = super::geobucket::Geobucket::from_poly(self.clone(), ring);
         let mut result_exps: Vec<u16> = Vec::new();
         let mut result_coeffs: Vec<FieldElem> = Vec::new();
@@ -890,7 +916,45 @@ impl Polynomial {
             let lookup_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
             let cur_dm = ring.divmask.compute_from_slice(&lt_exps);
             let mut chosen: Option<usize> = None;
-            if let Some(order) = &order_opt {
+            if let Some(buckets) = &bucket_index_opt {
+                // Plan v9 task 06: hash-bucketed divisor lookup.
+                // Iterate only buckets whose mask is a SUBMASK of cur_dm
+                // — others contain divisors whose divmask has bits cur_dm
+                // doesn't (so they can't divide). Within a compatible
+                // bucket, do the full exponent check; break on first
+                // match. The pick is deterministic-within-run (HashMap
+                // iteration is process-stable) but may differ from the
+                // linear-scan first-match across runs — same as the
+                // sort+early-break path. Test compat is preserved by
+                // the >=64 divisor gate (small tests use linear scan).
+                let cur_bits = cur_dm.0;
+                'outer: for (&mask, indices) in buckets {
+                    if (mask & !cur_bits) != 0 {
+                        // mask has bits cur_dm doesn't → no divisor in
+                        // this bucket can divide LT.
+                        continue;
+                    }
+                    for &di in indices {
+                        local_lookups += 1;
+                        if let Some((d_exps, d_deg, _, _)) = &div_lt[di] {
+                            if *d_deg > lt_deg {
+                                continue;
+                            }
+                            let mut divides = true;
+                            for k in 0..n {
+                                if d_exps[k] > lt_exps[k] {
+                                    divides = false;
+                                    break;
+                                }
+                            }
+                            if divides {
+                                chosen = Some(di);
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+            } else if let Some(order) = &order_opt {
                 // Sorted-ascending iteration with early break on
                 // exceeded-degree divisors.
                 for &di in order {

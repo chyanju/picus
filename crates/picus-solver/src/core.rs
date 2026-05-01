@@ -58,7 +58,7 @@ pub enum SolveOutcome {
 /// This mirrors cvc5's `split()` setup where `BitProp` is constructed from
 /// the parsed facts + encoder.  We do it post-encoding by analysing the
 /// polynomial structure with our `parse` module.
-fn populate_bitprop<'r>(
+pub fn populate_bitprop<'r>(
     poly_ring: &'r FfPolyRing,
     polys: &[Poly],
     bit_prop: &mut BitProp<'r>,

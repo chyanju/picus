@@ -17,6 +17,7 @@ pub mod split_gb;
 pub mod encoder;
 pub mod core;
 pub mod incremental;
+pub mod incremental_context;
 pub mod gb;
 pub mod roots;
 pub mod model;

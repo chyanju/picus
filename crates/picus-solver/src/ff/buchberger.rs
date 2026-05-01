@@ -400,6 +400,13 @@ struct BuchbergerState {
     /// GB-engine counters; written unconditionally, printed only on
     /// `PICUS_GB_STATS=1`.
     stats: GbEngineStats,
+    /// Plan v9 task 09: HOMOG flag set when all initial generators
+    /// share the same total degree. CoCoA's `myDoGBasis`
+    /// (`TmpGReductor.C:680, 710-721`) runs a periodic in-loop
+    /// tail-reduction step on HOMOG inputs to keep the basis lean.
+    /// Default false; set during `add_generators` based on input
+    /// shape.
+    input_is_homog: bool,
 }
 
 impl BuchbergerState {
@@ -413,6 +420,7 @@ impl BuchbergerState {
             generation: 0,
             trivial: false,
             stats: GbEngineStats::default(),
+            input_is_homog: false,
         }
     }
 
@@ -475,6 +483,20 @@ impl BuchbergerState {
         generators: Vec<Polynomial>,
         observer: &mut O,
     ) -> Result<(), SolverError> {
+        // Plan v9 task 09: detect HOMOG input. If every input generator
+        // is homogeneous w.r.t. total degree (every term in the
+        // polynomial has the same total degree), the input is HOMOG.
+        // CoCoA enables a periodic in-loop tail-reduce on HOMOG input
+        // (`TmpGReductor.C:680, 710-721`); we mirror that.
+        if self.basis.is_empty() {
+            self.input_is_homog = generators.iter()
+                .filter(|p| !p.is_zero())
+                .all(|p| {
+                    if p.num_terms() <= 1 { return true; }
+                    let d0 = p.term(0, &self.ring).total_degree();
+                    (1..p.num_terms()).all(|i| p.term(i, &self.ring).total_degree() == d0)
+                });
+        }
         for g in generators {
             self.check_cancel()?;
             if g.is_zero() { continue; }
@@ -853,14 +875,22 @@ impl BuchbergerState {
                 }
             }
             self.basis.push(BasisElement { poly: nf, lt, lt_divmask, active: true, sugar });
-            // No periodic in-loop tail-reduction here. CoCoA's `myDoGBasis`
-            // does not interreduce inside the main loop for non-homogeneous
-            // inputs; cleanup happens once at `myFinalizeGBasis`. With the
-            // M-criterion + B-criterion + skip-inactive pair-pruning in
-            // place the basis stays lean enough that an in-loop throttle
-            // is no longer needed (an A/B compared `tail_reduce_active`
-            // every 32 additions vs no throttle and found the latter
-            // gives equal-or-better KPI on the hard suite).
+            // Plan v9 task 09: HOMOG-gated periodic in-loop tail-reduce,
+            // mirroring CoCoA `myDoGBasis` (`TmpGReductor.C:680, 710-721`).
+            // CoCoA enables this only on homogeneous input (where
+            // tail-reduce mid-loop preserves the gradedness invariant
+            // sugar-degree pair selection relies on).
+            //
+            // Plan v7's earlier A/B (every 32 additions vs no throttle
+            // on the non-HOMOG hard suite) found the throttle hurt
+            // there. So we keep the throttle off for non-HOMOG and
+            // turn it on ONLY for HOMOG inputs (rare in our R1CS
+            // benchmarks but possible in homogenized paths).
+            if self.input_is_homog && self.stats.reductions_useful > 0
+                && self.stats.reductions_useful % 32 == 0
+            {
+                self.tail_reduce_active();
+            }
         }
         // Optional GB-engine telemetry: only emit when the user opts in
         // via `PICUS_GB_STATS=1`. Mirrors the existing `PICUS_PROFILE`
