@@ -97,6 +97,55 @@ pub struct SplitGbCounters {
 pub static SPLIT_DFS: SplitDfsCounters = SplitDfsCounters::new_const();
 pub static SPLIT_GB: SplitGbCounters = SplitGbCounters::new_const();
 
+/// Plan v9 task 01 — counters for the native-ff SMT backend, surfaced
+/// via `PICUS_GB_STATS=1`. Lets us quantify per-DPVL-signal re-encode
+/// cost: how many `solve` calls happen per circuit run, time per call
+/// in encoding vs. solving, and how stable the constraint side of the
+/// query is across consecutive calls (cache-key feasibility study).
+#[derive(Default)]
+pub struct NativeFfBackendCounters {
+    pub solve_calls: AtomicU64,
+    pub encode_time_ns: AtomicU64,
+    pub solve_inner_time_ns: AtomicU64,
+    pub encoded_polys_total: AtomicU64,
+    pub encoded_polys_max: AtomicU64,
+    pub encoded_vars_max: AtomicU64,
+    /// Number of distinct constraint-side digests observed (cache-key
+    /// proxy: a digest that repeats means the same constraint set
+    /// would be re-encoded under the current stateless design).
+    pub distinct_cs_digests: AtomicU64,
+    /// Number of solve calls whose constraint-side digest equaled
+    /// the immediately-previous call's. High value ⇒ adjacent calls
+    /// share constraints (cache would hit trivially).
+    pub repeated_cs_digest_streak: AtomicU64,
+    /// Plan v9 task 03: cache hit / rebuild stats.
+    pub cache_hits: AtomicU64,
+    pub cache_rebuild_time_ns: AtomicU64,
+    pub cache_query_diff_time_ns: AtomicU64,
+}
+
+pub static NATIVE_FF: NativeFfBackendCounters = NativeFfBackendCounters::new_const();
+
+impl NativeFfBackendCounters {
+    pub const fn new_const() -> Self {
+        Self {
+            solve_calls: AtomicU64::new(0),
+            encode_time_ns: AtomicU64::new(0),
+            solve_inner_time_ns: AtomicU64::new(0),
+            encoded_polys_total: AtomicU64::new(0),
+            encoded_polys_max: AtomicU64::new(0),
+            encoded_vars_max: AtomicU64::new(0),
+            distinct_cs_digests: AtomicU64::new(0),
+            repeated_cs_digest_streak: AtomicU64::new(0),
+            cache_hits: AtomicU64::new(0),
+            cache_rebuild_time_ns: AtomicU64::new(0),
+            cache_query_diff_time_ns: AtomicU64::new(0),
+        }
+    }
+    pub fn observe_polys_max(&self, v: u64) { observe_max(&self.encoded_polys_max, v); }
+    pub fn observe_vars_max(&self, v: u64) { observe_max(&self.encoded_vars_max, v); }
+}
+
 impl SplitDfsCounters {
     pub const fn new_const() -> Self {
         Self {
@@ -280,6 +329,40 @@ pub fn dump_split_stats_to_stderr() {
             load(&g.merge_owned_terms_total),
             load(&g.merge_owned_terms_total) as f64 / mo_calls as f64,
         );
+    }
+    let nf = &NATIVE_FF;
+    let nf_calls = load(&nf.solve_calls);
+    if nf_calls > 0 {
+        let enc_ms = load(&nf.encode_time_ns) as f64 / 1e6;
+        let solve_ms = load(&nf.solve_inner_time_ns) as f64 / 1e6;
+        let total_ms = enc_ms + solve_ms;
+        let enc_pct = if total_ms > 0.0 { enc_ms / total_ms * 100.0 } else { 0.0 };
+        eprintln!(
+            "[native-ff] solve_calls={} encoded_polys_max={} encoded_vars_max={} polys_total={} distinct_cs_digests={} repeated_streak={}",
+            nf_calls,
+            load(&nf.encoded_polys_max),
+            load(&nf.encoded_vars_max),
+            load(&nf.encoded_polys_total),
+            load(&nf.distinct_cs_digests),
+            load(&nf.repeated_cs_digest_streak),
+        );
+        eprintln!(
+            "[native-ff-time-ms] encode={:.2} solve_inner={:.2} total={:.2} encode_pct={:.1}%",
+            enc_ms, solve_ms, total_ms, enc_pct,
+        );
+        let hits = load(&nf.cache_hits);
+        let rebuild_ms = load(&nf.cache_rebuild_time_ns) as f64 / 1e6;
+        let diff_ms = load(&nf.cache_query_diff_time_ns) as f64 / 1e6;
+        if hits > 0 || rebuild_ms > 0.0 {
+            let total = hits + load(&nf.distinct_cs_digests);
+            let hit_pct = if total > 0 { hits as f64 * 100.0 / total as f64 } else { 0.0 };
+            eprintln!(
+                "[native-ff-cache] hits={} rebuilds={} hit_rate={:.1}% rebuild_ms={:.2} query_diff_ms={:.2}",
+                hits,
+                load(&nf.distinct_cs_digests),
+                hit_pct, rebuild_ms, diff_ms,
+            );
+        }
     }
     eprintln!("=== end split-GB stats ===\n");
 }

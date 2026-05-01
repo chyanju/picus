@@ -66,21 +66,43 @@ fn simple_opt_expr_z3(expr: &RExpr) -> RExpr {
         RExpr::Var(v) if v == "x0" => RExpr::Int(BigUint::one()),
 
         RExpr::Add(vs) => {
+            // Plan v9 task 07: align with cvc5's `theory_ff_rewriter.cpp`
+            // postRewriteFfAdd. After per-child recursion, fold all
+            // `Int` literals into a single constant addend (sum), and
+            // canonicalize position (constant goes last). picus's
+            // polynomial-level merge produces the same canonical form
+            // downstream, but doing it at the IR layer matches cvc5's
+            // pre-encoding pipeline.
             let optimized: Vec<RExpr> = vs
                 .iter()
                 .map(simple_opt_expr_z3)
                 .filter(|v| !is_zero_int(v))
                 .collect();
-            match optimized.len() {
+            // Fold int literals.
+            let mut int_sum: BigUint = BigUint::zero();
+            let mut non_int: Vec<RExpr> = Vec::with_capacity(optimized.len());
+            for e in optimized {
+                match &e {
+                    RExpr::Int(n) => int_sum += n,
+                    _ => non_int.push(e),
+                }
+            }
+            if !int_sum.is_zero() {
+                non_int.push(RExpr::Int(int_sum));
+            }
+            match non_int.len() {
                 0 => RExpr::Int(BigUint::zero()),
-                1 => optimized.into_iter().next().unwrap(),
-                _ => RExpr::Add(optimized),
+                1 => non_int.into_iter().next().unwrap(),
+                _ => RExpr::Add(non_int),
             }
         }
 
         RExpr::Mul(vs) => {
+            // Plan v9 task 07: align with cvc5's postRewriteFfMul. Fold
+            // int literal factors into a single constant; canonicalize
+            // position (constant goes first per cvc5's convention).
             let optimized: Vec<RExpr> = vs.iter().map(simple_opt_expr_z3).collect();
-            // If any is zero, whole product is zero
+            // If any is zero, whole product is zero.
             if optimized.iter().any(is_zero_int) {
                 return RExpr::Int(BigUint::zero());
             }
@@ -88,10 +110,24 @@ fn simple_opt_expr_z3(expr: &RExpr) -> RExpr {
                 .into_iter()
                 .filter(|v| !is_one_int(v))
                 .collect();
-            match filtered.len() {
+            // Fold int literals.
+            let mut int_prod: BigUint = BigUint::one();
+            let mut non_int: Vec<RExpr> = Vec::with_capacity(filtered.len());
+            for e in filtered {
+                match &e {
+                    RExpr::Int(n) => int_prod *= n,
+                    _ => non_int.push(e),
+                }
+            }
+            // Insert constant at FRONT (cvc5's canonical position for
+            // multiplication).
+            if !int_prod.is_one() {
+                non_int.insert(0, RExpr::Int(int_prod));
+            }
+            match non_int.len() {
                 0 => RExpr::Int(BigUint::one()),
-                1 => filtered.into_iter().next().unwrap(),
-                _ => RExpr::Mul(filtered),
+                1 => non_int.into_iter().next().unwrap(),
+                _ => RExpr::Mul(non_int),
             }
         }
 

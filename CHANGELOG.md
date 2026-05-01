@@ -4,6 +4,100 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.14] - 2026-04-28
+
+Architectural alignment with cvc5 + CoCoA's QF_FF theory: this release
+introduces several structural items that cvc5/CoCoA had and picus
+didn't, plus refines existing alignment. KPI-17 is unchanged (15/17;
+the same `inTest` timeout that 1.7.13 had); the value is in the
+architectural alignment itself, not in immediate KPI movement.
+`modulusagainst2p` median wall is slightly tighter (37–52 s range vs
+1.7.13's 44–67 s).
+
+### Added
+
+- **`IncrementalSolverContext` solver-state cache.** Caches the
+  encoded constraint side and computed split-GB across `solve_encoded`
+  calls within a `NativeFfBackend` session. On a cache hit, the
+  per-query Rabinowitsch disequality polynomial is encoded in the
+  cached polynomial ring and added to the cached split-GB via
+  `Ideal::extend_with_cancel` (Plan v6 incremental Buchberger).
+  Mirrors cvc5's `SubTheory` (`sub_theory.cpp:62-90`,
+  `sub_theory.h:112`) which accumulates facts across SMT solver calls
+  via a `context::CDList<Node>`. Lazy build (only after seeing 2+
+  same-digest calls) avoids regressions on circuits whose constraint
+  side changes per call. Disable via `PICUS_NO_INCREMENTAL_CACHE=1`.
+  Soundness rests on the existing `extend_with_cancel` correctness:
+  adding a generator to a reduced GB and re-running incremental
+  Buchberger yields the same final GB as full recomputation.
+
+- **Hash-bucketed divisor index in the geobucket reducer.** Groups
+  divisors by their `DivMask` bits; the lookup loop iterates only
+  buckets whose mask is a submask of the current LT's mask. Mirrors
+  CoCoA's `Reductors` class (`TmpGReductor.H:65-100`) which holds the
+  active basis with a similar fast-lookup structure. Gated to ≥ 64
+  divisors so small unit-test inputs continue to use the original
+  linear-scan first-match semantics.
+
+- **AST-level int-literal folding in `+` and `*`.** The IR optimizer's
+  `simple_opt_expr_z3` now consolidates `Int(a) + Int(b) → Int(a+b)`
+  and `Int(a) * Int(b) → Int(a*b)` with canonical position (constants
+  at end of `+`, at start of `*`). Mirrors cvc5's
+  `theory_ff_rewriter.cpp:45-150` postRewriteFfAdd / postRewriteFfMul.
+  picus's polynomial-level merging (`Polynomial::from_terms`) already
+  produced the equivalent canonical form post-encoding; this addition
+  makes the alignment explicit at the AST layer too.
+
+- **HOMOG-gated periodic in-loop tail-reduce.** When all initial
+  generators are homogeneous (every term has the same total degree),
+  `BuchbergerState::run` invokes `tail_reduce_active` every 32 useful
+  S-pair reductions. Mirrors CoCoA's `myDoGBasis`
+  (`TmpGReductor.C:680, 710-721`). Off for non-homogeneous inputs
+  (per CoCoA's gradedness invariant for sugar-driven pair selection,
+  and per Plan v7's A/B which found the throttle hurt non-HOMOG suite
+  performance).
+
+- **`BitPropState`** (`bitprop.rs`): owned snapshot of `BitProp`'s
+  logical state (the `bits` and `bitsums` sets), with `to_state` /
+  `from_state` accessors. Used by the cache to persist BitProp
+  contents across solve calls.
+
+- **Diagnostic instrumentation: `NativeFfBackendCounters`** surfaced
+  via `PICUS_GB_STATS=1`. Counters: `solve_calls`, `encode_time_ns`,
+  `solve_inner_time_ns`, `encoded_polys_max`, `distinct_cs_digests`,
+  `repeated_cs_digest_streak`, `cache_hits`, `cache_rebuild_time_ns`,
+  `cache_query_diff_time_ns`. Useful for analyzing per-circuit DPVL
+  query patterns.
+
+### Documentation
+
+- `docs/solver-evaluation.md § "Deliberate divergences from cvc5"`
+  updated with new entries: `IncrementalSolverContext`, hash-bucketed
+  divisor index, AST int-literal folding, `GbStrategy::ByHomog` /
+  `Auto` (picus-only). Borel-fixed flag confirmed as not-a-divergence
+  (cvc5 ff theory also passes `DontUseBorel`).
+
+### Performance
+
+| Circuit | 1.7.13 | this release | Δ |
+|---------|--------|--------------|---|
+| modulusagainst2p | ~52 s median | 37–52 s range | -10 to -30 % |
+| Other previously-solved circuits | unchanged within run-to-run noise | | |
+| `inTest` | timeout | timeout | unchanged (cache rebuild can't fit in per-signal budget; documented in `chat/plan-9/phase1-result.md`) |
+
+KPI-17 solved set: 15/17 (unchanged). Cache benefit on
+`modulusagainst2p` is modest because each per-query call there is
+already fast (~2 s); the cache hit savings are within run-to-run
+variance. The architectural value is the alignment with cvc5's
+SubTheory model, not a wall-time win in this release.
+
+### Correctness
+
+127 unit tests pass; 110-circuit correctness gate shows **0 verdict
+mismatches**. Cache soundness rests on `extend_with_cancel`'s
+incremental-Buchberger correctness (Plan v6) and the digest's
+faithful inclusion of all constraint-side fields.
+
 ## [1.7.13] - 2026-04-28
 
 KPI 14/17 → 15/17. `modulusagainst2p` recovered (median ≈ 52 s wall
