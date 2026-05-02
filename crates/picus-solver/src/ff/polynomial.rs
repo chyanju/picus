@@ -826,25 +826,27 @@ impl Polynomial {
         };
 
         // Plan v9 task 06: alignment with CoCoA's `Reductors` divisor index.
-        // CoCoA's `TmpGReductor.H:65-100` holds the active basis in a
-        // structure that admits fast LT-divides-LT lookup. Picus's prior
-        // implementation linearly scanned every divisor per LT pop. Here
-        // we group divisors by `DivMask` bits so that the lookup loop
-        // skips entire groups whose mask has bits the current LT's mask
-        // doesn't (those divisors' LTs cannot divide).
-        //
-        // Gate at the same large-basis threshold as the sort: small
-        // divisor sets keep the original linear scan to preserve the
-        // unit test `reduce_by_refs_geobucket_matches_naive`'s exact
-        // first-match semantics.
-        let bucket_index_opt: Option<std::collections::HashMap<u32, Vec<usize>>> =
-            if div_lt.len() >= SORT_THRESHOLD {
-                let mut buckets: std::collections::HashMap<u32, Vec<usize>> =
+        // Plan v10 task 10: empirically the bucket index's HashMap
+        // iteration overhead and weak filtering on high-n_vars circuits
+        // (`inTest`'s 571 vars) made it slower than the simpler
+        // sort+early-break path. We keep the bucket code structurally
+        // present (for ≥ 256 divisors where DivMask filtering pays off)
+        // but raise the gate so smaller dense bases use sort+early-break.
+        const BUCKET_THRESHOLD: usize = 256;
+        let bucket_index_opt: Option<std::collections::HashMap<u128, Vec<usize>>> =
+            if div_lt.len() >= BUCKET_THRESHOLD {
+                let mut buckets: std::collections::HashMap<u128, Vec<usize>> =
                     std::collections::HashMap::new();
                 for (i, lt_opt) in div_lt.iter().enumerate() {
                     if let Some((_, _, _, dm)) = lt_opt {
                         buckets.entry(dm.0).or_default().push(i);
                     }
+                }
+                // Plan v10 task 10: sort each bucket by total degree
+                // ascending so the lookup loop can `break` (not `continue`)
+                // on first divisor with deg > lt_deg.
+                for indices in buckets.values_mut() {
+                    indices.sort_by_key(|&i| div_lt[i].as_ref().map(|t| t.1).unwrap_or(u32::MAX));
                 }
                 Some(buckets)
             } else {
@@ -938,7 +940,10 @@ impl Polynomial {
                         local_lookups += 1;
                         if let Some((d_exps, d_deg, _, _)) = &div_lt[di] {
                             if *d_deg > lt_deg {
-                                continue;
+                                // Plan v10 task 10: bucket sorted by deg
+                                // ascending; once we exceed lt_deg, the
+                                // rest of this bucket is also too big.
+                                break;
                             }
                             let mut divides = true;
                             for k in 0..n {

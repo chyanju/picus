@@ -1,21 +1,23 @@
-//! 32-bit DivMask for fast monomial divisibility rejection.
+//! 128-bit DivMask for fast monomial divisibility rejection.
 //!
-//! A DivMask maps a monomial's exponent vector to a 32-bit bitmask where each
+//! A DivMask maps a monomial's exponent vector to a 128-bit bitmask where each
 //! bit indicates whether the corresponding exponent meets a precomputed
 //! threshold. Divisibility `a | b` requires `mask(a) & mask(b) == mask(a)`,
 //! so any bit set in `mask(a)` but not in `mask(b)` immediately rules out
 //! divisibility — without touching the exponent vector.
 //!
-//! The encoding follows the standard CoCoA scheme: 32 buckets distributed
-//! across the variables (with thresholds chosen by even spacing per variable).
+//! Plan v10 task 10: upgraded from 32 to 128 bits to provide divmask
+//! coverage on circuits with > 32 variables (e.g. `inTest` with 571 vars,
+//! where the original 32-bit scheme covered only the first 32 vars and
+//! provided no useful filter signal).
 
 use super::monomial::Monomial;
 
-const DIVMASK_BITS: usize = 32;
+const DIVMASK_BITS: usize = 128;
 
-/// 32-bit divisibility mask.
+/// 128-bit divisibility mask.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct DivMask(pub u32);
+pub struct DivMask(pub u128);
 
 impl DivMask {
     pub const fn empty() -> Self {
@@ -75,14 +77,14 @@ impl DivMaskScheme {
 
     #[inline]
     pub fn compute_from_slice(&self, exps: &[u16]) -> DivMask {
-        let mut mask: u32 = 0;
+        let mut mask: u128 = 0;
         let actual_vars = self.thresholds.len() / self.bits_per_var.max(1);
         for v in 0..actual_vars {
             let exp = if v < exps.len() { exps[v] } else { 0 };
             for k in 0..self.bits_per_var {
                 let t = self.thresholds[v * self.bits_per_var + k];
                 if exp > t {
-                    mask |= 1u32 << (v * self.bits_per_var + k);
+                    mask |= 1u128 << (v * self.bits_per_var + k);
                 }
             }
         }

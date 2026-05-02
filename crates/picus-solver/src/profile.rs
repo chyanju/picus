@@ -122,6 +122,16 @@ pub struct NativeFfBackendCounters {
     pub cache_hits: AtomicU64,
     pub cache_rebuild_time_ns: AtomicU64,
     pub cache_query_diff_time_ns: AtomicU64,
+    /// Plan v10 task 02 (Phase 1, sub-iter resumable cache): number of
+    /// solve calls that resumed an in-progress GB build saved from a
+    /// prior cancelled call. Each resume contributes additional
+    /// per-call budget toward eventually completing the cache, after
+    /// which subsequent calls all hit the cache.
+    pub cache_partial_resumes: AtomicU64,
+    /// Number of times a partial build completed (transitioned from
+    /// `partial_build` to `cached_base`). Equal to the number of
+    /// circuits where sub-iter resumption succeeded.
+    pub cache_partial_completions: AtomicU64,
 }
 
 pub static NATIVE_FF: NativeFfBackendCounters = NativeFfBackendCounters::new_const();
@@ -140,6 +150,8 @@ impl NativeFfBackendCounters {
             cache_hits: AtomicU64::new(0),
             cache_rebuild_time_ns: AtomicU64::new(0),
             cache_query_diff_time_ns: AtomicU64::new(0),
+            cache_partial_resumes: AtomicU64::new(0),
+            cache_partial_completions: AtomicU64::new(0),
         }
     }
     pub fn observe_polys_max(&self, v: u64) { observe_max(&self.encoded_polys_max, v); }
@@ -353,14 +365,16 @@ pub fn dump_split_stats_to_stderr() {
         let hits = load(&nf.cache_hits);
         let rebuild_ms = load(&nf.cache_rebuild_time_ns) as f64 / 1e6;
         let diff_ms = load(&nf.cache_query_diff_time_ns) as f64 / 1e6;
-        if hits > 0 || rebuild_ms > 0.0 {
+        let resumes = load(&nf.cache_partial_resumes);
+        let completions = load(&nf.cache_partial_completions);
+        if hits > 0 || rebuild_ms > 0.0 || resumes > 0 {
             let total = hits + load(&nf.distinct_cs_digests);
             let hit_pct = if total > 0 { hits as f64 * 100.0 / total as f64 } else { 0.0 };
             eprintln!(
-                "[native-ff-cache] hits={} rebuilds={} hit_rate={:.1}% rebuild_ms={:.2} query_diff_ms={:.2}",
+                "[native-ff-cache] hits={} rebuilds={} hit_rate={:.1}% rebuild_ms={:.2} query_diff_ms={:.2} partial_resumes={} partial_completions={}",
                 hits,
                 load(&nf.distinct_cs_digests),
-                hit_pct, rebuild_ms, diff_ms,
+                hit_pct, rebuild_ms, diff_ms, resumes, completions,
             );
         }
     }

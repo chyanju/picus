@@ -280,7 +280,10 @@ impl<'r> Geobucket<'r> {
                 }
                 let i_exps = &self.buckets[i].raw_exponents()[head_i * n..(head_i + 1) * n];
                 if i_exps == exps.as_slice() {
-                    coeff = self.ring.field.add(&coeff, &self.buckets[i].raw_coeffs()[head_i]);
+                    // Plan v10 task 09: in-place add to avoid per-merge
+                    // FieldElem allocation. `coeff` is owned at this point;
+                    // `add_assign` mutates it in place.
+                    self.ring.field.add_assign(&mut coeff, &self.buckets[i].raw_coeffs()[head_i]);
                     self.heads[i] += 1;
                 }
             }

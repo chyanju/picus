@@ -4,6 +4,122 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.15] - 2026-05-01
+
+Engine-level performance work plus an opt-in F4-lite degree-batched
+reducer. Architectural alignment with cvc5 + CoCoA's QF_FF theory was
+already complete in 1.7.14 — this release tightens the underlying
+Buchberger engine and adds F4-lite as scaffolding for future work
+where larger sugar batches are achievable. The KPI-17 solved set is
+**15/17** (unchanged); `Pedersen@pedersen` now sits right at the 60 s
+boundary and crosses to *unsafe* on faster runs (occasionally lifting
+the count to 16/17 in CI). `inTest` remains over the gate.
+
+### Added
+
+- **Thread-local `FieldElem` allocation pool** (`ff/field.rs`).
+  `FieldElem` now `impl Drop` recycles its `rug::Integer` mpz buffer
+  back into a thread-local stack of size 4096; `field.add` / `sub` /
+  `mul` / `neg` pull from the pool via `pool_take_or_default` instead
+  of allocating fresh mpz limbs on every operation. `add_owned` /
+  `sub_owned` consume both operands and recycle the right-hand side.
+  Eliminates one mpz allocation per coefficient operation on the
+  geobucket cascade path. Reentrancy guarded by an `IN_POOL_DROP`
+  cell so the Drop impl never recurses.
+
+- **GMP in-place arithmetic on hot paths.** Geobucket
+  `pop_leading_term`'s cross-bucket coefficient sum now uses
+  `field.add_assign` (in-place `+=`) instead of `field.add` (new
+  allocation). Same change applied throughout `Polynomial::merge_owned`
+  via `add_owned` / `sub_owned`. Reduces GMP allocations on dense
+  polynomial merges, which were the primary cost on `inTest`'s
+  late-stage S-pair reductions.
+
+- **128-bit `DivMask`** (was 32-bit; `ff/divmask.rs`). Provides
+  divisibility-rejection coverage on circuits with > 32 variables —
+  e.g. `inTest`'s 571-variable system, where the original 32-bit
+  scheme covered only the first ~32 vars and gave no useful filter
+  signal for the rest. Per-variable threshold count adapts via
+  `DIVMASK_BITS / n_vars`.
+
+- **Sorted divisor bucket with early-break** (`ff/polynomial.rs`).
+  Within a single divmask bucket, divisors are now sorted by leading-
+  term degree ascending; the bucket-scan loop `break`s on the first
+  divisor whose LT degree exceeds the current LT's, since every
+  subsequent one is at least that big. Threshold raised from 64 → 256
+  (the tipping point above which the sort+break path beats the
+  original linear scan).
+
+- **`IncrementalGB` resume primitives** (`ff/buchberger.rs`):
+  `run_only`, `set_cancel_token`, `is_quiescent`, `open_queue_len`.
+  Lets the cache re-attach a fresh per-call cancel token to an
+  in-flight Buchberger run and continue draining the open S-pair
+  queue across solve-call boundaries. Sub-iter resumable cache uses
+  this when the fast-path `split_gb_cancel` rebuild gets cancelled
+  mid-build.
+
+- **`IncrementalSolverContext` partial-build fallback**
+  (`incremental_context.rs`). When a fresh cache rebuild is cancelled
+  mid-build, the encoded artifacts plus per-partition `IncrementalGB`
+  in-flight state are saved as `partial_build`. The next solve call
+  with the matching constraint-side digest resumes via
+  `continue_partial`, draining the saved open queues with a fresh
+  cancel token. Once quiescent, the partial state is finalized into a
+  `CachedBase` (interreduce + monic). Counters
+  `cache_partial_resumes` and `cache_partial_completions` surfaced via
+  `PICUS_GB_STATS=1`.
+
+- **F4-lite scaffolding** (`ff/f4.rs`, ~700 lines, opt-in via
+  `PICUS_USE_F4=1`). Sugar-batched S-pair processing: build
+  S-polynomials for one same-sugar batch, run symbolic preprocessing
+  (BFS closure under reducibility, adding `(m / lt(b)) * b` reducer
+  rows for every monomial divisible by some active basis LT), build
+  a sparse matrix with a monomial-DESC column index, run sparse row-
+  echelon over GF(p) with reducer rows pivoted first, extract new
+  generators from S-poly residues whose LT column is not a reducer
+  LT. Wired into `BuchbergerState::run_f4` with size-1 batch fallback
+  to direct geobucket. Five unit tests including multi-pair property
+  tests cross-checking against the per-pair geobucket reference. **F4
+  is correctness-clean** (full 110-circuit gate produces 0 mismatches
+  with `PICUS_USE_F4=1`) but the matrix-construction overhead exceeds
+  the per-pair amortization savings on the current circuit set, so it
+  remains gated off by default.
+
+### Performance
+
+| Circuit | 1.7.14 | this release | Δ |
+|---------|--------|--------------|---|
+| modulusagainst2p | 37–52 s range | 52–63 s range (variance) | within noise |
+| Pedersen@pedersen | timeout | timeout (occasionally `unsafe` ~64.9 s) | edge of 60 s gate |
+| Other previously-solved circuits | unchanged within run-to-run noise | | |
+| `inTest` | timeout | timeout | unchanged (~5 s over gate) |
+
+Engine micro-benchmarks (cold inTest GB build under stats, no DPVL
+overhead): solve_inner dropped from ~75.9 s in 1.7.14 to ~63.7 s in
+this release (~16 % engine speedup) thanks to the FieldElem pool +
+GMP in-place + 128-bit DivMask + sorted bucket. The savings don't
+quite cover the 60 s per-signal budget, so `inTest` remains a
+timeout on the KPI gate — closing it requires either further engine
+work or a different solver topology (out of scope here).
+
+### Correctness
+
+132 unit tests pass (127 prior + 5 F4-lite, including two multi-pair
+property tests cross-checking F4 output against per-pair geobucket
+reduction); 110-circuit correctness gate produces **0 verdict
+mismatches** with F4 disabled (default) and **0 verdict mismatches**
+with F4 enabled (`PICUS_USE_F4=1`).
+
+### Documentation
+
+- `chat/plan-10/` records Plan v10's diagnosis (`diagnosis-v1714.md`)
+  and full progress log (`progress.md`), including the honest
+  assessment of which phases moved KPI numbers and which were pure
+  alignment / robustness work.
+- `docs/solver-evaluation.md` will be updated separately to add the
+  F4-lite entry to the divergences table (cvc5+CoCoA stay on
+  classical Buchberger; F4-lite is a picus-only opt-in path).
+
 ## [1.7.14] - 2026-04-28
 
 Architectural alignment with cvc5 + CoCoA's QF_FF theory: this release

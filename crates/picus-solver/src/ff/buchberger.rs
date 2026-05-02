@@ -34,6 +34,13 @@ pub struct BuchbergerConfig {
     pub cancel_token: Option<CancelToken>,
     /// Stop early if the basis contains a nonzero constant (i.e. the ideal is the whole ring).
     pub abort_on_trivial: bool,
+    /// Plan v10 Phase 4: dispatch the inner loop to F4-lite (degree-
+    /// batched matrix reduction) instead of one-S-pair-at-a-time
+    /// geobucket reduction. Enables on dense circuits where late-stage
+    /// S-poly reductions individually exceed the per-call budget
+    /// (e.g. `inTest`). Default: gated by env var `PICUS_USE_F4=1`
+    /// while we shake out perf.
+    pub use_f4: bool,
 }
 
 impl Default for BuchbergerConfig {
@@ -42,8 +49,19 @@ impl Default for BuchbergerConfig {
             order: MonomialOrder::DegRevLex,
             cancel_token: None,
             abort_on_trivial: true,
+            use_f4: use_f4_default(),
         }
     }
+}
+
+/// Plan v10 Phase 4: F4-lite default toggle. Returns true when
+/// `PICUS_USE_F4=1` is set. Used by `BuchbergerConfig::default` and
+/// every config-construction site so the F4 path is consistently
+/// enabled or disabled across the whole solver.
+pub fn use_f4_default() -> bool {
+    use std::sync::OnceLock;
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var_os("PICUS_USE_F4").is_some())
 }
 
 /// A computed Groebner basis.
@@ -722,6 +740,9 @@ impl BuchbergerState {
     }
 
     fn run<O: BuchbergerObserver>(&mut self, observer: &mut O) -> Result<(), SolverError> {
+        if self.cfg.use_f4 {
+            return self.run_f4(observer);
+        }
         if self.trivial && self.cfg.abort_on_trivial { return Ok(()); }
         // Plan v8: more granular instrumentation so we can see where time
         // goes inside the main loop on dense circuits like `inTest`.
@@ -935,6 +956,235 @@ impl BuchbergerState {
         }
         interreduce(active, &self.ring)
     }
+
+    /// Per-pair S-poly construction + geobucket reduction. Extracted
+    /// from `run()` so `run_f4` can fall back to it for size-1
+    /// batches (where F4's matrix amortization wins zero and the
+    /// safety-net reduction is pure overhead).
+    fn process_pair_geobucket<O: BuchbergerObserver>(
+        &mut self,
+        pair: SPair,
+        observer: &mut O,
+    ) -> Result<(), SolverError> {
+        let bi = &self.basis[pair.i];
+        let bj = &self.basis[pair.j];
+        let mul_i = pair.lcm.div(&bi.lt);
+        let mul_j = pair.lcm.div(&bj.lt);
+        let lc_i = bi.poly.leading_coefficient().unwrap();
+        let lc_j = bj.poly.leading_coefficient().unwrap();
+        let scale_j = self.ring.field.div(lc_i, lc_j).unwrap();
+        let term_i = self.ring.field.one();
+        let part_i = bi.poly.mul_term(mul_i.exponents(), &term_i, &self.ring);
+        let part_j = bj.poly.mul_term(mul_j.exponents(), &scale_j, &self.ring);
+        let s_poly = part_i.sub(&part_j, &self.ring);
+        let active_refs: Vec<&Polynomial> = self.basis.iter()
+            .filter(|e| e.active)
+            .map(|e| &e.poly)
+            .collect();
+        let mut nf = match &self.cfg.cancel_token {
+            Some(c) => s_poly.reduce_by_refs_cancel(&active_refs, &self.ring, c),
+            None => s_poly.reduce_by_refs(&active_refs, &self.ring),
+        };
+        if let Some(c) = &self.cfg.cancel_token {
+            if c.is_cancelled() {
+                return Err(SolverError::Timeout);
+            }
+        }
+        self.stats.reductions_total += 1;
+        if nf.is_zero() {
+            self.stats.reductions_useless += 1;
+            return Ok(());
+        }
+        self.stats.reductions_useful += 1;
+        nf = nf.make_monic(&self.ring);
+
+        let new_idx = self.basis.len();
+        let lt = nf.leading_monomial(&self.ring).unwrap();
+        let lt_divmask = self.ring.divmask.compute(&lt);
+        debug_assert!(
+            lt.total_degree() <= pair.sugar,
+            "sugar invariant violated: LT total_degree {} > pair.sugar {}",
+            lt.total_degree(), pair.sugar
+        );
+        let sugar = pair.sugar;
+        observer.on_new_poly(new_idx, &nf, (pair.i, pair.j));
+
+        if nf.is_constant() {
+            self.trivial = true;
+            self.basis.push(BasisElement { poly: nf, lt, lt_divmask, active: true, sugar });
+            if self.cfg.abort_on_trivial { return Ok(()); }
+            return Ok(());
+        }
+
+        self.generate_pairs_against(new_idx, &lt, sugar);
+        for k in 0..new_idx {
+            if self.basis[k].active && lt.divides(&self.basis[k].lt) {
+                self.basis[k].active = false;
+            }
+        }
+        self.basis.push(BasisElement { poly: nf, lt, lt_divmask, active: true, sugar });
+        Ok(())
+    }
+
+    /// Plan v10 Phase 4 — F4-lite path through the main loop. Pops a
+    /// batch of same-sugar S-pairs and reduces them simultaneously
+    /// via `f4::process_batch`, then integrates each new generator
+    /// (generating cross-pairs against the existing basis just like
+    /// the per-pair path does).
+    fn run_f4<O: BuchbergerObserver>(&mut self, observer: &mut O) -> Result<(), SolverError> {
+        if self.trivial && self.cfg.abort_on_trivial {
+            return Ok(());
+        }
+        let stats_on = crate::profile::gb_stats_enabled();
+        let run_start = std::time::Instant::now();
+        let initial_open_size = self.open.len();
+
+        loop {
+            self.check_cancel()?;
+            // self.open is sorted descending; pop returns smallest
+            // sugar first. Pop a batch with the SAME smallest sugar.
+            let lowest_sugar = match self.open.last() {
+                Some(p) => p.sugar,
+                None => break,
+            };
+            let mut batch: Vec<SPair> = Vec::new();
+            while let Some(top) = self.open.last() {
+                if top.sugar > lowest_sugar {
+                    break;
+                }
+                let pair = self.open.pop().unwrap();
+                if pair.generation < self.generation {
+                    continue;
+                }
+                batch.push(pair);
+            }
+            if batch.is_empty() {
+                continue;
+            }
+
+            // Plan v10 Phase 4: F4 amortizes reducer construction
+            // across a sugar batch but pays the matrix-build overhead
+            // each time. For a single-pair batch the matrix is
+            // strictly more expensive than direct per-pair reduction.
+            // Threshold tuned to keep small-circuit baselines fast.
+            if batch.len() < 2 {
+                for pair in batch {
+                    self.process_pair_geobucket(pair, observer)?;
+                }
+                continue;
+            }
+
+            // Build F4BasisRef array (same indexing as self.basis).
+            let basis_refs: Vec<super::f4::F4BasisRef> = self
+                .basis
+                .iter()
+                .map(|e| super::f4::F4BasisRef {
+                    poly: &e.poly,
+                    lt: &e.lt,
+                    active: e.active,
+                })
+                .collect();
+
+            let batch_refs: Vec<&SPair> = batch.iter().collect();
+            let new_polys = super::f4::process_batch(
+                &batch_refs,
+                &basis_refs,
+                &self.ring,
+                self.cfg.cancel_token.as_ref(),
+            );
+
+            self.check_cancel()?;
+
+            // Stats: each batch entry counts as one reduction. Useful
+            // = produced a new generator; useless = produced nothing.
+            self.stats.reductions_total += batch.len() as u64;
+            self.stats.reductions_useful += new_polys.len() as u64;
+            if batch.len() >= new_polys.len() {
+                self.stats.reductions_useless += (batch.len() - new_polys.len()) as u64;
+            }
+
+            // Integrate each new poly as a basis element. Mirror the
+            // run() path's integration step exactly. F4 already monic-
+            // normalized each output and the matrix echelon ensures
+            // each residue's LT is not divisible by any active basis
+            // LT (provided symbolic preprocessing closed under
+            // reducibility — which it does by BFS over reducer tails).
+            let batch_sugar = lowest_sugar;
+            for poly in new_polys {
+                self.check_cancel()?;
+                if poly.is_zero() {
+                    continue;
+                }
+                let lt = match poly.leading_monomial(&self.ring) {
+                    Some(l) => l,
+                    None => continue,
+                };
+                let lt_divmask = self.ring.divmask.compute(&lt);
+                debug_assert!(
+                    lt.total_degree() <= batch_sugar,
+                    "F4 sugar invariant violated: LT deg {} > batch_sugar {}",
+                    lt.total_degree(),
+                    batch_sugar
+                );
+                let sugar = batch_sugar;
+                let new_idx = self.basis.len();
+                // Use sentinel from-pair indices (0, 0) — F4 batches don't
+                // map back to a specific pair; tracer paths don't run on
+                // F4 anyway.
+                observer.on_new_poly(new_idx, &poly, (0, 0));
+
+                if poly.is_constant() {
+                    self.trivial = true;
+                    self.basis.push(BasisElement {
+                        poly,
+                        lt,
+                        lt_divmask,
+                        active: true,
+                        sugar,
+                    });
+                    if self.cfg.abort_on_trivial {
+                        return Ok(());
+                    }
+                    continue;
+                }
+
+                self.generate_pairs_against(new_idx, &lt, sugar);
+                for k in 0..new_idx {
+                    if self.basis[k].active && lt.divides(&self.basis[k].lt) {
+                        self.basis[k].active = false;
+                    }
+                }
+                self.basis.push(BasisElement {
+                    poly,
+                    lt,
+                    lt_divmask,
+                    active: true,
+                    sugar,
+                });
+            }
+        }
+
+        if stats_on {
+            let s = &self.stats;
+            let total_ns = run_start.elapsed().as_nanos() as u64;
+            let active_count = self.basis.iter().filter(|e| e.active).count();
+            eprintln!(
+                "[picus-gb-stats F4] pairs={} cop={} gm={} b={} red={} useful={} useless={} initial_open={} basis_size={} active={} time_run_ms={:.2}",
+                s.pairs_generated,
+                s.pairs_killed_coprime,
+                s.pairs_killed_gm,
+                s.pairs_killed_b,
+                s.reductions_total,
+                s.reductions_useful,
+                s.reductions_useless,
+                initial_open_size,
+                self.basis.len(),
+                active_count,
+                total_ns as f64 / 1e6,
+            );
+        }
+        Ok(())
+    }
 }
 
 // ──────────────────────────── Incremental GB ────────────────────────────────
@@ -996,6 +1246,43 @@ impl IncrementalGB {
             self.state.tail_reduce_active();
         }
         Ok(self.state.trivial)
+    }
+
+    /// Plan v10 task 02 (Phase 1, sub-iter checkpointing): drain the
+    /// in-progress S-pair queue without adding new generators. Used by
+    /// `IncrementalSolverContext` to resume a previously-cancelled GB
+    /// build across solve calls.
+    ///
+    /// Semantics are identical to `add_generators(vec![])` but skips the
+    /// `state.add_generators` no-op and the HOMOG-flag detection (which
+    /// is set on the first call and immutable thereafter).
+    pub fn run_only(&mut self) -> Result<bool, SolverError> {
+        let mut obs = NoObserver;
+        self.state.run(&mut obs)?;
+        if !self.state.trivial {
+            self.state.tail_reduce_active();
+        }
+        Ok(self.state.trivial)
+    }
+
+    /// Plan v10 task 02: swap in a fresh cancel token between solve
+    /// calls. Each `IncrementalSolverContext::solve` invocation produces
+    /// its own per-call cancel token; the persisted `IncrementalGB` must
+    /// pick that up so the resumed run respects the new budget.
+    pub fn set_cancel_token(&mut self, token: Option<CancelToken>) {
+        self.state.cfg.cancel_token = token;
+    }
+
+    /// True iff the open S-pair queue is empty (no further reductions
+    /// pending). When `is_quiescent()` and `!is_trivial()`, the active
+    /// polys form a Groebner basis (modulo a final inter-reduce).
+    pub fn is_quiescent(&self) -> bool {
+        self.state.open.is_empty()
+    }
+
+    /// Number of pending S-pairs in the open queue. Diagnostic.
+    pub fn open_queue_len(&self) -> usize {
+        self.state.open.len()
     }
 
     /// Observed variant of `add_generators`: the supplied observer

@@ -399,6 +399,7 @@ pub fn compute_gb_with_order(
         order,
         cancel_token: Some(cancel.clone()),
         abort_on_trivial: true,
+        use_f4: crate::ff::buchberger::use_f4_default(),
     };
     let start = std::time::Instant::now();
     let backup: Vec<Poly> = generators.iter().map(|p| p.clone()).collect();
@@ -447,6 +448,7 @@ pub fn compute_gb_incremental_with_order(
         order,
         cancel_token: Some(cancel.clone()),
         abort_on_trivial: true,
+        use_f4: crate::ff::buchberger::use_f4_default(),
     };
 
     // Backup for panic / error fallback (matches compute_gb_with_order behavior).
@@ -500,6 +502,7 @@ pub fn compute_gb_with_order_traced(
         order,
         cancel_token: Some(cancel.clone()),
         abort_on_trivial: true,
+        use_f4: crate::ff::buchberger::use_f4_default(),
     };
     let backup: Vec<Poly> = generators.iter().map(|p| p.clone()).collect();
 
@@ -544,6 +547,7 @@ pub fn compute_gb_incremental_with_order_traced(
         order,
         cancel_token: Some(cancel.clone()),
         abort_on_trivial: true,
+        use_f4: crate::ff::buchberger::use_f4_default(),
     };
     let backup: Vec<Poly> = known_gb.iter().chain(new_polys.iter())
         .map(|p| p.clone())
