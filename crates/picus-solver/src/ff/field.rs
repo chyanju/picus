@@ -58,6 +58,85 @@ impl FieldElem {
     pub fn as_biguint(&self) -> BigUint {
         integer_to_biguint(&self.value)
     }
+
+    /// Plan v10 task 08: take a recycled `FieldElem` (with its `mpz_t`
+    /// limb buffer already allocated) from the thread-local pool, or
+    /// allocate fresh if pool is empty. The returned element's value
+    /// is INDETERMINATE — caller must initialize via `assign(...)` or
+    /// equivalent before reading.
+    #[inline]
+    pub(crate) fn pool_take_or_default(capacity_bits: u32) -> Self {
+        FIELDELEM_POOL.with(|pool| {
+            if let Some(mut e) = pool.borrow_mut().pop() {
+                // Ensure capacity for the upcoming assign.
+                if (e.value.capacity() as u32) < capacity_bits {
+                    e.value.reserve(capacity_bits as usize);
+                }
+                e
+            } else {
+                FieldElem {
+                    value: Integer::with_capacity(capacity_bits as usize),
+                }
+            }
+        })
+    }
+
+    /// Return this `FieldElem` to the pool for later reuse. Drops if
+    /// pool is at capacity.
+    #[inline]
+    pub(crate) fn pool_return(self) {
+        FIELDELEM_POOL.with(|pool| {
+            let mut p = pool.borrow_mut();
+            if p.len() < FIELDELEM_POOL_CAP {
+                p.push(self);
+            }
+            // else: drop normally, freeing mpz_t buffer.
+        });
+    }
+}
+
+const FIELDELEM_POOL_CAP: usize = 4096;
+
+thread_local! {
+    /// Plan v10 task 08: thread-local pool of recycled `FieldElem`s.
+    /// Reduces GMP `mpz_init` / `mpz_clear` traffic in the geobucket
+    /// cascade hot path on dense-ideal benchmarks (`inTest`'s
+    /// 280-poly basis-1 reduces produce ~2 M field operations per
+    /// run; pooling eliminates the per-op allocation of the result
+    /// `Integer`'s limb buffer).
+    static FIELDELEM_POOL: std::cell::RefCell<Vec<FieldElem>> =
+        std::cell::RefCell::new(Vec::with_capacity(FIELDELEM_POOL_CAP / 4));
+    /// Re-entrancy guard: don't recurse into the pool from inside its
+    /// own Drop (e.g., FieldElem inside the pool itself being dropped
+    /// at thread exit).
+    static IN_POOL_DROP: std::cell::Cell<bool> = std::cell::Cell::new(false);
+}
+
+/// Plan v10 task 08: auto-recycle on drop. Catches FieldElems dropped
+/// by ordinary scope exit (e.g. a temporary in `merge_owned`'s
+/// Greater branch that's pushed into out_coeffs but later dropped
+/// when out_coeffs is dropped). Without this, only the explicit
+/// `pool_return` paths recycle.
+impl Drop for FieldElem {
+    fn drop(&mut self) {
+        // Avoid re-entry: when the pool itself is dropping its
+        // contents (thread exit), don't push back to the pool.
+        if IN_POOL_DROP.with(|c| c.get()) {
+            return;
+        }
+        // Only pool if size is bounded and the buffer is non-trivial.
+        let _ = FIELDELEM_POOL.try_with(|pool| {
+            if let Ok(mut p) = pool.try_borrow_mut() {
+                if p.len() < FIELDELEM_POOL_CAP {
+                    // Move out our value via std::mem::replace with a
+                    // zero Integer (which doesn't allocate beyond
+                    // mpz_t struct itself).
+                    let val = std::mem::replace(&mut self.value, rug::Integer::new());
+                    p.push(FieldElem { value: val });
+                }
+            }
+        });
+    }
 }
 
 impl PartialEq for FieldElem {
@@ -175,12 +254,15 @@ impl PrimeField {
     }
 
     pub fn add(&self, a: &FieldElem, b: &FieldElem) -> FieldElem {
-        let mut s = Integer::with_capacity(self.result_bits);
-        s.assign(&a.value + &b.value);
-        if s >= *self.prime {
-            s -= &*self.prime;
+        // Plan v10 task 08: pull a recycled FieldElem (or fresh) from
+        // the pool, assign in place. Avoids `Integer::with_capacity`
+        // allocation of a new limb buffer per call.
+        let mut out = FieldElem::pool_take_or_default(self.result_bits as u32);
+        out.value.assign(&a.value + &b.value);
+        if out.value >= *self.prime {
+            out.value -= &*self.prime;
         }
-        FieldElem::new_unchecked(s)
+        out
     }
 
     pub fn add_assign<B: std::borrow::Borrow<FieldElem>>(&self, a: &mut FieldElem, b: B) {
@@ -197,12 +279,12 @@ impl PrimeField {
     }
 
     pub fn sub(&self, a: &FieldElem, b: &FieldElem) -> FieldElem {
-        let mut r = Integer::with_capacity(self.result_bits);
-        r.assign(&a.value - &b.value);
-        if r.cmp0() == std::cmp::Ordering::Less {
-            r += &*self.prime;
+        let mut out = FieldElem::pool_take_or_default(self.result_bits as u32);
+        out.value.assign(&a.value - &b.value);
+        if out.value.cmp0() == std::cmp::Ordering::Less {
+            out.value += &*self.prime;
         }
-        FieldElem::new_unchecked(r)
+        out
     }
 
     pub fn sub_assign(&self, a: &mut FieldElem, b: &FieldElem) {
@@ -213,10 +295,10 @@ impl PrimeField {
     }
 
     pub fn mul(&self, a: &FieldElem, b: &FieldElem) -> FieldElem {
-        let mut p = Integer::with_capacity(self.product_bits);
-        p.assign(&a.value * &b.value);
-        p %= &*self.prime;
-        FieldElem::new_unchecked(p)
+        let mut out = FieldElem::pool_take_or_default(self.product_bits as u32);
+        out.value.assign(&a.value * &b.value);
+        out.value %= &*self.prime;
+        out
     }
 
     pub fn mul_assign(&self, a: &mut FieldElem, b: &FieldElem) {
@@ -229,21 +311,25 @@ impl PrimeField {
     /// allocation per merged-term in geobucket cascades — that path was
     /// the dominant cost on `inTest`'s dense reductions (26.7 s of
     /// `add_poly` cascade per ~30 s reduction).
+    /// Plan v10 task 08: also pool-returns `b` so its mpz_t buffer
+    /// can be recycled by future `pool_take_or_default` calls.
     #[inline]
     pub fn add_owned(&self, mut a: FieldElem, b: FieldElem) -> FieldElem {
-        a.value += b.value;
+        a.value += &b.value;
         if a.value >= *self.prime {
             a.value -= &*self.prime;
         }
+        b.pool_return();
         a
     }
 
     #[inline]
     pub fn sub_owned(&self, mut a: FieldElem, b: FieldElem) -> FieldElem {
-        a.value -= b.value;
+        a.value -= &b.value;
         if a.value.cmp0() == std::cmp::Ordering::Less {
             a.value += &*self.prime;
         }
+        b.pool_return();
         a
     }
 
@@ -251,13 +337,30 @@ impl PrimeField {
     #[inline]
     pub fn neg_owned(&self, mut a: FieldElem) -> FieldElem {
         if a.value.cmp0() != std::cmp::Ordering::Equal {
-            // a = prime - a (in place)
-            a.value = &*self.prime - a.value;
+            // a = prime - a (in place). With FieldElem now Drop-impled,
+            // we can't move-out of `a.value`; use std::mem::replace
+            // to extract the Integer, do the arithmetic, store back.
+            let old = std::mem::replace(&mut a.value, rug::Integer::new());
+            a.value = &*self.prime - old;
         }
         a
     }
 
     pub fn neg(&self, a: &FieldElem) -> FieldElem {
+        if a.value.cmp0() == std::cmp::Ordering::Equal {
+            self.zero()
+        } else {
+            let mut out = FieldElem::pool_take_or_default(self.result_bits as u32);
+            out.value.assign(&*self.prime - &a.value);
+            out
+        }
+    }
+
+    /// Plan v10 task 08: original (allocating) variant of `neg`. Kept
+    /// for the rare path where the pool's correctness is in question.
+    /// Currently unused; safe to remove once pool semantics validated.
+    #[allow(dead_code)]
+    pub(crate) fn neg_alloc(&self, a: &FieldElem) -> FieldElem {
         if a.value.cmp0() == std::cmp::Ordering::Equal {
             self.zero()
         } else {

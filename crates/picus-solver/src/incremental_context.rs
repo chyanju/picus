@@ -7,22 +7,20 @@
 //! is hashed; matching cache reuses the prior split-GB and only encodes
 //! the per-query disequality (Rabinowitsch polynomial).
 //!
-//! Soundness rests on the existing `Ideal::extend_with_cancel`
-//! correctness (Plan v6): adding a generator to a reduced GB and
-//! re-running incremental Buchberger yields the same final GB as
-//! recomputing on the union. Per-query Rabinowitsch is the ONLY
-//! polynomial that differs between cache-hit calls; we add it via
-//! `split_gb_extend_cancel` and run `split_find_zero_cancel` on the
-//! result. Equivalent to `solve_encoded_with_cancel(constraints +
-//! rabinowitsch)`.
+//! Plan v10 task 02 — sub-iter resumable cache: the IncrementalGB
+//! engine exposes `run_only` / `set_cancel_token` / `is_quiescent`
+//! primitives (see `crate::ff::buchberger`) that LET the cache cross
+//! call boundaries. The drive_partial fixpoint here keeps an in-flight
+//! `IncrementalGB` per partition so the open S-pair queue isn't lost
+//! when one solve call's cancel-budget expires. Used as a fallback
+//! ONLY when the fast-path `split_gb_cancel` build is cancelled —
+//! circuits where the build fits in budget (e.g. `modulusagainst2p`)
+//! continue to use the old fast path with no overhead.
 //!
-//! KPI motivation (Plan v9 task 01 diagnosis): on `inTest`, picus's
-//! DPVL driver makes 2-3 `solve_encoded` calls per run, ALL with the
-//! same constraint-side digest. Each call independently rebuilds the
-//! split-GB on a 280-poly basis-1 (~30 s). This cache turns calls 2..N
-//! into per-query incremental updates (~10 s each), bringing `inTest`
-//! under the 60 s gate. On `modulusagainst2p` (where 24 of 25 calls
-//! repeat the same digest), the cache is even more impactful.
+//! KPI motivation (Plan v9 task 01 diagnosis): on `modulusagainst2p`,
+//! 24 of 25 calls share the same digest; cache turns these into per-
+//! query incremental updates. Plan v10 added resumability for circuits
+//! where one budget can't even build the cache.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -32,7 +30,9 @@ use num_bigint::BigUint;
 use crate::bitprop::{BitProp, BitPropState};
 use crate::core::{populate_bitprop, SolveOutcome};
 use crate::encoder::{encode, ConstraintSystem};
-use crate::ideal::Ideal;
+use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
+use crate::ff::monomial::MonomialOrder;
+use crate::ideal::{interreduce_basis, ring_for_order, Ideal};
 use crate::model;
 use crate::poly::{FfPolyRing, Poly};
 use crate::split_gb::{
@@ -56,6 +56,23 @@ pub struct CachedBase {
     pub digest: u64,
 }
 
+/// Plan v10 task 02 — partial GB build state preserved across solve
+/// calls. Used as a fallback when the fast-path `split_gb_cancel`
+/// rebuild is cancelled mid-build; further calls with matching digest
+/// resume via `drive_partial` keeping an in-flight `IncrementalGB`
+/// per partition so the open S-pair queue isn't lost.
+struct PartialBuild {
+    digest: u64,
+    poly_ring: Arc<FfPolyRing>,
+    var_map: HashMap<String, usize>,
+    constraint_polys: Vec<Poly>,
+    bitsum_polys: Vec<Poly>,
+    bit_prop_state: BitPropState,
+    inflight: Vec<IncrementalGB>,
+    pending: Vec<Vec<Poly>>,
+    contains_memo: std::collections::HashSet<(u64, usize)>,
+}
+
 #[derive(Default)]
 pub struct IncrementalSolverContext {
     cached_base: Option<CachedBase>,
@@ -63,47 +80,85 @@ pub struct IncrementalSolverContext {
     /// First call goes through the stateless path; we only build the
     /// cache on a SUBSEQUENT call whose digest matches the previous
     /// call's. This avoids paying the cache-build cost on circuits
-    /// where every DPVL signal query has a different constraint side
-    /// (e.g. `test-rollup-tx-states` — 14 calls, 14 distinct digests),
-    /// while still amortizing on stuck-signal circuits (e.g.
-    /// `modulusagainst2p` — 25 calls, 24 same-digest streak).
+    /// where every DPVL signal query has a different constraint side.
     last_digest: Option<u64>,
+    /// Plan v10 task 02: in-flight partial GB build saved from a
+    /// previous cancelled call. Resumed on the next call with the
+    /// same digest.
+    partial_build: Option<PartialBuild>,
 }
 
 impl IncrementalSolverContext {
     pub fn new() -> Self {
-        Self { cached_base: None, last_digest: None }
+        Self {
+            cached_base: None,
+            last_digest: None,
+            partial_build: None,
+        }
     }
 
     pub fn invalidate(&mut self) {
         self.cached_base = None;
+        self.partial_build = None;
     }
 
-    /// Solve a query against the (possibly cached) base. The query's
-    /// constraint side is digested; on hit, only the per-query
-    /// disequality (Rabinowitsch poly) is encoded fresh and the
-    /// cached split-GB is incrementally extended. On miss, the cache
-    /// is rebuilt.
     pub fn solve(&mut self, cs: &ConstraintSystem, cancel: &CancelToken) -> SolveOutcome {
         let stats_on = crate::profile::gb_stats_enabled();
         let digest = digest_constraint_side(cs);
 
-        // Plan v9 task 03 refinement: cache lazily.
         let cache_matches = matches!(&self.cached_base, Some(c) if c.digest == digest);
+        let partial_matches = matches!(&self.partial_build, Some(p) if p.digest == digest);
         let prev_digest_matches = self.last_digest == Some(digest);
-        let should_build_cache = !cache_matches && prev_digest_matches;
+        let should_build = !cache_matches && !partial_matches && prev_digest_matches;
         self.last_digest = Some(digest);
 
-        // First call (or non-repeating digest after a different one): no
-        // cache yet. Run stateless solve. Don't pay the cache-build cost
-        // on circuits where every call has a different constraint side.
-        if !cache_matches && !should_build_cache {
-            // Drop any stale cache (from a previous digest run).
+        // First-time digest with no prior repeats: skip the cache-build
+        // cost (which can be wasted on circuits where every DPVL signal
+        // has a different constraint side).
+        if !cache_matches && !partial_matches && !should_build {
             self.cached_base = None;
+            self.partial_build = None;
             return stateless_solve(cs, cancel);
         }
 
-        if !cache_matches {
+        // Resume an in-flight partial build (Plan v10 task 02).
+        if !cache_matches && partial_matches {
+            if stats_on {
+                use std::sync::atomic::Ordering::Relaxed;
+                crate::profile::NATIVE_FF
+                    .cache_partial_resumes
+                    .fetch_add(1, Relaxed);
+            }
+            let t0 = std::time::Instant::now();
+            let mut partial = self.partial_build.take().unwrap();
+            let outcome = continue_partial(&mut partial, cancel);
+            let dt = t0.elapsed().as_nanos() as u64;
+            if stats_on {
+                use std::sync::atomic::Ordering::Relaxed;
+                crate::profile::NATIVE_FF
+                    .cache_rebuild_time_ns
+                    .fetch_add(dt, Relaxed);
+            }
+            match outcome {
+                ResumeOutcome::Complete(cached) => {
+                    if stats_on {
+                        use std::sync::atomic::Ordering::Relaxed;
+                        crate::profile::NATIVE_FF
+                            .cache_partial_completions
+                            .fetch_add(1, Relaxed);
+                    }
+                    self.cached_base = Some(cached);
+                }
+                ResumeOutcome::StillPartial => {
+                    self.partial_build = Some(partial);
+                    return SolveOutcome::Unknown;
+                }
+                ResumeOutcome::Failed => {
+                    return stateless_solve(cs, cancel);
+                }
+            }
+        } else if !cache_matches {
+            // Fresh build attempt via the fast path.
             if stats_on {
                 use std::sync::atomic::Ordering::Relaxed;
                 crate::profile::NATIVE_FF
@@ -114,7 +169,6 @@ impl IncrementalSolverContext {
             match self.rebuild_base(cs, digest, cancel) {
                 Ok(()) => {}
                 Err(()) => {
-                    // Rebuild was cancelled; fall back to stateless solve.
                     return stateless_solve(cs, cancel);
                 }
             }
@@ -125,16 +179,17 @@ impl IncrementalSolverContext {
                     .cache_rebuild_time_ns
                     .fetch_add(dt, Relaxed);
             }
+            // If the rebuild was cancelled, `rebuild_base` left
+            // `partial_build` populated for resumption.
+            if self.partial_build.is_some() && self.cached_base.is_none() {
+                return SolveOutcome::Unknown;
+            }
         } else if stats_on {
             use std::sync::atomic::Ordering::Relaxed;
-            crate::profile::NATIVE_FF
-                .cache_hits
-                .fetch_add(1, Relaxed);
+            crate::profile::NATIVE_FF.cache_hits.fetch_add(1, Relaxed);
         }
 
-        // Cache is now populated (rebuild succeeded or it was already there).
         let cached = self.cached_base.as_ref().expect("cache must be built");
-
         let t0 = std::time::Instant::now();
         let outcome = solve_with_cached(cached, cs, cancel);
         if stats_on {
@@ -147,26 +202,19 @@ impl IncrementalSolverContext {
         outcome
     }
 
-    /// Rebuild the cache from `cs`'s constraint side. Returns Err on
-    /// cancellation, leaving the cache cleared.
+    /// Build the cache via the fast path (`split_gb_cancel`). On
+    /// cancellation, save a `PartialBuild` so the next solve call with
+    /// matching digest can resume via `drive_partial` (Plan v10
+    /// sub-iter resumable cache).
     fn rebuild_base(
         &mut self,
         cs: &ConstraintSystem,
         digest: u64,
         cancel: &CancelToken,
     ) -> Result<(), ()> {
-        // Drop any previous cache before building a new one.
         self.cached_base = None;
+        self.partial_build = None;
 
-        // Encode with disequalities cleared but a placeholder kept so
-        // the witness var `__w_diseq_0` is allocated in `var_map`.
-        // The placeholder Rabinowitsch poly is dropped from `polynomials`
-        // so the cached split-GB is on constraint-side only.
-        //
-        // Why placeholder: `encode` allocates `__w_diseq_0` only when
-        // `disequalities.is_empty() == false`. The cached `var_map`
-        // must contain it so per-query Rabinowitsch encoding (using
-        // the cached `var_map`) finds it.
         let mut cs_for_cache = ConstraintSystem {
             prime: cs.prime.clone(),
             equalities: cs.equalities.clone(),
@@ -175,8 +223,6 @@ impl IncrementalSolverContext {
             add_field_polys: cs.add_field_polys,
             bitsums: cs.bitsums.clone(),
         };
-        // `cs.assignments[0] = (x0, 1)` is added by `query_to_constraint_system`,
-        // but a defensive insert if cs.assignments is empty.
         if cs_for_cache
             .assignments
             .iter()
@@ -192,33 +238,13 @@ impl IncrementalSolverContext {
             Ok(e) => e,
             Err(_) => return Err(()),
         };
-
-        // Drop the placeholder Rabinowitsch poly. The encoder appends
-        // it AFTER equalities + assignments, so it's at index
-        // `n_eq + n_ass` (after filtering of zero polys, which is
-        // also done for equalities and assignments). The simplest way
-        // to drop it accurately is to re-encode WITHOUT disequalities
-        // and use those polynomials. But that loses the witness var
-        // allocation. Compromise: encode with the placeholder, then
-        // re-encode without it for the polynomials, but reuse the
-        // first encode's poly_ring/var_map.
-        //
-        // Even simpler: just truncate by `n_diseq=1`. The Rabinowitsch
-        // is the LAST among equality/assignment/Rabinowitsch polys
-        // (bitsums are kept separate).
-        //
-        // Robustness: we drop the last poly equal to the encoded
-        // placeholder Rabinowitsch. It's the LAST entry pushed before
-        // bitsum encoding in `encode`.
         if !encoded.polynomials.is_empty() {
             encoded.polynomials.pop();
         }
-
         if cancel.is_cancelled() {
             return Err(());
         }
 
-        // Build l_gens / nl_gens for split_gb_cancel (mirrors core.rs).
         let nl_gens: Vec<Poly> = encoded
             .polynomials
             .iter()
@@ -237,45 +263,269 @@ impl IncrementalSolverContext {
         let mut bit_prop = BitProp::new(&encoded.poly_ring);
         populate_bitprop(&encoded.poly_ring, &encoded.polynomials, &mut bit_prop);
 
-        let split_basis = match split_gb_cancel(
+        // Fast-path build. On cancel, `split_gb_cancel` returns
+        // `Cancelled` and we transition to the resumable path.
+        match split_gb_cancel(
             &encoded.poly_ring,
-            vec![l_gens, nl_gens],
+            vec![l_gens.clone(), nl_gens.clone()],
             &mut bit_prop,
             cancel,
         ) {
-            Ok(b) => b,
-            Err(_) => return Err(()),
-        };
-
-        let split_gb_owned: Vec<Vec<Poly>> = split_basis
-            .into_iter()
-            .map(|ideal| {
-                ideal
-                    .basis
-                    .iter()
-                    .map(|p| encoded.poly_ring.ring.clone_el(p))
-                    .collect()
-            })
-            .collect();
-
-        let bit_prop_state = bit_prop.to_state();
-
-        self.cached_base = Some(CachedBase {
-            poly_ring: Arc::new(encoded.poly_ring),
-            var_map: encoded.var_map,
-            constraint_polys: encoded.polynomials,
-            bitsum_polys: encoded.bitsum_polys,
-            split_gb_owned,
-            bit_prop_state,
-            digest,
-        });
-        Ok(())
+            Ok(split_basis) => {
+                let split_gb_owned: Vec<Vec<Poly>> = split_basis
+                    .into_iter()
+                    .map(|ideal| {
+                        ideal
+                            .basis
+                            .iter()
+                            .map(|p| encoded.poly_ring.ring.clone_el(p))
+                            .collect()
+                    })
+                    .collect();
+                let bit_prop_state = bit_prop.to_state();
+                self.cached_base = Some(CachedBase {
+                    poly_ring: Arc::new(encoded.poly_ring),
+                    var_map: encoded.var_map,
+                    constraint_polys: encoded.polynomials,
+                    bitsum_polys: encoded.bitsum_polys,
+                    split_gb_owned,
+                    bit_prop_state,
+                    digest,
+                });
+                Ok(())
+            }
+            Err(_) => {
+                // Plan v10 task 02: build was cancelled. Save the
+                // encoding artifacts + initial generators as a
+                // PartialBuild so the next call can resume via
+                // `drive_partial`. The first attempt's S-pair work
+                // is lost (the IGBs inside split_gb_cancel are
+                // dropped), but subsequent resume calls accumulate
+                // progress.
+                let ring = ring_for_order(&encoded.poly_ring, MonomialOrder::DegRevLex);
+                let cfg = BuchbergerConfig {
+                    order: MonomialOrder::DegRevLex,
+                    cancel_token: None,
+                    abort_on_trivial: true,
+                    use_f4: crate::ff::buchberger::use_f4_default(),
+                };
+                let inflight = vec![
+                    IncrementalGB::new(ring.clone(), cfg.clone()),
+                    IncrementalGB::new(ring, cfg),
+                ];
+                let pending = vec![l_gens, nl_gens];
+                let bit_prop_state = bit_prop.to_state();
+                self.partial_build = Some(PartialBuild {
+                    digest,
+                    poly_ring: Arc::new(encoded.poly_ring),
+                    var_map: encoded.var_map,
+                    constraint_polys: encoded.polynomials,
+                    bitsum_polys: encoded.bitsum_polys,
+                    bit_prop_state,
+                    inflight,
+                    pending,
+                    contains_memo: std::collections::HashSet::new(),
+                });
+                // Returning Ok here lets the caller know the rebuild
+                // attempt is captured (in partial_build); the solve()
+                // entry point will return Unknown for this query.
+                Ok(())
+            }
+        }
     }
 }
 
-/// Encode just the per-query Rabinowitsch polynomial(s) using a
-/// cached `poly_ring` and `var_map`. Returns one polynomial per
-/// disequality.
+enum ResumeOutcome {
+    Complete(CachedBase),
+    StillPartial,
+    Failed,
+}
+
+/// Resume a partial build. Re-attaches the new cancel token to all
+/// in-flight `IncrementalGB`s, runs the fixpoint loop. On completion,
+/// produces a `CachedBase`. On further cancellation, the partial state
+/// is updated in place and `StillPartial` is returned.
+fn continue_partial(partial: &mut PartialBuild, cancel: &CancelToken) -> ResumeOutcome {
+    for igb in partial.inflight.iter_mut() {
+        igb.set_cancel_token(Some(cancel.clone()));
+    }
+    let poly_ring: &FfPolyRing = &partial.poly_ring;
+    let k = partial.inflight.len();
+    let mut bit_prop = BitProp::from_state(poly_ring, partial.bit_prop_state.clone());
+
+    let max_fixpoint_iters = (k * 64).max(256);
+    let mut fixpoint_iter: u64 = 0;
+    loop {
+        if cancel.is_cancelled() {
+            partial.bit_prop_state = bit_prop.to_state();
+            return ResumeOutcome::StillPartial;
+        }
+        fixpoint_iter += 1;
+        if fixpoint_iter > max_fixpoint_iters as u64 {
+            log::warn!("continue_partial: fixpoint cap reached");
+            break;
+        }
+
+        let mut any_extend_work = false;
+        for i in 0..k {
+            if cancel.is_cancelled() {
+                partial.bit_prop_state = bit_prop.to_state();
+                return ResumeOutcome::StillPartial;
+            }
+            let pending_i = std::mem::take(&mut partial.pending[i]);
+            let has_pending = !pending_i.is_empty();
+            let has_open = !partial.inflight[i].is_quiescent();
+            if !has_pending && !has_open {
+                continue;
+            }
+            any_extend_work = true;
+            let surviving: Vec<Poly> = if has_pending {
+                let basis = partial.inflight[i].basis();
+                if basis.is_empty() {
+                    pending_i
+                } else {
+                    let basis_refs: Vec<&Poly> = basis.iter().collect();
+                    let ring = poly_ring.ctx();
+                    pending_i
+                        .into_iter()
+                        .map(|p| p.reduce_by_refs_cancel(&basis_refs, ring, cancel))
+                        .filter(|p| !p.is_zero())
+                        .collect()
+                }
+            } else {
+                Vec::new()
+            };
+            if cancel.is_cancelled() {
+                partial.pending[i] = surviving;
+                partial.bit_prop_state = bit_prop.to_state();
+                return ResumeOutcome::StillPartial;
+            }
+
+            let res = if !surviving.is_empty() {
+                partial.inflight[i].add_generators(surviving)
+            } else {
+                partial.inflight[i].run_only()
+            };
+            if res.is_err() {
+                partial.bit_prop_state = bit_prop.to_state();
+                return ResumeOutcome::StillPartial;
+            }
+        }
+
+        if cancel.is_cancelled() {
+            partial.bit_prop_state = bit_prop.to_state();
+            return ResumeOutcome::StillPartial;
+        }
+        if partial.inflight.iter().any(|igb| igb.is_trivial()) {
+            break;
+        }
+
+        let split_basis: Vec<Ideal> = partial
+            .inflight
+            .iter()
+            .map(|igb| Ideal::from_gb(poly_ring, igb.basis()))
+            .collect();
+        for j in 0..k {
+            for p in &split_basis[j].basis {
+                partial.contains_memo.insert((p.content_hash(), j));
+            }
+        }
+
+        let mut to_propagate =
+            bit_prop.get_bit_equalities_with_cancel(&split_basis, Some(cancel));
+        if cancel.is_cancelled() {
+            partial.bit_prop_state = bit_prop.to_state();
+            return ResumeOutcome::StillPartial;
+        }
+        for b in &split_basis {
+            for p in &b.basis {
+                to_propagate.push(poly_ring.ring.clone_el(p));
+            }
+        }
+
+        let mut any_new = false;
+        for p in &to_propagate {
+            if cancel.is_cancelled() {
+                partial.bit_prop_state = bit_prop.to_state();
+                return ResumeOutcome::StillPartial;
+            }
+            let p_hash = p.content_hash();
+            for j in 0..k {
+                if admit(poly_ring, j, p) {
+                    let key = (p_hash, j);
+                    if partial.contains_memo.contains(&key) {
+                        continue;
+                    }
+                    let in_basis = split_basis[j].contains_with_cancel(p, cancel);
+                    if in_basis {
+                        partial.contains_memo.insert(key);
+                    } else {
+                        partial.pending[j].push(poly_ring.ring.clone_el(p));
+                        any_new = true;
+                        partial.contains_memo.insert(key);
+                    }
+                }
+            }
+        }
+
+        if !any_new && !any_extend_work {
+            break;
+        }
+        if !any_new {
+            continue;
+        }
+    }
+
+    if partial.inflight.iter().all(|igb| igb.is_quiescent())
+        && partial.pending.iter().all(|p| p.is_empty())
+    {
+        // Build the CachedBase. Take ownership of all the partial's
+        // fields via std::mem::replace.
+        let dummy_partial = PartialBuild {
+            digest: 0,
+            poly_ring: partial.poly_ring.clone(),
+            var_map: HashMap::new(),
+            constraint_polys: Vec::new(),
+            bitsum_polys: Vec::new(),
+            bit_prop_state: partial.bit_prop_state.clone(),
+            inflight: Vec::new(),
+            pending: Vec::new(),
+            contains_memo: std::collections::HashSet::new(),
+        };
+        let owned = std::mem::replace(partial, dummy_partial);
+        match finalize_partial(owned) {
+            Some(c) => ResumeOutcome::Complete(c),
+            None => ResumeOutcome::Failed,
+        }
+    } else {
+        partial.bit_prop_state = bit_prop.to_state();
+        ResumeOutcome::StillPartial
+    }
+}
+
+/// Convert a quiescent partial build into a `CachedBase`. Performs a
+/// final inter-reduce on each partition's basis to produce the
+/// canonical reduced GB.
+fn finalize_partial(partial: PartialBuild) -> Option<CachedBase> {
+    let cancel = CancelToken::none();
+    let poly_ring: &FfPolyRing = &partial.poly_ring;
+    let mut split_gb_owned: Vec<Vec<Poly>> = Vec::with_capacity(partial.inflight.len());
+    for igb in partial.inflight.iter() {
+        let basis = igb.basis();
+        let reduced = interreduce_basis(poly_ring, basis, &cancel);
+        split_gb_owned.push(reduced);
+    }
+    Some(CachedBase {
+        poly_ring: partial.poly_ring,
+        var_map: partial.var_map,
+        constraint_polys: partial.constraint_polys,
+        bitsum_polys: partial.bitsum_polys,
+        split_gb_owned,
+        bit_prop_state: partial.bit_prop_state,
+        digest: partial.digest,
+    })
+}
+
 fn encode_query_disequalities(
     cs: &ConstraintSystem,
     poly_ring: &FfPolyRing,
@@ -301,7 +551,6 @@ fn encode_query_disequalities(
     Ok(out)
 }
 
-/// Run a solve against a cached base + per-query disequality.
 fn solve_with_cached(
     cached: &CachedBase,
     cs: &ConstraintSystem,
@@ -309,13 +558,11 @@ fn solve_with_cached(
 ) -> SolveOutcome {
     let poly_ring: &FfPolyRing = &cached.poly_ring;
 
-    // Encode the per-query Rabinowitsch poly(s).
     let query_polys = match encode_query_disequalities(cs, poly_ring, &cached.var_map) {
         Ok(polys) => polys,
         Err(_) => return SolveOutcome::Unknown,
     };
 
-    // Reconstruct lifetime-bound Ideals from owned cached polys.
     let starting: Vec<Ideal> = cached
         .split_gb_owned
         .iter()
@@ -328,8 +575,6 @@ fn solve_with_cached(
         })
         .collect();
 
-    // Per-query polys go to the appropriate split via admit. Rabinowitsch
-    // is degree 2 → admit(0, ...) is false → goes to basis 1.
     let k = starting.len();
     let mut new_polys_per_split: Vec<Vec<Poly>> = (0..k).map(|_| Vec::new()).collect();
     for p in &query_polys {
@@ -347,7 +592,6 @@ fn solve_with_cached(
         }
     }
 
-    // Reconstruct BitProp from the cached state for this call.
     let mut bit_prop = BitProp::from_state(poly_ring, cached.bit_prop_state.clone());
 
     let new_basis = match split_gb_extend_cancel(
@@ -361,15 +605,12 @@ fn solve_with_cached(
         Err(_) => return SolveOutcome::Unknown,
     };
 
-    // Whole-ring shortcut.
     if new_basis.iter().any(|b| b.is_whole_ring()) {
-        return SolveOutcome::Unsat((0..cached.constraint_polys.len() + query_polys.len()).collect());
+        return SolveOutcome::Unsat(
+            (0..cached.constraint_polys.len() + query_polys.len()).collect(),
+        );
     }
 
-    // Run split_find_zero. Note that for SAT-model verification we
-    // need the FULL polys list (constraints + per-query Rabinowitsch),
-    // since `split_find_zero_cancel` uses these as the `orig_polys` for
-    // conflict detection.
     let outcome = match split_find_zero_cancel(poly_ring, new_basis, &mut bit_prop, cancel) {
         Ok(SplitFindZeroOutcome::Sat(point)) => {
             let mut model_map = HashMap::new();
@@ -379,7 +620,6 @@ fn solve_with_cached(
                     model_map.insert(poly_ring.var_names[idx].clone(), field.to_biguint(val));
                 }
             }
-            // Verify model against the FULL system (constraints + Rabinowitsch).
             let mut full_polys: Vec<Poly> = cached
                 .constraint_polys
                 .iter()
@@ -404,8 +644,6 @@ fn solve_with_cached(
     outcome
 }
 
-/// Stateless-equivalent solve, used as a fallback if the cache cannot
-/// be populated (cancelled mid-rebuild). Calls into the existing path.
 fn stateless_solve(cs: &ConstraintSystem, cancel: &CancelToken) -> SolveOutcome {
     match encode(cs) {
         Ok(encoded) => crate::core::solve_encoded_with_cancel(&encoded, cancel),
@@ -413,8 +651,6 @@ fn stateless_solve(cs: &ConstraintSystem, cancel: &CancelToken) -> SolveOutcome 
     }
 }
 
-/// Hash the constraint SIDE of a `ConstraintSystem`. Excludes
-/// `disequalities` (the per-query part).
 pub fn digest_constraint_side(cs: &ConstraintSystem) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -446,7 +682,6 @@ pub fn digest_constraint_side(cs: &ConstraintSystem) -> u64 {
     h.finish()
 }
 
-// Allow unused import in some contexts (BigUint via from(1u32)).
 #[allow(dead_code)]
 fn _unused() -> BigUint {
     BigUint::from(0u32)
