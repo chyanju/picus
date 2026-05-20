@@ -1,34 +1,26 @@
-//! Plan v10 Phase 4 — F4-lite degree-batched matrix reduction.
+//! F4-lite: degree-batched matrix reduction (Faugère 1999).
 //!
-//! Buchberger's algorithm processes one S-pair at a time: build the
-//! S-polynomial, run a `reduce_by_refs` cascade against the basis,
-//! produce one new generator. On dense circuits like `inTest`, late-stage
-//! S-polynomials have thousands of terms and the per-pair geobucket
-//! cascade exceeds 60 s on its own — making per-call cancel budgets
-//! useless.
+//! Where classical Buchberger processes one S-pair at a time, F4
+//! processes a batch of same-sugar S-pairs together:
 //!
-//! F4 (Faugère 1999) processes a *batch* of same-sugar S-pairs together:
+//! 1. Build the S-polynomials for the whole batch.
+//! 2. Symbolic preprocessing: any monomial appearing in some S-poly
+//!    that is divisible by an active basis leading term is covered by
+//!    adding a reducer row `(m / LT(b)) * b` to the matrix. Iterate
+//!    until no uncovered divisible monomial remains.
+//! 3. Build a sparse matrix whose rows are the S-polys plus the reducer
+//!    rows, and whose columns are the union of all monomials appearing.
+//! 4. Sparse row-echelon over GF(p).
+//! 5. Each reduced S-poly row whose leading term is not a reducer LT
+//!    (i.e. not divisible by any active basis LT) becomes a new GB
+//!    generator.
 //!
-//! 1. Build S-polynomials for the whole batch.
-//! 2. Symbolic preprocessing: every monomial appearing in any S-poly
-//!    that is divisible by some active basis LT is "covered" by adding
-//!    a reducer row `(m / LT(b)) * b` to the matrix. This is iterated
-//!    until no uncovered divisible monomials remain.
-//! 3. Build a sparse matrix: rows = S-polys + reducer rows, columns =
-//!    the union of all monomials appearing.
-//! 4. Sparse row-echelon reduce over GF(p).
-//! 5. Each reduced S-poly row whose LT is *not* a reducer LT (i.e. not
-//!    divisible by any active basis LT) is a new GB generator.
+//! The per-pair geobucket merge is amortised into a single sparse
+//! factorisation; shared monomials in the batch share reducer rows.
 //!
-//! The win on dense circuits: the per-pair geobucket merge cost is
-//! amortized into a single sparse linear-algebra factorization, where
-//! shared monomials in the batch share their reducer rows. Empirically
-//! ~10× faster on the kind of late-stage S-pairs that block `inTest`.
-//!
-//! This is a "lite" implementation: no F4 trace (don't reuse matrices
-//! across batches), no advanced selection strategy (just lowest-sugar),
-//! no GBLA-style structured matrix layout. Correctness first, then
-//! performance.
+//! Implementation scope. No matrix reuse across batches; selection
+//! strategy is lowest-sugar; layout is plain CSR-style rather than a
+//! structured F4 layout.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

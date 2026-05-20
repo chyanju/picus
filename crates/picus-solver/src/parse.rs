@@ -245,15 +245,16 @@ pub fn extract_linear_monomials(
 /// Returns the list of detected bitsums and the *remaining* polynomial
 /// (i.e. `p` minus the recognised bitsums, kept as a single polynomial).
 ///
-/// Algorithm (faithfully ported from cvc5's `parse::bitSums`):
+/// Algorithm:
 ///   1. Extract linear monomials from `p`.
-///   2. Group them by the **lowest bit** of their coefficient (i.e. by the
-///      candidate `coeff` after dividing out the power of 2).  For each
-///      candidate `coeff = c`, we try to greedily build the longest chain
-///      `c, 2c, 4c, ..., 2^k c` whose linear monomials are present.
-///   3. Among multiple candidate coeffs, prefer the one whose first bit is
-///      a variable from `bits_hint` (priority queue, as cvc5 does).
-///   4. Remove the consumed linear monomials, repeat until no more bitsums.
+///   2. Group them by the lowest bit of their coefficient (i.e. by the
+///      candidate `coeff` after dividing out the power of 2). For each
+///      candidate `coeff = c`, greedily build the longest chain
+///      `c, 2c, 4c, ..., 2^k * c` whose linear monomials are present.
+///   3. Among multiple candidate coefficients, a priority queue prefers
+///      the one whose first bit is a variable from `bits_hint`.
+///   4. Remove the consumed linear monomials and repeat until no more
+///      bitsums can be extracted.
 pub fn bit_sums(
     pr: &FfPolyRing,
     p: &Poly,

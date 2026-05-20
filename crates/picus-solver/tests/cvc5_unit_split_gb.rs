@@ -1,21 +1,16 @@
-//! Ports of cvc5's `theory_ff_split_gb_black.cpp` unit tests.
+//! Randomised Split-GB property tests over GF(11) with 6 variables.
 //!
-//! Four tests, all exercising the Split-GB solver with random polynomials
-//! over GF(11), 6 variables:
+//!   * `rand_sat`   — generate random polys that vanish on a known
+//!                    root → SAT.
+//!   * `rand_unsat` — generate random polys (no planted root)
+//!                    → mostly UNSAT.
+//!   * `gb_empty`   — sanity on `Ideal::from_gb(empty)`.
+//!   * `gb_rand`    — compare `Ideal` against repeated Buchberger runs.
 //!
-//!   * `RandSat`  — generate random polys that vanish on a known root → SAT.
-//!   * `RandUnsat` — generate random polys (no planted root) → mostly UNSAT.
-//!   * `GbEmpty`  — sanity on `Ideal::from_gb(empty)`.
-//!   * `GbRand`   — compare `Ideal` against repeated Buchberger runs.
-//!
-//! We use `oorandom` (already a workspace dep) with a fixed seed for
-//! determinism.  Exact bit-for-bit match with cvc5's `Random` is not a
-//! goal — we want *structural* parity (same input shape, same solver
-//! outcome up to model equivalence).
-//!
-//! In each SAT iteration we verify the returned model satisfies all
-//! generators.  In each UNSAT iteration we verify at least one basis
-//! becomes the whole ring after `split_gb`.
+//! Uses `oorandom` with a fixed seed for determinism. Each SAT
+//! iteration verifies the returned model satisfies all generators;
+//! each UNSAT iteration verifies at least one basis becomes the whole
+//! ring after `split_gb`.
 
 use picus_solver::field::{FfEl, FfField};
 use picus_solver::poly::{FfPolyRing, Poly};
@@ -92,7 +87,7 @@ fn rand_poly_with_root(
 }
 
 // =============================================================================
-// RandSat  — mirrors cvc5 lines 85-131
+// RandSat
 // =============================================================================
 //
 // Generate 50 systems of ~9 polys each (6 vars, degree ≤ 2, 2 terms per poly)
@@ -141,7 +136,7 @@ fn test_rand_sat() {
 }
 
 // =============================================================================
-// RandUnsat  — mirrors cvc5 lines 133-172
+// RandUnsat
 // =============================================================================
 //
 // Generate 40 systems of ~9 polys (degree ≤ 2, 1 term per poly — i.e.
@@ -184,7 +179,7 @@ fn test_rand_unsat() {
 }
 
 // =============================================================================
-// GbEmpty  — mirrors cvc5 lines 174-201
+// GbEmpty
 // =============================================================================
 //
 // An empty GB should:
@@ -208,7 +203,7 @@ fn test_gb_empty() {
 }
 
 // =============================================================================
-// GbRand  — mirrors cvc5 lines 203-236
+// GbRand
 // =============================================================================
 //
 // For 50 random 4-generator systems (6 vars, GF(11), degree ≤ 2, 2 terms

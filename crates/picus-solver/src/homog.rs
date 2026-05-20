@@ -1,26 +1,19 @@
-//! Homogenization helper for GB computation.
+//! Homogenization helpers for GB computation.
 //!
-//! This module provides the lift / homogenize / dehom primitives needed by
-//! [`crate::gb_homog::compute_gb_by_homog`], which mirrors CoCoA's
-//! `myGBasisByHomog` driver (`SparsePolyOps-ideal.C:819-862`).
+//! Provides the lift / homogenize / dehomogenize primitives used by
+//! [`crate::gb_homog::compute_gb_by_homog`].
 //!
-//! Background (R3 §1, §3.3, §5):
-//! * In `P = GF(p)[x_1,…,x_n]`, plain Buchberger on a *non-homogeneous* input
-//!   suffers from "sugar mis-prediction" — S-pairs are processed out of true
-//!   degree order, generating spurious high-degree intermediates (the
-//!   classical "intermediate expression swell" of the bit-decomposition
-//!   shape).
-//! * Adding a fresh variable `h` and homogenizing every input to a fixed
-//!   degree makes sugar = wdeg exactly, so S-pairs are processed in strict
-//!   ascending degree, eliminating the swell.  Dehomog (`h := 1`) is
-//!   linear-time, and the dehomog'd basis is then interreduced.
-//! * Empirically (CoCoA's primary-decomp / radical-membership), this is
-//!   ~5–50× faster on the bit-cube + bitsum + chunked-add ideals that
-//!   dominate picus's hard-eleven benchmarks.
+//! Background. Plain Buchberger on a non-homogeneous input in
+//! `P = GF(p)[x_1, ..., x_n]` suffers from sugar mis-prediction: S-pairs
+//! are processed out of true degree order, generating spurious
+//! high-degree intermediates. Adding a fresh variable `h` and
+//! homogenizing every input to a fixed degree makes sugar = weighted
+//! degree exactly, so S-pairs are processed in strict ascending degree.
+//! Dehomogenizing (`h := 1`) is linear-time, and the result is then
+//! interreduced.
 //!
-//! The Rust port is purely additive: no `Ideal`-API change, no new feanor
-//! trait.  The `ext` ring is a regular `FfPolyRing` with `n+1` variables;
-//! the extra variable `h` lives at index `n` (== `base.n_vars`).
+//! The `ext` ring is a regular [`FfPolyRing`] with `n + 1` variables;
+//! the extra variable `h` lives at index `n` (= `base.n_vars`).
 
 use crate::field::FfField;
 use crate::poly::{FfPolyRing, Poly};

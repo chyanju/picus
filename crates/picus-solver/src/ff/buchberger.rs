@@ -1,18 +1,20 @@
-//! Buchberger's algorithm and the Ideal abstraction.
+//! Buchberger's algorithm and the [`Ideal`] abstraction.
 //!
-//! Implementation notes (designed to match CoCoA's strategy from the start):
+//! Implementation notes:
 //!
-//! * **One-at-a-time S-pair processing** (D1) — pop the single lowest-sugar pair per iteration.
-//! * **`(sugar, lcm_deg, age)` ordering** for the priority queue.
-//! * **Non-strict basis deactivation** (D3) — when adding a new element, deactivate
-//!   any existing element whose leading monomial is divisible (not strictly) by the new one.
-//! * **End-only inter-reduction** (D5) — perform a single inter-reduction pass after
-//!   the main loop terminates.
-//! * **No restart heuristic** (D6) — never restart.
-//! * **DivMask** acceleration for fast divisibility rejection.
-//! * **Sugar degree** with running updates during reduction (GMNR style).
-//! * **Gebauer-Möller M-criterion + product criterion** for S-pair pruning at
-//!   pair-generation time (CoCoA `myGMInsert`, `myBuildNewPairs`).
+//! * One-at-a-time S-pair processing: the lowest-sugar pair is popped
+//!   per iteration.
+//! * Priority-queue ordering on `(sugar, lcm_deg, age)`.
+//! * Non-strict basis deactivation: when adding a new element,
+//!   deactivate any existing element whose leading monomial is
+//!   divisible (not strictly) by the new one.
+//! * End-only inter-reduction: a single pass after the main loop
+//!   terminates.
+//! * No restart heuristic.
+//! * `DivMask`-accelerated divisibility rejection.
+//! * Sugar degree with running updates during reduction.
+//! * Gebauer-Möller M-criterion and product criterion applied at
+//!   pair-generation time; B-criterion applied at basis-add time.
 
 use std::sync::Arc;
 
@@ -34,12 +36,9 @@ pub struct BuchbergerConfig {
     pub cancel_token: Option<CancelToken>,
     /// Stop early if the basis contains a nonzero constant (i.e. the ideal is the whole ring).
     pub abort_on_trivial: bool,
-    /// Plan v10 Phase 4: dispatch the inner loop to F4-lite (degree-
-    /// batched matrix reduction) instead of one-S-pair-at-a-time
-    /// geobucket reduction. Enables on dense circuits where late-stage
-    /// S-poly reductions individually exceed the per-call budget
-    /// (e.g. `inTest`). Default: gated by env var `PICUS_USE_F4=1`
-    /// while we shake out perf.
+    /// Dispatch the inner loop to F4-lite (degree-batched matrix
+    /// reduction) instead of one-S-pair-at-a-time geobucket reduction.
+    /// Default: enabled iff `PICUS_USE_F4=1` is set in the environment.
     pub use_f4: bool,
 }
 
@@ -54,10 +53,10 @@ impl Default for BuchbergerConfig {
     }
 }
 
-/// Plan v10 Phase 4: F4-lite default toggle. Returns true when
-/// `PICUS_USE_F4=1` is set. Used by `BuchbergerConfig::default` and
-/// every config-construction site so the F4 path is consistently
-/// enabled or disabled across the whole solver.
+/// F4-lite default toggle. Returns `true` iff `PICUS_USE_F4=1` is set
+/// in the environment. Used by all default `BuchbergerConfig`
+/// construction sites so the F4 path is consistently enabled or
+/// disabled across the solver.
 pub fn use_f4_default() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
@@ -197,19 +196,16 @@ pub fn interreduce_with_cancel(
         .zip(keep.iter())
         .filter_map(|(p, &k)| if k { Some(p) } else { None })
         .collect();
-    // Single-pass tail reduction (mirrors CoCoA `myFinalizeGBasis` non-HOMOG
-    // branch, TmpGReductor.C:1228-1280). After divisible-LT pruning above
-    // every surviving element's LT is incomparable to every other's, so
-    // reducing each element's tail by the others cannot re-introduce
-    // monomials that another element's LT divides — one pass is sufficient.
+    // Single-pass tail reduction. After divisible-LT pruning above,
+    // every surviving element's leading term is incomparable to every
+    // other's, so reducing each element's tail by the others cannot
+    // re-introduce monomials that some other element's LT divides —
+    // one pass suffices.
     let n = filtered.len();
     for i in 0..n {
-        // Cancel check between elements: dense bases can have tens of
-        // elements and each reduce_by_refs may itself be slow on dense
-        // polynomials, so this loop was a hot leak point for `--timeout`
-        // on circuits like `modulusagainst2p`. Surfaces the partially-
-        // interreduced basis on cancel; still valid generators of the
-        // same ideal.
+        // Cancel check between elements. On cancel, the partially
+        // inter-reduced basis is returned; it is still a valid
+        // generator set for the same ideal.
         if let Some(c) = cancel {
             if c.is_cancelled() { break; }
         }
@@ -238,18 +234,16 @@ pub fn interreduce_with_cancel(
 
 // ──────────────────── S-pair queue helpers (GM, merge) ────────────────────
 
-/// Gebauer-Möller M-criterion insertion (CoCoA `myGMInsert`,
-/// TmpGReductor.C:448-482).
+/// Gebauer-Möller M-criterion insertion.
 ///
-/// In the M-criterion a pair with a *smaller* lcm dominates pairs with
-/// larger lcms — `lcm(LT_a, LT_b)` dividing `lcm(LT_c, LT_d)` means the
-/// (a,b) pair makes (c,d) redundant. So:
-///   * If `LCM(existing) | LCM(P)`: existing dominates P, P is dropped.
-///     Special case (LCMs equal): if existing is non-coprime and P is
-///     coprime, replace existing with P. Coprime pairs get dropped by the
-///     product criterion downstream, so swapping a non-coprime owner for a
-///     coprime one for the same lcm eliminates the work entirely
-///     (CoCoA TmpGReductor.C:464-468).
+/// A pair with a smaller `lcm` dominates pairs with larger `lcm`s:
+/// `lcm(LT_a, LT_b)` dividing `lcm(LT_c, LT_d)` makes the (c, d) pair
+/// redundant. So:
+///   * If `LCM(existing) | LCM(P)`: existing dominates P, drop P.
+///     Special case (LCMs equal): if `existing` is non-coprime and P
+///     is coprime, replace `existing` with P. Coprime pairs are dropped
+///     by the product criterion downstream, so swapping in a coprime
+///     owner for the same `lcm` eliminates the work entirely.
 ///   * Else if `LCM(P) | LCM(existing)`: P dominates existing, erase
 ///     existing.
 ///
@@ -297,24 +291,22 @@ fn gm_insert(list: &mut Vec<SPair>, pair: SPair) {
     }
 }
 
-/// CoCoA Buchberger B-criterion (`myApplyBCriterion`,
-/// TmpGReductor.C:629-650). Walks `pairs` (the currently-pending S-pair
-/// queue) and erases every pair that the newly-added basis element's
-/// leading PP `new_lt` makes redundant per `GPair::BCriterion_OK`
-/// (TmpGPair.C:283-289).
+/// Buchberger B-criterion. Walks `pairs` (the currently-pending
+/// S-pair queue) and erases every pair that the newly-added basis
+/// element's leading term `new_lt` makes redundant.
 ///
-/// A pair `(i, j)` with cached `lcm = lcm(LT_i, LT_j)` is killed iff **all**
-/// three conditions hold:
-///   1. `new_lt | lcm` (DivMask prefilter, then full Monomial check),
-///   2. `lcm(LT_j, new_lt) ≠ lcm`,
-///   3. `lcm(LT_i, new_lt) ≠ lcm`.
+/// A pair `(i, j)` with cached `lcm = lcm(LT_i, LT_j)` is killed iff
+/// all three conditions hold:
+///   1. `new_lt | lcm` (DivMask prefilter, then full `Monomial` check),
+///   2. `lcm(LT_j, new_lt) != lcm`,
+///   3. `lcm(LT_i, new_lt) != lcm`.
 ///
 /// Soundness depends on the substitute pairs `(i, new)` and `(j, new)`
 /// being generated and discharged this round (or being GM-dominated by
-/// some `(m, new)` whose own obligation will be processed). picus's
-/// 2024 simplified chain criterion was unsound because it skipped
-/// conditions 2 and 3, breaking that invariant; this version is the
-/// full three-condition CoCoA form.
+/// some `(m, new)` whose own obligation will be processed). A simpler
+/// "any third element's LT divides `lcm`" chain criterion that skipped
+/// conditions 2 and 3 would break that invariant — this implementation
+/// keeps all three.
 ///
 /// The retain preserves the descending-sort invariant of `pairs`.
 fn b_criterion_kill(
@@ -385,10 +377,9 @@ fn merge_sorted_descending(dst: &mut Vec<SPair>, incoming: Vec<SPair>) {
 
 // ────────────────────────────── Buchberger ─────────────────────────────────
 
-/// Opt-in counter struct mirroring CoCoA's `myStat` (TmpGReductor.C:373).
-/// Filled unconditionally during a GB run; printed to stderr at the end of
-/// `BuchbergerState::run` only when the `PICUS_GB_STATS` environment
-/// variable is set, in the style of `PICUS_PROFILE`.
+/// Per-run engine counters. Filled unconditionally during a GB run;
+/// printed to stderr at the end of [`BuchbergerState::run`] only when
+/// the `PICUS_GB_STATS` environment variable is set.
 #[derive(Clone, Debug, Default)]
 pub struct GbEngineStats {
     pub pairs_generated: u64,
@@ -418,12 +409,9 @@ struct BuchbergerState {
     /// GB-engine counters; written unconditionally, printed only on
     /// `PICUS_GB_STATS=1`.
     stats: GbEngineStats,
-    /// Plan v9 task 09: HOMOG flag set when all initial generators
-    /// share the same total degree. CoCoA's `myDoGBasis`
-    /// (`TmpGReductor.C:680, 710-721`) runs a periodic in-loop
-    /// tail-reduction step on HOMOG inputs to keep the basis lean.
-    /// Default false; set during `add_generators` based on input
-    /// shape.
+    /// Set when every initial generator shares the same total degree.
+    /// Enables periodic in-loop tail-reduction. Set by
+    /// [`Self::add_generators`] based on input shape.
     input_is_homog: bool,
 }
 
@@ -451,20 +439,13 @@ impl BuchbergerState {
         Ok(())
     }
 
-    /// Seed the Buchberger state with a polynomials known to already be a
-    /// **reduced GB** under the current ring order. Bypasses S-pair
-    /// generation entirely: no `generate_pairs_against` is called, so
-    /// the `O(n²)` pairs (and their downstream `O(n)` GM walks each)
-    /// that `add_generators` would have produced are skipped.
+    /// Seed the Buchberger state with polynomials that are already a
+    /// reduced GB under [`Self.ring`]'s monomial order. Bypasses S-pair
+    /// generation: an already-reduced GB has no open obligations among
+    /// its own elements, so the pairs `add_generators` would generate
+    /// against the seed are guaranteed to reduce to zero.
     ///
-    /// This is the fast path used by `compute_gb_incremental_with_order`
-    /// to install a previously-computed reduced GB without paying the
-    /// pair-generation cost — those pairs are guaranteed to reduce to
-    /// zero by Buchberger's criterion (an already-reduced GB has no
-    /// open obligations among its own elements), so generating them
-    /// only to filter them out is pure overhead.
-    ///
-    /// Caller responsibilities: the input must already be a reduced GB
+    /// Caller responsibility: the input must already be a reduced GB
     /// in `self.ring.order`. No validation is performed.
     fn seed_with_reduced_basis(&mut self, basis: Vec<Polynomial>) {
         for poly in basis {
@@ -501,11 +482,9 @@ impl BuchbergerState {
         generators: Vec<Polynomial>,
         observer: &mut O,
     ) -> Result<(), SolverError> {
-        // Plan v9 task 09: detect HOMOG input. If every input generator
-        // is homogeneous w.r.t. total degree (every term in the
-        // polynomial has the same total degree), the input is HOMOG.
-        // CoCoA enables a periodic in-loop tail-reduce on HOMOG input
-        // (`TmpGReductor.C:680, 710-721`); we mirror that.
+        // Detect homogeneous input. If every generator's terms all
+        // share the same total degree, the input is homogeneous, and
+        // the main loop enables periodic in-loop tail-reduction.
         if self.basis.is_empty() {
             self.input_is_homog = generators.iter()
                 .filter(|p| !p.is_zero())
@@ -579,21 +558,21 @@ impl BuchbergerState {
     }
 
     fn generate_pairs_against(&mut self, new_idx: usize, new_lt: &Monomial, new_sugar: u32) {
-        // Algorithm (mirrors CoCoA `myBuildNewPairs` / `myGMInsert` in
-        // TmpGReductor.C:485-554):
-        //   1. For each ACTIVE earlier basis element k < new_idx, build pair
-        //      (k, new). Inactive k are skipped — under non-strict deactivation
-        //      some active m < k satisfies LT_m | LT_k, so (m, new) is also
-        //      generated and GM-dominates (k, new) anyway. Skipping inactive
-        //      avoids redundant GM walks.
-        //   2. Apply the M-criterion via `gm_insert` so a new pair is dropped
-        //      if any other new pair's LCM divides it (with the equal-LCM
-        //      coprime-replacement rule).
-        //   3. After all pairs are GM-inserted, drop coprime pairs (Buchberger
-        //      product criterion: their S-poly reduces to zero by construction).
-        //   4. Apply the B-criterion to the existing open queue using the new
-        //      poly's LT (CoCoA myApplyBCriterion).
-        //   5. Sort surviving new_pairs descending and merge into self.open.
+        // Algorithm:
+        //   1. For each active earlier basis element `k < new_idx`,
+        //      build pair `(k, new)`. Inactive `k` are skipped: under
+        //      non-strict deactivation, some active `m < k` satisfies
+        //      `LT_m | LT_k`, so `(m, new)` is generated and
+        //      GM-dominates `(k, new)`.
+        //   2. Apply the M-criterion via `gm_insert`: drop a new pair
+        //      if any other new pair's LCM divides it (with the
+        //      equal-LCM coprime-replacement rule).
+        //   3. After GM-insertion, drop coprime pairs (Buchberger
+        //      product criterion: their S-poly reduces to zero).
+        //   4. Apply the B-criterion to the existing open queue using
+        //      the new polynomial's leading term.
+        //   5. Sort surviving new_pairs descending and merge into
+        //      `self.open`.
         let mut new_pairs: Vec<SPair> = Vec::with_capacity(new_idx);
         let mut pairs_built: u64 = 0;
         for k in 0..new_idx {
@@ -631,9 +610,9 @@ impl BuchbergerState {
         new_pairs.retain(|p| !p.is_coprime);
         let after_coprime = new_pairs.len() as u64;
         self.stats.pairs_killed_coprime += after_gm.saturating_sub(after_coprime);
-        // B-criterion: prune the existing open queue using the new poly's
-        // leading PP. Mirrors CoCoA `myApplyBCriterion` (TmpGReductor.C:629-650),
-        // which runs *after* myBuildNewPairs has built+filtered new_pairs.
+        // B-criterion: prune the existing open queue using the new
+        // polynomial's leading term. Runs after `new_pairs` has been
+        // built and filtered.
         let new_lt_divmask = self.ring.divmask.compute(new_lt);
         let open_before_b = self.open.len() as u64;
         b_criterion_kill(&mut self.open, new_lt, new_lt_divmask, &self.basis);
@@ -744,8 +723,7 @@ impl BuchbergerState {
             return self.run_f4(observer);
         }
         if self.trivial && self.cfg.abort_on_trivial { return Ok(()); }
-        // Plan v8: more granular instrumentation so we can see where time
-        // goes inside the main loop on dense circuits like `inTest`.
+        // Granular per-phase timing inside the main loop.
         let stats_on = crate::profile::gb_stats_enabled();
         let mut t_spoly_ns: u64 = 0;
         let mut t_reduce_ns: u64 = 0;
@@ -776,17 +754,11 @@ impl BuchbergerState {
 
             // Skip pairs from earlier generations (incremental support).
             if pair.generation < self.generation { continue; }
-            // Non-strict deactivation (D3): we still process pending S-pairs
-            // even if one of the basis elements was later deactivated.
-            // Product criterion + GM M-criterion are now applied at pair
-            // generation time (see `generate_pairs_against` /
-            // `gm_insert`), so coprime/dominated pairs never reach this loop.
-            // Chain criterion (Buchberger's 2nd) is still NOT applied here:
-            // a previous attempt produced incomplete GBs (it only checked
-            // `lt(k) | lcm(i,j)` without verifying the substitute pairs were
-            // discharged). Re-introducing a sound version would require
-            // CoCoA's `BCriterion` (TmpGReductor.C:`myApplyBCriterion`) and
-            // is deferred to future work.
+            // Non-strict deactivation: pending S-pairs are processed
+            // even if one of their basis elements has since been
+            // deactivated. The product and GM M-criteria are applied at
+            // pair-generation time, so coprime and dominated pairs do
+            // not reach this loop.
 
             let t_spoly_start = if stats_on { Some(std::time::Instant::now()) } else { None };
             // Build the S-polynomial: (lcm/LT_i) * f_i - (lcm/LT_j) * f_j
@@ -806,15 +778,11 @@ impl BuchbergerState {
                 t_spoly_ns += t0.elapsed().as_nanos() as u64;
             }
 
-            // Reduce against the current ACTIVE basis (one-at-a-time).
-            // Use ref-based reduce to avoid cloning every active polynomial
-            // for each S-pair — this was the dominant per-call cost on
-            // dense-ideal benchmarks (e.g. chunkedadd1) under the profiler.
-            // Cancel-aware variant so a single dense reduction doesn't
-            // blow past the user's `--timeout` (was a real bug on
-            // `modulusagainst2p`: a 30 s budget could overrun by 10×+
-            // because no cancel point existed inside the reducer's
-            // `pop_leading_term` loop).
+            // Reduce against the current active basis. Reference-based
+            // reduction avoids cloning every active polynomial for each
+            // S-pair; the cancel-aware variant bounds the cost of a
+            // single dense reduction so the caller's timeout is
+            // honoured.
             let t_red_start = if stats_on { Some(std::time::Instant::now()) } else { None };
             let active_refs: Vec<&Polynomial> = self.basis.iter()
                 .filter(|e| e.active)
@@ -859,13 +827,12 @@ impl BuchbergerState {
             let new_idx = self.basis.len();
             let lt = nf.leading_monomial(&self.ring).unwrap();
             let lt_divmask = self.ring.divmask.compute(&lt);
-            // Sugar update: tighter CoCoA-aligned formula. The pair sugar
-            // (computed at pair generation) is already an upper bound on
-            // the new poly's sugar — it equals
-            // max(deg(lcm/LT_i) + sugar(f_i), deg(lcm/LT_j) + sugar(f_j)),
-            // and reduction is degree-non-increasing on the leading term.
-            // Mirrors CoCoA `myAssignSPoly` (TmpGPoly.C:316) /
-            // `NewSugar` (TmpGPair.C:36-44).
+            // Sugar update. The pair sugar (computed at pair generation)
+            // is already an upper bound on the new polynomial's sugar —
+            // it equals
+            // `max(deg(lcm/LT_i) + sugar(f_i), deg(lcm/LT_j) + sugar(f_j))`,
+            // and reduction is degree-non-increasing on the leading
+            // term.
             debug_assert!(
                 lt.total_degree() <= pair.sugar,
                 "sugar invariant violated: LT total_degree {} > pair.sugar {}",
@@ -896,17 +863,11 @@ impl BuchbergerState {
                 }
             }
             self.basis.push(BasisElement { poly: nf, lt, lt_divmask, active: true, sugar });
-            // Plan v9 task 09: HOMOG-gated periodic in-loop tail-reduce,
-            // mirroring CoCoA `myDoGBasis` (`TmpGReductor.C:680, 710-721`).
-            // CoCoA enables this only on homogeneous input (where
-            // tail-reduce mid-loop preserves the gradedness invariant
-            // sugar-degree pair selection relies on).
-            //
-            // Plan v7's earlier A/B (every 32 additions vs no throttle
-            // on the non-HOMOG hard suite) found the throttle hurt
-            // there. So we keep the throttle off for non-HOMOG and
-            // turn it on ONLY for HOMOG inputs (rare in our R1CS
-            // benchmarks but possible in homogenized paths).
+            // Periodic in-loop tail-reduction, gated on homogeneous
+            // input. Tail-reduction mid-loop preserves the gradedness
+            // invariant that sugar-degree pair selection relies on; for
+            // non-homogeneous input it would distort selection order
+            // and slow the search, so it is disabled there.
             if self.input_is_homog && self.stats.reductions_useful > 0
                 && self.stats.reductions_useful % 32 == 0
             {
@@ -1026,11 +987,10 @@ impl BuchbergerState {
         Ok(())
     }
 
-    /// Plan v10 Phase 4 — F4-lite path through the main loop. Pops a
-    /// batch of same-sugar S-pairs and reduces them simultaneously
-    /// via `f4::process_batch`, then integrates each new generator
-    /// (generating cross-pairs against the existing basis just like
-    /// the per-pair path does).
+    /// F4-lite main loop. Pops a batch of same-sugar S-pairs and
+    /// reduces them simultaneously via [`f4::process_batch`], then
+    /// integrates each new generator (generating cross-pairs against
+    /// the existing basis exactly as the per-pair path does).
     fn run_f4<O: BuchbergerObserver>(&mut self, observer: &mut O) -> Result<(), SolverError> {
         if self.trivial && self.cfg.abort_on_trivial {
             return Ok(());
@@ -1062,11 +1022,10 @@ impl BuchbergerState {
                 continue;
             }
 
-            // Plan v10 Phase 4: F4 amortizes reducer construction
-            // across a sugar batch but pays the matrix-build overhead
-            // each time. For a single-pair batch the matrix is
-            // strictly more expensive than direct per-pair reduction.
-            // Threshold tuned to keep small-circuit baselines fast.
+            // F4 amortises reducer construction across a sugar batch
+            // but pays the matrix-build overhead each time. For a
+            // single-pair batch the matrix is strictly more expensive
+            // than direct per-pair reduction, so fall back.
             if batch.len() < 2 {
                 for pair in batch {
                     self.process_pair_geobucket(pair, observer)?;
@@ -1248,14 +1207,14 @@ impl IncrementalGB {
         Ok(self.state.trivial)
     }
 
-    /// Plan v10 task 02 (Phase 1, sub-iter checkpointing): drain the
-    /// in-progress S-pair queue without adding new generators. Used by
-    /// `IncrementalSolverContext` to resume a previously-cancelled GB
-    /// build across solve calls.
+    /// Drain the in-progress S-pair queue without adding new
+    /// generators. Used by [`crate::incremental_context::IncrementalSolverContext`]
+    /// to resume a previously-cancelled GB build across solve calls.
     ///
-    /// Semantics are identical to `add_generators(vec![])` but skips the
-    /// `state.add_generators` no-op and the HOMOG-flag detection (which
-    /// is set on the first call and immutable thereafter).
+    /// Semantics are identical to `add_generators(vec![])` but skips
+    /// the no-op generator append and the homogeneous-input flag
+    /// detection (which is set on the first call and is immutable
+    /// thereafter).
     pub fn run_only(&mut self) -> Result<bool, SolverError> {
         let mut obs = NoObserver;
         self.state.run(&mut obs)?;
@@ -1265,10 +1224,11 @@ impl IncrementalGB {
         Ok(self.state.trivial)
     }
 
-    /// Plan v10 task 02: swap in a fresh cancel token between solve
-    /// calls. Each `IncrementalSolverContext::solve` invocation produces
-    /// its own per-call cancel token; the persisted `IncrementalGB` must
-    /// pick that up so the resumed run respects the new budget.
+    /// Swap in a fresh cancel token. Each
+    /// [`crate::incremental_context::IncrementalSolverContext::solve`]
+    /// invocation produces its own per-call cancel token; a persisted
+    /// `IncrementalGB` must pick that up so a resumed run respects the
+    /// new budget.
     pub fn set_cancel_token(&mut self, token: Option<CancelToken>) {
         self.state.cfg.cancel_token = token;
     }

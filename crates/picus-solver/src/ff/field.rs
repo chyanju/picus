@@ -2,13 +2,11 @@
 //!
 //! Field elements are stored in canonical (least non-negative) form in
 //! `[0, p)`. All arithmetic dispatches to GMP (`mpz_add`, `mpz_mul`,
-//! `mpz_mod`, `mpz_invert`, ...) for Karatsuba/Toom-Cook multiplication
-//! and platform-specific assembly. This is the same arithmetic backend
-//! cvc5+CoCoA uses (`include/CoCoA/BigInt.H:41`).
+//! `mpz_mod`, `mpz_invert`, ...).
 //!
-//! The public API still exchanges `num_bigint::BigUint` at the boundary
-//! (encoder input, model output) for compatibility with the rest of the
-//! picus workspace. Conversions go through byte order via
+//! The public API exchanges [`num_bigint::BigUint`] at the boundary
+//! (encoder input, model output) for compatibility with the rest of
+//! the picus workspace. Conversions go through byte order via
 //! `to_bytes_le` / `from_bytes_le`.
 
 use num_bigint::BigUint;
@@ -59,11 +57,11 @@ impl FieldElem {
         integer_to_biguint(&self.value)
     }
 
-    /// Plan v10 task 08: take a recycled `FieldElem` (with its `mpz_t`
-    /// limb buffer already allocated) from the thread-local pool, or
-    /// allocate fresh if pool is empty. The returned element's value
-    /// is INDETERMINATE — caller must initialize via `assign(...)` or
-    /// equivalent before reading.
+    /// Take a recycled `FieldElem` (with its `mpz_t` limb buffer
+    /// already allocated) from the thread-local pool, or allocate fresh
+    /// if the pool is empty. The returned element's value is
+    /// indeterminate — the caller must initialise it (via `assign` or
+    /// an equivalent operation) before reading.
     #[inline]
     pub(crate) fn pool_take_or_default(capacity_bits: u32) -> Self {
         FIELDELEM_POOL.with(|pool| {
@@ -98,12 +96,9 @@ impl FieldElem {
 const FIELDELEM_POOL_CAP: usize = 4096;
 
 thread_local! {
-    /// Plan v10 task 08: thread-local pool of recycled `FieldElem`s.
-    /// Reduces GMP `mpz_init` / `mpz_clear` traffic in the geobucket
-    /// cascade hot path on dense-ideal benchmarks (`inTest`'s
-    /// 280-poly basis-1 reduces produce ~2 M field operations per
-    /// run; pooling eliminates the per-op allocation of the result
-    /// `Integer`'s limb buffer).
+    /// Thread-local pool of recycled `FieldElem`s. Reduces GMP
+    /// `mpz_init` / `mpz_clear` traffic on the geobucket cascade hot
+    /// path.
     static FIELDELEM_POOL: std::cell::RefCell<Vec<FieldElem>> =
         std::cell::RefCell::new(Vec::with_capacity(FIELDELEM_POOL_CAP / 4));
     /// Re-entrancy guard: don't recurse into the pool from inside its
@@ -112,11 +107,9 @@ thread_local! {
     static IN_POOL_DROP: std::cell::Cell<bool> = std::cell::Cell::new(false);
 }
 
-/// Plan v10 task 08: auto-recycle on drop. Catches FieldElems dropped
-/// by ordinary scope exit (e.g. a temporary in `merge_owned`'s
-/// Greater branch that's pushed into out_coeffs but later dropped
-/// when out_coeffs is dropped). Without this, only the explicit
-/// `pool_return` paths recycle.
+/// Auto-recycle on drop. Catches `FieldElem`s dropped by ordinary
+/// scope exit; without this, only the explicit `pool_return` paths
+/// recycle.
 impl Drop for FieldElem {
     fn drop(&mut self) {
         // Avoid re-entry: when the pool itself is dropping its
@@ -254,9 +247,8 @@ impl PrimeField {
     }
 
     pub fn add(&self, a: &FieldElem, b: &FieldElem) -> FieldElem {
-        // Plan v10 task 08: pull a recycled FieldElem (or fresh) from
-        // the pool, assign in place. Avoids `Integer::with_capacity`
-        // allocation of a new limb buffer per call.
+        // Pull a recycled FieldElem (or fresh) from the pool; assign in
+        // place to avoid a fresh limb-buffer allocation per call.
         let mut out = FieldElem::pool_take_or_default(self.result_bits as u32);
         out.value.assign(&a.value + &b.value);
         if out.value >= *self.prime {
@@ -306,13 +298,9 @@ impl PrimeField {
         a.value %= &*self.prime;
     }
 
-    /// Plan v8: in-place add-and-consume that recycles `a`'s mpz buffer.
-    /// Used by `Polynomial::merge_owned` to eliminate one `Integer`
-    /// allocation per merged-term in geobucket cascades — that path was
-    /// the dominant cost on `inTest`'s dense reductions (26.7 s of
-    /// `add_poly` cascade per ~30 s reduction).
-    /// Plan v10 task 08: also pool-returns `b` so its mpz_t buffer
-    /// can be recycled by future `pool_take_or_default` calls.
+    /// In-place add-and-consume that recycles `a`'s mpz buffer. Returns
+    /// `b` to the pool so its mpz_t buffer is available for future
+    /// `pool_take_or_default` calls.
     #[inline]
     pub fn add_owned(&self, mut a: FieldElem, b: FieldElem) -> FieldElem {
         a.value += &b.value;
@@ -337,9 +325,10 @@ impl PrimeField {
     #[inline]
     pub fn neg_owned(&self, mut a: FieldElem) -> FieldElem {
         if a.value.cmp0() != std::cmp::Ordering::Equal {
-            // a = prime - a (in place). With FieldElem now Drop-impled,
-            // we can't move-out of `a.value`; use std::mem::replace
-            // to extract the Integer, do the arithmetic, store back.
+            // a = prime - a (in place). Since `FieldElem` implements
+            // `Drop`, we cannot move out of `a.value`; use
+            // `std::mem::replace` to extract the `Integer`, perform the
+            // arithmetic, then store back.
             let old = std::mem::replace(&mut a.value, rug::Integer::new());
             a.value = &*self.prime - old;
         }
@@ -356,9 +345,8 @@ impl PrimeField {
         }
     }
 
-    /// Plan v10 task 08: original (allocating) variant of `neg`. Kept
-    /// for the rare path where the pool's correctness is in question.
-    /// Currently unused; safe to remove once pool semantics validated.
+    /// Allocating variant of [`Self::neg`]. Unused on the hot path;
+    /// retained as a pool-free fallback.
     #[allow(dead_code)]
     pub(crate) fn neg_alloc(&self, a: &FieldElem) -> FieldElem {
         if a.value.cmp0() == std::cmp::Ordering::Equal {

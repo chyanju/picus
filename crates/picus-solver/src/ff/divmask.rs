@@ -1,15 +1,12 @@
 //! 128-bit DivMask for fast monomial divisibility rejection.
 //!
-//! A DivMask maps a monomial's exponent vector to a 128-bit bitmask where each
-//! bit indicates whether the corresponding exponent meets a precomputed
-//! threshold. Divisibility `a | b` requires `mask(a) & mask(b) == mask(a)`,
-//! so any bit set in `mask(a)` but not in `mask(b)` immediately rules out
-//! divisibility — without touching the exponent vector.
-//!
-//! Plan v10 task 10: upgraded from 32 to 128 bits to provide divmask
-//! coverage on circuits with > 32 variables (e.g. `inTest` with 571 vars,
-//! where the original 32-bit scheme covered only the first 32 vars and
-//! provided no useful filter signal).
+//! A DivMask maps a monomial's exponent vector to a 128-bit bitmask
+//! where each bit indicates whether the corresponding exponent meets a
+//! precomputed threshold. Divisibility `a | b` requires
+//! `mask(a) & mask(b) == mask(a)`, so any bit set in `mask(a)` but not
+//! in `mask(b)` immediately rules out divisibility without touching the
+//! exponent vector. At 128 bits per mask, the filter covers up to 128
+//! distinct variables before bucketing reduces resolution.
 
 use super::monomial::Monomial;
 

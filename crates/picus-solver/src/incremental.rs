@@ -1,15 +1,9 @@
-//! Incremental solver: push/pop/check API.
+//! Incremental solver: push / pop / check API.
 //!
-//! Mirrors cvc5's `SubTheory` semantics, where a `context::CDList<Node>`
-//! holds the current set of asserted facts and the SAT context manages
-//! push/pop.  We expose a simple push/pop interface backed by a stack
-//! of checkpoint heights into a single `Vec<Constraint>`.
-//!
-//! Each `check()` re-encodes the current fact list from scratch and
-//! invokes [`crate::core::solve_split_gb`].  This matches cvc5, which
-//! calls `enc.endScan(); ... split(facts, ...)` on every solve.  The
-//! benefit of incrementality is that the user does not have to rebuild
-//! the constraint list manually.
+//! A simple push/pop interface backed by a stack of checkpoint heights
+//! into a single `Vec<Constraint>`. Each `check()` re-encodes the
+//! current fact list from scratch and invokes
+//! [`crate::core::solve_split_gb`].
 
 use num_bigint::BigUint;
 

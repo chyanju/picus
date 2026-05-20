@@ -15,14 +15,12 @@ use picus_solver::incremental_context::IncrementalSolverContext;
 use picus_solver::timeout::CancelToken;
 
 pub struct NativeFfBackend {
-    /// Plan v9 task 01: track the previous call's constraint-side
-    /// digest so we can count "consecutive-same" streaks (the cache-key
-    /// feasibility signal — high streak ⇒ caching trivially helps).
+    /// Constraint-side digest of the most recent `solve` call. Used to
+    /// count consecutive-same-digest streaks for telemetry.
     last_cs_digest: Option<u64>,
-    /// Plan v9 task 03: amortizes split-GB across `solve` calls whose
-    /// constraint side hasn't changed (typical of DPVL per-signal
-    /// queries). Default-on; set `PICUS_NO_INCREMENTAL_CACHE=1` to
-    /// disable for diagnostics or rollback.
+    /// Amortises split-GB across `solve` calls whose constraint side
+    /// has not changed. Default-on; disable by setting
+    /// `PICUS_NO_INCREMENTAL_CACHE=1`.
     cache: IncrementalSolverContext,
     cache_enabled: bool,
 }
@@ -38,10 +36,10 @@ impl NativeFfBackend {
     }
 }
 
-/// Plan v9 task 01: thin wrapper around the cache module's
-/// `digest_constraint_side`, used here only for the
-/// repeated-streak counter. The cache itself uses the same
-/// function for its hit/miss decisions, so the digests agree.
+/// Thin wrapper around the cache module's
+/// [`picus_solver::incremental_context::digest_constraint_side`]. The
+/// cache itself uses the same function for its hit/miss decisions, so
+/// the digests agree.
 fn digest_constraint_side(cs: &ConstraintSystem) -> u64 {
     picus_solver::incremental_context::digest_constraint_side(cs)
 }
@@ -169,7 +167,6 @@ impl SolverBackend for NativeFfBackend {
     ) -> Result<SolverResult, SolverError> {
         let cs = query_to_constraint_system(query);
         let stats_on = picus_solver::profile::gb_stats_enabled();
-        // Plan v9 task 01 instrumentation.
         let cs_digest = if stats_on { Some(digest_constraint_side(&cs)) } else { None };
         if stats_on {
             use std::sync::atomic::Ordering::Relaxed;
@@ -196,12 +193,13 @@ impl SolverBackend for NativeFfBackend {
             let cancel = CancelToken::with_timeout(std::time::Duration::from_millis(timeout_ms));
             let solve_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
             let outcome = if cache_enabled {
-                // Plan v9: cached path. Encoding is amortized inside
-                // the cache (re-encodes only on miss); per-query work
-                // is the Rabinowitsch poly + incremental GB extend.
+                // Cached path. Encoding is amortised inside the cache
+                // (re-encodes only on miss); per-query work is the
+                // Rabinowitsch polynomial plus an incremental GB
+                // extend.
                 cache.solve(&cs, &cancel)
             } else {
-                // Stateless 1.7.13 path, kept available via
+                // Stateless path, selected by
                 // `PICUS_NO_INCREMENTAL_CACHE=1`.
                 let enc_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
                 let encoded = encode(&cs).map_err(|e| SolverError::Internal(e))?;

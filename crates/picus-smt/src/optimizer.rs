@@ -66,13 +66,9 @@ fn simple_opt_expr_z3(expr: &RExpr) -> RExpr {
         RExpr::Var(v) if v == "x0" => RExpr::Int(BigUint::one()),
 
         RExpr::Add(vs) => {
-            // Plan v9 task 07: align with cvc5's `theory_ff_rewriter.cpp`
-            // postRewriteFfAdd. After per-child recursion, fold all
-            // `Int` literals into a single constant addend (sum), and
-            // canonicalize position (constant goes last). picus's
-            // polynomial-level merge produces the same canonical form
-            // downstream, but doing it at the IR layer matches cvc5's
-            // pre-encoding pipeline.
+            // After per-child recursion, fold all `Int` literals into
+            // a single constant addend (sum) and canonicalise position
+            // (constant last).
             let optimized: Vec<RExpr> = vs
                 .iter()
                 .map(simple_opt_expr_z3)
@@ -98,9 +94,8 @@ fn simple_opt_expr_z3(expr: &RExpr) -> RExpr {
         }
 
         RExpr::Mul(vs) => {
-            // Plan v9 task 07: align with cvc5's postRewriteFfMul. Fold
-            // int literal factors into a single constant; canonicalize
-            // position (constant goes first per cvc5's convention).
+            // Fold integer-literal factors into a single constant and
+            // canonicalise position (constant first).
             let optimized: Vec<RExpr> = vs.iter().map(simple_opt_expr_z3).collect();
             // If any is zero, whole product is zero.
             if optimized.iter().any(is_zero_int) {
@@ -280,7 +275,7 @@ fn simple_opt_expr_cvc5(expr: &RExpr) -> RExpr {
     }
 }
 
-// ========================= AB0 optimizer (phase 0) =========================
+// ============================ AB0 optimiser ===============================
 
 fn ab0_optimize_z3(cmds: &RCmds) -> RCmds {
     let p = bn128_prime();
@@ -408,7 +403,7 @@ fn is_zero_rhs_cvc5(expr: &RExpr) -> bool {
     }
 }
 
-// ========================= SubP optimizer (phase 1) =========================
+// ============================ SubP optimiser ==============================
 
 fn subp_optimize_z3(cnsts: &RCmds, decls: &RCmds, include_p_defs: bool) -> (RCmds, RCmds) {
     let p = bn128_prime();

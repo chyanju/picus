@@ -15,12 +15,12 @@ pub struct SPair {
     pub age: u64,
     /// Generation tag for incremental support — see `IncrementalGB`.
     pub generation: u32,
-    /// True iff `LM(i)` and `LM(j)` are coprime, in which case the S-polynomial
-    /// reduces to zero by Buchberger's product criterion. We keep these pairs
-    /// in the queue during the GM (M-criterion) walk so they can dominate
-    /// non-coprime pairs (matching CoCoA `myGMInsert`), and remove them
-    /// before the queue is merged into `open` so the reduction loop never
-    /// sees them.
+    /// True iff `LM(i)` and `LM(j)` are coprime; the S-polynomial then
+    /// reduces to zero by Buchberger's product criterion. Coprime pairs
+    /// are kept in the queue during the M-criterion walk so they can
+    /// dominate non-coprime pairs, and are filtered out before the
+    /// queue is merged into `open` so the reduction loop never sees
+    /// them.
     pub is_coprime: bool,
 }
 

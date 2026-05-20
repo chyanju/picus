@@ -1,12 +1,10 @@
-//! Multivariate polynomial ring over GF(p), backed by `crate::ff`.
+//! Multivariate polynomial ring over GF(p), backed by [`crate::ff`].
 //!
-//! This module preserves the public API used by the rest of picus-solver
-//! (`FfPolyRing`, `Poly`, `Mono`, `pr.var(i)`, `pr.constant(el)`,
-//! `pr.add/sub/mul/...`, and the inner `pr.ring.terms(&p)` /
-//! `pr.ring.create_term(c, m)` / `pr.ring.exponent_at(m, i)` /
-//! `pr.ring.appearing_indeterminates(&p)` / `pr.ring.indeterminate(i)` /
-//! etc.) while delegating storage and arithmetic to the inlined `ff::*`
-//! types. The previous feanor-math backend has been removed.
+//! Public surface: `FfPolyRing`, `Poly`, `Mono`, `pr.var(i)`,
+//! `pr.constant(el)`, `pr.add/sub/mul/...`, and the inner `pr.ring.terms(&p)`
+//! / `pr.ring.create_term(c, m)` / `pr.ring.exponent_at(m, i)` /
+//! `pr.ring.appearing_indeterminates(&p)` / `pr.ring.indeterminate(i)`.
+//! Storage and arithmetic are delegated to the [`crate::ff`] types.
 
 use std::sync::Arc;
 
@@ -18,16 +16,14 @@ use crate::ff::polynomial::{PolyRing as FfPolyRingCtx, Polynomial};
 pub type Poly = Polynomial;
 /// Re-export the monomial type.
 pub type Mono = Monomial;
-/// Legacy type alias used by callers that referenced `crate::poly::PolyRingType`.
-/// It points at the facade so `&PolyRingType` works wherever the legacy code
-/// previously held a feanor `&MultivariatePolyRingImpl<...>` reference.
+/// Type alias for the polynomial-ring facade. `&PolyRingType` is the
+/// reference shape used throughout picus-solver.
 pub type PolyRingType = PolyRingFacade;
 
 /// A multivariate polynomial ring GF(p)[x_0, ..., x_{n-1}].
 ///
-/// `pr.ring` exposes the legacy "ring methods" surface (a thin facade around
-/// the new `ff::PolyRing` context) so existing call sites such as
-/// `pr.ring.terms(&p)` and `pr.ring.create_term(c, m)` keep compiling.
+/// `pr.ring` is a thin facade around the underlying [`ff::PolyRing`]
+/// context, exposing `terms`, `create_term`, `exponent_at`, etc.
 pub struct FfPolyRing {
     pub field: FfField,
     pub ring: PolyRingFacade,
@@ -78,14 +74,13 @@ impl FfPolyRing {
         self.var_names.iter().position(|n| n == name)
     }
 
-    /// Reference to the underlying `ff::PolyRing` context, for code that
-    /// needs the raw new-style API.
+    /// Reference to the underlying `ff::PolyRing` context.
     pub fn ctx(&self) -> &Arc<FfPolyRingCtx> { &self.ring.ctx }
 }
 
-/// Facade exposing the legacy "ring." method surface used throughout
-/// picus-solver. It holds a shared `Arc<ff::PolyRing>` context and
-/// dispatches calls to the appropriate `Polynomial` / `Monomial` methods.
+/// Facade exposing the `.ring.` method surface used throughout
+/// picus-solver. Holds a shared `Arc<ff::PolyRing>` context and
+/// dispatches to the appropriate `Polynomial` / `Monomial` methods.
 pub struct PolyRingFacade {
     pub ctx: Arc<FfPolyRingCtx>,
 }
@@ -121,8 +116,8 @@ impl PolyRingFacade {
         Monomial::from_exponents(e)
     }
 
-    /// Build a monomial from an exponent slice (legacy callers pass
-    /// `Vec<usize>` — we cast down to `u16`).
+    /// Build a monomial from an exponent slice. Exponents are cast from
+    /// `usize` down to `u16`.
     pub fn create_monomial(&self, exps: impl IntoIterator<Item = usize>) -> Monomial {
         Monomial::from_exponents(exps.into_iter().map(|e| e as u16).collect())
     }
@@ -135,8 +130,8 @@ impl PolyRingFacade {
     }
 
     /// Exponent of variable `var` in monomial `m`. Accepts both `&Monomial`
-    /// and `Monomial` (by-value) so callers iterating over `terms()` —
-    /// which yields owned `Monomial` values — can pass `m` directly.
+    /// and `Monomial` so callers iterating over [`Self::terms`], which
+    /// yields owned `Monomial`s, can pass the value directly.
     pub fn exponent_at<M: std::borrow::Borrow<Monomial>>(&self, m: M, var: usize) -> usize {
         m.borrow().exponent(var) as usize
     }
@@ -146,11 +141,10 @@ impl PolyRingFacade {
         m.borrow().clone()
     }
 
-    /// Variables that actually appear in `p`. Returned as a vector of
-    /// variable indices in ascending order. (The legacy feanor API returned
-    /// a vector of `(index, max_degree)` pairs; callers in our codebase
-    /// only ever use `.is_empty()` or iterate, so we return a simpler
-    /// shape — wrapped in a thin newtype to support both patterns.)
+    /// Variables that actually appear in `p`, in ascending index order.
+    /// Returned as an `AppearingVars` newtype supporting `.is_empty()`,
+    /// iteration over variable indices, and indexed `(index, max_degree)`
+    /// access.
     pub fn appearing_indeterminates(&self, p: &Poly) -> AppearingVars {
         AppearingVars { vars: p.appearing_variables(&self.ctx) }
     }
@@ -175,8 +169,7 @@ impl PolyRingFacade {
     pub fn zero(&self) -> Poly { Polynomial::zero() }
     pub fn one(&self) -> Poly { Polynomial::constant(self.ctx.field.one(), &self.ctx) }
 
-    /// `*acc += other`. Replaces `acc` in-place. Provided for compatibility
-    /// with feanor's `RingBase::add_assign`.
+    /// `*acc += other`. Replaces `acc` in-place.
     pub fn add_assign(&self, acc: &mut Poly, other: Poly) {
         let new = std::mem::replace(acc, Polynomial::zero()).add(&other, &self.ctx);
         *acc = new;

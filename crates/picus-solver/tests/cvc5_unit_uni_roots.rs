@@ -1,14 +1,7 @@
-//! Ports of cvc5's `theory_ff_uni_roots_black.cpp` unit tests.
+//! Univariate root-finding tests.
 //!
-//! cvc5's `ff::roots(p)` returns the roots of a univariate polynomial over
-//! GF(p) using `distinctRootsPoly` then linear factorization.  Our pure-Rust
-//! equivalent is `picus_solver::roots::find_roots(field, &coeffs)`.
-//!
-//! cvc5 also exposes `distinctRootsPoly(f)` which returns the squarefree
-//! product of all linear factors of `f`.  We don't expose that internal
-//! helper directly; feanor-math's `factor_poly` gives us the same answer
-//! at the level of `roots`.  Tests below check the *root sets*, which is
-//! the externally observable behavior.
+//! Exercise [`picus_solver::roots::find_roots`] on small primes,
+//! checking the observable root set of polynomials over GF(p).
 
 use picus_solver::field::FfField;
 use picus_solver::roots::find_roots;
@@ -37,7 +30,7 @@ fn expected(p: &BigUint, vals: &[i64]) -> Vec<BigUint> {
 }
 
 // =============================================================================
-// TINY_MODULUS = 7
+// Small modulus used for finite-set root enumeration: p = 7.
 // =============================================================================
 //
 // cvc5 polynomials and expected (squarefree) distinct-roots polynomial:
@@ -80,7 +73,6 @@ fn test_distinct_roots_poly_small() {
 // RootsZero  (small modulus)
 // =============================================================================
 //
-// Mirrors cvc5 lines 116-141 (TINY_MODULUS branch).
 //   x            → {0}
 //   x^3          → {0}
 //   x*(x^2+1)    → {0}
@@ -106,7 +98,6 @@ fn test_roots_zero_small() {
 // RootsFull  (small modulus)
 // =============================================================================
 //
-// Mirrors cvc5 lines 171-209 (TINY_MODULUS branch).
 //   x*(x-1)                       → {0, 1}
 //   (x*(x-1))^2                   → {0, 1}
 //   (x*(x-1))^2 * (x^2+1)^2       → {0, 1}
@@ -155,7 +146,7 @@ fn test_roots_full_small() {
 // BIG_MODULUS = 2^255 - 19  (Curve25519 scalar field prime)
 // =============================================================================
 //
-// Mirrors cvc5 lines 213-256.  The interesting case is x^2 - x + 1 over the
+//.  The interesting case is x^2 - x + 1 over the
 // 2^255-19 prime, with roots given as the literal decimal strings in the
 // cvc5 source.
 #[test]

@@ -1,12 +1,9 @@
-//! Extended cvc5 regression test ports.
+//! Extended QF_FF regression tests.
 //!
-//! Each test mirrors a `regress0/ff/*.smt2` file from the cvc5 source tree.
-//! The high-level SMT-LIB constructs (Bool, ITE, →) are pre-translated into
-//! polynomial constraints over GF(p), suitable for our pure ff polynomial
-//! layer.  Higher-level tests requiring ITE / disjunction / UF are skipped
-//! (they live above our solver in the cvc5 architecture).
-//!
-//! Naming convention: `test_<smt2_basename>` (for traceability).
+//! High-level SMT-LIB constructs (Bool, ITE, `=>`) are pre-translated
+//! into polynomial constraints over GF(p) for the QF_FF layer; tests
+//! requiring ITE / disjunction / uninterpreted functions are out of
+//! scope for the polynomial solver and are not covered here.
 
 use picus_solver::core::{solve_encoded, SolveOutcome};
 use picus_solver::encoder::{ConstraintSystem, PolyTerm, encode};

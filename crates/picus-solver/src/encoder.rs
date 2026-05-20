@@ -45,8 +45,8 @@ pub struct ConstraintSystem {
     /// `[b0, b1, ..., bk]` representing a bitsum `b0 + 2*b1 + 4*b2 + ...`.
     /// When provided, the encoder creates a fresh auxiliary variable for each
     /// bitsum and adds a definition polynomial `b0 + 2*b1 + ... - aux = 0`
-    /// to a separate list (matching cvc5's `CocoaEncoder::bitsumPolys()`).
-    /// When empty, the solver falls back to heuristic detection via `parse::bit_sums`.
+    /// to a separate list. When empty, the solver falls back to heuristic
+    /// detection via [`crate::parse::bit_sums`].
     pub bitsums: Vec<Vec<String>>,
 }
 
@@ -212,8 +212,8 @@ pub fn encode(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
     }
 
     // Normalize all polynomials: divide by leading coefficient so LC = 1.
-    // This matches cvc5's cocoa_encoder.cpp:326-329 and ensures consistent
-    // representation for tracer-based UNSAT core extraction.
+    // Ensures a consistent representation for tracer-based UNSAT core
+    // extraction.
     let polynomials = polynomials.into_iter().map(|p| {
         normalize_poly(&poly_ring, p)
     }).collect();
@@ -236,15 +236,9 @@ fn normalize_poly(pr: &FfPolyRing, p: Poly) -> Poly {
 
 #[cfg(test)]
 mod tests {
-    //! Encoder equivalence tests against cvc5's `theory_ff_rewriter.cpp`
-    //! pre-encode rewrites. These verify that picus's polynomial-level
-    //! algebraic merging achieves the same canonical form as cvc5's
-    //! AST-level rewriting, even though the merging happens at a
-    //! different stage of the pipeline.
-    //!
-    //! Each test is a counter-example to the hypothesis that picus
-    //! is missing a rewrite cvc5 has. If any of these fail in the
-    //! future, picus's encoder genuinely diverges from cvc5's output.
+    //! Encoder canonical-form tests. Confirm that the polynomial-level
+    //! merging produces the expected canonical form (constant merging,
+    //! repeated-monomial collapse) on each `encode()` call.
     use super::*;
     use num_bigint::BigUint;
 
@@ -267,8 +261,7 @@ mod tests {
     }
 
     /// `c1*x + c2*x` (within one equality) should encode to a single
-    /// `(c1+c2)*x` polynomial term, matching cvc5's
-    /// `postRewriteFfAdd:98-106` repeated-subterm merge.
+    /// `(c1+c2)*x` polynomial term.
     #[test]
     fn merge_repeated_monomial_within_equality() {
         // 2*x + 3*x = 0 over GF(101) should produce a poly with a
@@ -284,8 +277,7 @@ mod tests {
     }
 
     /// `c1 + c2` (constant terms, within one equality) should merge to
-    /// a single constant, matching cvc5's `postRewriteFfAdd:83-114`
-    /// constant-merging rewrite.
+    /// a single constant.
     #[test]
     fn merge_constant_terms_within_equality() {
         // 2 + 3 + 7 = 0 mod 11 → 12 = 0 mod 11 → 1 = 0 (so the

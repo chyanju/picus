@@ -1,10 +1,9 @@
-//! Ideal operations over GF(p)[x_1,...,x_n].
+//! Ideal operations over GF(p)[x_1, ..., x_n].
 //!
-//! Thin shim over the inlined `crate::ff` Buchberger / Ideal implementation.
-//! The historical feanor-math backend has been removed; the public API
-//! (`Ideal`, `compute_gb_with_order{,_traced}`, `interreduce_basis`,
-//! `leading_monomial`, `leading_coefficient`, `GbStrategy`) is preserved
-//! for the rest of the crate (and for `picus-cli` / `picus-smt`).
+//! Thin shim over the in-tree [`crate::ff`] Buchberger / Ideal
+//! implementation. Public API: [`Ideal`], [`compute_gb_with_order`],
+//! [`compute_gb_with_order_traced`], [`interreduce_basis`],
+//! [`leading_monomial`], [`leading_coefficient`], [`GbStrategy`].
 
 use std::collections::HashSet;
 
@@ -23,9 +22,9 @@ use std::sync::atomic::{AtomicU8, Ordering};
 /// Strategy for computing a Groebner basis. See [`set_gb_strategy`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum GbStrategy {
-    /// Plain DegRevLex Buchberger on `P` (the historical default).
+    /// Plain DegRevLex Buchberger on `P`. Default.
     Direct = 0,
-    /// CoCoA-style homogenize → GB on `P[h]` → dehomogenize → interreduce.
+    /// Homogenize → GB on `P[h]` → dehomogenize → interreduce.
     ByHomog = 1,
     /// Pick `Direct` if every input is already homogeneous w.r.t. the
     /// total-degree grading; otherwise pick `ByHomog`.
@@ -125,15 +124,10 @@ impl<'r> Ideal<'r> {
 
     /// Extend an existing ideal by adding new generators incrementally.
     ///
-    /// **Deliberate divergence from cvc5** (see
-    /// `docs/solver-evaluation.md` § "Deliberate divergences"): cvc5
-    /// recomputes the full GB on every branch (`split_gb.cpp:233-257`);
-    /// picus reuses the previously-computed reduced GB and runs
-    /// incremental Buchberger seeded with the existing basis, only
-    /// computing cross/intra S-pairs involving the new generators.
-    /// Sound — extending a reduced GB by additional generators yields
-    /// the same final GB as full recomputation — and significantly
-    /// faster on deep DFS trees common in zk-circuit verification.
+    /// Reuses the existing reduced GB and runs incremental Buchberger
+    /// seeded with the existing basis, computing only cross / intra
+    /// S-pairs involving the new generators. The final GB equals the
+    /// one obtained by full recomputation on the union of generators.
     pub(crate) fn extend_with_cancel(
         self,
         new_polys: Vec<Poly>,
@@ -156,11 +150,8 @@ impl<'r> Ideal<'r> {
         }
         // Pre-reduce new generators against the existing reduced GB.
         // If every new polynomial reduces to zero, the ideal is unchanged
-        // and we can skip the entire incremental Buchberger + interreduce
-        // round-trip (the GB engine would do the same reductions internally
-        // and discard the inputs, then interreduce_basis would walk an
-        // unchanged basis). Profiling on `modulusagainst2p` showed ~28% of
-        // `extend_with_cancel` invocations land on this path.
+        // and the entire incremental Buchberger + interreduce round-trip
+        // can be skipped.
         let surviving: Vec<Poly> = if self.basis.is_empty() {
             new_polys
         } else {

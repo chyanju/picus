@@ -1,14 +1,13 @@
 //! Model construction from a Groebner basis.
 //!
-//! Implements `findZero` from [OKTB23] (Figure 5): given an ideal, finds a
-//! common zero of all polynomials using iterative backtracking with ideal
-//! augmentation.  At each branch point, a variable assignment `x = c` is
-//! added to the ideal and the GB is recomputed, propagating the constraint
-//! algebraically to all other polynomials.
+//! Implements `findZero` from [OKTB23] (Figure 5): given an ideal, find
+//! a common zero of all polynomials using iterative backtracking with
+//! ideal augmentation. At each branch point a variable assignment
+//! `x = c` is added to the ideal and the GB is recomputed.
 //!
-//! This matches cvc5's `multi_roots.cpp::findZero` algorithm exactly:
-//! stack-based iterative search with three branching strategies
-//! (univariate factoring, minimal polynomial, round-robin enumeration).
+//! Stack-based iterative search with three branching strategies:
+//! univariate factoring, minimal polynomial, and round-robin
+//! enumeration.
 
 use std::collections::HashMap;
 use num_bigint::BigUint;
@@ -34,11 +33,11 @@ pub enum FindZeroOutcome {
 
 /// Try to find a common zero of the polynomials that generated `initial_gb`.
 ///
-/// Uses iterative backtracking with ideal augmentation (matching cvc5):
-/// at each branch, `x - val` is added to the generators and the GB is
-/// recomputed.  Returns `Sat(model)`, `Unsat`, or `Unknown` (when the
-/// search exhausted a non-exhaustive round-robin brancher on a large prime
-/// field — the formula could still have a model outside the bounded range).
+/// At each branch `x - val` is added to the generators and the GB is
+/// recomputed. Returns `Sat(model)`, `Unsat`, or `Unknown` (when the
+/// search exhausted a non-exhaustive round-robin brancher on a large
+/// prime field — the formula could still have a model outside the
+/// bounded range).
 pub fn find_zero(
     poly_ring: &FfPolyRing,
     initial_gb: &[Poly],
@@ -58,7 +57,7 @@ pub fn find_zero_cancel(
         .collect();
     let initial_ideal = Ideal::new(poly_ring, initial_gens);
 
-    // Stack-based iterative search (matching cvc5's findZero)
+    // Stack-based iterative search.
     let mut ideals: Vec<Ideal> = vec![initial_ideal];
     let mut branchers: Vec<Brancher> = Vec::new();
     // True iff at least one popped brancher was a non-exhaustive
@@ -70,7 +69,7 @@ pub fn find_zero_cancel(
 
         let ideal = ideals.last().unwrap();
 
-        // Check UNSAT — pop the ideal only (matching cvc5 multi_roots.cpp:264-267)
+        // Check UNSAT — pop the ideal only (do not pop the brancher).
         if ideal.is_whole_ring() {
             ideals.pop();
             continue;
