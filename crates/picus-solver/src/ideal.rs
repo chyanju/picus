@@ -100,11 +100,14 @@ impl<'r> Ideal<'r> {
 
     /// Build an ideal by computing its DegRevLex Groebner basis.
     pub fn new(poly_ring: &'r FfPolyRing, generators: Vec<Poly>) -> Self {
-        if generators.is_empty() {
-            return Ideal { poly_ring, basis: Vec::new() };
-        }
-        let basis = compute_gb_dispatch(poly_ring, generators, &CancelToken::none());
-        Ideal { poly_ring, basis }
+        // Delegate to the cancel-aware variant with a never-firing token
+        // so the two entry points produce identical bases (including the
+        // explicit `interreduce_basis` pass after Buchberger's own
+        // internal finalisation). The `Err` arm is unreachable with a
+        // none cancel token, but we fall back to an empty ideal
+        // defensively.
+        Self::new_with_cancel(poly_ring, generators, &CancelToken::none())
+            .unwrap_or_else(|_| Ideal { poly_ring, basis: Vec::new() })
     }
 
     /// Build an ideal with cooperative cancellation.
