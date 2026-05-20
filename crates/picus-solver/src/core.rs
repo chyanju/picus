@@ -184,6 +184,7 @@ pub fn solve_split_gb_cancel<'r>(
 
     let mut bit_prop = BitProp::new(poly_ring);
     populate_bitprop(poly_ring, original_polys, &mut bit_prop);
+    populate_bitprop(poly_ring, bitsum_polys, &mut bit_prop);
     let split_basis = match split_gb_cancel(poly_ring, vec![l_gens, nl_gens], &mut bit_prop, cancel) {
         Ok(b) => b,
         Err(_) => return SolveOutcome::Unknown,

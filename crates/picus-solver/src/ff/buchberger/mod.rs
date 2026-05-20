@@ -425,27 +425,34 @@ impl BuchbergerState {
         //      non-strict deactivation, some active `m < k` satisfies
         //      `LT_m | LT_k`, so `(m, new)` is generated and
         //      GM-dominates `(k, new)`.
-        //   2. Apply the M-criterion via `gm_insert`: drop a new pair
-        //      if any other new pair's LCM divides it (with the
-        //      equal-LCM coprime-replacement rule).
-        //   3. After GM-insertion, drop coprime pairs (Buchberger
-        //      product criterion: their S-poly reduces to zero).
+        //   2. Drop coprime pairs immediately (Buchberger product
+        //      criterion: their S-poly reduces to zero via the
+        //      generators). Coprime pairs do not enter `gm_insert`, so
+        //      the same-LCM coprime-replacement rule does not fire;
+        //      any non-coprime pair with the same LCM remains in the
+        //      queue and reduces normally.
+        //   3. Apply the M-criterion via `gm_insert` to the surviving
+        //      non-coprime pairs.
         //   4. Apply the B-criterion to the existing open queue using
         //      the new polynomial's leading term.
         //   5. Sort surviving new_pairs descending and merge into
         //      `self.open`.
         let mut new_pairs: Vec<SPair> = Vec::with_capacity(new_idx);
         let mut pairs_built: u64 = 0;
+        let mut coprime_skipped: u64 = 0;
         for k in 0..new_idx {
             if !self.basis[k].active {
                 continue;
             }
             pairs_built += 1;
             let basis_k_lt = &self.basis[k].lt;
+            if new_lt.is_coprime(basis_k_lt) {
+                coprime_skipped += 1;
+                continue;
+            }
             let lcm = new_lt.lcm(basis_k_lt);
             let lcm_divmask = self.ring.divmask.compute(&lcm);
             let lcm_deg = lcm.total_degree();
-            let is_coprime = new_lt.is_coprime(basis_k_lt);
             // Sugar = max(sugar(new) + (lcm - new_lt), sugar(k) + (lcm - k_lt))
             let s_new = new_sugar + (lcm_deg - new_lt.total_degree());
             let s_k = self.basis[k].sugar + (lcm_deg - basis_k_lt.total_degree());
@@ -460,17 +467,15 @@ impl BuchbergerState {
                 lcm_deg,
                 age: self.age_counter,
                 generation: self.generation,
-                is_coprime,
+                is_coprime: false,
             };
             gm_insert(&mut new_pairs, pair);
         }
         self.stats.pairs_generated += pairs_built;
+        self.stats.pairs_killed_coprime += coprime_skipped;
         let after_gm = new_pairs.len() as u64;
-        self.stats.pairs_killed_gm += pairs_built.saturating_sub(after_gm);
-        // Coprime criterion: drop coprime pairs now that GM is done with them.
-        new_pairs.retain(|p| !p.is_coprime);
-        let after_coprime = new_pairs.len() as u64;
-        self.stats.pairs_killed_coprime += after_gm.saturating_sub(after_coprime);
+        let non_coprime = pairs_built.saturating_sub(coprime_skipped);
+        self.stats.pairs_killed_gm += non_coprime.saturating_sub(after_gm);
         // B-criterion: prune the existing open queue using the new
         // polynomial's leading term. Runs after `new_pairs` has been
         // built and filtered.
@@ -724,13 +729,13 @@ impl BuchbergerState {
                 }
             }
             self.basis.push(BasisElement { poly: nf, lt, lt_divmask, active: true, sugar });
-            // Periodic in-loop tail-reduction, gated on homogeneous
-            // input. Tail-reduction mid-loop preserves the gradedness
-            // invariant that sugar-degree pair selection relies on; for
-            // non-homogeneous input it would distort selection order
-            // and slow the search, so it is disabled there.
-            if self.input_is_homog && self.stats.reductions_useful > 0
-                && self.stats.reductions_useful % 32 == 0
+            // Periodic in-loop tail-reduction. Tail-reduction preserves
+            // the gradedness invariant exactly for homogeneous input;
+            // for non-homogeneous input it can perturb sugar-degree
+            // pair selection, so it runs less often there.
+            let interreduce_period: u64 = if self.input_is_homog { 32 } else { 128 };
+            if self.stats.reductions_useful > 0
+                && self.stats.reductions_useful % interreduce_period == 0
             {
                 self.tail_reduce_active();
             }
