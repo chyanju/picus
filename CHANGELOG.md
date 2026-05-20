@@ -4,6 +4,123 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.16] - 2026-05-20
+
+Refactor and documentation release. No behavioural changes; the
+201-test algorithmic suite and the 17-circuit `circomlib-cff5ab6`
+R1CS smoke (`scripts/regression.sh`) pass throughout.
+
+### Added
+
+- `scripts/regression.sh` — two-tier validation runner.
+  - Tier 1: `cargo test -p picus-solver --release` (algorithmic
+    correctness, ~5 s).
+  - Tier 2: `picus check --solver native --theory ff` against a
+    curated 17-circuit subset of `circomlib-cff5ab6` (10 safe + 7
+    unsafe), with verdicts compared to `docs/benchmarks.md`. Auto-
+    compiles missing circuits via the `benchmarks/circom/compile.sh`
+    harness.
+- `encoder::encode_constraint_side` — encodes equalities,
+  assignments, bitsum definitions, and (optionally) field polynomials
+  while reserving `__w_diseq_i` witness-variable slots without
+  emitting the per-disequality Rabinowitsch polynomial. Used by
+  `IncrementalSolverContext` to build a cache keyed on the constraint
+  side and add per-query Rabinowitsch polynomials lazily.
+- `R1csBackend` descriptor in `picus-smt::r1cs_parser`. Captures
+  per-solver R1CS-encoding parameters (logic, sort, range checks,
+  `mod p` wrapping) so the shared `parse_r1cs_impl` /
+  `expand_cmd_impl` bodies can dispatch on a small config struct.
+
+### Changed
+
+- `ff/buchberger.rs` split into `ff/buchberger/{mod.rs,
+  spair_criteria.rs, incremental.rs}`. `mod.rs` retains the core
+  `BuchbergerState` + main `run` loop and public entry points;
+  `spair_criteria.rs` holds `gm_insert` / `b_criterion_kill` /
+  `merge_sorted_descending`; `incremental.rs` holds `IncrementalGB`
+  + `Checkpoint`. `BasisElement` and the fields / methods of
+  `BuchbergerState` accessed by the sibling submodules are exposed at
+  `pub(super)`.
+- `split_gb.rs` split into `split_gb/{mod.rs, fixpoint.rs, search.rs,
+  branching.rs}`. `mod.rs` retains the shared types (`SplitGb`,
+  `PartialPoint`, `ZeroExtendResult`, `SplitFindZeroOutcome`), the
+  `split_find_zero{,_cancel}` orchestrator, and the
+  `admit` / `total_degree` / `num_terms` helpers; `fixpoint.rs`
+  hosts `split_gb` / `split_gb_cancel` / `split_gb_extend_cancel`,
+  with the two cancel-aware drivers sharing a single private
+  `run_fixpoint` body (eliminating ~190 lines of near-duplicate
+  bit-prop fixpoint logic); `search.rs` hosts
+  `split_zero_extend{,_cancel}`; `branching.rs` hosts `apply_rule`
+  / `apply_rule_multi` / `univariate_coeffs`.
+- `picus-smt::r1cs_parser` consolidated. Backend-specific
+  `parse_r1cs_z3` / `parse_r1cs_cvc5` and `expand_cmd_z3` /
+  `expand_cmd_cvc5` (each ~70 lines of near-identical code) collapse
+  into shared `parse_r1cs_impl` and `expand_cmd_impl` bodies driven
+  by an `R1csBackend` config. Net ~80 LOC reduction.
+- `picus-smt::optimizer::subp_optimize_z3` and `subp_optimize_cvc5`
+  share a single `subp_optimize_impl` body parameterised by the SMT
+  sort name and the substitution map. Z3 keeps `p` as a named
+  constant; cvc5 keeps `p → "zero"` as an extra substitution.
+- `Ideal::new` (in `picus-solver::ideal`) now delegates to
+  `Ideal::new_with_cancel(..., &CancelToken::none())`. The two entry
+  points previously produced subtly different bases (the
+  cancel-aware variant ran an extra `interreduce_basis` pass on top
+  of Buchberger's own internal finalisation).
+- `picus-solver`: non-cancel variants of `solve_split_gb`,
+  `solve_encoded`, `solve_encoded_with_mode`, and
+  `IncrementalSolver::check` now delegate to their `_cancel`
+  counterparts with a no-op `CancelToken::none()`, removing ~75 lines
+  of duplicated solve logic.
+- `IncrementalSolverContext::rebuild_base` (in
+  `picus-solver::incremental_context`) uses
+  `encode_constraint_side(cs)` directly instead of fabricating a
+  placeholder `("x0", "x0")` disequality, calling `encode`, and
+  `.pop()`-ing the Rabinowitsch polynomial off the result. The
+  placeholder hack was fragile under `add_field_polys = true` (which
+  appends field polynomials *after* the Rabinowitsch term) and is
+  gone.
+- `picus-solver::field::FfField` is now a type alias for
+  `PrimeField` (was a wrapper struct that re-exported every method
+  on `PrimeField` as a one-line delegate). Callsites use
+  `FfField::new(p.clone())` (was `FfField::new(&p)`) and
+  `pr.field.prime()` (was `pr.field.prime` field access).
+- `split_gb`'s `total_degree` and `num_terms` helpers no longer take
+  a `_ring: &PolyRingType` parameter — it was unused.
+- All in-source comments and `docs/` content rewritten to drop
+  development-process narrative (plan-phase tags, KPI discussion,
+  version-by-version storytelling, source-line references into
+  external libraries, circuit-name anecdotes). Doc comments now
+  describe interfaces, invariants, and algorithms without referring
+  to internal development plans or external source-line citations.
+- `CHANGELOG.md` rewritten with the same convention applied to every
+  prior version entry.
+
+### Removed
+
+- `picus-solver::ff::buchberger::Ideal` and its impl — internal
+  duplicate of the higher-level `picus-solver::ideal::Ideal`. The
+  `min_poly_cancel` Gaussian-elimination body lifted up into the
+  public Ideal; `poly_coefficient_at` exposed at `pub(crate)`. Two
+  redundant tests (`gb_simple_two_gen`, `min_poly_simple`) removed —
+  the same scenarios are already covered by tests on the public
+  `Ideal` in `ideal.rs::tests`.
+- `picus-smt::optimizer::ab0_optimize_cvc5` and its helpers
+  (`ab0_opt_cmd_cvc5`, `match_ab0_cvc5`, `is_zero_rhs_cvc5`) — 56
+  lines that had been marked `#[allow(dead_code)]` since v1.1.2.
+  `ab0_optimize_z3` retains the rewrite pattern; if the cvc5 QF_FF
+  `or` bug (1.2.0–1.3.3) is fixed in a future cvc5 release, the
+  cvc5 entry point can be re-derived from the Z3 implementation
+  (drop the `(mod _ p)` wrappers).
+- Unused `const_poly` test helper in `ff/f4.rs`.
+
+### Documentation
+
+- `docs/solver-evaluation.md` rewritten as a technical reference
+  (module layout, public API, algorithmic notes, configuration,
+  tests, known limitations) — version timelines and per-release
+  prose removed.
+- `docs/TODO.md` trimmed to factual entries.
+
 ## [1.7.15] - 2026-05-01
 
 ### Added

@@ -343,72 +343,19 @@ fn is_zero_rhs_z3(expr: &RExpr) -> bool {
     false
 }
 
-// NOTE: cvc5 AB0 disabled due to cvc5 1.2.0–1.3.3 bug with `or` in QF_FF.
-// These functions are retained for when the bug is fixed in future cvc5 versions.
-#[allow(dead_code)]
-fn ab0_optimize_cvc5(cmds: &RCmds) -> RCmds {
-    RCmds::new(cmds.commands.iter().map(ab0_opt_cmd_cvc5).collect())
-}
-
-#[allow(dead_code)]
-fn ab0_opt_cmd_cvc5(cmd: &RCmd) -> RCmd {
-    match cmd {
-        RCmd::Assert(RExpr::Eq(lhs, rhs)) => {
-            // Check: (mul [vs]) = (add [0]) or vice versa
-            if let Some(mul_args) = match_ab0_cvc5(lhs, rhs) {
-                let disjuncts: Vec<RExpr> = mul_args
-                    .iter()
-                    .map(|v| {
-                        RExpr::Eq(
-                            Box::new(RExpr::Int(BigUint::zero())),
-                            Box::new(v.clone()),
-                        )
-                    })
-                    .collect();
-                RCmd::Assert(RExpr::Or(disjuncts))
-            } else if let Some(mul_args) = match_ab0_cvc5(rhs, lhs) {
-                let disjuncts: Vec<RExpr> = mul_args
-                    .iter()
-                    .map(|v| {
-                        RExpr::Eq(
-                            Box::new(RExpr::Int(BigUint::zero())),
-                            Box::new(v.clone()),
-                        )
-                    })
-                    .collect();
-                RCmd::Assert(RExpr::Or(disjuncts))
-            } else {
-                cmd.clone()
-            }
-        }
-        _ => cmd.clone(),
-    }
-}
-
-#[allow(dead_code)]
-fn match_ab0_cvc5(lhs: &RExpr, rhs: &RExpr) -> Option<Vec<RExpr>> {
-    if let RExpr::Mul(vs) = lhs
-        && is_zero_rhs_cvc5(rhs) {
-            return Some(vs.clone());
-        }
-    None
-}
-
-#[allow(dead_code)]
-fn is_zero_rhs_cvc5(expr: &RExpr) -> bool {
-    match expr {
-        RExpr::Add(vs) if vs.len() == 1 => is_zero_int(&vs[0]),
-        RExpr::Int(v) => v.is_zero(),
-        _ => false,
-    }
-}
+// AB0 for cvc5 is disabled because cvc5 1.2.0–1.3.3 produces spurious
+// SAT results for `or` disjunctions in QF_FF (see docs/TODO.md). The
+// rewrite pattern itself is captured by `ab0_optimize_z3` above; if a
+// future cvc5 release fixes the bug, the cvc5 entry point can call
+// that pass directly (drop the `(mod _ p)` wrappers).
 
 // ============================ SubP optimiser ==============================
 
 fn subp_optimize_z3(cnsts: &RCmds, decls: &RCmds, include_p_defs: bool) -> (RCmds, RCmds) {
     let p = bn128_prime();
-
-    let constants = [
+    // Z3 (QF_NIA) sees the field as integers, so `p` itself is a usable
+    // named constant.
+    let constants = vec![
         ("p", p.clone()),
         ("ps1", p - BigUint::from(1u32)),
         ("ps2", p - BigUint::from(2u32)),
@@ -418,41 +365,14 @@ fn subp_optimize_z3(cnsts: &RCmds, decls: &RCmds, include_p_defs: bool) -> (RCmd
         ("zero", BigUint::zero()),
         ("one", BigUint::one()),
     ];
-
-    let mut extra_decls = Vec::new();
-    if include_p_defs {
-        extra_decls.push(RCmd::Comment("======== p-related constants ========".into()));
-        for (name, val) in &constants {
-            extra_decls.push(RCmd::Def {
-                var: name.to_string(),
-                typ: "Int".to_string(),
-            });
-            extra_decls.push(RCmd::Assert(RExpr::Eq(
-                Box::new(RExpr::Var(name.to_string())),
-                Box::new(RExpr::Int(val.clone())),
-            )));
-        }
-    }
-
-    // Substitute constants in constraints
-    let subst_map: Vec<(BigUint, &str)> = constants.iter().map(|(n, v)| (v.clone(), *n)).collect();
-    let new_cnsts = RCmds::new(
-        cnsts
-            .commands
-            .iter()
-            .map(|c| subp_cmd(&subst_map, c))
-            .collect(),
-    );
-
-    // Merge extra decls with existing decls
-    let mut all_decls = extra_decls;
-    all_decls.extend(decls.commands.iter().cloned());
-    (new_cnsts, RCmds::new(all_decls))
+    let extra_subst: Vec<(BigUint, &str)> = Vec::new();
+    subp_optimize_impl(cnsts, decls, include_p_defs, "Int", &constants, &extra_subst)
 }
 
 fn subp_optimize_cvc5(cnsts: &RCmds, decls: &RCmds, include_p_defs: bool) -> (RCmds, RCmds) {
     let p = bn128_prime();
-
+    // cvc5 (QF_FF) computes in the field, so `p` itself is not a named
+    // constant — but any literal equal to `p` reduces to `zero`.
     let constants: Vec<(&str, BigUint)> = vec![
         ("ps1", p - BigUint::from(1u32)),
         ("ps2", p - BigUint::from(2u32)),
@@ -462,14 +382,34 @@ fn subp_optimize_cvc5(cnsts: &RCmds, decls: &RCmds, include_p_defs: bool) -> (RC
         ("zero", BigUint::zero()),
         ("one", BigUint::one()),
     ];
+    let extra_subst: Vec<(BigUint, &str)> = vec![(p.clone(), "zero")];
+    subp_optimize_impl(cnsts, decls, include_p_defs, "F", &constants, &extra_subst)
+}
 
+/// Shared body for [`subp_optimize_z3`] and [`subp_optimize_cvc5`].
+///
+/// * `var_type` — `"Int"` for Z3, `"F"` for cvc5.
+/// * `constants` — `(name, value)` pairs to introduce as named SMT
+///   constants and substitute everywhere they appear as integer
+///   literals.
+/// * `extra_subst` — additional `(literal, name)` substitution entries
+///   not paired with a declaration (e.g. cvc5 maps `p → zero` even
+///   though `p` is not declared).
+fn subp_optimize_impl(
+    cnsts: &RCmds,
+    decls: &RCmds,
+    include_p_defs: bool,
+    var_type: &str,
+    constants: &[(&str, BigUint)],
+    extra_subst: &[(BigUint, &str)],
+) -> (RCmds, RCmds) {
     let mut extra_decls = Vec::new();
     if include_p_defs {
         extra_decls.push(RCmd::Comment("======== p-related constants ========".into()));
-        for (name, val) in &constants {
+        for (name, val) in constants {
             extra_decls.push(RCmd::Def {
                 var: name.to_string(),
-                typ: "F".to_string(),
+                typ: var_type.to_string(),
             });
             extra_decls.push(RCmd::Assert(RExpr::Eq(
                 Box::new(RExpr::Var(name.to_string())),
@@ -478,10 +418,10 @@ fn subp_optimize_cvc5(cnsts: &RCmds, decls: &RCmds, include_p_defs: bool) -> (RC
         }
     }
 
-    // For cvc5, p itself maps to 0
+    // Substitute literals → named constants in the constraints.
     let mut subst_map: Vec<(BigUint, &str)> =
         constants.iter().map(|(n, v)| (v.clone(), *n)).collect();
-    subst_map.push((p.clone(), "zero")); // p → zero in finite field
+    subst_map.extend(extra_subst.iter().cloned());
 
     let new_cnsts = RCmds::new(
         cnsts

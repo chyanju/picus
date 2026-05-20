@@ -82,24 +82,22 @@ pub enum SplitFindZeroOutcome {
 ///   - basis 1 (nonlinear): admits `p` iff `deg(p) <= 1` and
 ///                          `numTerms(p) <= 2`.
 ///   - any other index: never admit.
-pub fn admit(pr: &FfPolyRing, idx: usize, p: &Poly) -> bool {
-    let ring = &pr.ring;
-    let d = total_degree(ring, p);
-    if d > 1 { return false; }
+pub fn admit(_pr: &FfPolyRing, idx: usize, p: &Poly) -> bool {
+    if total_degree(p) > 1 { return false; }
     match idx {
         0 => true,
-        1 => num_terms(ring, p) <= 2,
+        1 => num_terms(p) <= 2,
         _ => false,
     }
 }
 
 /// Total degree of a polynomial.
-pub fn total_degree(_ring: &crate::poly::PolyRingType, p: &Poly) -> usize {
+pub fn total_degree(p: &Poly) -> usize {
     p.total_degree() as usize
 }
 
 /// Number of terms in a polynomial.
-pub fn num_terms(_ring: &crate::poly::PolyRingType, p: &Poly) -> usize {
+pub fn num_terms(p: &Poly) -> usize {
     p.num_terms()
 }
 
