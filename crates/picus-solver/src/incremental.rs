@@ -7,7 +7,7 @@
 
 use num_bigint::BigUint;
 
-use crate::core::{solve_encoded, solve_encoded_with_cancel, SolveOutcome};
+use crate::core::{solve_encoded_with_cancel, SolveOutcome};
 use crate::encoder::{encode, ConstraintSystem, PolyTerm};
 use crate::timeout::CancelToken;
 
@@ -79,29 +79,13 @@ impl IncrementalSolver {
         self.facts.push(Constraint::Assignment(var.into(), value));
     }
 
-    /// Solve the current fact set.  Encodes from scratch and dispatches to
+    /// Solve the current fact set. Encodes from scratch and dispatches to
     /// the Split GB engine.
     pub fn check(&self) -> SolveOutcome {
-        let (equalities, disequalities, assignments) = self.build_constraint_lists();
-        let cs = ConstraintSystem {
-            prime: self.prime.clone(),
-            equalities,
-            disequalities,
-            assignments,
-            add_field_polys: self.add_field_polys,
-            bitsums: vec![],
-        };
-        let encoded = match encode(&cs) {
-            Ok(e) => e,
-            Err(e) => {
-                log::error!("encode failed: {e}");
-                return SolveOutcome::Unknown;
-            }
-        };
-        solve_encoded(&encoded)
+        self.check_with_cancel(&CancelToken::none())
     }
 
-    /// Solve the current fact set with cooperative timeout.
+    /// Solve the current fact set with cooperative cancellation.
     pub fn check_with_cancel(&self, cancel: &CancelToken) -> SolveOutcome {
         let (equalities, disequalities, assignments) = self.build_constraint_lists();
         let cs = ConstraintSystem {
