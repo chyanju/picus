@@ -1,15 +1,9 @@
 //! End-to-end R1CS smoke test against a curated `circomlib-cff5ab6`
 //! subset, run through the native finite-field backend.
 //!
-//! Acts as a refactor gate complementing the unit tests in
-//! `picus-solver`: every fixture's verdict is verified to match the
-//! expected `safe` / `unsafe` outcome documented in
-//! `docs/benchmarks.md`.
-//!
-//! The test reads compiled `.r1cs` files from the `benchmarks/circom/`
-//! submodule. If the submodule is not initialised or the circuits are
-//! not yet compiled, the test logs a hint and exits 0 (so a clean
-//! checkout still passes `cargo test`).
+//! Reads compiled `.r1cs` files from `benchmarks/circom/circomlib-cff5ab6/`.
+//! If the submodule is not initialised or the circuits are not yet
+//! compiled, the test logs a hint and exits 0.
 //!
 //! To provision the fixtures:
 //!
@@ -22,11 +16,8 @@ use std::path::PathBuf;
 
 use picus::{check_circuit, CheckResult, Config, SolverKind, Theory};
 
-/// `(circuit_name, expected_verdict)` pairs. Expected verdicts mirror
-/// `docs/benchmarks.md § Expected Results` for `circomlib-cff5ab6`.
-/// Selected for small `.r1cs` size and fast verdict under the native
-/// solver — the known slow / never-resolved circuits (Pedersen,
-/// BitElementMulAny, ed25519 / keccak / pairing) are excluded.
+/// `(circuit_name, expected_verdict)` pairs over the
+/// `circomlib-cff5ab6` subset.
 const FIXTURES: &[(&str, &str)] = &[
     // safe-expected
     ("AND@gates", "safe"),

@@ -44,13 +44,14 @@ Foundation layer. No external Picus dependencies.
 
 ### `picus-smt`
 
-Solver interaction layer with three sub-components:
+Solver interaction layer:
 
 - **`query.rs`** — Defines `UniquenessQuery`, a solver-agnostic intermediate representation (IR). The `build_query()` function converts R1CS binary constraints directly into IR form (linear and nonlinear terms), bypassing the AST pipeline.
-- **`backends/`** — Three solver backend implementations, each implementing the `SolverBackend` trait:
+- **`backends/`** — Four solver backend implementations, each implementing the `SolverBackend` trait:
   - **`z3_nia.rs`** — z3 Rust API, QF_NIA (integer arithmetic with `mod p`)
-  - **`cvc5_ff.rs`** — cvc5 Rust API, QF_FF (native finite field, recommended)
+  - **`cvc5_ff.rs`** — cvc5 Rust API, QF_FF (native finite field)
   - **`cvc5_nia.rs`** — cvc5 Rust API, QF_NIA
+  - **`native_ff.rs`** — pure-Rust QF_FF via `picus-solver`
 - **`r1cs_parser.rs`** — R1CS binary → RCmds AST conversion (used by propagation lemmas only, not by solver backends).
 - **`optimizer.rs`** — AST-to-AST optimization passes for the propagation pipeline:
   - **AB0:** A·B=0 → A=0 ∨ B=0 (z3 only; disabled for cvc5 due to a known solver bug with `or` in QF_FF)
@@ -77,7 +78,7 @@ Public library API (facade crate). Re-exports key types from the internal crates
 - **`check_circuit(path, config)`** — Read an R1CS file and run the full analysis pipeline.
 - **`check_r1cs_bytes(data, config)`** — Analyze from raw bytes.
 - **`check_r1cs(r1cs, config)`** — Analyze a pre-parsed `R1csFile`.
-- **`Config`** — Analysis configuration with sensible defaults (cvc5 + QF_FF + all lemmas).
+- **`Config`** — Analysis configuration. Defaults: `solver = Cvc5`, `theory = Ff`, `timeout_ms = 5000`, `lemmas = all`, `selector = Counter`.
 - **`CheckResult`** — Structured result: `Safe`, `Unsafe { witness_1, witness_2 }`, or `Unknown`.
 - **`PicusError`** — Error type covering parse, solver, config, and I/O errors.
 
@@ -92,7 +93,9 @@ Thin entry point with two subcommands:
 
 ### `picus-solver`
 
-Pure-Rust finite field (QF_FF) solver, replacing cvc5's CoCoA-based theory solver. Uses an in-tree Buchberger engine (`src/ff/`) over `BigUint` for Groebner basis computation; no external GB library dependency.
+Pure-Rust finite field (QF_FF) solver. In-tree Buchberger engine
+(`src/ff/`) over GMP-backed `FieldElem` (`rug::Integer`); no external
+GB library dependency.
 
 - **`core.rs`** — High-level API (`solve_split_gb`, `solve_single_gb`, `SolverMode`, `SolveOutcome`).
 - **`split_gb/`** — Split GB algorithm with inter-basis propagation.

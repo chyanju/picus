@@ -9,9 +9,11 @@ a field but is disabled for the cvc5 backend: cvc5 1.2.0–1.3.3 returns
 inconsistent models for `or` disjunctions in QF_FF (one or more assertions
 violated by the returned model).
 
-The AB0 pass remains in `picus-smt/src/optimizer.rs` (marked
-`#[allow(dead_code)]`). Re-enable by changing `optimize_p0` to call
-`ab0_optimize_cvc5` once a fixed cvc5 release is available.
+`ab0_optimize_z3` in `picus-smt/src/optimizer.rs` retains the
+rewrite pattern. To re-enable for cvc5 once the upstream `or`/QF_FF
+bug is fixed, port the rewrite (dropping the `(mod _ p)` wrappers
+that the cvc5 path drops elsewhere) and route `optimize_p0` to it
+for `SolverKind::Cvc5`.
 
 AB0 is an internal query-construction pass and is not exposed via
 `--lemmas` (which controls propagation lemmas).

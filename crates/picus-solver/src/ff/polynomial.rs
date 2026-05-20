@@ -747,7 +747,7 @@ impl Polynomial {
         if self.is_zero() || divisors.is_empty() {
             return self.clone();
         }
-        self.reduce_by_refs_geobucket(divisors, ring, None)
+        self.reduce_by_refs_geobucket(divisors, ring, None, None)
     }
 
     /// Cancel-aware variant of [`reduce_by_refs`]. On cancel, returns
@@ -765,17 +765,53 @@ impl Polynomial {
         if self.is_zero() || divisors.is_empty() {
             return self.clone();
         }
-        self.reduce_by_refs_geobucket(divisors, ring, Some(cancel))
+        self.reduce_by_refs_geobucket(divisors, ring, Some(cancel), None)
+    }
+
+    /// Variant of [`reduce_by_refs_cancel`] that also records, in
+    /// `use_counts`, how many times each divisor was selected as the
+    /// reducer during this call. `use_counts.len()` must equal
+    /// `divisors.len()`; entries are incremented (not zeroed).
+    pub fn reduce_by_refs_counted_cancel(
+        &self,
+        divisors: &[&Polynomial],
+        ring: &PolyRing,
+        cancel: &crate::timeout::CancelToken,
+        use_counts: &mut [u64],
+    ) -> Polynomial {
+        debug_assert_eq!(divisors.len(), use_counts.len());
+        if self.is_zero() || divisors.is_empty() {
+            return self.clone();
+        }
+        self.reduce_by_refs_geobucket(divisors, ring, Some(cancel), Some(use_counts))
+    }
+
+    /// Non-cancel-aware version of [`reduce_by_refs_counted_cancel`].
+    pub fn reduce_by_refs_counted(
+        &self,
+        divisors: &[&Polynomial],
+        ring: &PolyRing,
+        use_counts: &mut [u64],
+    ) -> Polynomial {
+        debug_assert_eq!(divisors.len(), use_counts.len());
+        if self.is_zero() || divisors.is_empty() {
+            return self.clone();
+        }
+        self.reduce_by_refs_geobucket(divisors, ring, None, Some(use_counts))
     }
 
     /// Geobucket-based reduction. Public for testing — production code should
     /// go through `reduce_by_refs` so the dispatch (currently always geobucket)
     /// stays in one place.
+    ///
+    /// When `use_counts` is provided, the per-divisor counter at the
+    /// index of the selected reducer is incremented every iteration.
     pub(crate) fn reduce_by_refs_geobucket(
         &self,
         divisors: &[&Polynomial],
         ring: &PolyRing,
         cancel: Option<&crate::timeout::CancelToken>,
+        mut use_counts: Option<&mut [u64]>,
     ) -> Polynomial {
         let n = ring.n_vars;
         let stats_on = crate::profile::gb_stats_enabled();
@@ -1007,6 +1043,9 @@ impl Polynomial {
                 }
                 gb.sub_scaled_tail(&shift, &neg_coeff, divisors[di]);
                 local_sub_scaled += 1;
+                if let Some(counts) = use_counts.as_deref_mut() {
+                    counts[di] = counts[di].saturating_add(1);
+                }
                 if let Some(t0) = sub_t0 {
                     local_sub_ns += t0.elapsed().as_nanos() as u64;
                 }
@@ -1260,7 +1299,7 @@ mod tests {
             &r,
         );
         let divs: Vec<&Polynomial> = vec![&d1, &d2, &d3];
-        let geo = p.reduce_by_refs_geobucket(&divs, &r, None);
+        let geo = p.reduce_by_refs_geobucket(&divs, &r, None, None);
         let naive = p.reduce_by_refs_naive(&divs, &r);
         let dispatched = p.reduce_by_refs(&divs, &r);
         assert_eq!(geo.num_terms(), naive.num_terms());
@@ -1297,7 +1336,7 @@ mod tests {
             &r,
         );
         // p reduced by (x - y): leading reductions cancel until 0.
-        let nf = p.reduce_by_refs_geobucket(&[&d], &r, None);
+        let nf = p.reduce_by_refs_geobucket(&[&d], &r, None, None);
         let nf_naive = p.reduce_by_refs_naive(&[&d], &r);
         assert!(nf.is_zero(), "geobucket reduction should yield zero");
         assert!(nf_naive.is_zero(), "naive reduction should also yield zero");

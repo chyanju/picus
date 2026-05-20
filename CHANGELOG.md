@@ -4,6 +4,49 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.19] - 2026-05-20
+
+### Added
+
+- `Polynomial::reduce_by_refs_counted` and
+  `Polynomial::reduce_by_refs_counted_cancel`. Variants of
+  `reduce_by_refs` and `reduce_by_refs_cancel` that take a
+  `use_counts: &mut [u64]` slice aligned with `divisors`. Each
+  iteration of the geobucket reduce loop increments
+  `use_counts[chosen]` by one when a divisor is selected.
+- `BasisElement::use_count: u64`. Cumulative reducer-usage count
+  per active basis element; incremented by writeback after each
+  `reduce_by_refs_counted*` call.
+- `USE_COUNT_SORT_THRESHOLD = 32` in
+  `ff::buchberger::mod`. Below this active-basis size the
+  `active_idxs` list is left in basis-insertion order; at or above
+  it the list is sorted by `use_count` descending before being
+  passed to `reduce_by_refs_counted_cancel`. The inner stable LT-
+  degree sort in `reduce_by_refs_geobucket` preserves the
+  `use_count` order across equal LT-degree ties.
+
+### Changed
+
+- `BuchbergerState::add_generators`, `BuchbergerState::run` (main
+  loop), and `BuchbergerState::process_pair_geobucket` now build
+  `active_idxs` directly (instead of iterating
+  `self.basis.iter().filter(active)` for `active_refs` and
+  separately calling `active_indices`), sort it conditionally by
+  `use_count`, allocate a `use_counts: Vec<u64>` aligned with the
+  sorted list, call the counted reduce variant, and write the
+  counts back into `BasisElement::use_count` via
+  `saturating_add`.
+
+### Removed
+
+- `docs/solver-evaluation.md`.
+- `docs/benchmarks.md`. The `Benchmarks` row in `README.md`'s
+  documentation table is dropped.
+
+### Correctness
+
+212 lib + integration tests pass.
+
 ## [1.7.18] - 2026-05-20
 
 ### Fixed

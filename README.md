@@ -61,7 +61,7 @@ Picus can also be used as a library crate in other Rust projects:
 
 ```toml
 [dependencies]
-picus = { git = "https://github.com/chyanju/Picus", tag = "v1.7.18" }
+picus = { git = "https://github.com/chyanju/Picus", tag = "v1.7.19" }
 ```
 
 ```rust
@@ -123,7 +123,6 @@ picus info --r1cs circuit.r1cs --constraints
 | [Usage Guide](docs/usage-guide.md) | Result interpretation, solver differences, troubleshooting, large circuit strategies |
 | [Architecture](docs/architecture.md) | Crate structure, data flow, solver backends |
 | [Propagation Lemmas](docs/propagation-lemmas.md) | Deduction rules and their implementation |
-| [Benchmarks](docs/benchmarks.md) | Test suite from real-world ZK projects |
 | [Future Work](docs/TODO.md) | Planned features and removed components |
 | [Changelog](CHANGELOG.md) | Version history |
 

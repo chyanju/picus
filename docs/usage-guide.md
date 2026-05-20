@@ -16,12 +16,12 @@ Picus supports four solver backends:
 
 | Backend | Theory | How it works |
 |---------|--------|-------------|
-| cvc5 + QF_FF | Finite field | Native field arithmetic via cvc5's CoCoA/Groebner basis solver — most accurate for ZK circuits |
-| native + QF_FF | Finite field | Pure-Rust solver (`picus-solver`) with an in-tree Groebner basis engine — no C++ dependencies, same algorithm class as cvc5 |
-| z3 + QF_NIA | Integer mod p | Simulates field arithmetic using integers with modular reduction |
-| none | — | Propagation only — no SMT solver invoked, uses lemma-based deduction |
+| cvc5 + QF_FF | Finite field | Native field arithmetic via cvc5's CoCoA/Groebner basis solver |
+| native + QF_FF | Finite field | Pure-Rust solver (`picus-solver`) with an in-tree Groebner basis engine; no C++ dependencies |
+| z3 + QF_NIA | Integer mod p | Integer arithmetic with explicit `mod p` |
+| none | — | Propagation only; no SMT solver invoked |
 
-Both encodings are semantically equivalent when implemented correctly. If both solvers terminate, they should agree on safe/unsafe. In practice:
+The QF_FF and QF_NIA encodings are semantically equivalent. If two solvers terminate, they should agree on safe/unsafe:
 
 - **cvc5 safe, z3 safe** — consistent, circuit is safe.
 - **cvc5 unsafe, z3 unsafe** — consistent, circuit is unsafe.
