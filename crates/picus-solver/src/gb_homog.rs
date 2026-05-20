@@ -117,12 +117,12 @@ mod tests {
     }
 
     fn pr_xy(p: u32) -> FfPolyRing {
-        let field = FfField::new(&BigUint::from(p));
+        let field = FfField::new(BigUint::from(p));
         FfPolyRing::new(field, vec!["x".into(), "y".into()])
     }
 
     fn pr_xyz(p: u32) -> FfPolyRing {
-        let field = FfField::new(&BigUint::from(p));
+        let field = FfField::new(BigUint::from(p));
         FfPolyRing::new(field, vec!["x".into(), "y".into(), "z".into()])
     }
 
@@ -213,7 +213,7 @@ mod tests {
         //   a^2 - a, b^2 - b, c^2 - c   (bit cubes)
         // Equivalence check on this 5-poly system.
         let p: u32 = 65521; // a small-ish prime, big enough so 4 has an inverse
-        let field = FfField::new(&BigUint::from(p));
+        let field = FfField::new(BigUint::from(p));
         let pr = FfPolyRing::new(field, vec!["a".into(), "b".into(), "c".into(), "r".into()]);
         let a = pr.var(0); let b = pr.var(1);
         let c = pr.var(2); let r = pr.var(3);

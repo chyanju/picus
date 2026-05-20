@@ -38,7 +38,7 @@ fn rand_poly(pr: &FfPolyRing, degree: usize, n_terms: usize, rng: &mut Rand64) -
         let mut out = pr.zero();
         for _ in 0..n_terms {
             let c = rand_coeff(&pr.field, rng);
-            let mut term = pr.constant(pr.field.field().clone_el(&c));
+            let mut term = pr.constant(pr.field.clone_el(&c));
             let t_deg = 1 + (rng.rand_u64() as usize % degree.max(1));
             for _ in 0..t_deg {
                 let j = (rng.rand_u64() as usize) % pr.n_vars;
@@ -53,7 +53,7 @@ fn rand_poly(pr: &FfPolyRing, degree: usize, n_terms: usize, rng: &mut Rand64) -
 /// Evaluate `p` at the given point (length = n_vars).  Returns the field element.
 fn eval_poly(pr: &FfPolyRing, p: &Poly, point: &[FfEl]) -> FfEl {
     let ring = &pr.ring;
-    let fp = pr.field.field();
+    let fp = &pr.field;
     let mut acc = fp.zero();
     for (c, m) in ring.terms(p) {
         let mut t = fp.clone_el(c);
@@ -102,7 +102,7 @@ fn test_rand_sat() {
     let mut rng = Rand64::new(0xcafe_babe_cafe_babe);
 
     for _ in 0..n_iters {
-        let ff = FfField::new(&BigUint::from(P));
+        let ff = FfField::new(BigUint::from(P));
         let var_names: Vec<String> = (0..N_VARS).map(|i| format!("x{}", i)).collect();
         let pr = FfPolyRing::new(ff, var_names);
 
@@ -150,7 +150,7 @@ fn test_rand_unsat() {
     let mut rng = Rand64::new(0xdead_beef_dead_beef);
 
     for _ in 0..n_iters {
-        let ff = FfField::new(&BigUint::from(P));
+        let ff = FfField::new(BigUint::from(P));
         let var_names: Vec<String> = (0..N_VARS).map(|i| format!("x{}", i)).collect();
         let pr = FfPolyRing::new(ff, var_names);
 
@@ -188,7 +188,7 @@ fn test_rand_unsat() {
 //   * contain no variable
 #[test]
 fn test_gb_empty() {
-    let ff = FfField::new(&BigUint::from(7u64));
+    let ff = FfField::new(BigUint::from(7u64));
     let var_names: Vec<String> = (0..N_VARS).map(|i| format!("x{}", i)).collect();
     let pr = FfPolyRing::new(ff, var_names);
 
@@ -222,7 +222,7 @@ fn test_gb_rand() {
     let mut rng = Rand64::new(0x1234_5678_9abc_def0);
 
     for _ in 0..n_iters {
-        let ff = FfField::new(&BigUint::from(P));
+        let ff = FfField::new(BigUint::from(P));
         let var_names: Vec<String> = (0..N_VARS).map(|i| format!("x{}", i)).collect();
         let pr = FfPolyRing::new(ff, var_names);
 

@@ -56,7 +56,7 @@ pub struct BitSum {
 /// and a non-zero constant `c`.  Otherwise `None`.
 pub fn linear_monomial(pr: &FfPolyRing, p: &Poly) -> Option<LinearMonomial> {
     let ring = &pr.ring;
-    let fp = pr.field.field();
+    let fp = &pr.field;
     let n_vars = pr.n_vars;
 
     let mut found: Option<(usize, FfEl)> = None;
@@ -98,7 +98,7 @@ pub fn zero_constraint(pr: &FfPolyRing, p: &Poly) -> Option<usize> {
 /// Detects polynomials of the form `c*x + d` with `c, d != 0` and `d/c = -1`.
 pub fn one_constraint(pr: &FfPolyRing, p: &Poly) -> Option<usize> {
     let ring = &pr.ring;
-    let fp = pr.field.field();
+    let fp = &pr.field;
     let n_vars = pr.n_vars;
 
     let mut linear_term: Option<(usize, FfEl)> = None;
@@ -146,7 +146,7 @@ pub fn one_constraint(pr: &FfPolyRing, p: &Poly) -> Option<usize> {
 /// any sign / scalar form: `c*(x^2 - x) == 0` for some non-zero `c`.
 pub fn bit_constraint(pr: &FfPolyRing, p: &Poly) -> Option<BitConstraint> {
     let ring = &pr.ring;
-    let fp = pr.field.field();
+    let fp = &pr.field;
     let n_vars = pr.n_vars;
 
     // Collect the (degree, var, coeff) triples.
@@ -201,7 +201,7 @@ pub fn extract_linear_monomials(
     p: &Poly,
 ) -> Option<(Vec<LinearMonomial>, Vec<Poly>)> {
     let ring = &pr.ring;
-    let fp = pr.field.field();
+    let fp = &pr.field;
     let n_vars = pr.n_vars;
 
     if ring.is_zero(p) {
@@ -261,7 +261,7 @@ pub fn bit_sums(
     bits_hint: &HashSet<usize>,
 ) -> Option<(Vec<BitSum>, Poly)> {
     let ring = &pr.ring;
-    let fp = pr.field.field();
+    let fp = &pr.field;
     let two = fp.int_hom().map(2);
 
     let (mut linears, rest) = extract_linear_monomials(pr, p)?;
@@ -371,7 +371,7 @@ mod tests {
     use num_bigint::BigUint;
 
     fn ff(p: u32) -> FfField {
-        FfField::new(&BigUint::from(p))
+        FfField::new(BigUint::from(p))
     }
 
     #[test]

@@ -48,7 +48,7 @@ impl<'r> HomogRing<'r> {
         let n = base.n_vars;
         let mut var_names = base.var_names.clone();
         var_names.push("__h".to_string());
-        let ext_field = FfField::new(&base.field.prime);
+        let ext_field = FfField::new(base.field.prime().clone());
         let ext = FfPolyRing::new(ext_field, var_names);
         debug_assert_eq!(ext.n_vars, n + 1);
         HomogRing { base, ext, h_idx: n }
@@ -93,7 +93,7 @@ impl<'r> HomogRing<'r> {
     pub fn homogenize(&self, q_lifted: &Poly) -> Poly {
         let ext_ring = &self.ext.ring;
         let n_plus_1 = self.ext.n_vars;
-        let field = self.ext.field.field();
+        let field = &self.ext.field;
         // Gather (coeff, exps[n+1]) and find max total deg.
         // exponent_at slot h_idx is 0 by construction of `lift`.
         let mut terms_buf: Vec<(_, Vec<usize>)> = Vec::new();
@@ -158,7 +158,7 @@ mod tests {
     use num_bigint::BigUint;
 
     fn pr_xy() -> FfPolyRing {
-        let field = FfField::new(&BigUint::from(17u32));
+        let field = FfField::new(BigUint::from(17u32));
         FfPolyRing::new(field, vec!["x".into(), "y".into()])
     }
 

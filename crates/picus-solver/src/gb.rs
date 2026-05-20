@@ -167,7 +167,7 @@ mod tests {
     #[test]
     fn test_trivial_gb() {
         // x = 0 and x = 1 over GF(17) → UNSAT
-        let field = FfField::new(&BigUint::from(17u32));
+        let field = FfField::new(BigUint::from(17u32));
         let pr = FfPolyRing::new(field, vec!["x".into()]);
 
         let x = pr.var(0);
@@ -183,7 +183,7 @@ mod tests {
     #[test]
     fn test_nontrivial_gb() {
         // x * y = 1 over GF(17) → SAT
-        let field = FfField::new(&BigUint::from(17u32));
+        let field = FfField::new(BigUint::from(17u32));
         let pr = FfPolyRing::new(field, vec!["x".into(), "y".into()]);
 
         let xy = pr.mul(pr.var(0), pr.var(1));

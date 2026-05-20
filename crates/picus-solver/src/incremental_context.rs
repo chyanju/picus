@@ -15,7 +15,7 @@ use num_bigint::BigUint;
 
 use crate::bitprop::{BitProp, BitPropState};
 use crate::core::{populate_bitprop, SolveOutcome};
-use crate::encoder::{encode, ConstraintSystem};
+use crate::encoder::{encode, encode_constraint_side, ConstraintSystem};
 use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
 use crate::ff::monomial::MonomialOrder;
 use crate::ideal::{interreduce_basis, ring_for_order, Ideal};
@@ -197,32 +197,16 @@ impl IncrementalSolverContext {
         self.cached_base = None;
         self.partial_build = None;
 
-        let mut cs_for_cache = ConstraintSystem {
-            prime: cs.prime.clone(),
-            equalities: cs.equalities.clone(),
-            disequalities: vec![("x0".to_string(), "x0".to_string())],
-            assignments: cs.assignments.clone(),
-            add_field_polys: cs.add_field_polys,
-            bitsums: cs.bitsums.clone(),
-        };
-        if cs_for_cache
-            .assignments
-            .iter()
-            .find(|(n, _)| n == "x0")
-            .is_none()
-        {
-            cs_for_cache
-                .assignments
-                .insert(0, ("x0".to_string(), num_bigint::BigUint::from(1u32)));
-        }
-
-        let mut encoded = match encode(&cs_for_cache) {
+        // Encode the constraint side only: the cache entry is keyed on
+        // `digest_constraint_side(cs)`, so the encoded ring must contain
+        // everything *except* the per-query Rabinowitsch polynomials.
+        // `encode_constraint_side` still reserves the `__w_diseq_i`
+        // variable slots so [`encode_query_disequalities`] can build the
+        // Rabinowitsch polynomial in this ring later.
+        let encoded = match encode_constraint_side(cs) {
             Ok(e) => e,
             Err(_) => return Err(()),
         };
-        if !encoded.polynomials.is_empty() {
-            encoded.polynomials.pop();
-        }
         if cancel.is_cancelled() {
             return Err(());
         }

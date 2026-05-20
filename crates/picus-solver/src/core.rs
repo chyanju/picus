@@ -16,7 +16,7 @@ use crate::gb::{compute_gb_with_timeout_traced, GbResultTraced};
 use crate::model;
 use crate::parse;
 use crate::poly::{FfPolyRing, Poly};
-use crate::split_gb::{admit, split_find_zero, split_find_zero_cancel, split_gb, split_gb_cancel};
+use crate::split_gb::{admit, split_find_zero_cancel, split_gb_cancel};
 use crate::timeout::CancelToken;
 
 /// An UNSAT core: indices into the input fact list that suffice for UNSAT.
@@ -85,57 +85,12 @@ pub fn solve_split_gb<'r>(
     original_polys: &[Poly],
     bitsum_polys: &[Poly],
 ) -> SolveOutcome {
-    // Split into two ideals:
-    //   - basis 0 ("linear"):    bitsum polys + every input poly with deg <= 1
-    //   - basis 1 ("nonlinear"): all input polys
-    let nl_gens: Vec<Poly> = original_polys.iter().map(|p| poly_ring.ring.clone_el(p)).collect();
-    let mut l_gens: Vec<Poly> = Vec::new();
-    // Seed bitsum definition polys into basis 0 (linear).
-    for p in bitsum_polys {
-        l_gens.push(poly_ring.ring.clone_el(p));
-    }
-    for p in original_polys {
-        if admit(poly_ring, 0, p) {
-            l_gens.push(poly_ring.ring.clone_el(p));
-        }
-    }
-
-    let mut bit_prop = BitProp::new(poly_ring);
-    populate_bitprop(poly_ring, original_polys, &mut bit_prop);
-    let split_basis = split_gb(poly_ring, vec![l_gens, nl_gens], &mut bit_prop);
-
-    // Trivial UNSAT detection: any basis is the whole ring.
-    if split_basis.iter().any(|b| b.is_whole_ring()) {
-        return SolveOutcome::Unsat((0..original_polys.len()).collect());
-    }
-
-    match split_find_zero(poly_ring, split_basis, &mut bit_prop) {
-        crate::split_gb::SplitFindZeroOutcome::Sat(point) => {
-            let mut model_map = HashMap::new();
-            let field = &poly_ring.field;
-            for (idx, val) in point.iter().enumerate() {
-                if idx < poly_ring.var_names.len() {
-                    model_map.insert(poly_ring.var_names[idx].clone(), field.to_biguint(val));
-                }
-            }
-            // Validate model against original polynomials.
-            if model::verify_model(poly_ring, original_polys, &model_map) {
-                SolveOutcome::Sat(model_map)
-            } else {
-                log::warn!("model validation failed; reporting Unknown");
-                SolveOutcome::Unknown
-            }
-        }
-        crate::split_gb::SplitFindZeroOutcome::Unsat => {
-            SolveOutcome::Unsat((0..original_polys.len()).collect())
-        }
-        crate::split_gb::SplitFindZeroOutcome::Unknown => SolveOutcome::Unknown,
-    }
+    solve_split_gb_cancel(poly_ring, original_polys, bitsum_polys, &CancelToken::none())
 }
 
 /// Solve an `EncodedSystem` directly.  Convenience wrapper.
 pub fn solve_encoded(encoded: &EncodedSystem) -> SolveOutcome {
-    solve_split_gb(&encoded.poly_ring, &encoded.polynomials, &encoded.bitsum_polys)
+    solve_encoded_with_cancel(encoded, &CancelToken::none())
 }
 
 /// Solve with a specified mode.
@@ -143,14 +98,7 @@ pub fn solve_encoded_with_mode(
     encoded: &EncodedSystem,
     mode: SolverMode,
 ) -> SolveOutcome {
-    match mode {
-        SolverMode::SplitGb => solve_split_gb(&encoded.poly_ring, &encoded.polynomials, &encoded.bitsum_polys),
-        SolverMode::SingleGb => {
-            let polys: Vec<Poly> = encoded.polynomials.iter()
-                .map(|p| encoded.poly_ring.ring.clone_el(p)).collect();
-            solve_single_gb(&encoded.poly_ring, polys)
-        }
-    }
+    solve_encoded_with_mode_cancel(encoded, mode, &CancelToken::none())
 }
 
 /// Solve with a specified mode and cooperative timeout.
@@ -274,7 +222,7 @@ mod tests {
     use super::*;
     use crate::field::FfField;
 
-    fn ff(p: u32) -> FfField { FfField::new(&BigUint::from(p)) }
+    fn ff(p: u32) -> FfField { FfField::new(BigUint::from(p)) }
 
     #[test]
     fn test_solve_sat() {

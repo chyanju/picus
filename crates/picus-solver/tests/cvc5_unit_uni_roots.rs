@@ -43,7 +43,7 @@ fn expected(p: &BigUint, vals: &[i64]) -> Vec<BigUint> {
 #[test]
 fn test_distinct_roots_poly_small() {
     let p = BigUint::from(7u32);
-    let ff = FfField::new(&p);
+    let ff = FfField::new(p.clone());
 
     // f = x   →  roots {0}
     let f1 = vec![ff.zero(), ff.one()];
@@ -79,7 +79,7 @@ fn test_distinct_roots_poly_small() {
 #[test]
 fn test_roots_zero_small() {
     let p = BigUint::from(7u32);
-    let ff = FfField::new(&p);
+    let ff = FfField::new(p.clone());
 
     let f1 = vec![ff.zero(), ff.one()];
     assert_eq!(sorted_roots(&ff, &find_roots(&ff, &f1)), expected(&p, &[0]));
@@ -106,7 +106,7 @@ fn test_roots_zero_small() {
 #[test]
 fn test_roots_full_small() {
     let p = BigUint::from(7u32);
-    let ff = FfField::new(&p);
+    let ff = FfField::new(p.clone());
 
     // x*(x-1) = x^2 - x
     let mut f1 = vec![ff.zero(); 3];
@@ -153,7 +153,7 @@ fn test_roots_full_small() {
 fn test_distinct_roots_poly_big() {
     let p: BigUint = "57896044618658097711785492504343953926634992332820282019728792003956564819949"
         .parse().unwrap();
-    let ff = FfField::new(&p);
+    let ff = FfField::new(p.clone());
 
     // f = x   →  {0}
     let f1 = vec![ff.zero(), ff.one()];
@@ -178,7 +178,7 @@ fn test_distinct_roots_poly_big() {
 fn test_roots_full_big() {
     let p: BigUint = "57896044618658097711785492504343953926634992332820282019728792003956564819949"
         .parse().unwrap();
-    let ff = FfField::new(&p);
+    let ff = FfField::new(p.clone());
 
     // x^2 - x + 1  → roots from cvc5 source (lines 246-253):
     //   r1 = -25380276437079137597092236364571181010632177832931468165172742469126098314552

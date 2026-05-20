@@ -87,17 +87,19 @@ pub trait BuchbergerObserver {
 pub struct NoObserver;
 impl BuchbergerObserver for NoObserver {}
 
-/// Internal basis element.
+/// Internal basis element. Visible to sibling submodules
+/// (`spair_criteria`, `incremental`) so they can index into the
+/// `BuchbergerState::basis` slice.
 #[derive(Clone, Debug)]
-struct BasisElement {
-    poly: Polynomial,
-    lt: Monomial,
+pub(super) struct BasisElement {
+    pub(super) poly: Polynomial,
+    pub(super) lt: Monomial,
     #[allow(dead_code)] // reserved for future Gebauer-Möller chain criterion
-    lt_divmask: DivMask,
+    pub(super) lt_divmask: DivMask,
     /// Lazily deactivated when superseded by a smaller-LT element.
-    active: bool,
+    pub(super) active: bool,
     /// Sugar degree at the time this element was added.
-    sugar: u32,
+    pub(super) sugar: u32,
 }
 
 // ─────────────────────────── Public entry points ───────────────────────────
@@ -232,148 +234,8 @@ pub fn interreduce_with_cancel(
     filtered
 }
 
-// ──────────────────── S-pair queue helpers (GM, merge) ────────────────────
-
-/// Gebauer-Möller M-criterion insertion.
-///
-/// A pair with a smaller `lcm` dominates pairs with larger `lcm`s:
-/// `lcm(LT_a, LT_b)` dividing `lcm(LT_c, LT_d)` makes the (c, d) pair
-/// redundant. So:
-///   * If `LCM(existing) | LCM(P)`: existing dominates P, drop P.
-///     Special case (LCMs equal): if `existing` is non-coprime and P
-///     is coprime, replace `existing` with P. Coprime pairs are dropped
-///     by the product criterion downstream, so swapping in a coprime
-///     owner for the same `lcm` eliminates the work entirely.
-///   * Else if `LCM(P) | LCM(existing)`: P dominates existing, erase
-///     existing.
-///
-/// On exit the list is left in arbitrary order; callers sort it before
-/// merging.
-fn gm_insert(list: &mut Vec<SPair>, pair: SPair) {
-    let mut to_insert = Some(pair);
-    let mut dominated = false;
-    let mut idx = 0;
-    while idx < list.len() {
-        let p_ref = match &to_insert {
-            Some(p) => p,
-            None => break,
-        };
-        let existing = &list[idx];
-        // Existing dominates P iff LCM(existing) divides LCM(P).
-        let existing_dominates =
-            existing.lcm_divmask.divides_consistent_with(p_ref.lcm_divmask)
-                && existing.lcm.divides(&p_ref.lcm);
-        if existing_dominates {
-            let same_lcm = p_ref.lcm == existing.lcm;
-            if same_lcm && !existing.is_coprime && p_ref.is_coprime {
-                list[idx] = to_insert.take().unwrap();
-            }
-            dominated = true;
-            break;
-        }
-        // Otherwise check if P strictly dominates existing.
-        let p_dominates =
-            p_ref.lcm_divmask.divides_consistent_with(existing.lcm_divmask)
-                && p_ref.lcm.divides(&existing.lcm);
-        if p_dominates {
-            // P strictly dominates (equality was handled above). Erase
-            // existing without advancing idx — swap_remove brings a
-            // not-yet-checked element into position idx.
-            list.swap_remove(idx);
-            continue;
-        }
-        idx += 1;
-    }
-    if !dominated {
-        if let Some(p) = to_insert {
-            list.push(p);
-        }
-    }
-}
-
-/// Buchberger B-criterion. Walks `pairs` (the currently-pending
-/// S-pair queue) and erases every pair that the newly-added basis
-/// element's leading term `new_lt` makes redundant.
-///
-/// A pair `(i, j)` with cached `lcm = lcm(LT_i, LT_j)` is killed iff
-/// all three conditions hold:
-///   1. `new_lt | lcm` (DivMask prefilter, then full `Monomial` check),
-///   2. `lcm(LT_j, new_lt) != lcm`,
-///   3. `lcm(LT_i, new_lt) != lcm`.
-///
-/// Soundness depends on the substitute pairs `(i, new)` and `(j, new)`
-/// being generated and discharged this round (or being GM-dominated by
-/// some `(m, new)` whose own obligation will be processed). A simpler
-/// "any third element's LT divides `lcm`" chain criterion that skipped
-/// conditions 2 and 3 would break that invariant — this implementation
-/// keeps all three.
-///
-/// The retain preserves the descending-sort invariant of `pairs`.
-fn b_criterion_kill(
-    pairs: &mut Vec<SPair>,
-    new_lt: &Monomial,
-    new_lt_divmask: DivMask,
-    basis: &[BasisElement],
-) {
-    pairs.retain(|p| {
-        // Cheap reject: NewPP must divide pair's lcm to even consider killing.
-        if !new_lt_divmask.divides_consistent_with(p.lcm_divmask) {
-            return true;
-        }
-        if !new_lt.divides(&p.lcm) {
-            return true;
-        }
-        // NewPP divides p.lcm. Check the two non-equality conditions.
-        let lcm_j_new = basis[p.j].lt.lcm(new_lt);
-        if lcm_j_new == p.lcm {
-            return true;
-        }
-        let lcm_i_new = basis[p.i].lt.lcm(new_lt);
-        if lcm_i_new == p.lcm {
-            return true;
-        }
-        // All three conditions hold ⇒ pair is killed.
-        false
-    });
-}
-
-/// Merge `incoming` (sorted descending) into `dst` (also sorted descending),
-/// preserving descending order. O(n + m).
-fn merge_sorted_descending(dst: &mut Vec<SPair>, incoming: Vec<SPair>) {
-    if incoming.is_empty() {
-        return;
-    }
-    if dst.is_empty() {
-        *dst = incoming;
-        return;
-    }
-    let mut out: Vec<SPair> = Vec::with_capacity(dst.len() + incoming.len());
-    let old = std::mem::take(dst);
-    let mut a = old.into_iter().peekable();
-    let mut b = incoming.into_iter().peekable();
-    loop {
-        match (a.peek(), b.peek()) {
-            (Some(x), Some(y)) => {
-                // descending: take the larger first
-                if x.cmp(y) == std::cmp::Ordering::Greater {
-                    out.push(a.next().unwrap());
-                } else {
-                    out.push(b.next().unwrap());
-                }
-            }
-            (Some(_), None) => {
-                out.extend(a);
-                break;
-            }
-            (None, Some(_)) => {
-                out.extend(b);
-                break;
-            }
-            (None, None) => break,
-        }
-    }
-    *dst = out;
-}
+mod spair_criteria;
+use spair_criteria::{b_criterion_kill, gm_insert, merge_sorted_descending};
 
 // ────────────────────────────── Buchberger ─────────────────────────────────
 
@@ -392,20 +254,19 @@ pub struct GbEngineStats {
     pub interreduces_run: u64,
 }
 
-struct BuchbergerState {
-    ring: Arc<PolyRing>,
-    cfg: BuchbergerConfig,
-    basis: Vec<BasisElement>,
+pub(super) struct BuchbergerState {
+    pub(super) ring: Arc<PolyRing>,
+    pub(super) cfg: BuchbergerConfig,
+    pub(super) basis: Vec<BasisElement>,
     /// Pending S-pairs sorted in **descending** `ordering_key` order so
     /// `Vec::pop()` returns the smallest pair (lowest sugar, then lcm_deg,
     /// then age). Held as a sorted vector — not a heap — because the GM
-    /// M-criterion needs to walk and mutate the list during pair insertion
-    /// (CoCoA's `GPairList`).
-    open: Vec<SPair>,
-    age_counter: u64,
-    generation: u32,
+    /// M-criterion needs to walk and mutate the list during pair insertion.
+    pub(super) open: Vec<SPair>,
+    pub(super) age_counter: u64,
+    pub(super) generation: u32,
     /// True once a constant (nonzero) has entered the basis.
-    trivial: bool,
+    pub(super) trivial: bool,
     /// GB-engine counters; written unconditionally, printed only on
     /// `PICUS_GB_STATS=1`.
     stats: GbEngineStats,
@@ -416,7 +277,7 @@ struct BuchbergerState {
 }
 
 impl BuchbergerState {
-    fn new(ring: Arc<PolyRing>, cfg: BuchbergerConfig) -> Self {
+    pub(super) fn new(ring: Arc<PolyRing>, cfg: BuchbergerConfig) -> Self {
         BuchbergerState {
             ring,
             cfg,
@@ -447,7 +308,7 @@ impl BuchbergerState {
     ///
     /// Caller responsibility: the input must already be a reduced GB
     /// in `self.ring.order`. No validation is performed.
-    fn seed_with_reduced_basis(&mut self, basis: Vec<Polynomial>) {
+    pub(super) fn seed_with_reduced_basis(&mut self, basis: Vec<Polynomial>) {
         for poly in basis {
             if poly.is_zero() {
                 continue;
@@ -477,7 +338,7 @@ impl BuchbergerState {
         }
     }
 
-    fn add_generators<O: BuchbergerObserver>(
+    pub(super) fn add_generators<O: BuchbergerObserver>(
         &mut self,
         generators: Vec<Polynomial>,
         observer: &mut O,
@@ -625,7 +486,7 @@ impl BuchbergerState {
         merge_sorted_descending(&mut self.open, new_pairs);
     }
 
-    fn active_polys(&self) -> Vec<Polynomial> {
+    pub(super) fn active_polys(&self) -> Vec<Polynomial> {
         self.basis
             .iter()
             .filter(|e| e.active)
@@ -633,7 +494,7 @@ impl BuchbergerState {
             .collect()
     }
 
-    fn active_poly_refs(&self) -> Vec<&Polynomial> {
+    pub(super) fn active_poly_refs(&self) -> Vec<&Polynomial> {
         self.basis
             .iter()
             .filter(|e| e.active)
@@ -658,7 +519,7 @@ impl BuchbergerState {
     /// calls because D3 only deactivates strictly dominated elements but
     /// does not shrink tail-redundancy in surviving polynomials, which
     /// makes every subsequent `reduce_by_refs` quadratically more expensive.
-    fn tail_reduce_active(&mut self) {
+    pub(super) fn tail_reduce_active(&mut self) {
         // Snapshot the active indices and clone their polys ONCE into a
         // workspace. We then reduce each workspace[i] by &workspace[j] for
         // j ≠ i with `reduce_by_refs`. Repeating to a fixed point isn't
@@ -718,7 +579,7 @@ impl BuchbergerState {
             .collect()
     }
 
-    fn run<O: BuchbergerObserver>(&mut self, observer: &mut O) -> Result<(), SolverError> {
+    pub(super) fn run<O: BuchbergerObserver>(&mut self, observer: &mut O) -> Result<(), SolverError> {
         if self.cfg.use_f4 {
             return self.run_f4(observer);
         }
@@ -1146,328 +1007,15 @@ impl BuchbergerState {
     }
 }
 
-// ──────────────────────────── Incremental GB ────────────────────────────────
-//
-// Provides push/pop semantics. Each `push` records the basis length and the
-// S-pair queue contents; `pop` truncates the basis and restores the queue.
+mod incremental;
+pub use incremental::IncrementalGB;
 
-#[derive(Clone, Debug)]
-struct Checkpoint {
-    basis_len: usize,
-    /// Snapshot of `active` flags for the elements that existed at push time,
-    /// so we can fully restore them on `pop` (covers any deactivations that
-    /// happened between push and pop).
-    active_snapshot: Vec<bool>,
-    /// Generation at this level — bumped on `pop`.
-    generation: u32,
-    /// Snapshot of the open S-pair queue (sorted descending, same convention
-    /// as `BuchbergerState::open`). Simple but correct; could be replaced
-    /// with generation tagging in future work.
-    saved_open: Vec<SPair>,
-    age_counter: u64,
-    trivial: bool,
-}
+// ─── Polynomial coefficient lookup ─────────────────────────────────────────
 
-pub struct IncrementalGB {
-    state: BuchbergerState,
-    trail: Vec<Checkpoint>,
-}
-
-impl IncrementalGB {
-    pub fn new(ring: Arc<PolyRing>, cfg: BuchbergerConfig) -> Self {
-        IncrementalGB {
-            state: BuchbergerState::new(ring, cfg),
-            trail: Vec::new(),
-        }
-    }
-
-    pub fn ring(&self) -> &Arc<PolyRing> { &self.state.ring }
-
-    /// Seed the engine with a polynomial set that is **already a reduced
-    /// GB** in the engine's order. Skips S-pair generation among these
-    /// inputs entirely — the caller asserts the seeded set has no open
-    /// obligations.
-    ///
-    /// Used by `compute_gb_incremental_with_order` to avoid the
-    /// O(n²) pair-generation + O(n) GM-walk-per-pair overhead that
-    /// `add_generators` would otherwise pay during seeding.
-    pub fn seed_reduced_basis(&mut self, basis: Vec<Polynomial>) {
-        self.state.seed_with_reduced_basis(basis);
-    }
-
-    pub fn add_generators(&mut self, polys: Vec<Polynomial>) -> Result<bool, SolverError> {
-        let mut obs = NoObserver;
-        self.state.add_generators(polys, &mut obs)?;
-        self.state.run(&mut obs)?;
-        // Tail-reduce the active basis to prevent monotonic growth across
-        // successive `add_generators` calls (a hot path under profiling).
-        if !self.state.trivial {
-            self.state.tail_reduce_active();
-        }
-        Ok(self.state.trivial)
-    }
-
-    /// Drain the in-progress S-pair queue without adding new
-    /// generators. Used by [`crate::incremental_context::IncrementalSolverContext`]
-    /// to resume a previously-cancelled GB build across solve calls.
-    ///
-    /// Semantics are identical to `add_generators(vec![])` but skips
-    /// the no-op generator append and the homogeneous-input flag
-    /// detection (which is set on the first call and is immutable
-    /// thereafter).
-    pub fn run_only(&mut self) -> Result<bool, SolverError> {
-        let mut obs = NoObserver;
-        self.state.run(&mut obs)?;
-        if !self.state.trivial {
-            self.state.tail_reduce_active();
-        }
-        Ok(self.state.trivial)
-    }
-
-    /// Swap in a fresh cancel token. Each
-    /// [`crate::incremental_context::IncrementalSolverContext::solve`]
-    /// invocation produces its own per-call cancel token; a persisted
-    /// `IncrementalGB` must pick that up so a resumed run respects the
-    /// new budget.
-    pub fn set_cancel_token(&mut self, token: Option<CancelToken>) {
-        self.state.cfg.cancel_token = token;
-    }
-
-    /// True iff the open S-pair queue is empty (no further reductions
-    /// pending). When `is_quiescent()` and `!is_trivial()`, the active
-    /// polys form a Groebner basis (modulo a final inter-reduce).
-    pub fn is_quiescent(&self) -> bool {
-        self.state.open.is_empty()
-    }
-
-    /// Number of pending S-pairs in the open queue. Diagnostic.
-    pub fn open_queue_len(&self) -> usize {
-        self.state.open.len()
-    }
-
-    /// Observed variant of `add_generators`: the supplied observer
-    /// receives `on_initial_basis` / `on_new_poly` / `on_inter_reduce`
-    /// callbacks during the GB extension.  Used by `GbTracer` for
-    /// UNSAT-core extraction.
-    pub fn add_generators_observed<O: BuchbergerObserver>(
-        &mut self,
-        polys: Vec<Polynomial>,
-        observer: &mut O,
-    ) -> Result<bool, SolverError> {
-        self.state.add_generators(polys, observer)?;
-        self.state.run(observer)?;
-        // NOTE: do NOT tail-reduce here. The observer/tracer relies on
-        // basis-element identity for UNSAT-core extraction; rewriting
-        // polynomial bodies underneath it would invalidate its tracking.
-        Ok(self.state.trivial)
-    }
-
-    /// Save a checkpoint for backtracking. Cost: O(basis_len + open_len)
-    /// (clones the S-pair vector — already sorted, no extra ordering work).
-    pub fn push(&mut self) {
-        let active_snapshot: Vec<bool> = self.state.basis.iter().map(|e| e.active).collect();
-        self.trail.push(Checkpoint {
-            basis_len: self.state.basis.len(),
-            active_snapshot,
-            generation: self.state.generation,
-            saved_open: self.state.open.clone(),
-            age_counter: self.state.age_counter,
-            trivial: self.state.trivial,
-        });
-        self.state.generation = self.state.generation.wrapping_add(1);
-    }
-
-    pub fn pop(&mut self) {
-        if let Some(cp) = self.trail.pop() {
-            // Truncate basis.
-            self.state.basis.truncate(cp.basis_len);
-            // Restore active flags from the snapshot.
-            for (idx, was_active) in cp.active_snapshot.into_iter().enumerate() {
-                if idx < self.state.basis.len() {
-                    self.state.basis[idx].active = was_active;
-                }
-            }
-            // Restore S-pair queue (already sorted descending).
-            self.state.open = cp.saved_open;
-            self.state.age_counter = cp.age_counter;
-            self.state.generation = cp.generation;
-            self.state.trivial = cp.trivial;
-        }
-    }
-
-    pub fn basis(&self) -> Vec<Polynomial> {
-        self.state.active_polys()
-    }
-
-    pub fn reduce(&self, p: &Polynomial) -> Polynomial {
-        let refs = self.state.active_poly_refs();
-        p.reduce_by_refs(&refs, &self.state.ring)
-    }
-
-    pub fn is_trivial(&self) -> bool {
-        self.state.trivial
-    }
-
-    pub fn decision_level(&self) -> usize {
-        self.trail.len()
-    }
-}
-
-// ─────────────────────────────── Ideal ──────────────────────────────────────
-
-/// A high-level wrapper around a Groebner basis.
-///
-/// Provides ideal containment, reduction, zero-dimensionality testing, and
-/// minimal-polynomial computation by Gaussian elimination on normal forms.
-#[derive(Clone, Debug)]
-pub struct Ideal {
-    pub ring: Arc<PolyRing>,
-    pub basis: Vec<Polynomial>,
-}
-
-impl Ideal {
-    pub fn new(ring: Arc<PolyRing>, basis: Vec<Polynomial>) -> Self {
-        Ideal { ring, basis }
-    }
-
-    pub fn from_generators(
-        ring: Arc<PolyRing>,
-        generators: Vec<Polynomial>,
-        cfg: &BuchbergerConfig,
-    ) -> Result<Self, SolverError> {
-        let gb = groebner_basis(generators, &ring, cfg)?;
-        Ok(Ideal { ring, basis: gb.basis })
-    }
-
-    pub fn reduce(&self, p: &Polynomial) -> Polynomial {
-        p.reduce_by(&self.basis, &self.ring)
-    }
-
-    pub fn contains(&self, p: &Polynomial) -> bool {
-        self.reduce(p).is_zero()
-    }
-
-    pub fn is_whole_ring(&self) -> bool {
-        self.basis.iter().any(|p| p.is_constant() && !p.is_zero())
-    }
-
-    /// Zero-dimensional iff every variable has a pure-power leading monomial in the GB.
-    pub fn is_zero_dim(&self) -> bool {
-        if self.basis.is_empty() { return false; }
-        let n = self.ring.n_vars;
-        let mut pure_var = vec![false; n];
-        for p in &self.basis {
-            if let Some(lt) = p.leading_term(&self.ring) {
-                let exps = lt.exponents();
-                let nonzero: Vec<usize> = (0..n).filter(|&v| exps[v] > 0).collect();
-                if nonzero.len() == 1 {
-                    pure_var[nonzero[0]] = true;
-                }
-            }
-        }
-        pure_var.iter().all(|&b| b)
-    }
-
-    pub fn normalize(&self, p: &Polynomial) -> Polynomial {
-        if p.is_zero() { return Polynomial::zero(); }
-        p.make_monic(&self.ring)
-    }
-
-    /// Compute the minimal polynomial of `x_var` modulo the ideal.
-    ///
-    /// Returns the coefficient vector `[c_0, c_1, ..., c_d]` (with `c_d = 1`).
-    /// Returns `None` if the ideal is not zero-dimensional or the search hits the cap.
-    pub fn min_poly(&self, var_idx: usize) -> Option<Vec<FieldElem>> {
-        self.min_poly_cancel(var_idx, &CancelToken::none())
-    }
-
-    pub fn min_poly_cancel(
-        &self,
-        var_idx: usize,
-        cancel: &CancelToken,
-    ) -> Option<Vec<FieldElem>> {
-        let ring = &self.ring;
-        let f = &ring.field;
-        if self.is_whole_ring() { return Some(vec![f.one()]); }
-        if !self.is_zero_dim() { return None; }
-
-        let one_poly = Polynomial::constant(f.one(), ring);
-        let x_poly = Polynomial::variable(var_idx, ring);
-        let one_nf = self.reduce(&one_poly);
-        let mut powers: Vec<Polynomial> = vec![one_nf];
-
-        const MIN_POLY_DEG_CAP: usize = 4096;
-
-        // Echelon form: each row is (normal_form, dependency vector).
-        let mut nfs: Vec<Polynomial> = Vec::new();
-        let mut deps: Vec<Vec<FieldElem>> = Vec::new();
-        let mut pivot_monos: Vec<Monomial> = Vec::new();
-
-        for d in 0..=MIN_POLY_DEG_CAP {
-            if cancel.is_cancelled() { return None; }
-            let nf = if d == 0 {
-                powers[0].clone()
-            } else {
-                let prev = powers[d - 1].clone();
-                let next = prev.mul(&x_poly, ring);
-                self.reduce(&next)
-            };
-            if d > 0 {
-                powers.push(nf.clone());
-            }
-
-            // Build a row: (nf, e_d).
-            let mut row_poly = nf.clone();
-            let mut row_dep: Vec<FieldElem> = vec![f.zero(); d + 1];
-            row_dep[d] = f.one();
-
-            // Reduce row against existing echelon rows.
-            for (i, nf_i) in nfs.iter().enumerate() {
-                let lm_i = &pivot_monos[i];
-                let coeff_at_lm = poly_coefficient_at(&row_poly, lm_i, ring);
-                if !f.is_zero(&coeff_at_lm) {
-                    let lc_i = poly_coefficient_at(nf_i, lm_i, ring);
-                    debug_assert!(!f.is_zero(&lc_i));
-                    let factor = f.div(&coeff_at_lm, &lc_i).unwrap();
-                    let neg_factor = f.neg(&factor);
-                    let scaled = nf_i.scale(&neg_factor, ring);
-                    row_poly = row_poly.add(&scaled, ring);
-                    let dep_i = &deps[i];
-                    debug_assert!(dep_i.len() <= row_dep.len(),
-                        "echelon row dep length exceeds current row_dep");
-                    for k in 0..dep_i.len() {
-                        let prod = f.mul(&factor, &dep_i[k]);
-                        f.sub_assign(&mut row_dep[k], &prod);
-                    }
-                }
-            }
-
-            if row_poly.is_zero() {
-                // Found a dependency!
-                let mut top = row_dep.len();
-                while top > 0 && f.is_zero(&row_dep[top - 1]) { top -= 1; }
-                if top == 0 { return Some(vec![f.one()]); }
-                let lead = row_dep[top - 1].clone();
-                let mut coeffs: Vec<FieldElem> = Vec::with_capacity(top);
-                for k in 0..top {
-                    coeffs.push(f.div(&row_dep[k], &lead).unwrap());
-                }
-                return Some(coeffs);
-            }
-
-            // Add to echelon: pivot is the leading monomial of the (reduced) row.
-            if let Some(lm) = row_poly.leading_monomial(ring) {
-                pivot_monos.push(lm);
-                nfs.push(row_poly);
-                deps.push(row_dep);
-            }
-        }
-        None
-    }
-}
-
-// Look up the coefficient at a specific monomial within a polynomial.
-fn poly_coefficient_at(p: &Polynomial, mon: &Monomial, ring: &PolyRing) -> FieldElem {
+/// Look up the coefficient at a specific monomial within a polynomial,
+/// using binary search over the polynomial's descending term order.
+/// Used by `crate::ideal::Ideal::min_poly_cancel`'s Gaussian elimination.
+pub(crate) fn poly_coefficient_at(p: &Polynomial, mon: &Monomial, ring: &PolyRing) -> FieldElem {
     let n = ring.n_vars;
     let target_deg = mon.total_degree();
     let target_exps = mon.exponents();
@@ -1514,66 +1062,6 @@ mod tests {
         let gb = groebner_basis(vec![const_p(&r, 1)], &r, &cfg).unwrap();
         assert_eq!(gb.basis.len(), 1);
         assert!(gb.basis[0].is_constant());
-    }
-
-    #[test]
-    fn gb_simple_two_gen() {
-        let r = ring(2);
-        let f = &r.field;
-        // I = (x^2 - y, x*y - 1) in DegRevLex.
-        let p1 = Polynomial::from_terms(
-            vec![
-                (Monomial::from_exponents(vec![2, 0]), f.from_u64(1)),
-                (Monomial::from_exponents(vec![0, 1]), f.from_i64(-1)),
-            ],
-            &r,
-        );
-        let p2 = Polynomial::from_terms(
-            vec![
-                (Monomial::from_exponents(vec![1, 1]), f.from_u64(1)),
-                (Monomial::from_exponents(vec![0, 0]), f.from_i64(-1)),
-            ],
-            &r,
-        );
-        let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-        let gb = groebner_basis(vec![p1, p2], &r, &cfg).unwrap();
-        // Sanity: GB should be nonempty and zero-dimensional (two equations in two unknowns).
-        assert!(!gb.basis.is_empty());
-        let ideal = Ideal { ring: r.clone(), basis: gb.basis };
-        assert!(ideal.is_zero_dim());
-        // x^3 - 1 should be in the ideal: x^2 = y, so x^3 = x*y = 1, hence x^3 - 1 = 0.
-        let test = Polynomial::from_terms(
-            vec![
-                (Monomial::from_exponents(vec![3, 0]), f.from_u64(1)),
-                (Monomial::from_exponents(vec![0, 0]), f.from_i64(-1)),
-            ],
-            &r,
-        );
-        assert!(ideal.contains(&test));
-    }
-
-    #[test]
-    fn min_poly_simple() {
-        let r = ring(1);
-        let f = &r.field;
-        // I = (x^2 - 2) over GF(101). Then min_poly(x) = x^2 - 2 (monic).
-        let p = Polynomial::from_terms(
-            vec![
-                (Monomial::from_exponents(vec![2]), f.from_u64(1)),
-                (Monomial::from_exponents(vec![0]), f.from_i64(-2)),
-            ],
-            &r,
-        );
-        let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-        let gb = groebner_basis(vec![p], &r, &cfg).unwrap();
-        let ideal = Ideal { ring: r.clone(), basis: gb.basis };
-        assert!(ideal.is_zero_dim());
-        let mp = ideal.min_poly(0).expect("zero-dim min_poly should exist");
-        // Expect [-2, 0, 1]
-        assert_eq!(mp.len(), 3);
-        assert_eq!(mp[0], f.from_i64(-2));
-        assert!(f.is_zero(&mp[1]));
-        assert!(f.is_one(&mp[2]));
     }
 
     #[test]

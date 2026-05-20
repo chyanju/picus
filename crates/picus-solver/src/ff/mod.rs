@@ -24,7 +24,7 @@ pub use divmask::{DivMask, DivMaskScheme};
 pub use polynomial::{PolyRing, Polynomial, TermRef};
 pub use spair::SPair;
 pub use buchberger::{
-    BuchbergerConfig, BuchbergerObserver, GBasis, Ideal, IncrementalGB, NoObserver,
+    BuchbergerConfig, BuchbergerObserver, GBasis, IncrementalGB, NoObserver,
     groebner_basis, groebner_basis_observed, groebner_basis_incremental, interreduce,
 };
 pub use univariate::{UnivariatePoly, find_roots};

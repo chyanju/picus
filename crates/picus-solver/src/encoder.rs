@@ -80,10 +80,40 @@ impl ConstraintSystem {
 }
 
 /// Encode a constraint system into polynomials for GB computation.
+///
+/// Disequalities are encoded via the Rabinowitsch trick:
+/// `a != b` becomes `(a - b) * w_i - 1 = 0`, where `w_i` is a fresh
+/// witness variable named `__w_diseq_i`.
 pub fn encode(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
+    encode_impl(system, true)
+}
+
+/// Encode the *constraint side* of `system` — equalities, assignments,
+/// bitsum definitions, and (optionally) field polynomials — but skip
+/// the Rabinowitsch polynomials for the disequalities.
+///
+/// The witness variables `__w_diseq_i` are still reserved in `var_map`
+/// for every entry of `system.disequalities`, so a caller can later
+/// build the Rabinowitsch polynomial in the same ring (see
+/// [`crate::incremental_context::IncrementalSolverContext`], which
+/// caches the constraint-side encoding and adds per-query disequality
+/// polynomials lazily).
+pub fn encode_constraint_side(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
+    encode_impl(system, false)
+}
+
+/// Shared encoder body. When `emit_rabinowitsch` is false, the witness
+/// variables for disequalities are still reserved (so [`EncodedSystem::var_map`]
+/// contains them) but no `(a - b) * w_i - 1` polynomial is emitted.
+fn encode_impl(
+    system: &ConstraintSystem,
+    emit_rabinowitsch: bool,
+) -> Result<EncodedSystem, String> {
     let mut var_names = system.collect_vars();
 
-    // Add a Rabinowitsch witness variable for each disequality.
+    // Reserve a Rabinowitsch witness variable for each disequality —
+    // even when we are not going to emit the polynomial, so callers
+    // that build it later in this ring can look the variable up.
     let n_diseq = system.disequalities.len();
     let mut witness_vars: Vec<String> = Vec::with_capacity(n_diseq);
     for i in 0..n_diseq {
@@ -100,7 +130,7 @@ pub fn encode(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
         bitsum_aux_vars.push(name);
     }
 
-    let field = FfField::new(&system.prime);
+    let field = FfField::new(system.prime.clone());
 
     // Check that the variable count is within the GB ring's working capacity.
     // Historically the underlying ring required C(n_vars + max_deg, n_vars) < 2^64;
@@ -151,15 +181,17 @@ pub fn encode(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
     }
 
     // Rabinowitsch trick: (a - b) * w_i - 1 = 0 for each disequality.
-    for ((a, b), w_name) in system.disequalities.iter().zip(witness_vars.iter()) {
-        let a_idx = *var_map.get(a).ok_or_else(|| format!("unknown var: {}", a))?;
-        let b_idx = *var_map.get(b).ok_or_else(|| format!("unknown var: {}", b))?;
-        let w_idx = *var_map.get(w_name).unwrap();
+    if emit_rabinowitsch {
+        for ((a, b), w_name) in system.disequalities.iter().zip(witness_vars.iter()) {
+            let a_idx = *var_map.get(a).ok_or_else(|| format!("unknown var: {}", a))?;
+            let b_idx = *var_map.get(b).ok_or_else(|| format!("unknown var: {}", b))?;
+            let w_idx = *var_map.get(w_name).unwrap();
 
-        let diff = poly_ring.sub(poly_ring.var(a_idx), poly_ring.var(b_idx));
-        let prod = poly_ring.mul(diff, poly_ring.var(w_idx));
-        let rabinowitsch = poly_ring.sub(prod, poly_ring.one());
-        polynomials.push(rabinowitsch);
+            let diff = poly_ring.sub(poly_ring.var(a_idx), poly_ring.var(b_idx));
+            let prod = poly_ring.mul(diff, poly_ring.var(w_idx));
+            let rabinowitsch = poly_ring.sub(prod, poly_ring.one());
+            polynomials.push(rabinowitsch);
+        }
     }
 
     // Encode bitsum definitions: b0 + 2*b1 + 4*b2 + ... - aux = 0.
@@ -167,7 +199,7 @@ pub fn encode(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
     // algorithm seeds them only into the linear basis.
     let mut bitsum_polys = Vec::new();
     for (bs, aux_name) in system.bitsums.iter().zip(bitsum_aux_vars.iter()) {
-        let fp = poly_ring.field.field();
+        let fp = &poly_ring.field;
         let two = fp.int_hom().map(2);
         let mut sum = poly_ring.zero();
         let mut coeff = poly_ring.field.one();
@@ -224,7 +256,7 @@ pub fn encode(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
 /// Divide a polynomial by its leading coefficient (in DegRevLex order).
 fn normalize_poly(pr: &FfPolyRing, p: Poly) -> Poly {
     let ring = &pr.ring;
-    let fp = pr.field.field();
+    let fp = &pr.field;
     if ring.is_zero(&p) || p.num_terms() == 0 { return p; }
     // Leading term is at index 0 (polynomials are stored sorted descending).
     let lc = fp.clone_el(p.term(0, ring.ctx.as_ref()).coefficient());

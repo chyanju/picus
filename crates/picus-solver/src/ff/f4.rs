@@ -491,16 +491,6 @@ mod tests {
         Polynomial::variable(idx, ring)
     }
 
-    fn const_poly(v: i32, ring: &Arc<PolyRing>) -> Polynomial {
-        let f = &ring.field;
-        let coeff = if v >= 0 {
-            f.from_u64(v as u64)
-        } else {
-            f.neg(&f.from_u64((-v) as u64))
-        };
-        Polynomial::constant(coeff, ring)
-    }
-
     fn lt(p: &Polynomial, ring: &Arc<PolyRing>) -> Monomial {
         p.leading_monomial(ring).unwrap()
     }

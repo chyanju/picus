@@ -91,7 +91,7 @@ pub fn find_zero_cancel(
         if let Some((var, val)) = brancher.next(&poly_ring.field) {
             // Add x_var - val to the ideal generators
             let v = poly_ring.var(var);
-            let c = poly_ring.constant(poly_ring.field.field().clone_el(&val));
+            let c = poly_ring.constant(poly_ring.field.clone_el(&val));
             let assign_poly = poly_ring.sub(v, c);
 
             let mut new_gens: Vec<Poly> = ideals.last().unwrap().basis.iter()
@@ -126,7 +126,7 @@ fn try_extract_full_assignment(
     ideal: &Ideal,
 ) -> Option<HashMap<String, BigUint>> {
     let ring = &poly_ring.ring;
-    let fp = poly_ring.field.field();
+    let fp = &poly_ring.field;
     let n_vars = poly_ring.n_vars;
     let mut assignment: HashMap<usize, FfEl> = HashMap::new();
 
@@ -180,7 +180,7 @@ fn compute_candidates(
         if appearing.len() == 1 {
             let (var_idx, _) = appearing[0];
             if !assigned[var_idx] {
-                if let Some(coeffs) = extract_univariate_coeffs(ring, field.field(), p, var_idx) {
+                if let Some(coeffs) = extract_univariate_coeffs(ring, field, p, var_idx) {
                     if coeffs.len() > 2 { // deg > 1
                         let roots = find_roots(field, &coeffs);
                         return Brancher::Roots(
@@ -212,7 +212,7 @@ fn compute_candidates(
         return Brancher::Roots(Vec::new());
     }
 
-    let prime = &field.prime;
+    let prime = field.prime();
     // Match split_gb.rs: no fixed cap. For large primes, set per_var
     // to u64::MAX; the cancel token in the DFS loop handles termination.
     let exhaustive = prime.bits() <= 16;
@@ -279,7 +279,7 @@ pub fn verify_model(
     model: &HashMap<String, BigUint>,
 ) -> bool {
     let ring = &poly_ring.ring;
-    let fp = poly_ring.field.field();
+    let fp = &poly_ring.field;
 
     for p in polys {
         let mut val = fp.zero();
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn test_find_zero_linear() {
         // GB: [x - 3, y - 5] over GF(17)
-        let ff = FfField::new(&BigUint::from(17u32));
+        let ff = FfField::new(BigUint::from(17u32));
         let pr = FfPolyRing::new(ff, vec!["x".into(), "y".into()]);
 
         let three = pr.field.from_biguint(&BigUint::from(3u32));
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn test_find_zero_quadratic() {
         // x^2 - 1 = 0 over GF(17) → roots 1, 16
-        let ff = FfField::new(&BigUint::from(17u32));
+        let ff = FfField::new(BigUint::from(17u32));
         let pr = FfPolyRing::new(ff, vec!["x".into()]);
 
         let x2 = pr.mul(pr.var(0), pr.var(0));
@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn test_find_zero_unsat() {
         // x = 0 ∧ x = 1 over GF(17) → UNSAT
-        let ff = FfField::new(&BigUint::from(17u32));
+        let ff = FfField::new(BigUint::from(17u32));
         let pr = FfPolyRing::new(ff, vec!["x".into()]);
 
         let p1 = pr.var(0);
@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn test_find_zero_inverse() {
         // x*y = 1 over GF(7) → model where x*y ≡ 1 mod 7
-        let ff = FfField::new(&BigUint::from(7u32));
+        let ff = FfField::new(BigUint::from(7u32));
         let pr = FfPolyRing::new(ff, vec!["x".into(), "y".into()]);
 
         let xy = pr.mul(pr.var(0), pr.var(1));
