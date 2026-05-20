@@ -1,11 +1,10 @@
 //! UNSAT core type and high-level solving API.
 //!
-//! Mirrors cvc5's `FfCore` (a list of input facts that are jointly
-//! unsatisfiable).  The single-GB solver uses Buchberger observer hooks
-//! (via `tracer::GbTracer`) to track which input polynomials contribute
-//! to the UNSAT proof, matching cvc5's `--ff-trace-gb` mode.  The
-//! split-GB solver returns trivial (all-input) cores, also matching
-//! cvc5's behavior.
+//! An UNSAT core is a list of input fact indices that are jointly
+//! unsatisfiable. The single-GB solver uses Buchberger observer hooks
+//! (via [`crate::tracer::GbTracer`]) to track which input polynomials
+//! contribute to the UNSAT proof. The split-GB solver returns trivial
+//! (all-input) cores.
 
 use std::collections::{HashMap, HashSet};
 
@@ -23,24 +22,20 @@ use crate::timeout::CancelToken;
 /// An UNSAT core: indices into the input fact list that suffice for UNSAT.
 pub type UnsatCore = Vec<usize>;
 
-/// Solver mode: mirrors cvc5's `--ff-solver` option.
+/// Solver mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SolverMode {
-    /// Split Groebner Basis (default, matches cvc5's `--ff-solver split`).
+    /// Split Groebner basis (default).
     SplitGb,
-    /// Single Groebner Basis (matches cvc5's `--ff-solver gb`).
+    /// Single Groebner basis (DegRevLex → Lex → findZero).
     SingleGb,
 }
 
 /// Outcome of the core solver.
 ///
-/// Three-valued result is a **deliberate divergence from cvc5** (see
-/// `docs/solver-evaluation.md` § "Deliberate divergences"). cvc5's
-/// `findZero` returns an empty vector both when no model exists and
-/// when bounded search ran out without finding one; picus distinguishes
-/// the two via `Unsat` vs `Unknown`. More-honest reporting; allows
-/// downstream callers to retry with relaxed bounds rather than treating
-/// bounded-no-model as definitive UNSAT.
+/// `Unsat` and `Unknown` are distinct: `Unsat` is a proof of
+/// infeasibility, `Unknown` indicates the search was cancelled or
+/// bounded out. Callers may retry on `Unknown` with relaxed bounds.
 #[derive(Debug, Clone)]
 pub enum SolveOutcome {
     /// SAT — a model assigning every variable a field element (as BigUint).
@@ -54,10 +49,6 @@ pub enum SolveOutcome {
 
 /// Populate a `BitProp` by scanning the encoded polynomials for bit
 /// constraints (`x*(x-1) = 0`) and bitsum patterns.
-///
-/// This mirrors cvc5's `split()` setup where `BitProp` is constructed from
-/// the parsed facts + encoder.  We do it post-encoding by analysing the
-/// polynomial structure with our `parse` module.
 pub fn populate_bitprop<'r>(
     poly_ring: &'r FfPolyRing,
     polys: &[Poly],
@@ -94,12 +85,12 @@ pub fn solve_split_gb<'r>(
     original_polys: &[Poly],
     bitsum_polys: &[Poly],
 ) -> SolveOutcome {
-    // Split into two ideals per cvc5's `split` (split_gb.cpp:148-160):
-    //   - basis 0 ("linear"): bitsum polys + every input poly with deg <= 1
-    //   - basis 1 ("nonlinear"): ALL input polys
+    // Split into two ideals:
+    //   - basis 0 ("linear"):    bitsum polys + every input poly with deg <= 1
+    //   - basis 1 ("nonlinear"): all input polys
     let nl_gens: Vec<Poly> = original_polys.iter().map(|p| poly_ring.ring.clone_el(p)).collect();
     let mut l_gens: Vec<Poly> = Vec::new();
-    // Seed bitsum definition polys into basis 0 (linear), matching cvc5.
+    // Seed bitsum definition polys into basis 0 (linear).
     for p in bitsum_polys {
         l_gens.push(poly_ring.ring.clone_el(p));
     }
@@ -127,7 +118,7 @@ pub fn solve_split_gb<'r>(
                     model_map.insert(poly_ring.var_names[idx].clone(), field.to_biguint(val));
                 }
             }
-            // Validate model against original polynomials (matches cvc5's checkZero)
+            // Validate model against original polynomials.
             if model::verify_model(poly_ring, original_polys, &model_map) {
                 SolveOutcome::Sat(model_map)
             } else {
@@ -183,10 +174,10 @@ pub fn solve_encoded_with_mode_cancel(
     }
 }
 
-/// Single Groebner basis solver (matches cvc5's `--ff-solver gb`).
+/// Single Groebner basis solver.
 ///
 /// Uses Buchberger observer hooks to trace which input polynomials
-/// contribute to the UNSAT proof, matching cvc5's `--ff-trace-gb` mode.
+/// contribute to an UNSAT proof.
 pub fn solve_single_gb(
     poly_ring: &FfPolyRing,
     polynomials: Vec<Poly>,

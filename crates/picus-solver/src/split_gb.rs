@@ -29,13 +29,13 @@ use crate::timeout::{CancelToken, Cancelled};
 /// A split Groebner basis: one `Ideal` per partition.
 pub type SplitGb<'r> = Vec<Ideal<'r>>;
 
-/// Default split-admission predicate (matches cvc5's `admit`).
+/// Default split-admission predicate.
 ///
-/// cvc5's `split_gb.cpp:245-249`:
-///   `admit(i, p) = deg(p) <= 1 && (i == 0 || numTerms(p) <= 2)`
+/// `admit(i, p) = deg(p) <= 1 && (i == 0 || numTerms(p) <= 2)`
 ///
 ///   - basis 0 (linear):    admits `p` iff `deg(p) <= 1`.
-///   - basis 1 (nonlinear): admits `p` iff `deg(p) <= 1` and `numTerms(p) <= 2`.
+///   - basis 1 (nonlinear): admits `p` iff `deg(p) <= 1` and
+///                          `numTerms(p) <= 2`.
 ///   - any other index: never admit.
 pub fn admit(pr: &FfPolyRing, idx: usize, p: &Poly) -> bool {
     let ring = &pr.ring;
@@ -94,14 +94,13 @@ pub fn split_gb_cancel<'r>(
         .map(|_| Ideal::from_gb(poly_ring, Vec::new()))
         .collect();
 
-    // Plan v8 task 06 — see split_gb_extend_cancel for design rationale.
+    // Cross-iteration memoisation of positive `contains` results.
     let mut contains_memo: std::collections::HashSet<(u64, usize)> =
         std::collections::HashSet::new();
 
-    // **Deliberate divergence from cvc5** (see `docs/solver-evaluation.md`
-    // § "Deliberate divergences"): cvc5 has no explicit fixpoint cap — it
-    // relies on the caller's timeout. picus adds a safety bound to prevent
-    // pathological propagation loops on degenerate inputs.
+    // Safety bound against pathological propagation loops on degenerate
+    // inputs. The cancel token would also bound the loop; this cap
+    // produces a deterministic exit independent of wall time.
     let max_fixpoint_iters = (k * 64).max(256);
     let mut fixpoint_iter: u64 = 0;
 
@@ -153,7 +152,8 @@ pub fn split_gb_cancel<'r>(
             break;
         }
 
-        // Plan v8 task 06 — see split_gb_extend_cancel.
+        // Seed the memo with self-membership: every poly in basis j is
+        // trivially `contains(p, j) = true`.
         for j in 0..k {
             for p in &split_basis[j].basis {
                 contains_memo.insert((p.content_hash(), j));
@@ -185,7 +185,6 @@ pub fn split_gb_cancel<'r>(
         let mut any_new = false;
         for p in &to_propagate {
             if cancel.is_cancelled() { return Err(Cancelled); }
-            // Plan v8 task 06: same memoization as split_gb_extend_cancel.
             let p_hash = p.content_hash();
             for j in 0..k {
                 if admit(poly_ring, j, p) {
@@ -272,15 +271,11 @@ pub fn split_gb_cancel<'r>(
 /// `split_gb_extend_cancel` from that hot path lets each ideal grow
 /// incrementally.
 /// Extend an existing reduced split-GB by additional generators
-/// **without** recomputing each basis from scratch.
+/// without recomputing each basis from scratch.
 ///
-/// **Deliberate divergence from cvc5** (see `docs/solver-evaluation.md`
-/// § "Deliberate divergences"): cvc5 recomputes the full GB on each
-/// branch (`split_gb.cpp:233-257`); picus reuses the existing reduced
-/// GB and runs incremental Buchberger via `Ideal::extend_with_cancel`.
-/// Sound — extending a reduced GB by additional generators and
-/// re-running Buchberger yields the same final GB as full recomputation
-/// — and significantly faster on deep DFS trees.
+/// Each partition reuses its existing reduced GB and runs incremental
+/// Buchberger via [`Ideal::extend_with_cancel`]. The final GB equals
+/// the one obtained by full recomputation on the union of generators.
 pub(crate) fn split_gb_extend_cancel<'r>(
     poly_ring: &'r FfPolyRing,
     starting: SplitGb<'r>,
@@ -301,11 +296,11 @@ pub(crate) fn split_gb_extend_cancel<'r>(
     let mut new_polys: Vec<Vec<Poly>> = new_polys;
     let mut split_basis: SplitGb<'r> = starting;
 
-    // Plan v8 task 06 — memoize positive `contains` results across fixpoint
-    // iterations. Key: `(content_hash(p), target_basis_idx)`. Sound because
-    // ideal membership is monotonic in the basis (`extend_with_cancel` and
-    // `interreduce_basis` only add or rewrite generators within the same
-    // ideal). Phase 1 measured 99.9% true rate on `modulusagainst2p`.
+    // Memoise positive `contains` results across fixpoint iterations.
+    // Key: `(content_hash(p), target_basis_idx)`. Sound because ideal
+    // membership is monotonic in the basis: `extend_with_cancel` and
+    // `interreduce_basis` only add or rewrite generators within the
+    // same ideal, so once `p in I_j` holds it continues to hold.
     let mut contains_memo: std::collections::HashSet<(u64, usize)> =
         std::collections::HashSet::new();
 
@@ -363,10 +358,10 @@ pub(crate) fn split_gb_extend_cancel<'r>(
             break;
         }
 
-        // Plan v8 task 06: pre-populate the memo with self-memberships
-        // (p in basis_j ⇒ contains(p, j) = true, trivially). Saves the
-        // ~50% of contains checks where source-basis == target-basis,
-        // including all first-iteration tests.
+        // Seed the memo with self-membership (p in basis_j implies
+        // contains(p, j) = true). Avoids the contains-check for the
+        // case where source-basis == target-basis, including all
+        // first-iteration tests.
         for j in 0..k {
             for p in &split_basis[j].basis {
                 contains_memo.insert((p.content_hash(), j));
@@ -397,19 +392,11 @@ pub(crate) fn split_gb_extend_cancel<'r>(
         let contains_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
         let mut any_new = false;
         for p in &to_propagate {
-            // Cancel check between propagation candidates: each `contains`
-            // is a full reduce, and dense bases on circuits like
-            // `modulusagainst2p` made this loop a primary `--timeout` leak
-            // point. Coarse-grained — a single in-progress `contains` call
-            // can still overshoot — but breaks the per-iteration ceiling.
+            // Cancel check between propagation candidates. Each
+            // `contains` call is a full reduce, so a dense basis can
+            // overshoot a single budget; the per-iteration check at
+            // least bounds the cost between two candidates.
             if cancel.is_cancelled() { return Err(Cancelled); }
-            // Plan v8 task 06: memoize positive `contains` results across
-            // fixpoint iterations within this call. Phase 1 measured 99.9%
-            // of `contains` calls return TRUE on `modulusagainst2p`, with
-            // contains time accounting for ~54% of wall. By ideal-membership
-            // monotonicity (basis only grows here; `extend_with_cancel`
-            // and `interreduce_basis` both preserve membership), once
-            // `p ∈ I_j` it remains true. We key on `(content_hash(p), j)`.
             let p_hash = p.content_hash();
             for j in 0..k {
                 if admit(poly_ring, j, p) {
@@ -542,27 +529,24 @@ pub fn split_zero_extend<'r>(
     split_zero_extend_cancel(poly_ring, orig_polys, cur_bases, cur_r, bit_prop, &CancelToken::none())
 }
 
-/// Cancel-aware version of `split_zero_extend`.
+/// Cancel-aware version of [`split_zero_extend`].
 ///
-/// **Deliberate divergence from cvc5** (see `docs/solver-evaluation.md`
-/// § "Deliberate divergences"): uses an explicit stack instead of
-/// recursion to avoid stack overflow on deep searches. cvc5's
-/// `splitZeroExtend` (`split_gb.cpp:156-264`) is recursive.
+/// Uses an explicit stack instead of recursion to avoid stack overflow
+/// on deep searches.
 ///
-/// CDCL-lite enhancements:
-///   * **Phase saving**: when a frame is popped, the partial assignment's
-///     last-assigned `(var, val)` is remembered in `saved_phase`. When a
-///     future `Brancher::Roots(v)` is constructed for the same variable,
-///     the saved value (if present) is moved to the back of `v` so
-///     `v.pop()` tries it first. This is a per-call cache, not per-frame:
-///     a value that worked deep along one branch is preferred again.
+/// Search enhancements:
+///   * **Phase saving**: when a frame is popped, the partial
+///     assignment's last-assigned `(var, val)` is remembered in
+///     `saved_phase`. When a future `Brancher::Roots(v)` is constructed
+///     for the same variable, the saved value (if present) is moved to
+///     the back of `v` so `Vec::pop` tries it first.
 ///   * **Nogood cache**: each time a candidate `(var, val)` is proved
-///     infeasible (quick UNSAT, linear-only whole-ring, or full split-GB
-///     whole-ring), the resulting partial assignment is recorded as a
-///     `Nogood`. Future candidates whose partial assignment is a
-///     superset of any stored nogood are skipped without recomputing GB.
-///     Keys are `BTreeMap<usize, FfEl>` so the subset check is linear in
-///     the smaller map.
+///     infeasible (quick UNSAT, linear-only whole-ring, or full
+///     split-GB whole-ring), the resulting partial assignment is
+///     recorded as a `Nogood`. Future candidates whose partial
+///     assignment is a superset of any stored nogood are skipped
+///     without recomputing the GB. Keys are `BTreeMap<usize, FfEl>` so
+///     the subset check is linear in the smaller map.
 pub fn split_zero_extend_cancel<'r>(
     poly_ring: &'r FfPolyRing,
     orig_polys: &[Poly],
@@ -587,20 +571,12 @@ pub fn split_zero_extend_cancel<'r>(
         last_tried: Option<(usize, FfEl)>,
     }
 
-    // ─── CDCL-lite: phase saving + nogood cache ───────────────────────────
-    //
-    // **Deliberate divergence from cvc5** (see `docs/solver-evaluation.md`
-    // § "Deliberate divergences"): cvc5's `splitZeroExtend` does no phase
-    // saving and no nogood caching. picus adds both as standalone-search
-    // optimizations that exploit the standalone uniqueness-checker
-    // setting, where there is no SAT/DPLL(T) layer above to absorb these
-    // duties.
+    // Phase-saving + nogood cache.
     //
     // `saved_phase[v]` is the most recently popped value of variable `v`
-    // (across the whole search). When a future Brancher::Roots produces
-    // candidates for `v`, the saved value is moved to the back of the Vec
-    // so `Vec::pop` (Brancher::Roots semantics, see split_gb.rs:Brancher
-    // impl) tries it first.
+    // across the whole search. When a future `Brancher::Roots` produces
+    // candidates for `v`, the saved value is moved to the back of the
+    // `Vec` so `Vec::pop` (Brancher::Roots semantics) tries it first.
     let mut saved_phase: HashMap<usize, FfEl> = HashMap::new();
 
     // `nogoods` records partial assignments proved infeasible. Each entry
@@ -834,21 +810,14 @@ pub fn split_zero_extend_cancel<'r>(
             continue; // backtrack to next candidate
         }
 
-        // **Deliberate divergence from cvc5** (see
-        // `docs/solver-evaluation.md` § "Deliberate divergences"):
-        // linear-only quick UNSAT pre-check.  Before the full split-GB
-        // extension on a candidate, test if adding the assignment to the
-        // linear basis (basis 0) alone makes it whole-ring. cvc5 does
-        // not have this optimization.
+        // Linear-only quick UNSAT pre-check. Before the full split-GB
+        // extension on a candidate, test if adding the assignment to
+        // the linear basis (basis 0) alone makes it the whole ring.
         //
-        // Earlier this used `extend_with_cancel`, which cloned the
-        // linear basis and ran incremental Buchberger. For a linear
-        // basis (every element has degree ≤ 1), Buchberger reduces to
-        // Gaussian elimination, so the cheap test is exact:
-        // `assign_poly mod lin_basis` is a non-zero constant ⇔ the
-        // augmented ideal is the whole ring. Saves the per-candidate
-        // basis clone, which on dense circuits like `modulusagainst2p`
-        // was the dominant cost in `split_zero_extend_cancel`'s body.
+        // For a basis whose elements all have degree <= 1, Buchberger
+        // reduces to Gaussian elimination, so the test is exact:
+        // `assign_poly mod lin_basis` is a non-zero constant iff the
+        // augmented ideal is the whole ring.
         if !stack[frame_idx].bases.is_empty() {
             let lq_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
             let nf = stack[frame_idx].bases[0]
@@ -966,14 +935,9 @@ pub fn split_zero_extend_cancel<'r>(
     }
 }
 
-/// Like `apply_rule` but checks ALL bases for univariate/zero-dim structure.
-///
-/// **Deliberate divergence from cvc5** (see `docs/solver-evaluation.md`
-/// § "Deliberate divergences"): cvc5's `applyRule` (`multi_roots.cpp:164-196`)
-/// only inspects basis 0; picus iterates over all bases. Sound — the
-/// branching structure detected is mathematically valid in either basis —
-/// and avoids round-robin fallback when the nonlinear basis exposes
-/// usable structure after bit-propagation.
+/// Like [`apply_rule`] but checks every basis for univariate / zero-dim
+/// structure. The detected branching structure is mathematically valid
+/// in any of the bases.
 fn apply_rule_multi<'r>(
     poly_ring: &'r FfPolyRing,
     bases: &[Ideal<'r>],
@@ -1031,9 +995,8 @@ fn apply_rule_multi<'r>(
 ///     enumerate its roots over GF(p);
 /// (2) if `gb` is zero-dimensional, compute the minimal polynomial of an
 ///     unassigned variable and enumerate its roots;
-/// (3) otherwise, round-robin: for each unassigned variable, try values
-///     in `0..min(p, cap)` (lazily generated, matching cvc5's
-///     `RoundRobinEnumerator`).
+/// (3) otherwise, round-robin: for each unassigned variable, try
+///     values in `0..min(p, cap)` (lazily generated).
 pub fn apply_rule<'r>(
     poly_ring: &'r FfPolyRing,
     gb: &Ideal<'r>,
@@ -1075,18 +1038,16 @@ pub fn apply_rule<'r>(
         }
     }
 
-    // (3) round-robin: lazy generation matching cvc5's RoundRobinEnumerator
+    // (3) round-robin: lazy enumeration.
     let unassigned: Vec<usize> = (0..poly_ring.n_vars).filter(|i| r[*i].is_none()).collect();
     if unassigned.is_empty() {
         return Brancher::Roots(Vec::new());
     }
 
     let prime = &field.prime;
-    // No per-variable cap — cvc5 relies on the solver-level timeout to
-    // terminate enumeration. We follow that model: set the count to the
-    // field size (capped at u64::MAX for huge primes).  The DFS
-    // cancel-token check terminates exhaustive enumeration when time
-    // runs out, just as in cvc5.
+    // No per-variable cap: the count is the field size (saturated to
+    // `u64::MAX` for primes larger than 64 bits). Termination on large
+    // primes relies on the cancel token / caller timeout.
     let exhaustive = prime.bits() <= 16;
     let per_var: u64 = if exhaustive {
         let x = prime.iter_u64_digits().next().unwrap_or(2);

@@ -1,26 +1,12 @@
-//! Plan v9 — solver-side state cache for amortizing fixed work across
-//! multiple `solve` calls with the same constraint side.
+//! Solver-side state cache for amortising fixed work across multiple
+//! `solve` calls with the same constraint side.
 //!
-//! Each call to `solve_encoded` previously rebuilt the encoded
-//! constraint system + ran `populate_bitprop` + computed the split-GB
-//! from scratch. With this context, the constraint side of the query
-//! is hashed; matching cache reuses the prior split-GB and only encodes
-//! the per-query disequality (Rabinowitsch polynomial).
-//!
-//! Plan v10 task 02 — sub-iter resumable cache: the IncrementalGB
-//! engine exposes `run_only` / `set_cancel_token` / `is_quiescent`
-//! primitives (see `crate::ff::buchberger`) that LET the cache cross
-//! call boundaries. The drive_partial fixpoint here keeps an in-flight
-//! `IncrementalGB` per partition so the open S-pair queue isn't lost
-//! when one solve call's cancel-budget expires. Used as a fallback
-//! ONLY when the fast-path `split_gb_cancel` build is cancelled —
-//! circuits where the build fits in budget (e.g. `modulusagainst2p`)
-//! continue to use the old fast path with no overhead.
-//!
-//! KPI motivation (Plan v9 task 01 diagnosis): on `modulusagainst2p`,
-//! 24 of 25 calls share the same digest; cache turns these into per-
-//! query incremental updates. Plan v10 added resumability for circuits
-//! where one budget can't even build the cache.
+//! The constraint side of a [`ConstraintSystem`] is hashed; a matching
+//! cache reuses the prior split-GB and encodes only the per-query
+//! disequalities (Rabinowitsch polynomials). Sub-iter resumability:
+//! when a fresh cache build is cancelled mid-build, the per-partition
+//! [`IncrementalGB`] in-flight state is preserved as a `PartialBuild`
+//! and resumed on the next solve call with the matching digest.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -56,11 +42,11 @@ pub struct CachedBase {
     pub digest: u64,
 }
 
-/// Plan v10 task 02 — partial GB build state preserved across solve
-/// calls. Used as a fallback when the fast-path `split_gb_cancel`
-/// rebuild is cancelled mid-build; further calls with matching digest
-/// resume via `drive_partial` keeping an in-flight `IncrementalGB`
-/// per partition so the open S-pair queue isn't lost.
+/// Partial GB build state preserved across solve calls. Used when the
+/// fast-path build is cancelled mid-build; subsequent calls with the
+/// same digest resume via `continue_partial`, which keeps the
+/// in-flight [`IncrementalGB`] per partition so the open S-pair queue
+/// is not lost.
 struct PartialBuild {
     digest: u64,
     poly_ring: Arc<FfPolyRing>,
@@ -76,15 +62,13 @@ struct PartialBuild {
 #[derive(Default)]
 pub struct IncrementalSolverContext {
     cached_base: Option<CachedBase>,
-    /// Plan v9 task 03 refinement: don't build the cache speculatively.
-    /// First call goes through the stateless path; we only build the
-    /// cache on a SUBSEQUENT call whose digest matches the previous
-    /// call's. This avoids paying the cache-build cost on circuits
-    /// where every DPVL signal query has a different constraint side.
+    /// Lazy-build flag: the first call goes through the stateless path;
+    /// the cache is only built on a subsequent call whose digest matches
+    /// the previous call's. Avoids paying the cache-build cost on
+    /// circuits where every solve has a different constraint side.
     last_digest: Option<u64>,
-    /// Plan v10 task 02: in-flight partial GB build saved from a
-    /// previous cancelled call. Resumed on the next call with the
-    /// same digest.
+    /// In-flight partial GB build saved from a cancelled call. Resumed
+    /// on the next call with the same digest.
     partial_build: Option<PartialBuild>,
 }
 
@@ -113,15 +97,14 @@ impl IncrementalSolverContext {
         self.last_digest = Some(digest);
 
         // First-time digest with no prior repeats: skip the cache-build
-        // cost (which can be wasted on circuits where every DPVL signal
-        // has a different constraint side).
+        // cost.
         if !cache_matches && !partial_matches && !should_build {
             self.cached_base = None;
             self.partial_build = None;
             return stateless_solve(cs, cancel);
         }
 
-        // Resume an in-flight partial build (Plan v10 task 02).
+        // Resume an in-flight partial build.
         if !cache_matches && partial_matches {
             if stats_on {
                 use std::sync::atomic::Ordering::Relaxed;
@@ -202,10 +185,9 @@ impl IncrementalSolverContext {
         outcome
     }
 
-    /// Build the cache via the fast path (`split_gb_cancel`). On
+    /// Build the cache via the fast path ([`split_gb_cancel`]). On
     /// cancellation, save a `PartialBuild` so the next solve call with
-    /// matching digest can resume via `drive_partial` (Plan v10
-    /// sub-iter resumable cache).
+    /// matching digest can resume via [`continue_partial`].
     fn rebuild_base(
         &mut self,
         cs: &ConstraintSystem,
@@ -295,13 +277,12 @@ impl IncrementalSolverContext {
                 Ok(())
             }
             Err(_) => {
-                // Plan v10 task 02: build was cancelled. Save the
-                // encoding artifacts + initial generators as a
-                // PartialBuild so the next call can resume via
-                // `drive_partial`. The first attempt's S-pair work
-                // is lost (the IGBs inside split_gb_cancel are
-                // dropped), but subsequent resume calls accumulate
-                // progress.
+                // Build was cancelled. Save the encoding artifacts plus
+                // initial generators as a `PartialBuild` so the next
+                // call can resume via `continue_partial`. The S-pair
+                // work from this attempt is lost (the IGBs inside
+                // `split_gb_cancel` are dropped); subsequent resume
+                // calls accumulate progress.
                 let ring = ring_for_order(&encoded.poly_ring, MonomialOrder::DegRevLex);
                 let cfg = BuchbergerConfig {
                     order: MonomialOrder::DegRevLex,

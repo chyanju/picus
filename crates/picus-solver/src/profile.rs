@@ -33,11 +33,9 @@ static INIT: OnceLock<()> = OnceLock::new();
 /// Monotonic id for active timers.
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-// ────────────────── Plan v8 phase 1 instrumentation ─────────────────────────
-// Lightweight global counters for the split-GB driver and DFS, gated by
-// `PICUS_GB_STATS=1`. Independent from the `ScopedTimer` table; mirrors the
-// existing `GbEngineStats` style at the Buchberger layer. All counters are
-// `AtomicU64` so updates are wait-free and thread-safe.
+// Global counters for the split-GB driver and DFS, gated by
+// `PICUS_GB_STATS=1`. Independent of the `ScopedTimer` table. All counters
+// are `AtomicU64` so updates are wait-free and thread-safe.
 
 #[derive(Default)]
 pub struct SplitDfsCounters {
@@ -77,8 +75,7 @@ pub struct SplitGbCounters {
     pub basis_size_total_terms_max: AtomicU64,
     pub extend_with_cancel_calls: AtomicU64,
     pub extend_no_op_skips: AtomicU64,
-    /// Plan v8 phase 2 — fine-grained reducer timers used to diagnose
-    /// `inTest`'s 169 ms/reduction cost on the dense BN128 basis.
+    /// Fine-grained reducer timers.
     pub reduce_calls: AtomicU64,
     pub reduce_lt_pops: AtomicU64,
     pub reduce_div_lookups: AtomicU64,
@@ -97,11 +94,9 @@ pub struct SplitGbCounters {
 pub static SPLIT_DFS: SplitDfsCounters = SplitDfsCounters::new_const();
 pub static SPLIT_GB: SplitGbCounters = SplitGbCounters::new_const();
 
-/// Plan v9 task 01 — counters for the native-ff SMT backend, surfaced
-/// via `PICUS_GB_STATS=1`. Lets us quantify per-DPVL-signal re-encode
-/// cost: how many `solve` calls happen per circuit run, time per call
-/// in encoding vs. solving, and how stable the constraint side of the
-/// query is across consecutive calls (cache-key feasibility study).
+/// Counters for the native-ff SMT backend, surfaced via
+/// `PICUS_GB_STATS=1`. Reports per-call encoding vs. solving time and
+/// constraint-side digest stability across consecutive calls.
 #[derive(Default)]
 pub struct NativeFfBackendCounters {
     pub solve_calls: AtomicU64,
@@ -110,27 +105,20 @@ pub struct NativeFfBackendCounters {
     pub encoded_polys_total: AtomicU64,
     pub encoded_polys_max: AtomicU64,
     pub encoded_vars_max: AtomicU64,
-    /// Number of distinct constraint-side digests observed (cache-key
-    /// proxy: a digest that repeats means the same constraint set
-    /// would be re-encoded under the current stateless design).
+    /// Number of distinct constraint-side digests observed.
     pub distinct_cs_digests: AtomicU64,
-    /// Number of solve calls whose constraint-side digest equaled
-    /// the immediately-previous call's. High value ⇒ adjacent calls
-    /// share constraints (cache would hit trivially).
+    /// Number of solve calls whose constraint-side digest equaled the
+    /// immediately-previous call's.
     pub repeated_cs_digest_streak: AtomicU64,
-    /// Plan v9 task 03: cache hit / rebuild stats.
+    /// Cache hit / rebuild stats.
     pub cache_hits: AtomicU64,
     pub cache_rebuild_time_ns: AtomicU64,
     pub cache_query_diff_time_ns: AtomicU64,
-    /// Plan v10 task 02 (Phase 1, sub-iter resumable cache): number of
-    /// solve calls that resumed an in-progress GB build saved from a
-    /// prior cancelled call. Each resume contributes additional
-    /// per-call budget toward eventually completing the cache, after
-    /// which subsequent calls all hit the cache.
+    /// Number of solve calls that resumed an in-progress GB build saved
+    /// from a prior cancelled call.
     pub cache_partial_resumes: AtomicU64,
-    /// Number of times a partial build completed (transitioned from
-    /// `partial_build` to `cached_base`). Equal to the number of
-    /// circuits where sub-iter resumption succeeded.
+    /// Number of partial builds that completed (`partial_build`
+    /// → `cached_base`).
     pub cache_partial_completions: AtomicU64,
 }
 
@@ -259,7 +247,7 @@ pub fn dump_split_stats_to_stderr() {
     let d = &SPLIT_DFS;
     let g = &SPLIT_GB;
     let load = |a: &AtomicU64| a.load(Ordering::Relaxed);
-    eprintln!("\n=== picus split-GB driver stats (Plan v8 phase 1) ===");
+    eprintln!("\n=== picus split-GB driver stats ===");
     eprintln!("[split-dfs] split_zero_extend_calls={} branches_tried={} quick_eval_unsat={} lin_quick_unsat={} nogood_hits={} branches_to_full_extend={} conflicts={} points={} max_depth={}",
         load(&d.split_zero_extend_calls),
         load(&d.branches_tried),

@@ -84,7 +84,7 @@ pub fn compute_gb_with_timeout(
 ///
 /// When the DegRevLex phase produces a trivial basis (UNSAT), the tracer
 /// is used to extract the minimal set of input polynomial indices
-/// responsible.  This mirrors cvc5's `--ff-trace-gb` mode.
+/// responsible for the conflict.
 pub fn compute_gb_with_timeout_traced(
     poly_ring: &FfPolyRing,
     polynomials: Vec<Poly>,

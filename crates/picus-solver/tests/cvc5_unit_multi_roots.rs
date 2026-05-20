@@ -1,21 +1,11 @@
-//! Ports of cvc5's `theory_ff_multi_roots_black.cpp` unit tests.
+//! Multi-root solver tests driven through [`picus_solver::core::solve_encoded`].
 //!
-//! cvc5 exposes `ff::isUnsat(ideal)` and `ff::findZero(ideal, env)` directly
-//! over CoCoA ideals.  Our equivalent is going through the `core::solve_encoded`
-//! entry point with an `EncodedSystem`.  Semantically:
-//!   * `isUnsat(I) = true`   ↔   `solve_encoded(I) = Unsat`
-//!   * `findZero(I)` returns a model    ↔   `solve_encoded(I) = Sat(model)`
+//! Each test constructs an [`crate::EncodedSystem`] from polynomial
+//! generators and checks the SAT / UNSAT verdict (and, for SAT, that
+//! the returned model satisfies the generators).
 //!
-//! cvc5's `IsUnsat` test expects `isUnsat=true` only when adding the field
-//! polynomials yields a contradiction; some examples have no field polys
-//! and so are SAT.  We toggle our `add_field_polys` flag accordingly.
-//!
-//! We skip the `UnivariateEnumerator`, `RoundRobinEnumerator`, and
-//! `ExtractAssignment` tests: those exercise CoCoA-flavored internal
-//! helpers (`AssignmentEnumerator`, `extractAssignment`) that we don't
-//! expose at the same granularity.  The RoundRobin enumeration is already
-//! covered by `split_gb::tests::test_apply_rule_round_robin_interleaves`
-//! in the lib unit tests.
+//! `IsUnsat` cases use the `add_field_polys` flag to introduce field
+//! polynomials when the test requires the resulting contradiction.
 
 use picus_solver::core::{solve_encoded, SolveOutcome};
 use picus_solver::encoder::{ConstraintSystem, PolyTerm, encode};
@@ -43,7 +33,7 @@ fn is_unsat(system: &ConstraintSystem) -> bool {
 }
 
 // =============================================================================
-// IsUnsat   (mirrors cvc5 lines 106-127, GF(3))
+// IsUnsat   , GF(3)
 // =============================================================================
 //
 // cvc5 cases (basis | expected isUnsat):
@@ -191,7 +181,7 @@ fn test_is_unsat_a_b_c_inverse() {
 }
 
 // =============================================================================
-// CommonRoot   (mirrors cvc5 lines 149-201, GF(3))
+// CommonRoot   , GF(3)
 // =============================================================================
 //
 // cvc5's `findZero(I, env)` returns a vector of values, one per variable in
@@ -327,7 +317,7 @@ fn test_common_root_a_b_inv_b_two() {
 }
 
 // =============================================================================
-// CommonRootBig   (mirrors cvc5 lines 203-221, GF(17))
+// CommonRootBig   , GF(17)
 // =============================================================================
 //
 // a^2 - a, b^2 - b, a - b, a, c*d - 1  →  a = b = 0, c*d = 1.
@@ -360,7 +350,7 @@ fn test_common_root_big() {
 }
 
 // =============================================================================
-// CommonRootCosntraints   (mirrors cvc5 lines 223-239, GF(17))
+// CommonRootCosntraints   , GF(17)
 // =============================================================================
 //
 // a^2 = b   ∧   b * c = 1

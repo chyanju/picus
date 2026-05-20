@@ -1,8 +1,5 @@
-//! Semantic ports of cvc5's `theory_ff_parse_white.cpp` unit tests.
-//!
-//! cvc5's tests operate on SMT-LIB AST `Node`s; ours operate directly on
-//! polynomials in our `FfPolyRing`.  The semantics are identical: we construct
-//! the same polynomial from terms and check the same detection functions.
+//! Pattern-detection tests for [`picus_solver::parse`]: `bit_constraint`,
+//! `linear_monomial`, `extract_linear_monomials`, and `bit_sums`.
 
 use picus_solver::field::FfField;
 use picus_solver::parse::*;
@@ -13,11 +10,12 @@ use std::collections::HashSet;
 fn ff(p: u32) -> FfField { FfField::new(&BigUint::from(p)) }
 
 // =============================================================================
-// bitConstraint  (cvc5 lines 29-63, GF(7))
+// bitConstraint  (GF(7))
 // =============================================================================
 //
-// cvc5 tests that x*(x-1)=0 is detected under various sign/rewrite forms,
-// and rejects non-qualifying forms (pure x, pure x^2, x^3, etc.).
+// `x*(x-1) = 0` must be detected under all sign / rewrite forms;
+// non-qualifying forms (pure `x`, pure `x^2`, `x^3`, ...) must be
+// rejected.
 #[test]
 fn test_bit_constraint_positive_forms() {
     let pr = FfPolyRing::new(ff(7), vec!["x".into()]);
@@ -69,7 +67,7 @@ fn test_bit_constraint_negative_forms() {
 }
 
 // =============================================================================
-// linearMonomial  (cvc5 lines 66-79, GF(7))
+// linearMonomial  (GF(7))
 // =============================================================================
 #[test]
 fn test_linear_monomial_forms() {
@@ -103,7 +101,7 @@ fn test_linear_monomial_forms() {
 }
 
 // =============================================================================
-// extractLinearMonomials  (cvc5 lines 82-145, GF(5))
+// extractLinearMonomials  (GF(5))
 // =============================================================================
 #[test]
 fn test_extract_linear_none() {
@@ -163,7 +161,7 @@ fn test_extract_linear_mixed() {
 }
 
 // =============================================================================
-// bitSums  (cvc5 lines 148-279, GF(103))
+// bitSums  (GF(103))
 // =============================================================================
 #[test]
 fn test_bitsums_implicit_one_coeff() {

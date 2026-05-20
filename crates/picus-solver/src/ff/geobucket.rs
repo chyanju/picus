@@ -17,17 +17,12 @@ use std::cmp::Ordering;
 use super::field::FieldElem;
 use super::polynomial::{PolyRing, Polynomial};
 
-/// Smallest bucket capacity (in terms). Matches CoCoA's
-/// `gbk_minlen = 128` (`geobucket.C:36`). Larger first bucket means
-/// fewer cascade events per `sub_scaled_tail` call, which dominates
-/// the reduction inner loop on dense-ideal benchmarks.
+/// Smallest bucket capacity (in terms). Larger first-bucket means
+/// fewer cascade events per `sub_scaled_tail` call.
 const BASE_CAPACITY: usize = 128;
-/// Geometric growth factor between consecutive buckets. Matches CoCoA
-/// `gbk_factor = 4`.
+/// Geometric growth factor between consecutive buckets.
 const RATIO: usize = 4;
-/// Hard cap on the number of buckets. Matches CoCoA `gbk_max = 20`.
-/// 128 * 4^19 covers polynomials of ~10^13 terms — well beyond any
-/// practical workload but matches CoCoA's ceiling exactly.
+/// Hard cap on the number of buckets. 128 * 4^19 ≈ 10^13 terms.
 const MAX_BUCKETS: usize = 20;
 
 pub struct Geobucket<'r> {
@@ -137,12 +132,10 @@ impl<'r> Geobucket<'r> {
                 idx += 1;
                 continue;
             }
-            // Take ownership of bucket[idx]'s live tail and merge with `cur`.
-            // Plan v8: both `live` and `cur` are owned, so the move-based
-            // `merge_owned` recycles their `FieldElem` allocations into
-            // the output instead of cloning each — eliminates ~2 GMP
-            // `Integer` allocations per merged term. Profiled as the
-            // dominant cost on `inTest`'s dense reductions.
+            // Take ownership of bucket[idx]'s live tail and merge with
+            // `cur`. Both `live` and `cur` are owned, so `merge_owned`
+            // recycles their `FieldElem` allocations into the output
+            // instead of cloning each.
             let live = self.take_bucket_live(idx);
             let merged = live.merge_owned(cur, self.ring, false);
             let merged_len = merged.num_terms();
@@ -280,9 +273,9 @@ impl<'r> Geobucket<'r> {
                 }
                 let i_exps = &self.buckets[i].raw_exponents()[head_i * n..(head_i + 1) * n];
                 if i_exps == exps.as_slice() {
-                    // Plan v10 task 09: in-place add to avoid per-merge
-                    // FieldElem allocation. `coeff` is owned at this point;
-                    // `add_assign` mutates it in place.
+                    // In-place add to avoid a per-merge `FieldElem`
+                    // allocation. `coeff` is owned here; `add_assign`
+                    // mutates it in place.
                     self.ring.field.add_assign(&mut coeff, &self.buckets[i].raw_coeffs()[head_i]);
                     self.heads[i] += 1;
                 }

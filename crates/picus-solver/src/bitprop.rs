@@ -28,15 +28,16 @@ pub struct BitProp<'r> {
     pub poly_ring: &'r FfPolyRing,
     /// Variables known to be bit-constrained (by user-asserted `x*(x-1)=0`).
     pub bits: HashSet<usize>,
-    /// Known bitsums.  Each bitsum is a list of variable indices `[b_0,...,b_k]`
-    /// representing  `b_0 + 2*b_1 + ... + 2^k*b_k`.  (Without scalar `coeff`,
-    /// because cvc5's BitProp pre-extracts unit-coefficient bitsums.)
+    /// Known bitsums. Each bitsum is a list of variable indices
+    /// `[b_0, ..., b_k]` representing `b_0 + 2*b_1 + ... + 2^k * b_k`.
+    /// Scalar coefficient is implicit (unit) — non-unit bitsums are
+    /// pre-extracted before registration.
     pub bitsums: Vec<Vec<usize>>,
 }
 
-/// Plan v9: owned snapshot of `BitProp`'s logical state, for cache
-/// persistence. `BitProp<'r>` borrows the poly_ring; this owned form
-/// reconstitutes via `BitProp::from_state(&poly_ring, state.clone())`.
+/// Owned snapshot of [`BitProp`]'s logical state. [`BitProp`] borrows
+/// the poly ring; this owned form reconstitutes via
+/// [`BitProp::from_state`].
 #[derive(Clone, Default, Debug)]
 pub struct BitPropState {
     pub bits: HashSet<usize>,

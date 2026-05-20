@@ -1,15 +1,12 @@
 //! UNSAT core tracing via Buchberger observer hooks.
 //!
-//! Mirrors cvc5's `Tracer` class (`theory/ff/core.cpp`), which hooks into
-//! Buchberger callbacks to build a polynomial dependency DAG and then
-//! BFS-traces from a target basis element back to the input
-//! polynomials responsible for it.
+//! Hooks into the [`BuchbergerObserver`] callbacks to build a polynomial
+//! dependency DAG, then BFS-traces from a target basis element back to
+//! the original input polynomials responsible for it.
 //!
-//! Implements [`ff::BuchbergerObserver`]: the in-tree Buchberger observer
-//! trait.  Each basis element maintains the set of *original input*
-//! indices it transitively depends on.  When the GB is trivial (contains
-//! a constant), reading the dependency set of that constant yields the
-//! UNSAT core.
+//! Each basis element maintains the set of original input indices it
+//! transitively depends on. When the GB is trivial (contains a
+//! constant), the dependency set of that constant is the UNSAT core.
 
 use std::collections::BTreeSet;
 

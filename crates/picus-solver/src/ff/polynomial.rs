@@ -34,7 +34,8 @@ pub struct PolyRing {
 impl PolyRing {
     pub fn new(field: PrimeField, var_names: Vec<String>, order: MonomialOrder) -> Arc<Self> {
         let n_vars = var_names.len();
-        // Heuristic: budget for typical KPI workloads — exponents rarely exceed 16.
+        // Heuristic exponent cap: monomials beyond degree 16 in any
+        // single variable are rare for the inputs the solver sees.
         let divmask = DivMaskScheme::build(n_vars, 16);
         Arc::new(PolyRing { field, n_vars, order, var_names, divmask })
     }
@@ -223,9 +224,10 @@ impl Polynomial {
         self.total_degs.first().copied().unwrap_or(0)
     }
 
-    /// Cheap structural fingerprint for memoization keys (Plan v8 phase 2).
+    /// Cheap structural fingerprint suitable as a memoisation key.
     ///
-    /// Hashes the exponent layout + per-term degrees + leading coefficient.
+    /// Hashes the exponent layout + per-term degrees + leading
+    /// coefficient.
     /// Two distinct polynomials having the same `content_hash` is
     /// possible (it's a u64 hash, not a content-equality check) but
     /// astronomically unlikely within a single GB call. Used by
@@ -406,11 +408,8 @@ impl Polynomial {
 
     /// Move-based merge for cases where both inputs are owned. Recycles
     /// each input's `FieldElem` allocations into the output rather than
-    /// cloning them, eliminating O(M+N) GMP `Integer` allocations per
-    /// merge. Plan v8: this is the dominant fix for `inTest` — the
-    /// geobucket-cascade path in `Geobucket::add_poly` was paying
-    /// the per-element clone on every cascade merge, accumulating to
-    /// ~26 s/30 s of every reduction call.
+    /// cloning them, eliminating O(M + N) GMP `Integer` allocations
+    /// per merge.
     pub fn merge_owned(self, other: Polynomial, ring: &PolyRing, negate_other: bool) -> Polynomial {
         if self.is_zero() {
             return if negate_other { other.negate(ring) } else { other };
@@ -741,10 +740,9 @@ impl Polynomial {
     /// the divisor list when the caller already holds polynomials inside
     /// some larger container (e.g. `BuchbergerState::basis`).
     ///
-    /// Geobucket-based accumulator (Yan 1998), matching CoCoA's
-    /// `ChooseReductionCogGeobucket` strategy used in `myReduce` /
-    /// `myReduceTail`. Each reduction step is O(D × log(N/D)) where D is the
-    /// divisor length and N is the running tail size.
+    /// Geobucket-based accumulator (Yan 1998). Each reduction step is
+    /// O(D · log(N / D)) where D is the divisor length and N is the
+    /// running tail size.
     pub fn reduce_by_refs(&self, divisors: &[&Polynomial], ring: &PolyRing) -> Polynomial {
         if self.is_zero() || divisors.is_empty() {
             return self.clone();
@@ -752,11 +750,12 @@ impl Polynomial {
         self.reduce_by_refs_geobucket(divisors, ring, None)
     }
 
-    /// Cancel-aware variant of `reduce_by_refs`. Returns the partial
-    /// remainder accumulated so far on cancel — sound but not necessarily
-    /// fully reduced. Hot paths (Buchberger main loop, interreduce, bit-prop
-    /// `contains`) should prefer this over `reduce_by_refs` to keep
-    /// `--timeout` honest on dense polynomials.
+    /// Cancel-aware variant of [`reduce_by_refs`]. On cancel, returns
+    /// the partial remainder accumulated so far — sound (same residue
+    /// class) but not necessarily a normal form. Hot paths (Buchberger
+    /// main loop, interreduce, bit-prop `contains`) should prefer this
+    /// over [`reduce_by_refs`] so the cancel token is honoured on
+    /// dense polynomials.
     pub fn reduce_by_refs_cancel(
         &self,
         divisors: &[&Polynomial],
@@ -803,19 +802,14 @@ impl Polynomial {
                 }
             })
             .collect();
-        // Plan v8: when the divisor set is large (typical of dense
-        // Buchberger runs like `inTest`'s 700-element basis), build
-        // an auxiliary index sorted by total degree ascending. Inside
-        // the lookup loop we iterate via this index and `break` on
-        // the first divisor whose LT degree exceeds `lt_deg` — every
-        // subsequent divisor in ascending order is at least that big.
-        // The normal-form output is unchanged because, with sufficient
-        // divisor density, the FIRST divisor in EITHER ordering whose LT
-        // divides `lt_exps` typically agrees (the "smallest LT that
-        // divides" is well-defined modulo the divmask filter, and on
-        // a Groebner-basis-shaped divisor set it's unique). For small
-        // divisor sets we keep the original linear scan order so the
-        // unit tests' "reducer-matches-naive" property is preserved.
+        // When the divisor set is large, build an auxiliary index
+        // sorted by leading-term total degree ascending. The lookup
+        // loop iterates this index and `break`s on the first divisor
+        // whose LT degree exceeds `lt_deg`. The normal-form output is
+        // unchanged because the first divisor whose LT divides
+        // `lt_exps` is unique on a Groebner-basis-shaped divisor set;
+        // for small divisor sets the linear scan path is kept so
+        // unit-tests' "reducer matches naive" property is preserved.
         const SORT_THRESHOLD: usize = 64;
         let order_opt: Option<Vec<usize>> = if div_lt.len() >= SORT_THRESHOLD {
             let mut order: Vec<usize> = (0..div_lt.len()).collect();
@@ -825,13 +819,10 @@ impl Polynomial {
             None
         };
 
-        // Plan v9 task 06: alignment with CoCoA's `Reductors` divisor index.
-        // Plan v10 task 10: empirically the bucket index's HashMap
-        // iteration overhead and weak filtering on high-n_vars circuits
-        // (`inTest`'s 571 vars) made it slower than the simpler
-        // sort+early-break path. We keep the bucket code structurally
-        // present (for ≥ 256 divisors where DivMask filtering pays off)
-        // but raise the gate so smaller dense bases use sort+early-break.
+        // Hash-bucketed divisor index, keyed on `DivMask`. Only enabled
+        // at ≥ 256 divisors, where `DivMask` filtering wins over the
+        // sort + early-break path; below this threshold the cost of
+        // building / iterating the buckets outweighs the savings.
         const BUCKET_THRESHOLD: usize = 256;
         let bucket_index_opt: Option<std::collections::HashMap<u128, Vec<usize>>> =
             if div_lt.len() >= BUCKET_THRESHOLD {
@@ -842,9 +833,9 @@ impl Polynomial {
                         buckets.entry(dm.0).or_default().push(i);
                     }
                 }
-                // Plan v10 task 10: sort each bucket by total degree
-                // ascending so the lookup loop can `break` (not `continue`)
-                // on first divisor with deg > lt_deg.
+                // Sort each bucket by leading-term total degree
+                // ascending so the lookup loop can `break` (not
+                // `continue`) on the first divisor with deg > lt_deg.
                 for indices in buckets.values_mut() {
                     indices.sort_by_key(|&i| div_lt[i].as_ref().map(|t| t.1).unwrap_or(u32::MAX));
                 }
@@ -870,13 +861,10 @@ impl Polynomial {
         let mut local_lookup_ns: u64 = 0;
         let mut local_sub_ns: u64 = 0;
 
-        // Throttle the cancel check very coarsely: an atomic load is
-        // ~1 ns, but the `match`/branch on every iteration measurably
-        // regressed `binadd1` from 5 s to 15 s in benchmarking. With
-        // 4096 we stay responsive for any user-facing `--timeout` (~ms
-        // resolution would still be O(thousands of S-pairs/ms) latency
-        // ceiling on cancel) while making the per-iteration overhead
-        // unmeasurable.
+        // Throttle the cancel check coarsely. Checking the atomic on
+        // every iteration measurably slows reduction; period = 4096
+        // keeps the per-iteration overhead unmeasurable while still
+        // bounding cancel latency at the millisecond scale.
         let mut iter_counter: u32 = 0;
         const CANCEL_CHECK_PERIOD: u32 = 4096;
         // Bind the cancel reference outside the loop so the per-iteration
@@ -919,16 +907,13 @@ impl Polynomial {
             let cur_dm = ring.divmask.compute_from_slice(&lt_exps);
             let mut chosen: Option<usize> = None;
             if let Some(buckets) = &bucket_index_opt {
-                // Plan v9 task 06: hash-bucketed divisor lookup.
-                // Iterate only buckets whose mask is a SUBMASK of cur_dm
-                // — others contain divisors whose divmask has bits cur_dm
-                // doesn't (so they can't divide). Within a compatible
-                // bucket, do the full exponent check; break on first
-                // match. The pick is deterministic-within-run (HashMap
-                // iteration is process-stable) but may differ from the
-                // linear-scan first-match across runs — same as the
-                // sort+early-break path. Test compat is preserved by
-                // the >=64 divisor gate (small tests use linear scan).
+                // Hash-bucketed divisor lookup. Iterate only buckets
+                // whose mask is a submask of `cur_dm` — others contain
+                // divisors whose `DivMask` has bits `cur_dm` does not,
+                // so they cannot divide. Within a compatible bucket
+                // perform the full exponent check; break on the first
+                // match. The pick is process-deterministic but may
+                // differ from the linear-scan first-match across runs.
                 let cur_bits = cur_dm.0;
                 'outer: for (&mask, indices) in buckets {
                     if (mask & !cur_bits) != 0 {
@@ -940,9 +925,9 @@ impl Polynomial {
                         local_lookups += 1;
                         if let Some((d_exps, d_deg, _, _)) = &div_lt[di] {
                             if *d_deg > lt_deg {
-                                // Plan v10 task 10: bucket sorted by deg
-                                // ascending; once we exceed lt_deg, the
-                                // rest of this bucket is also too big.
+                                // Bucket is sorted by LT degree ascending;
+                                // once it exceeds `lt_deg`, every later
+                                // divisor in this bucket is also too big.
                                 break;
                             }
                             let mut divides = true;

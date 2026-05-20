@@ -1,7 +1,8 @@
-//! Correctness tests mirroring cvc5's QF_FF regression suite.
+//! QF_FF regression tests.
 //!
-//! Each test encodes the same mathematical problem as the corresponding
-//! cvc5 regress0/ff/*.smt2 file, but uses our polynomial encoding.
+//! Each test encodes a mathematical problem as a polynomial system
+//! and checks the SAT / UNSAT verdict via
+//! [`picus_solver::core::solve_encoded`].
 
 use picus_solver::core::{solve_encoded, SolveOutcome};
 use picus_solver::encoder::{ConstraintSystem, PolyTerm, encode};
