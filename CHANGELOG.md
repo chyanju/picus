@@ -7,19 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [1.7.16] - 2026-05-20
 
 Refactor and documentation release. No behavioural changes; the
-201-test algorithmic suite and the 17-circuit `circomlib-cff5ab6`
-R1CS smoke (`scripts/regression.sh`) pass throughout.
+201-test algorithmic suite plus an R1CS smoke against a curated
+17-circuit `circomlib-cff5ab6` subset pass throughout.
 
 ### Added
 
-- `scripts/regression.sh` — two-tier validation runner.
-  - Tier 1: `cargo test -p picus-solver --release` (algorithmic
-    correctness, ~5 s).
-  - Tier 2: `picus check --solver native --theory ff` against a
-    curated 17-circuit subset of `circomlib-cff5ab6` (10 safe + 7
-    unsafe), with verdicts compared to `docs/benchmarks.md`. Auto-
-    compiles missing circuits via the `benchmarks/circom/compile.sh`
-    harness.
+- `crates/picus/tests/r1cs_smoke.rs` — integration test that runs
+  `picus::check_circuit` with `SolverKind::Native` + `Theory::Ff`
+  against a curated 17-circuit subset of `circomlib-cff5ab6` (10
+  safe + 7 unsafe) and compares verdicts to `docs/benchmarks.md`.
+  Auto-skips with a hint if the `benchmarks/circom/` submodule is
+  not initialised or the circuits are not yet compiled, so a clean
+  checkout still passes `cargo test`.
 - `encoder::encode_constraint_side` — encodes equalities,
   assignments, bitsum definitions, and (optionally) field polynomials
   while reserving `__w_diseq_i` witness-variable slots without
