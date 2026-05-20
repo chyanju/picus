@@ -4,6 +4,55 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.17] - 2026-05-20
+
+### Added
+
+- `encoder::auto_extract_bitsums(&ConstraintSystem) -> ConstraintSystem`.
+  Scans each equality for the longest chain
+  `c·b_0 + 2·c·b_1 + ... + 2^k·c·b_k` where each `b_i` is in the
+  bit-constrained set (collected from `bitsums` plus matched
+  `b·(b − 1) = 0` equalities). Rewrites the equality to replace the
+  chain with `c · __bitsum_N` and appends the bit list to `bitsums`.
+  Base coefficients tried in ascending symmetric-residue order
+  (`min(c, p − c)`). Minimum chain length:
+  `MIN_AUTO_BITSUM_LEN = 2`.
+- `encoder::encode_no_auto_bitsum`. `encode` entry point that skips
+  `auto_extract_bitsums`.
+- `smt2` module. `pub fn parse(&str) -> Result<ConstraintSystem,
+  ParseError>` covering: `(set-logic QF_FF)`,
+  `(define-sort F () (_ FiniteField N))`, `(declare-fun x () F)` /
+  `(declare-const x F)` / inline `(declare-fun x () (_ FiniteField
+  N))`, `(assert (= a b))`, `(assert (not (= a b)))`, `ff.add`,
+  `ff.mul`, `ff.neg`, `(as ffN F)`, constants `ffN` and `#fNmP`,
+  decimal literals. Boolean operators (`and`, `or`, `=>`, `ite`)
+  inside `(assert ...)` return `ParseError::BooleanInAssert`.
+- `run_smt2` binary (`src/bin/run_smt2.rs`). One-argument form
+  prints one of `sat` / `unsat` / `unknown`. With an iteration
+  count `N ≥ 2`, also prints
+  `file,verdict,iters,encode_us,gb_med_us,gb_min_us,gb_max_us,total_med_us`.
+- `bench_bitdecomp_auto_extract_speedup` `#[ignore]` test in
+  `tests/bench_perf.rs`. K-bit decomposition systems over BN128
+  for K ∈ {6, 8, 10, 12}; asserts verdict agreement between
+  `encode` and `encode_no_auto_bitsum`.
+
+### Changed
+
+- `encoder::encode` and `encoder::encode_constraint_side` invoke
+  `auto_extract_bitsums` on the input before encoding.
+- `encode_impl` deduplicates auxiliary variable names via a
+  `HashSet`.
+- `ConstraintSystem` derives `Clone` and `Debug`.
+
+### Fixed
+
+- `benches/solver_bench.rs`: `FfField::new(&BigUint)` →
+  `FfField::new(BigUint)`.
+
+### Correctness
+
+141 lib tests pass. 71 integration tests pass.
+
 ## [1.7.16] - 2026-05-20
 
 Refactor and documentation release. No behavioural changes; the

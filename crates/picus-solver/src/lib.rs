@@ -27,6 +27,7 @@ pub mod tracer;
 pub mod profile;
 pub mod homog;
 pub mod gb_homog;
+pub mod smt2;
 
 use num_bigint::BigUint;
 use std::collections::HashMap;

@@ -46,17 +46,17 @@ AB0 is an internal query-construction pass and is not exposed via
 ### Non-trivial UNSAT core tracing (`ffTraceGb`)
 
 Implemented for `SolverMode::SingleGb`. The in-tree GB engine
-(`src/ff/buchberger.rs`) exposes `BuchbergerObserver` callbacks
-(`on_initial_basis`, `on_new_poly`, `on_inter_reduce`). The `tracer`
-module builds a polynomial dependency DAG from these callbacks and
-extracts the subset of input polynomial indices responsible for the
-trivial element (UNSAT proof).
+(`src/ff/buchberger/`) exposes `BuchbergerObserver` callbacks
+(`on_initial_reducers`, `on_initial_basis`, `on_new_poly`,
+`on_inter_reduce`). The `tracer` module builds a polynomial dependency
+DAG from these callbacks and extracts the subset of input polynomial
+indices responsible for the trivial element (UNSAT proof).
 
 Limitations:
 
 - Initial inter-reduction conflates inputs conservatively: each survivor
-  is marked as depending on all inputs, so the core may be coarser than
-  cvc5's when inter-reduction is significant.
+  is marked as depending on all inputs, so the core may be coarser when
+  inter-reduction is significant.
 - Reduction-step-level tracking (which polynomials are used as divisors
   during S-poly reduction) is not implemented; only S-polynomial parent
   indices are tracked.

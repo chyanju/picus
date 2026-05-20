@@ -20,8 +20,9 @@ The following are **not** in scope and must be handled by a caller:
 ```
 src/
 ├── core.rs                # Top-level API: solve_split_gb, solve_single_gb, SolveOutcome
-├── encoder.rs             # ConstraintSystem → Polynomial encoding
-├── split_gb.rs            # Split-GB algorithm: model search + DFS branching
+├── encoder.rs             # ConstraintSystem → Polynomial encoding; auto_extract_bitsums
+├── smt2.rs                # QF_FF SMT-LIB v2 parser (parse → ConstraintSystem)
+├── split_gb/              # Split-GB algorithm: model search + DFS branching
 ├── gb.rs                  # Single-GB solver (DegRevLex → Lex)
 ├── ideal.rs               # Ideal: GB computation, membership, reduce, zero-dim check
 ├── model.rs               # Model construction (univariate roots, minpoly, round-robin)
@@ -34,13 +35,15 @@ src/
 ├── timeout.rs             # CancelToken (atomic cancellation)
 ├── homog.rs, gb_homog.rs  # Homogenize → GB → dehomogenize pipeline (optional)
 ├── poly.rs, field.rs      # Helper types
+├── bin/
+│   └── run_smt2.rs        # Standalone CLI on top of smt2 + encoder + core
 └── ff/                    # In-tree Groebner basis engine
     ├── field.rs           # GF(p) arithmetic (rug/GMP), thread-local FieldElem pool
     ├── monomial.rs        # Packed-exponent monomials, divisibility, orderings
     ├── divmask.rs         # 128-bit divisibility mask
     ├── polynomial.rs      # Sparse polynomial, reduce_by_refs_geobucket
     ├── geobucket.rs       # Geometric-bucket accumulator
-    ├── buchberger.rs      # BuchbergerState, IncrementalGB
+    ├── buchberger/        # BuchbergerState, IncrementalGB, S-pair criteria
     ├── spair.rs           # S-pair representation
     ├── f4.rs              # Opt-in F4-lite (degree-batched matrix reduction)
     └── univariate.rs      # Univariate polynomial arithmetic, Cantor-Zassenhaus
@@ -54,7 +57,10 @@ src/
 | `core::solve_single_gb` | `(cs, opts, cancel) -> SolveOutcome` | Single-GB (DegRevLex → Lex → findZero) |
 | `core::solve_encoded_with_cancel` | `(encoded, cs, opts, cancel) -> SolveOutcome` | Reuse a pre-encoded constraint system |
 | `incremental_context::IncrementalSolverContext` | — | State cache keyed by constraint-side digest |
-| `encoder::encode` | `(cs) -> EncodedSystem` | `ConstraintSystem` → polynomial form |
+| `encoder::encode` | `(cs) -> EncodedSystem` | `ConstraintSystem` → polynomial form (runs `auto_extract_bitsums` first) |
+| `encoder::encode_no_auto_bitsum` | `(cs) -> EncodedSystem` | `encode` without the bitsum-extraction rewrite |
+| `encoder::auto_extract_bitsums` | `(&cs) -> ConstraintSystem` | Rewrite equalities, routing bitsum-defining polynomials into `bitsums` |
+| `smt2::parse` | `(&str) -> Result<ConstraintSystem, ParseError>` | QF_FF SMT-LIB v2 parser |
 | `ideal::Ideal::compute_gb` | `(generators, ring, cancel) -> Ideal` | Reduced Groebner basis |
 | `ideal::Ideal::extend_with_cancel` | `(extra_gens, cancel) -> Ideal` | Add generators and re-run Buchberger |
 
@@ -171,7 +177,7 @@ indices responsible for producing the trivial element.
 
 | Test file | Count | Source |
 |-----------|-------|--------|
-| `lib.rs` unit tests | 48 | Internals (field, poly, ideal, parse, bitprop, split_gb, core, incremental, timeout, stats, tracer, roots) |
+| `lib.rs` unit tests | 141 | Internals (field, poly, ideal, parse, bitprop, split_gb, core, incremental, timeout, stats, tracer, roots, encoder, smt2) |
 | `tests/cvc5_regression.rs` | 9 | Direct ports of cvc5 `regress0/ff/*.smt2` |
 | `tests/cvc5_extended.rs` | 14 | Additional cvc5 regression ports |
 | `tests/cvc5_unit_uni_roots.rs` | 5 | Univariate root tests |
@@ -180,6 +186,7 @@ indices responsible for producing the trivial element.
 | `tests/cvc5_unit_parse.rs` | 11 | Pattern detection tests |
 | `tests/integration.rs` | 6 | End-to-end |
 | `tests/timeout.rs` | 7 | Cooperative timeout |
+| `tests/bench_perf.rs` | 3 (ignored) | Encode + GB performance probes; run with `--ignored` |
 
 Every cross-checked test produces the same SAT/UNSAT verdict as cvc5. For
 SAT outcomes the returned model is verified against the input constraints.
