@@ -8,8 +8,10 @@
 use std::collections::HashSet;
 
 use crate::ff::buchberger::{
-    self, BuchbergerConfig, GBasis, Ideal as FfIdeal, IncrementalGB,
+    self, poly_coefficient_at, BuchbergerConfig, GBasis, IncrementalGB,
 };
+use crate::ff::polynomial::Polynomial;
+use crate::ff::monomial::Monomial;
 use crate::ff::monomial::MonomialOrder as FfOrder;
 use crate::field::FfEl;
 use crate::poly::{FfPolyRing, Mono, Poly, PolyRingType};
@@ -301,11 +303,90 @@ impl<'r> Ideal<'r> {
     }
 
     /// Cancel-aware variant of [`Self::min_poly`].
+    ///
+    /// Computes the monic minimal polynomial of `x_{var_idx}` in `R/I`
+    /// via Gaussian elimination on the normal forms of `1, x, x^2, ...`.
+    /// Returns `None` if the ideal is not zero-dimensional or the search
+    /// hits the degree cap.
     pub fn min_poly_cancel(&self, var_idx: usize, cancel: &CancelToken) -> Option<Vec<FfEl>> {
         let _t = crate::profile::ScopedTimer::new("ideal::min_poly");
-        let ring = self.poly_ring.ctx().clone();
-        let ff_ideal = FfIdeal::new(ring, self.basis.iter().map(|p| p.clone()).collect());
-        ff_ideal.min_poly_cancel(var_idx, cancel)
+        let ring = self.poly_ring.ctx();
+        let f = &ring.field;
+        if self.is_whole_ring() { return Some(vec![f.one()]); }
+        if !self.is_zero_dim() { return None; }
+
+        let one_poly = Polynomial::constant(f.one(), ring);
+        let x_poly = Polynomial::variable(var_idx, ring);
+        let one_nf = self.reduce(&one_poly);
+        let mut powers: Vec<Polynomial> = vec![one_nf];
+
+        const MIN_POLY_DEG_CAP: usize = 4096;
+
+        // Echelon form: each row is (normal_form, dependency vector).
+        let mut nfs: Vec<Polynomial> = Vec::new();
+        let mut deps: Vec<Vec<FfEl>> = Vec::new();
+        let mut pivot_monos: Vec<Monomial> = Vec::new();
+
+        for d in 0..=MIN_POLY_DEG_CAP {
+            if cancel.is_cancelled() { return None; }
+            let nf = if d == 0 {
+                powers[0].clone()
+            } else {
+                let prev = powers[d - 1].clone();
+                let next = prev.mul(&x_poly, ring);
+                self.reduce(&next)
+            };
+            if d > 0 {
+                powers.push(nf.clone());
+            }
+
+            // Build a row: (nf, e_d).
+            let mut row_poly = nf.clone();
+            let mut row_dep: Vec<FfEl> = vec![f.zero(); d + 1];
+            row_dep[d] = f.one();
+
+            // Reduce row against existing echelon rows.
+            for (i, nf_i) in nfs.iter().enumerate() {
+                let lm_i = &pivot_monos[i];
+                let coeff_at_lm = poly_coefficient_at(&row_poly, lm_i, ring);
+                if !f.is_zero(&coeff_at_lm) {
+                    let lc_i = poly_coefficient_at(nf_i, lm_i, ring);
+                    debug_assert!(!f.is_zero(&lc_i));
+                    let factor = f.div(&coeff_at_lm, &lc_i).unwrap();
+                    let neg_factor = f.neg(&factor);
+                    let scaled = nf_i.scale(&neg_factor, ring);
+                    row_poly = row_poly.add(&scaled, ring);
+                    let dep_i = &deps[i];
+                    debug_assert!(dep_i.len() <= row_dep.len(),
+                        "echelon row dep length exceeds current row_dep");
+                    for k in 0..dep_i.len() {
+                        let prod = f.mul(&factor, &dep_i[k]);
+                        f.sub_assign(&mut row_dep[k], &prod);
+                    }
+                }
+            }
+
+            if row_poly.is_zero() {
+                // Found a dependency: normalise so the leading coefficient is 1.
+                let mut top = row_dep.len();
+                while top > 0 && f.is_zero(&row_dep[top - 1]) { top -= 1; }
+                if top == 0 { return Some(vec![f.one()]); }
+                let lead = row_dep[top - 1].clone();
+                let mut coeffs: Vec<FfEl> = Vec::with_capacity(top);
+                for k in 0..top {
+                    coeffs.push(f.div(&row_dep[k], &lead).unwrap());
+                }
+                return Some(coeffs);
+            }
+
+            // Add to echelon: pivot is the leading monomial of the (reduced) row.
+            if let Some(lm) = row_poly.leading_monomial(ring) {
+                pivot_monos.push(lm);
+                nfs.push(row_poly);
+                deps.push(row_dep);
+            }
+        }
+        None
     }
 
     /// Divide `p` by its leading coefficient (in DegRevLex). LC becomes 1.
