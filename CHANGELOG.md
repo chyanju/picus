@@ -4,6 +4,45 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.18] - 2026-05-20
+
+### Fixed
+
+- `core::solve_split_gb_cancel` now calls `populate_bitprop` on
+  `bitsum_polys` in addition to `original_polys`. Before this change,
+  bitsum-defining polynomials moved to `bitsum_polys` by
+  `auto_extract_bitsums` (1.7.17) were invisible to
+  `populate_bitprop`'s pattern-matching pass, so `BitProp::bitsums`
+  remained empty and the split-GB DFS enumerated `2^K` bit
+  assignments instead of propagating bit values from the linear
+  basis. End-to-end on synthetic bitdecomp (`stress_v2/bitdecomp_kN.smt2`,
+  BN128): K=14 drops from 5800 ms to ~7 ms; K=16 from 27000 ms to
+  ~8 ms; K=20 and K=24 from > 30 s timeout to ~9 ms and ~11 ms
+  respectively. The same pattern resolves rangecheck (double-bitsum)
+  workloads where cvc5 times out.
+
+### Changed
+
+- `BuchbergerState::generate_pairs_against` drops coprime S-pairs at
+  generation time instead of routing them through `gm_insert` and
+  filtering them via `new_pairs.retain(|p| !p.is_coprime)` afterwards.
+  Coprime pairs are eliminated by the product criterion regardless;
+  removing the `gm_insert` call removes its O(N) per-pair scan, taking
+  pair-generation cost on sparse-support workloads from O(N²) to O(N).
+  The same-LCM swap rule no longer fires (a coprime new pair no
+  longer replaces an existing non-coprime pair with identical LCM);
+  any such non-coprime pair stays in the queue and reduces normally.
+  End-to-end on `Pedersen@pedersen_old` (BN128, 100 constraints,
+  basis_size_max=167, 13861 generated pairs all coprime):
+  `extend_with_cancel` drops from 428 ms to 135 ms.
+- `BuchbergerState::run` periodic in-loop tail-reduction now also
+  runs for non-homogeneous input, gated to every 128 useful S-pair
+  reductions (homogeneous input remains at every 32).
+
+### Correctness
+
+212 lib + integration tests pass. 3 `#[ignore]` perf tests unchanged.
+
 ## [1.7.17] - 2026-05-20
 
 ### Added

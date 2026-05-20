@@ -94,8 +94,10 @@ Runtime environment variables:
   `DivMask`.
 - Reduction: geometric-bucket accumulator (`geobucket.rs`) for the cascade
   of polynomial additions during division.
-- S-pair criteria: Gebauer-Möller M-criterion at generation time, companion
-  B-criterion at basis-add time.
+- S-pair criteria: product criterion (coprime pairs dropped at
+  generation time, never entered into the open queue); Gebauer-Möller
+  M-criterion on the remaining non-coprime new pairs; Buchberger
+  B-criterion against the open queue at basis-add time.
 - Pair selection: sugar order.
 - Divisor lookup: linear scan below the bucket-index threshold (256
   divisors); hash-bucketed index keyed on `DivMask` bits above it.
