@@ -2,9 +2,13 @@
 //!
 //! - Equality `f = 0` → polynomial `f`
 //! - Disequality `a ≠ b` → Rabinowitsch trick: `(a - b) * w - 1`
+//! - Bitsum subpatterns in equalities are extracted by
+//!   [`auto_extract_bitsums`] and routed to `bitsum_polys` (basis 0
+//!   only).
 
 use num_bigint::BigUint;
-use std::collections::{HashMap, HashSet};
+use num_traits::Zero;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::field::FfField;
 use crate::poly::{FfPolyRing, Poly};
@@ -30,6 +34,7 @@ pub struct PolyTerm {
 }
 
 /// Input constraint system.
+#[derive(Clone, Debug)]
 pub struct ConstraintSystem {
     pub prime: BigUint,
     /// Each equality is a list of terms; their sum equals zero.
@@ -84,8 +89,14 @@ impl ConstraintSystem {
 /// Disequalities are encoded via the Rabinowitsch trick:
 /// `a != b` becomes `(a - b) * w_i - 1 = 0`, where `w_i` is a fresh
 /// witness variable named `__w_diseq_i`.
+///
+/// Runs [`auto_extract_bitsums`] first, so bitsum subpatterns
+/// `c·b_0 + 2c·b_1 + ... + 2^k·c·b_k` (with each `b_i` bit-constrained)
+/// get rewritten as `c · aux` and the bitsum definition is appended to
+/// `system.bitsums`. Use [`encode_no_auto_bitsum`] to skip the rewrite.
 pub fn encode(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
-    encode_impl(system, true)
+    let extracted = auto_extract_bitsums(system);
+    encode_impl(&extracted, true)
 }
 
 /// Encode the *constraint side* of `system` — equalities, assignments,
@@ -98,8 +109,16 @@ pub fn encode(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
 /// [`crate::incremental_context::IncrementalSolverContext`], which
 /// caches the constraint-side encoding and adds per-query disequality
 /// polynomials lazily).
+///
+/// Also runs [`auto_extract_bitsums`] before encoding.
 pub fn encode_constraint_side(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
-    encode_impl(system, false)
+    let extracted = auto_extract_bitsums(system);
+    encode_impl(&extracted, false)
+}
+
+/// Same as [`encode`] but skips [`auto_extract_bitsums`].
+pub fn encode_no_auto_bitsum(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
+    encode_impl(system, true)
 }
 
 /// Shared encoder body. When `emit_rabinowitsch` is false, the witness
@@ -110,6 +129,10 @@ fn encode_impl(
     emit_rabinowitsch: bool,
 ) -> Result<EncodedSystem, String> {
     let mut var_names = system.collect_vars();
+    // Names already declared. Aux-reservation loops below skip
+    // entries already present (auto-extract may write `__bitsum_<i>`
+    // into equalities, so `collect_vars` already returns them).
+    let mut seen_names: HashSet<String> = var_names.iter().cloned().collect();
 
     // Reserve a Rabinowitsch witness variable for each disequality —
     // even when we are not going to emit the polynomial, so callers
@@ -118,7 +141,9 @@ fn encode_impl(
     let mut witness_vars: Vec<String> = Vec::with_capacity(n_diseq);
     for i in 0..n_diseq {
         let name = format!("__w_diseq_{}", i);
-        var_names.push(name.clone());
+        if seen_names.insert(name.clone()) {
+            var_names.push(name.clone());
+        }
         witness_vars.push(name);
     }
 
@@ -126,7 +151,9 @@ fn encode_impl(
     let mut bitsum_aux_vars: Vec<String> = Vec::with_capacity(system.bitsums.len());
     for i in 0..system.bitsums.len() {
         let name = format!("__bitsum_{}", i);
-        var_names.push(name.clone());
+        if seen_names.insert(name.clone()) {
+            var_names.push(name.clone());
+        }
         bitsum_aux_vars.push(name);
     }
 
@@ -253,6 +280,212 @@ fn encode_impl(
     Ok(EncodedSystem { poly_ring, polynomials, bitsum_polys, var_map })
 }
 
+/// Minimum chain length for [`auto_extract_bitsums`] to extract a
+/// detected bitsum.
+const MIN_AUTO_BITSUM_LEN: usize = 2;
+
+/// Rewrite equalities to extract bitsum subpatterns into
+/// [`ConstraintSystem::bitsums`].
+///
+/// Algorithm:
+/// 1. Collect `bits`: variables appearing in `system.bitsums`, plus
+///    any variable `b` with an equality of the form `b·(b − 1) = 0`
+///    (matched by [`detect_bit_constraint_in_terms`]).
+/// 2. For each equality, repeatedly find the longest sub-sum
+///    `c·b_0 + 2c·b_1 + ... + 2^k·c·b_k` where each `b_i ∈ bits`
+///    appears as a single-variable degree-1 term. Base coefficients
+///    are tried in ascending symmetric-residue order (`min(c, p−c)`).
+/// 3. When a chain of length ≥ [`MIN_AUTO_BITSUM_LEN`] is found:
+///    - Drop the chain's terms from the equality.
+///    - Append a `c · __bitsum_N` term, where `N` is the bitsum's
+///      index in the returned `bitsums` vector.
+///    - Append the bit list to `bitsums`. The encoder then emits
+///      `b_0 + 2·b_1 + ... + 2^k·b_k − __bitsum_N = 0` into
+///      `bitsum_polys` (which the split-GB seeder routes to basis 0
+///      only).
+///
+/// Equivalence: substituting `__bitsum_N = b_0 + 2·b_1 + ... +
+/// 2^k·b_k` into the rewritten equality yields the original.
+pub fn auto_extract_bitsums(system: &ConstraintSystem) -> ConstraintSystem {
+    let p = &system.prime;
+
+    // Bit-constrained variable set.
+    let mut bits: HashSet<String> = HashSet::new();
+    for bs in &system.bitsums {
+        for var in bs {
+            bits.insert(var.clone());
+        }
+    }
+    for eq in &system.equalities {
+        if let Some(bit_var) = detect_bit_constraint_in_terms(eq, p) {
+            bits.insert(bit_var);
+        }
+    }
+    if bits.is_empty() {
+        return system.clone();
+    }
+
+    let mut rewritten_equalities: Vec<Vec<PolyTerm>> = Vec::with_capacity(system.equalities.len());
+    let mut new_bitsums: Vec<Vec<String>> = system.bitsums.clone();
+
+    for eq in &system.equalities {
+        let mut current_eq: Vec<PolyTerm> = eq.clone();
+        // Each iteration consumes ≥ 2 terms.
+        let max_iters = current_eq.len() + 1;
+        for _ in 0..max_iters {
+            match find_bitsum_chain_in_terms(&current_eq, &bits, p, MIN_AUTO_BITSUM_LEN) {
+                Some((bit_list, base_coeff, consumed)) => {
+                    let aux_name = format!("__bitsum_{}", new_bitsums.len());
+                    new_bitsums.push(bit_list);
+
+                    let mut new_terms: Vec<PolyTerm> = current_eq
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| !consumed.contains(i))
+                        .map(|(_, t)| t.clone())
+                        .collect();
+                    new_terms.push(PolyTerm {
+                        coeff: base_coeff,
+                        vars: vec![aux_name],
+                    });
+                    current_eq = new_terms;
+                }
+                None => break,
+            }
+        }
+        rewritten_equalities.push(current_eq);
+    }
+
+    ConstraintSystem {
+        prime: system.prime.clone(),
+        equalities: rewritten_equalities,
+        disequalities: system.disequalities.clone(),
+        assignments: system.assignments.clone(),
+        add_field_polys: system.add_field_polys,
+        bitsums: new_bitsums,
+    }
+}
+
+/// Match the term-list form of `b·(b − 1) = 0`: exactly two non-zero
+/// terms `c · b·b` and `c' · b` with the same variable `b` and
+/// `c + c' ≡ 0 (mod p)`. Returns the variable name on match.
+fn detect_bit_constraint_in_terms(eq: &[PolyTerm], p: &BigUint) -> Option<String> {
+    let nonzero: Vec<&PolyTerm> = eq.iter().filter(|t| !t.coeff.is_zero()).collect();
+    if nonzero.len() != 2 {
+        return None;
+    }
+    let (quad, lin) = if nonzero[0].vars.len() == 2
+        && nonzero[0].vars[0] == nonzero[0].vars[1]
+        && nonzero[1].vars.len() == 1
+        && nonzero[1].vars[0] == nonzero[0].vars[0]
+    {
+        (nonzero[0], nonzero[1])
+    } else if nonzero[1].vars.len() == 2
+        && nonzero[1].vars[0] == nonzero[1].vars[1]
+        && nonzero[0].vars.len() == 1
+        && nonzero[0].vars[0] == nonzero[1].vars[0]
+    {
+        (nonzero[1], nonzero[0])
+    } else {
+        return None;
+    };
+    let sum = (&quad.coeff + &lin.coeff) % p;
+    if !sum.is_zero() {
+        return None;
+    }
+    Some(quad.vars[0].clone())
+}
+
+/// Find the longest bitsum chain in an equality, where a chain is
+/// `c·b_0 + 2c·b_1 + 4c·b_2 + ... + 2^k·c·b_k` with each
+/// `b_i ∈ bits` appearing as a single-variable, exponent-1 term.
+/// Base coefficients are tried in ascending symmetric-residue order
+/// (`min(c, p − c)`, ties broken by raw value).
+///
+/// Returns `(bit_list_low_to_high, base_coeff, consumed_term_indices)`,
+/// or `None` if no chain of length `>= min_len` exists.
+fn find_bitsum_chain_in_terms(
+    eq: &[PolyTerm],
+    bits: &HashSet<String>,
+    p: &BigUint,
+    min_len: usize,
+) -> Option<(Vec<String>, BigUint, HashSet<usize>)> {
+    // Linear-on-bit terms indexed by coefficient (mod p).
+    let mut by_coeff: BTreeMap<BigUint, Vec<(String, usize)>> = BTreeMap::new();
+    for (idx, t) in eq.iter().enumerate() {
+        if t.coeff.is_zero() {
+            continue;
+        }
+        if t.vars.len() == 1 && bits.contains(&t.vars[0]) {
+            by_coeff
+                .entry(&t.coeff % p)
+                .or_default()
+                .push((t.vars[0].clone(), idx));
+        }
+    }
+    if by_coeff.is_empty() {
+        return None;
+    }
+
+    let abs_residue = |c: &BigUint| -> BigUint {
+        let neg = p - c;
+        if c < &neg {
+            c.clone()
+        } else {
+            neg
+        }
+    };
+    let mut candidates: Vec<BigUint> = by_coeff.keys().cloned().collect();
+    candidates.sort_by(|a, b| {
+        let ra = abs_residue(a);
+        let rb = abs_residue(b);
+        ra.cmp(&rb).then(a.cmp(b))
+    });
+
+    let two = BigUint::from(2u32);
+    let mut best: Option<(Vec<String>, BigUint, HashSet<usize>)> = None;
+
+    for base in &candidates {
+        let mut chain_vars: Vec<String> = Vec::new();
+        let mut chain_idxs: HashSet<usize> = HashSet::new();
+        let mut used_vars: HashSet<String> = HashSet::new();
+
+        let mut cur = base.clone();
+        loop {
+            let bucket = match by_coeff.get(&cur) {
+                Some(b) => b,
+                None => break,
+            };
+            // Lowest unused term-index → deterministic output.
+            let next = bucket
+                .iter()
+                .filter(|(v, _)| !used_vars.contains(v))
+                .min_by_key(|(_, idx)| *idx);
+            match next {
+                Some((var, idx)) => {
+                    used_vars.insert(var.clone());
+                    chain_vars.push(var.clone());
+                    chain_idxs.insert(*idx);
+                    cur = (&cur * &two) % p;
+                }
+                None => break,
+            }
+        }
+
+        if chain_vars.len() >= min_len {
+            let pick = match &best {
+                None => true,
+                Some((b_vars, _, _)) => chain_vars.len() > b_vars.len(),
+            };
+            if pick {
+                best = Some((chain_vars, base.clone(), chain_idxs));
+            }
+        }
+    }
+
+    best
+}
+
 /// Divide a polynomial by its leading coefficient (in DegRevLex order).
 fn normalize_poly(pr: &FfPolyRing, p: Poly) -> Poly {
     let ring = &pr.ring;
@@ -362,5 +595,175 @@ mod tests {
         let p = &enc.polynomials[0];
         // After normalize_poly divides by 5: just x*y.
         assert_eq!(p.num_terms(), 1, "expected single x*y term, got {} terms", p.num_terms());
+    }
+
+    // ── auto_extract_bitsums tests ────────────────────────────────────
+
+    /// Builds `k` bit constraints `b_i·(b_i − 1) = 0` plus one equality
+    /// `s − (b_0 + 2·b_1 + 4·b_2 + ... + 2^{k-1}·b_{k-1}) = 0` over GF(`prime`).
+    fn bitdecomp_system_no_target(prime: u32, k: usize) -> ConstraintSystem {
+        let p = BigUint::from(prime);
+        let pm1 = &p - BigUint::from(1u32);
+        let mut sys = small_sys(prime);
+        for i in 0..k {
+            let bi = format!("b{}", i);
+            sys.equalities.push(vec![
+                PolyTerm { coeff: BigUint::from(1u32), vars: vec![bi.clone(), bi.clone()] },
+                PolyTerm { coeff: pm1.clone(), vars: vec![bi] },
+            ]);
+        }
+        // Terms: (1, [s]), (p-1, [b_0]), (p-2, [b_1]), ..., (p-2^{k-1}, [b_{k-1}]).
+        let mut terms: Vec<PolyTerm> = vec![PolyTerm {
+            coeff: BigUint::from(1u32),
+            vars: vec!["s".to_string()],
+        }];
+        let mut coeff: BigUint = BigUint::from(1u32);
+        let two = BigUint::from(2u32);
+        for i in 0..k {
+            terms.push(PolyTerm {
+                coeff: &p - &coeff,
+                vars: vec![format!("b{}", i)],
+            });
+            coeff = (&coeff * &two) % &p;
+        }
+        sys.equalities.push(terms);
+        sys
+    }
+
+    #[test]
+    fn auto_bitsum_extracts_simple_chain() {
+        let sys = bitdecomp_system_no_target(101, 3);
+        let n_eq_before = sys.equalities.len();
+        let n_bitsums_before = sys.bitsums.len();
+
+        let rewritten = auto_extract_bitsums(&sys);
+
+        assert_eq!(rewritten.bitsums.len(), n_bitsums_before + 1);
+        let detected = rewritten.bitsums.last().unwrap();
+        assert_eq!(detected, &vec!["b0".to_string(), "b1".to_string(), "b2".to_string()]);
+        assert_eq!(rewritten.equalities.len(), n_eq_before);
+
+        let sum_eq = rewritten.equalities.last().unwrap();
+        let nonzero: Vec<&PolyTerm> = sum_eq.iter().filter(|t| !t.coeff.is_zero()).collect();
+        assert_eq!(nonzero.len(), 2, "rewritten sum equality should have 2 terms, got {}", nonzero.len());
+        let vars: HashSet<&str> = nonzero.iter().flat_map(|t| t.vars.iter().map(|s| s.as_str())).collect();
+        assert!(vars.contains("s"));
+        assert!(vars.iter().any(|v| v.starts_with("__bitsum_")));
+    }
+
+    /// No `b·(b − 1) = 0` constraints and no user-provided bitsums → empty
+    /// `bits` set → chain detection skipped even on bitsum-shaped equalities.
+    #[test]
+    fn auto_bitsum_skips_when_no_bit_constraints() {
+        let mut sys = small_sys(101);
+        sys.equalities.push(vec![
+            term(1, &["s"]),
+            term(100, &["b0"]), // -1 mod 101
+            term(99,  &["b1"]), // -2 mod 101
+            term(97,  &["b2"]), // -4 mod 101
+        ]);
+        let rewritten = auto_extract_bitsums(&sys);
+        assert!(rewritten.bitsums.is_empty(), "expected no bitsum extraction; got {:?}", rewritten.bitsums);
+        assert_eq!(rewritten.equalities[0].len(), 4);
+    }
+
+    /// Chain length 1 is below `MIN_AUTO_BITSUM_LEN`.
+    #[test]
+    fn auto_bitsum_skips_single_bit() {
+        let sys = bitdecomp_system_no_target(101, 1);
+        let rewritten = auto_extract_bitsums(&sys);
+        assert!(rewritten.bitsums.is_empty());
+    }
+
+    /// User-provided `bitsums` entries retain their indices; auto-detected
+    /// entries are appended.
+    #[test]
+    fn auto_bitsum_preserves_user_provided() {
+        let mut sys = bitdecomp_system_no_target(101, 3);
+        sys.bitsums.push(vec!["b0".into(), "b1".into()]);
+        let rewritten = auto_extract_bitsums(&sys);
+        assert_eq!(rewritten.bitsums[0], vec!["b0".to_string(), "b1".to_string()]);
+        assert!(rewritten.bitsums.len() >= 2);
+    }
+
+    /// `encode` (auto-extract on) and `encode_no_auto_bitsum` produce the same
+    /// verdict on a bitdecomp-shaped system.
+    #[test]
+    fn auto_bitsum_solve_equivalence_gf11() {
+        use crate::core::{solve_encoded, SolveOutcome};
+
+        // k=3 bits over GF(11), target = 5 (binary 101 → b0=1, b1=0, b2=1).
+        let prime: u32 = 11;
+        let p = BigUint::from(prime);
+        let pm1 = &p - BigUint::from(1u32);
+        let target: u32 = 5;
+        let bits = ["b0", "b1", "b2"];
+
+        let mut sys = small_sys(prime);
+        for b in &bits {
+            sys.equalities.push(vec![
+                PolyTerm { coeff: BigUint::from(1u32), vars: vec![b.to_string(), b.to_string()] },
+                PolyTerm { coeff: pm1.clone(), vars: vec![b.to_string()] },
+            ]);
+        }
+        // b_0 + 2·b_1 + 4·b_2 − target = 0
+        let mut sum_terms: Vec<PolyTerm> = Vec::new();
+        let mut c = BigUint::from(1u32);
+        let two = BigUint::from(2u32);
+        for b in &bits {
+            sum_terms.push(PolyTerm { coeff: c.clone(), vars: vec![b.to_string()] });
+            c = (&c * &two) % &p;
+        }
+        sum_terms.push(PolyTerm { coeff: &p - BigUint::from(target), vars: vec![] });
+        sys.equalities.push(sum_terms);
+
+        let enc_auto = encode(&sys).unwrap();
+        let out_auto = solve_encoded(&enc_auto);
+
+        let enc_raw = encode_no_auto_bitsum(&sys).unwrap();
+        let out_raw = solve_encoded(&enc_raw);
+
+        match (&out_auto, &out_raw) {
+            (SolveOutcome::Sat(m_auto), SolveOutcome::Sat(m_raw)) => {
+                for b in &bits {
+                    let va = m_auto.get(*b).expect("auto: missing bit in model");
+                    let vr = m_raw.get(*b).expect("raw: missing bit in model");
+                    assert_eq!(va, vr, "models disagree on {}: auto={}, raw={}", b, va, vr);
+                }
+            }
+            (SolveOutcome::Unsat(_), SolveOutcome::Unsat(_)) => {}
+            (a, b) => panic!("verdict mismatch — auto: {:?}, raw: {:?}", a, b),
+        }
+    }
+
+    /// Matches `b·(b − 1) = 0` in several term orderings and scalings;
+    /// rejects shapes that don't satisfy `c + c' ≡ 0 (mod p)` or have
+    /// extra terms.
+    #[test]
+    fn detect_bit_constraint_canonical_forms() {
+        let p = BigUint::from(101u32);
+        // b² + (p-1)·b = 0
+        let eq1 = vec![term(1, &["b", "b"]), term(100, &["b"])];
+        assert_eq!(detect_bit_constraint_in_terms(&eq1, &p), Some("b".to_string()));
+
+        // Linear term first, quadratic second.
+        let eq2 = vec![term(100, &["b"]), term(1, &["b", "b"])];
+        assert_eq!(detect_bit_constraint_in_terms(&eq2, &p), Some("b".to_string()));
+
+        // 2·b² + (p-2)·b = 0
+        let eq3 = vec![term(2, &["b", "b"]), term(99, &["b"])];
+        assert_eq!(detect_bit_constraint_in_terms(&eq3, &p), Some("b".to_string()));
+
+        // c + c' ≢ 0 (mod p) → no match.
+        let eq4 = vec![term(1, &["b", "b"]), term(99, &["b"])];
+        assert_eq!(detect_bit_constraint_in_terms(&eq4, &p), None);
+
+        // Distinct variables → no match.
+        let eq5 = vec![term(1, &["b", "b"]), term(100, &["c"])];
+        assert_eq!(detect_bit_constraint_in_terms(&eq5, &p), None);
+
+        // Three terms → no match.
+        let eq6 = vec![term(1, &["b", "b"]), term(100, &["b"]), term(1, &[])];
+        assert_eq!(detect_bit_constraint_in_terms(&eq6, &p), None);
     }
 }

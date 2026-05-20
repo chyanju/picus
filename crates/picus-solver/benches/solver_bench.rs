@@ -177,7 +177,7 @@ fn bench_find_roots(c: &mut Criterion) {
 
     // GF(7): x^4 - x^3 (roots 0, 1)
     {
-        let ff = FfField::new(&BigUint::from(7u32));
+        let ff = FfField::new(BigUint::from(7u32));
         let mut coeffs = vec![ff.zero(); 5];
         coeffs[3] = ff.from_biguint(&BigUint::from(6u32));
         coeffs[4] = ff.one();
@@ -190,7 +190,7 @@ fn bench_find_roots(c: &mut Criterion) {
     {
         let p: BigUint = "57896044618658097711785492504343953926634992332820282019728792003956564819949"
             .parse().unwrap();
-        let ff = FfField::new(&p);
+        let ff = FfField::new(p.clone());
         let pm1 = &p - BigUint::one();
         let mut coeffs = vec![ff.zero(); 3];
         coeffs[0] = ff.one();
