@@ -100,6 +100,11 @@ pub(super) struct BasisElement {
     pub(super) active: bool,
     /// Sugar degree at the time this element was added.
     pub(super) sugar: u32,
+    /// Cumulative reducer-usage count. Incremented each time this
+    /// element is selected as the divisor in a `reduce_by_refs_geobucket`
+    /// iteration. Used to bias the divisor scan order toward
+    /// frequently-selected reducers (cache locality).
+    pub(super) use_count: u64,
 }
 
 // ─────────────────────────── Public entry points ───────────────────────────
@@ -276,6 +281,11 @@ pub(super) struct BuchbergerState {
     input_is_homog: bool,
 }
 
+/// Minimum active-basis size for use-count-based reductor reordering to
+/// kick in. Below this threshold the per-call O(N log N) sort outweighs
+/// the divisor-scan locality gain.
+const USE_COUNT_SORT_THRESHOLD: usize = 32;
+
 impl BuchbergerState {
     pub(super) fn new(ring: Arc<PolyRing>, cfg: BuchbergerConfig) -> Self {
         BuchbergerState {
@@ -334,6 +344,7 @@ impl BuchbergerState {
                 lt_divmask,
                 active: true,
                 sugar,
+                use_count: 0,
             });
         }
     }
@@ -359,16 +370,36 @@ impl BuchbergerState {
             self.check_cancel()?;
             if g.is_zero() { continue; }
             // Reduce the new generator by the current basis BEFORE adding.
-            // Use ref-based reduce to avoid cloning every active polynomial.
-            let active_refs: Vec<&Polynomial> = self.basis.iter()
-                .filter(|e| e.active)
-                .map(|e| &e.poly)
-                .collect();
-            let active_idxs = self.active_indices();
-            let mut g_red = match &self.cfg.cancel_token {
-                Some(c) => g.reduce_by_refs_cancel(&active_refs, &self.ring, c),
-                None => g.reduce_by_refs(&active_refs, &self.ring),
+            // At or above `USE_COUNT_SORT_THRESHOLD` the active list is
+            // sorted by `use_count` descending; the inner stable LT-degree
+            // sort in `reduce_by_refs_geobucket` preserves this order for
+            // equal-degree ties.
+            let mut active_idxs = self.active_indices();
+            if active_idxs.len() >= USE_COUNT_SORT_THRESHOLD {
+                active_idxs.sort_by(|&a, &b| {
+                    self.basis[b].use_count.cmp(&self.basis[a].use_count)
+                });
+            }
+            let mut use_counts = vec![0u64; active_idxs.len()];
+            let mut g_red = {
+                let active_refs: Vec<&Polynomial> = active_idxs
+                    .iter()
+                    .map(|&i| &self.basis[i].poly)
+                    .collect();
+                match &self.cfg.cancel_token {
+                    Some(c) => g.reduce_by_refs_counted_cancel(
+                        &active_refs, &self.ring, c, &mut use_counts,
+                    ),
+                    None => g.reduce_by_refs_counted(
+                        &active_refs, &self.ring, &mut use_counts,
+                    ),
+                }
             };
+            for (slot, &basis_i) in active_idxs.iter().enumerate() {
+                self.basis[basis_i].use_count = self.basis[basis_i]
+                    .use_count
+                    .saturating_add(use_counts[slot]);
+            }
             if let Some(c) = &self.cfg.cancel_token {
                 if c.is_cancelled() {
                     return Err(SolverError::Timeout);
@@ -391,6 +422,7 @@ impl BuchbergerState {
                     lt_divmask,
                     active: true,
                     sugar,
+                    use_count: 0,
                 });
                 if self.cfg.abort_on_trivial {
                     return Ok(());
@@ -413,7 +445,7 @@ impl BuchbergerState {
                     self.basis[k].active = false;
                 }
             }
-            self.basis.push(BasisElement { poly: g_red, lt, lt_divmask, active: true, sugar });
+            self.basis.push(BasisElement { poly: g_red, lt, lt_divmask, active: true, sugar, use_count: 0 });
         }
         Ok(())
     }
@@ -518,12 +550,6 @@ impl BuchbergerState {
     /// If a polynomial reduces to zero, it is deactivated (and all bookkeeping
     /// invariants — including `Checkpoint::active_snapshot` — remain stable
     /// because we never resize `self.basis`).
-    ///
-    /// This is the periodic "interreduce-during-incremental-GB" hook:
-    /// without it, the basis grows monotonically across `add_generators`
-    /// calls because D3 only deactivates strictly dominated elements but
-    /// does not shrink tail-redundancy in surviving polynomials, which
-    /// makes every subsequent `reduce_by_refs` quadratically more expensive.
     pub(super) fn tail_reduce_active(&mut self) {
         // Snapshot the active indices and clone their polys ONCE into a
         // workspace. We then reduce each workspace[i] by &workspace[j] for
@@ -648,16 +674,38 @@ impl BuchbergerState {
             // reduction avoids cloning every active polynomial for each
             // S-pair; the cancel-aware variant bounds the cost of a
             // single dense reduction so the caller's timeout is
-            // honoured.
+            // honoured. Above `USE_COUNT_SORT_THRESHOLD`, divisors are
+            // tried in `use_count` descending order; the inner stable
+            // sort by LT degree preserves this for equal-degree ties.
             let t_red_start = if stats_on { Some(std::time::Instant::now()) } else { None };
-            let active_refs: Vec<&Polynomial> = self.basis.iter()
-                .filter(|e| e.active)
-                .map(|e| &e.poly)
+            let mut active_idxs: Vec<usize> = (0..self.basis.len())
+                .filter(|&i| self.basis[i].active)
                 .collect();
-            let mut nf = match &self.cfg.cancel_token {
-                Some(c) => s_poly.reduce_by_refs_cancel(&active_refs, &self.ring, c),
-                None => s_poly.reduce_by_refs(&active_refs, &self.ring),
+            if active_idxs.len() >= USE_COUNT_SORT_THRESHOLD {
+                active_idxs.sort_by(|&a, &b| {
+                    self.basis[b].use_count.cmp(&self.basis[a].use_count)
+                });
+            }
+            let mut use_counts = vec![0u64; active_idxs.len()];
+            let mut nf = {
+                let active_refs: Vec<&Polynomial> = active_idxs
+                    .iter()
+                    .map(|&i| &self.basis[i].poly)
+                    .collect();
+                match &self.cfg.cancel_token {
+                    Some(c) => s_poly.reduce_by_refs_counted_cancel(
+                        &active_refs, &self.ring, c, &mut use_counts,
+                    ),
+                    None => s_poly.reduce_by_refs_counted(
+                        &active_refs, &self.ring, &mut use_counts,
+                    ),
+                }
             };
+            for (slot, &basis_i) in active_idxs.iter().enumerate() {
+                self.basis[basis_i].use_count = self.basis[basis_i]
+                    .use_count
+                    .saturating_add(use_counts[slot]);
+            }
             if let Some(t0) = t_red_start {
                 t_reduce_ns += t0.elapsed().as_nanos() as u64;
             }
@@ -710,7 +758,7 @@ impl BuchbergerState {
             // Trivial-ideal short-circuit.
             if nf.is_constant() {
                 self.trivial = true;
-                self.basis.push(BasisElement { poly: nf, lt, lt_divmask, active: true, sugar });
+                self.basis.push(BasisElement { poly: nf, lt, lt_divmask, active: true, sugar, use_count: 0 });
                 if self.cfg.abort_on_trivial { return Ok(()); }
                 continue;
             }
@@ -728,7 +776,7 @@ impl BuchbergerState {
                     self.basis[k].active = false;
                 }
             }
-            self.basis.push(BasisElement { poly: nf, lt, lt_divmask, active: true, sugar });
+            self.basis.push(BasisElement { poly: nf, lt, lt_divmask, active: true, sugar, use_count: 0 });
             // Periodic in-loop tail-reduction. Tail-reduction preserves
             // the gradedness invariant exactly for homogeneous input;
             // for non-homogeneous input it can perturb sugar-degree
@@ -804,14 +852,34 @@ impl BuchbergerState {
         let part_i = bi.poly.mul_term(mul_i.exponents(), &term_i, &self.ring);
         let part_j = bj.poly.mul_term(mul_j.exponents(), &scale_j, &self.ring);
         let s_poly = part_i.sub(&part_j, &self.ring);
-        let active_refs: Vec<&Polynomial> = self.basis.iter()
-            .filter(|e| e.active)
-            .map(|e| &e.poly)
+        let mut active_idxs: Vec<usize> = (0..self.basis.len())
+            .filter(|&i| self.basis[i].active)
             .collect();
-        let mut nf = match &self.cfg.cancel_token {
-            Some(c) => s_poly.reduce_by_refs_cancel(&active_refs, &self.ring, c),
-            None => s_poly.reduce_by_refs(&active_refs, &self.ring),
+        if active_idxs.len() >= USE_COUNT_SORT_THRESHOLD {
+            active_idxs.sort_by(|&a, &b| {
+                self.basis[b].use_count.cmp(&self.basis[a].use_count)
+            });
+        }
+        let mut use_counts = vec![0u64; active_idxs.len()];
+        let mut nf = {
+            let active_refs: Vec<&Polynomial> = active_idxs
+                .iter()
+                .map(|&i| &self.basis[i].poly)
+                .collect();
+            match &self.cfg.cancel_token {
+                Some(c) => s_poly.reduce_by_refs_counted_cancel(
+                    &active_refs, &self.ring, c, &mut use_counts,
+                ),
+                None => s_poly.reduce_by_refs_counted(
+                    &active_refs, &self.ring, &mut use_counts,
+                ),
+            }
         };
+        for (slot, &basis_i) in active_idxs.iter().enumerate() {
+            self.basis[basis_i].use_count = self.basis[basis_i]
+                .use_count
+                .saturating_add(use_counts[slot]);
+        }
         if let Some(c) = &self.cfg.cancel_token {
             if c.is_cancelled() {
                 return Err(SolverError::Timeout);
@@ -838,7 +906,7 @@ impl BuchbergerState {
 
         if nf.is_constant() {
             self.trivial = true;
-            self.basis.push(BasisElement { poly: nf, lt, lt_divmask, active: true, sugar });
+            self.basis.push(BasisElement { poly: nf, lt, lt_divmask, active: true, sugar, use_count: 0 });
             if self.cfg.abort_on_trivial { return Ok(()); }
             return Ok(());
         }
@@ -849,7 +917,7 @@ impl BuchbergerState {
                 self.basis[k].active = false;
             }
         }
-        self.basis.push(BasisElement { poly: nf, lt, lt_divmask, active: true, sugar });
+        self.basis.push(BasisElement { poly: nf, lt, lt_divmask, active: true, sugar, use_count: 0 });
         Ok(())
     }
 
@@ -966,6 +1034,7 @@ impl BuchbergerState {
                         lt_divmask,
                         active: true,
                         sugar,
+                        use_count: 0,
                     });
                     if self.cfg.abort_on_trivial {
                         return Ok(());
@@ -985,6 +1054,7 @@ impl BuchbergerState {
                     lt_divmask,
                     active: true,
                     sugar,
+                    use_count: 0,
                 });
             }
         }
@@ -1187,6 +1257,7 @@ mod tests {
             lt_divmask,
             active: true,
             sugar: 0,
+            use_count: 0,
         }
     }
 
