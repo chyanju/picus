@@ -488,7 +488,7 @@ pub enum ZeroExtendResult {
 /// Build a polynomial of the form `x_var - val`.
 fn assignment_poly(pr: &FfPolyRing, var: usize, val: &FfEl) -> Poly {
     let v = pr.var(var);
-    let c = pr.constant(pr.field.field().clone_el(val));
+    let c = pr.constant(pr.field.clone_el(val));
     pr.sub(v, c)
 }
 
@@ -497,7 +497,7 @@ fn assignment_poly(pr: &FfPolyRing, var: usize, val: &FfEl) -> Poly {
 /// evaluate); else None.
 fn evaluate_full(pr: &FfPolyRing, p: &Poly, r: &PartialPoint) -> Option<FfEl> {
     let ring = &pr.ring;
-    let fp = pr.field.field();
+    let fp = &pr.field;
     let mut acc = fp.zero();
     for (c, m) in ring.terms(p) {
         let mut term_val = fp.clone_el(c);
@@ -612,7 +612,7 @@ pub fn split_zero_extend_cancel<'r>(
         let mut m = BTreeMap::new();
         for (i, slot) in r.iter().enumerate() {
             if let Some(v) = slot {
-                m.insert(i, fp.field().clone_el(v));
+                m.insert(i, fp.clone_el(v));
             }
         }
         m
@@ -741,7 +741,7 @@ pub fn split_zero_extend_cancel<'r>(
         // Record the candidate as the most-recent-tried for this frame
         // BEFORE attempting it, so a return-without-pop (cancel, conflict)
         // also leaves the trail in a consistent state.
-        stack[frame_idx].last_tried = Some((var, poly_ring.field.field().clone_el(&val)));
+        stack[frame_idx].last_tried = Some((var, poly_ring.field.clone_el(&val)));
 
         if stats_on {
             crate::profile::SPLIT_DFS.branches_tried
@@ -749,7 +749,7 @@ pub fn split_zero_extend_cancel<'r>(
         }
 
         let mut new_r = stack[frame_idx].r.clone();
-        new_r[var] = Some(poly_ring.field.field().clone_el(&val));
+        new_r[var] = Some(poly_ring.field.clone_el(&val));
         let assign_poly = assignment_poly(poly_ring, var, &val);
 
         // Nogood subsumption check: if any recorded nogood is a subset of
@@ -1044,7 +1044,7 @@ pub fn apply_rule<'r>(
         return Brancher::Roots(Vec::new());
     }
 
-    let prime = &field.prime;
+    let prime = field.prime();
     // No per-variable cap: the count is the field size (saturated to
     // `u64::MAX` for primes larger than 64 bits). Termination on large
     // primes relies on the cancel token / caller timeout.
@@ -1074,7 +1074,7 @@ fn univariate_coeffs(
     var_idx: usize,
 ) -> Option<Vec<FfEl>> {
     let ring = &poly_ring.ring;
-    let fp = poly_ring.field.field();
+    let fp = &poly_ring.field;
     let appearing = ring.appearing_indeterminates(p);
     for (v, _) in &appearing {
         if *v != var_idx { return None; }
@@ -1179,7 +1179,7 @@ mod tests {
     use crate::field::FfField;
     use num_bigint::BigUint;
 
-    fn ff(p: u32) -> FfField { FfField::new(&BigUint::from(p)) }
+    fn ff(p: u32) -> FfField { FfField::new(BigUint::from(p)) }
 
     #[test]
     fn test_admit() {

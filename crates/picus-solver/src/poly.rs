@@ -36,7 +36,7 @@ impl FfPolyRing {
     pub fn new(field: FfField, var_names: Vec<String>) -> Self {
         let n_vars = var_names.len();
         let ctx = FfPolyRingCtx::new(
-            field.field().clone(),
+            field.clone(),
             var_names.clone(),
             MonomialOrder::DegRevLex,
         );
@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn test_poly_basic() {
-        let field = FfField::new(&BigUint::from(17u32));
+        let field = FfField::new(BigUint::from(17u32));
         let pr = FfPolyRing::new(field, vec!["x".into(), "y".into()]);
 
         let x = pr.var(0);

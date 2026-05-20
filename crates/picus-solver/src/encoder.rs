@@ -100,7 +100,7 @@ pub fn encode(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
         bitsum_aux_vars.push(name);
     }
 
-    let field = FfField::new(&system.prime);
+    let field = FfField::new(system.prime.clone());
 
     // Check that the variable count is within the GB ring's working capacity.
     // Historically the underlying ring required C(n_vars + max_deg, n_vars) < 2^64;
@@ -167,7 +167,7 @@ pub fn encode(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
     // algorithm seeds them only into the linear basis.
     let mut bitsum_polys = Vec::new();
     for (bs, aux_name) in system.bitsums.iter().zip(bitsum_aux_vars.iter()) {
-        let fp = poly_ring.field.field();
+        let fp = &poly_ring.field;
         let two = fp.int_hom().map(2);
         let mut sum = poly_ring.zero();
         let mut coeff = poly_ring.field.one();
@@ -224,7 +224,7 @@ pub fn encode(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
 /// Divide a polynomial by its leading coefficient (in DegRevLex order).
 fn normalize_poly(pr: &FfPolyRing, p: Poly) -> Poly {
     let ring = &pr.ring;
-    let fp = pr.field.field();
+    let fp = &pr.field;
     if ring.is_zero(&p) || p.num_terms() == 0 { return p; }
     // Leading term is at index 0 (polynomials are stored sorted descending).
     let lc = fp.clone_el(p.term(0, ring.ctx.as_ref()).coefficient());

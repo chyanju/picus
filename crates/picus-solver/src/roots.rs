@@ -17,7 +17,7 @@ use crate::field::{FfEl, FfField};
 /// `coeffs[i]` is the coefficient of x^i.
 pub fn find_roots(field: &FfField, coeffs: &[FfEl]) -> Vec<FfEl> {
     let _t = crate::profile::ScopedTimer::new("find_roots");
-    let fp = field.field();
+    let fp = field;
     let owned: Vec<FfEl> = coeffs.iter().map(|c| fp.clone_el(c)).collect();
     let poly = UnivariatePoly::from_coeffs(owned, fp);
     if poly.is_zero() {
@@ -34,7 +34,7 @@ mod tests {
     #[test]
     fn test_roots_linear() {
         // x - 3 = 0 over GF(17) → root = 3
-        let ff = FfField::new(&BigUint::from(17u32));
+        let ff = FfField::new(BigUint::from(17u32));
 
         let coeffs = vec![
             ff.from_biguint(&BigUint::from(14u32)), // -3 mod 17
@@ -49,7 +49,7 @@ mod tests {
     #[test]
     fn test_roots_quadratic() {
         // x^2 - 1 = 0 over GF(17) → roots 1, 16
-        let ff = FfField::new(&BigUint::from(17u32));
+        let ff = FfField::new(BigUint::from(17u32));
 
         let coeffs = vec![
             ff.from_biguint(&BigUint::from(16u32)), // -1 mod 17
@@ -67,7 +67,7 @@ mod tests {
     #[test]
     fn test_no_roots() {
         // x^2 + 1 = 0 over GF(3) → no roots
-        let ff = FfField::new(&BigUint::from(3u32));
+        let ff = FfField::new(BigUint::from(3u32));
 
         let coeffs = vec![ff.one(), ff.zero(), ff.one()];
         let roots = find_roots(&ff, &coeffs);
@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn test_roots_with_zero_root() {
         // x^2 - x = 0 over GF(7) → roots 0, 1
-        let ff = FfField::new(&BigUint::from(7u32));
+        let ff = FfField::new(BigUint::from(7u32));
         let coeffs = vec![ff.zero(), ff.from_biguint(&BigUint::from(6u32)), ff.one()];
         let roots = find_roots(&ff, &coeffs);
         assert_eq!(roots.len(), 2);
@@ -89,7 +89,7 @@ mod tests {
     #[test]
     fn test_roots_high_degree_with_irreducible_factors() {
         // x^4 - 1 over GF(5): a^4 ≡ 1 mod 5 for all a ∈ {1,2,3,4}.
-        let ff = FfField::new(&BigUint::from(5u32));
+        let ff = FfField::new(BigUint::from(5u32));
         let coeffs = vec![
             ff.from_biguint(&BigUint::from(4u32)), // -1
             ff.zero(),

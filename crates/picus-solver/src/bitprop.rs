@@ -110,7 +110,7 @@ impl<'r> BitProp<'r> {
         let _t = crate::profile::ScopedTimer::new("bitprop::get_bit_equalities");
         let pr = self.poly_ring;
         let ring = &pr.ring;
-        let fp = pr.field.field();
+        let fp = &pr.field;
         let mut output: Vec<Poly> = Vec::new();
 
         // We snapshot the bitsums to avoid borrow conflicts with `self.is_bit`.
@@ -186,7 +186,7 @@ impl<'r> BitProp<'r> {
                 let min = a.len().min(b.len());
                 let max = a.len().max(b.len());
                 // Check overflow: bitwidth shouldn't exceed field bitlength
-                let field_bits = pr.field.prime.bits() as usize;
+                let field_bits = pr.field.prime().bits() as usize;
                 if max > field_bits { continue; }
 
                 let all_bits = a.iter().chain(b.iter()).all(|&v| self.is_bit(v, split_basis));
@@ -210,7 +210,7 @@ impl<'r> BitProp<'r> {
 
 /// Construct the polynomial  `b_0 + 2*b_1 + ... + 2^k*b_k`  for a bitsum.
 fn bitsum_poly(pr: &FfPolyRing, bits: &[usize]) -> Poly {
-    let fp = pr.field.field();
+    let fp = &pr.field;
     let two = fp.int_hom().map(2);
     let mut result = pr.zero();
     let mut coeff = fp.one();
@@ -225,7 +225,7 @@ fn bitsum_poly(pr: &FfPolyRing, bits: &[usize]) -> Poly {
 /// Get the constant term of a polynomial (assumes it's already a constant).
 fn constant_term_value(pr: &FfPolyRing, p: &Poly) -> FfEl {
     let ring = &pr.ring;
-    let fp = pr.field.field();
+    let fp = &pr.field;
     let mut acc = fp.zero();
     for (c, m) in ring.terms(p) {
         let mut deg = 0usize;
@@ -246,7 +246,7 @@ mod tests {
     use crate::field::FfField;
     use num_bigint::BigUint;
 
-    fn ff(p: u32) -> FfField { FfField::new(&BigUint::from(p)) }
+    fn ff(p: u32) -> FfField { FfField::new(BigUint::from(p)) }
 
     #[test]
     fn test_bitprop_constant_bitsum() {

@@ -447,7 +447,7 @@ pub(crate) fn interreduce_basis(
 /// Cheap (an `Arc<PolyRing>` with the same field/var-name data).
 pub(crate) fn ring_for_order(poly_ring: &FfPolyRing, order: FfOrder) -> std::sync::Arc<crate::ff::polynomial::PolyRing> {
     crate::ff::polynomial::PolyRing::new(
-        poly_ring.field.field().clone(),
+        poly_ring.field.clone(),
         poly_ring.var_names.clone(),
         order,
     )
@@ -651,7 +651,7 @@ mod tests {
     use num_bigint::BigUint;
 
     fn ff(p: u32) -> FfField {
-        FfField::new(&BigUint::from(p))
+        FfField::new(BigUint::from(p))
     }
 
     #[test]
@@ -706,7 +706,7 @@ mod tests {
         let ideal = Ideal::new(&pr, vec![p1]);
         let mp = ideal.min_poly(0).expect("zero-dim, should have minpoly");
         assert_eq!(mp.len(), 2);
-        let fp = pr.field.field();
+        let fp = &pr.field;
         let neg_five = fp.neg(&pr.field.from_int(5));
         assert!(fp.eq_el(&mp[0], &neg_five));
         assert!(fp.is_one(&mp[1]));
@@ -722,7 +722,7 @@ mod tests {
         let ideal = Ideal::new(&pr, vec![p]);
         let mp = ideal.min_poly(0).expect("zero-dim, should have minpoly");
         assert_eq!(mp.len(), 3);
-        let fp = pr.field.field();
+        let fp = &pr.field;
         let neg_one = fp.neg(&fp.one());
         assert!(fp.eq_el(&mp[0], &neg_one));
         assert!(fp.is_zero(&mp[1]));
@@ -739,6 +739,6 @@ mod tests {
         let ideal = Ideal::new(&pr, vec![]);
         let normalized = ideal.normalize(&p);
         let lc = leading_coefficient(&pr.ring, &normalized, FfOrder::DegRevLex);
-        assert!(pr.field.field().is_one(&lc));
+        assert!(pr.field.is_one(&lc));
     }
 }

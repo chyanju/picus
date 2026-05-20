@@ -7,7 +7,7 @@ use picus_solver::poly::FfPolyRing;
 use num_bigint::BigUint;
 use std::collections::HashSet;
 
-fn ff(p: u32) -> FfField { FfField::new(&BigUint::from(p)) }
+fn ff(p: u32) -> FfField { FfField::new(BigUint::from(p)) }
 
 // =============================================================================
 // bitConstraint  (GF(7))
@@ -19,7 +19,7 @@ fn ff(p: u32) -> FfField { FfField::new(&BigUint::from(p)) }
 #[test]
 fn test_bit_constraint_positive_forms() {
     let pr = FfPolyRing::new(ff(7), vec!["x".into()]);
-    let _fp = pr.field.field();
+    let _fp = &pr.field;
 
     // x*(x-1) = x^2 - x  →  detected
     let x2 = pr.mul(pr.var(0), pr.var(0));
@@ -72,7 +72,7 @@ fn test_bit_constraint_negative_forms() {
 #[test]
 fn test_linear_monomial_forms() {
     let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
-    let fp = pr.field.field();
+    let fp = &pr.field;
 
     // x * 1 = x  →  detected
     assert!(linear_monomial(&pr, &pr.var(0)).is_some());
@@ -127,7 +127,7 @@ fn test_extract_linear_none() {
 fn test_extract_linear_with_neg() {
     // x*y - x  →  1 linear (-x), 1 rest (x*y)
     let pr = FfPolyRing::new(ff(5), vec!["x".into(), "y".into()]);
-    let fp = pr.field.field();
+    let fp = &pr.field;
     let p = pr.sub(pr.mul(pr.var(0), pr.var(1)), pr.var(0));
     let (lins, rest) = extract_linear_monomials(&pr, &p).unwrap();
     assert_eq!(lins.len(), 1);
@@ -188,7 +188,7 @@ fn test_bitsums_negative_coeffs() {
     // Expected: 1 bitsum coeff=-1, bits=[b0, b1, b2], others=[x*y, x, y]
     let pr = FfPolyRing::new(ff(103),
         vec!["x".into(), "y".into(), "b0".into(), "b1".into(), "b2".into(), "b3".into()]);
-    let fp = pr.field.field();
+    let fp = &pr.field;
     let neg1 = pr.field.from_int(-1);
     let neg2 = pr.field.from_int(-2);
     let neg4 = pr.field.from_int(-4);
@@ -244,7 +244,7 @@ fn test_bitsums_weird_positive_start() {
     // 6*b0 + 12*b1 + 24*b2   →  bitsum coeff=6, bits=[b0, b1, b2]
     let pr = FfPolyRing::new(ff(103),
         vec!["b0".into(), "b1".into(), "b2".into(), "b3".into()]);
-    let fp = pr.field.field();
+    let fp = &pr.field;
     let c6 = pr.field.from_int(6);
     let c12 = pr.field.from_int(12);
     let c24 = pr.field.from_int(24);
@@ -269,7 +269,7 @@ fn test_bitsums_two_bitsums() {
     //   coeff=6,  bits=[b0, b1]
     let pr = FfPolyRing::new(ff(103),
         vec!["b0".into(), "b1".into(), "b2".into(), "b3".into()]);
-    let _fp = pr.field.field();
+    let _fp = &pr.field;
     let c6 = pr.field.from_int(6);
     let c12 = pr.field.from_int(12);
     let neg4 = pr.field.from_int(-4);

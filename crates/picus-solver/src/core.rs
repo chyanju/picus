@@ -222,7 +222,7 @@ mod tests {
     use super::*;
     use crate::field::FfField;
 
-    fn ff(p: u32) -> FfField { FfField::new(&BigUint::from(p)) }
+    fn ff(p: u32) -> FfField { FfField::new(BigUint::from(p)) }
 
     #[test]
     fn test_solve_sat() {
