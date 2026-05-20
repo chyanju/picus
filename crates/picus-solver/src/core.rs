@@ -16,7 +16,7 @@ use crate::gb::{compute_gb_with_timeout_traced, GbResultTraced};
 use crate::model;
 use crate::parse;
 use crate::poly::{FfPolyRing, Poly};
-use crate::split_gb::{admit, split_find_zero, split_find_zero_cancel, split_gb, split_gb_cancel};
+use crate::split_gb::{admit, split_find_zero_cancel, split_gb_cancel};
 use crate::timeout::CancelToken;
 
 /// An UNSAT core: indices into the input fact list that suffice for UNSAT.
