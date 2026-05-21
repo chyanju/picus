@@ -688,7 +688,6 @@ mod tests {
 
     #[test]
     fn dnf_size_estimate_lit_is_one() {
-        let p = BigUint::from(101u32);
         let f = Formula::Lit(Literal::Eq(vec![t(1, &["x"])], vec![t(0, &[])]));
         assert_eq!(f.dnf_size_estimate(1_000), 1);
     }
@@ -696,7 +695,6 @@ mod tests {
     #[test]
     fn dnf_size_estimate_and_of_ors_multiplies() {
         // 5 fold and-of-ors with each or having 2 disjuncts → 2^5 = 32.
-        let p = BigUint::from(101u32);
         let lit = |v: &str, c: u64| {
             Formula::Lit(Literal::Eq(vec![t(1, &[v])], vec![t(c, &[])]))
         };
@@ -731,10 +729,18 @@ mod tests {
 
     #[test]
     fn solve_boolean_query_dnf_returns_unknown_past_cap() {
-        // Non-bit constants (5, 6) keep `rewrite_disjunctive_bit`
-        // from folding the disjunctions: 4 ors × 2 = DNF length 16.
-        // Cap of 8 ⇒ DNF path returns Unknown immediately.
+        // 4 ors × 2 = DNF length 16; cap 8 ⇒ Unknown.
+        let _env_lock = crate::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        struct EnvGuard(&'static str);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                unsafe { std::env::remove_var(self.0); }
+            }
+        }
         unsafe { std::env::set_var("PICUS_DNF_CAP", "8"); }
+        let _g = EnvGuard("PICUS_DNF_CAP");
         let src = r#"
 (define-sort F () (_ FiniteField 101))
 (declare-fun a () F)
@@ -749,6 +755,5 @@ mod tests {
         let q = crate::smt2::parse_boolean(src).expect("parse");
         let outcome = solve_boolean_query_dnf(&q, &CancelToken::none());
         assert!(matches!(outcome, SolveOutcome::Unknown));
-        unsafe { std::env::remove_var("PICUS_DNF_CAP"); }
     }
 }

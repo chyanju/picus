@@ -4,6 +4,88 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.22] - 2026-05-21
+
+### Added
+
+- `picus-solver::sat::Solver` decision heuristic and restart machinery.
+  - VSIDS variable-activity score (`var_activity`, `var_inc`, `var_decay`),
+    bumped during 1-UIP resolution for every variable encountered
+    (the 1-UIP and intermediate resolved vars included, not only
+    `learnt[1..]`), with `1e100` rescale.
+  - Phase saving (`saved_phase`): the last polarity assigned to a
+    variable is reused on its next decision; survives backtrack.
+  - MiniSAT-style max-heap (`order_heap`, `heap_pos`) on
+    `var_activity`. `pick_decision` is now O(log n) extract-max with
+    skip-already-assigned; `bump_var_activity` percolates up in place;
+    `backtrack_to` re-inserts each unassigned variable.
+  - Luby restart (`luby(i)`, `should_restart`, `perform_restart`,
+    `n_conflicts`). Restart base 100; sequence
+    `1, 1, 2, 1, 1, 2, 4, 1, 1, 2, 1, 1, 2, 4, 8, …`. Backtrack to
+    root, advance the Luby index, set the next threshold to
+    `n_conflicts + base × luby_idx`.
+- `picus-solver::cdclt::atoms::AtomKey::as_single_var_eq(&BigUint)`.
+  Detects atoms canonically of the form `a·x + c = 0` for any non-zero
+  coefficient `a`; computes `a⁻¹` via Fermat (`a^(p-2) mod p`) and
+  returns `(var_name, −c·a⁻¹ mod p)`.
+- `AtomTable::single_var_eq: HashMap<String, Vec<(BigUint, Var)>>`.
+  `intern_eq` emits a pairwise at-most-one mutex clause
+  `(¬new ∨ ¬other)` for each existing entry with a different value.
+- `ENV_TEST_LOCK: Mutex<()>` (`#[cfg(test)]`) in `picus-solver` root.
+  Serializes the `PICUS_DNF_CAP` / `PICUS_CDCLT_ITER_CAP` tests so
+  the suite can run with the default parallel test threads.
+
+### Changed
+
+- `picus-solver::cdclt::orchestrator::cdclt_loop` checks
+  `should_restart` after each learnt clause; on restart, calls
+  `sync_theory_after_backtrack` and clamps `notified` to the new
+  trail length.
+- `picus-solver::sat::Solver::pick_decision` signature changed from
+  `&self` to `&mut self` (heap pop is destructive).
+- `picus-solver::sat::Solver::analyze` signature changed from
+  `&self` to `&mut self` (VSIDS bump + conflict count update).
+
+### Fixed
+
+- `AtomKey::from_eq` reduces `rhs` coefficients mod `prime` before
+  negation. Previously, passing an un-reduced coefficient (e.g. `10`
+  for GF(7)) caused a `BigUint` subtract-underflow panic.
+- `cdclt::orchestrator::apply_theory_conflict`'s `LBool::Undef`
+  branch is now `unreachable!` with a diagnostic instead of silently
+  returning `false`; the previous behavior reported the formula as
+  UNSAT when the theory/SAT push/pop discipline diverged.
+
+### Tests
+
+- 342 lib + integration tests (235 in the library, 107 across
+  integration suites; up from 317 at 1.7.21).
+  - 28 in `sat::solver` (+ `luby_first_15_values`,
+    `phase_saving_remembers_after_backtrack`,
+    `vsids_prefers_higher_activity_variable`,
+    `vsids_bumps_intermediate_resolved_variables`,
+    `restart_preserves_root_level_units`,
+    `perform_restart_resets_decision_level`).
+  - 13 in `cdclt::atoms` (+ pairwise mutex emission, lhs/rhs swap
+    canonicalization, three-constant pairwise count, Fermat
+    non-unit coefficient detection, semantically-equivalent scaled
+    atoms).
+  - `cross_validate_random_3cnf_sweep` (8 seeds × 4 sizes = 32
+    instances) and `cross_validate_random_implies_chain_sweep` (32
+    instances) added to `cdclt_regression`; both run CDCL(T) and
+    DNF and assert agreement (skipping when the DNF size cap fires).
+- `restart_preserves_root_level_units` calls `perform_restart()`
+  directly rather than relying on `solve()` to accumulate enough
+  conflicts on a small input.
+- `cross_validate_mutex_pin_unsat` uses non-bit constants (5, 6, 7)
+  so `rewrite_disjunctive_bit` does not collapse the disjunctions,
+  exercising the mutex code path.
+
+### Notes
+
+- Suite re-validated single-threaded (`--test-threads=1`) and with
+  the default parallel threads; both report 342 passed, 0 failed.
+
 ## [1.7.21] - 2026-05-20
 
 ### Added
