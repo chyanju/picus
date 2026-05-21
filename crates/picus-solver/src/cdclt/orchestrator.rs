@@ -19,16 +19,9 @@ use super::cnf::{tseitin, TseitinResult};
 use super::ff_theory::FfTheory;
 use super::theory::{CheckOutcome, Effort, Theory};
 
-/// Solve a `Formula` over GF(`prime`) using CDCL(T) with the FF theory.
-///
-/// Returns:
-/// * `SolveOutcome::Sat(model)` — both the Boolean structure and the
-///   FF theory have a consistent witness. The returned `model` maps FF
-///   variable names to their assigned BigUint values.
-/// * `SolveOutcome::Unsat(_)` — the formula is unsatisfiable.
-/// * `SolveOutcome::Unknown` — the theory returned Unknown (typically
-///   due to cancellation) and no SAT assignment compatible with the
-///   theory could be confirmed.
+/// Solve a `Formula` over GF(`prime`) via CDCL(T) with the FF theory.
+/// `Sat(model)` carries the FF variable assignments; `Unknown` is
+/// returned on cancellation, theory `Unknown`, or iteration cap.
 pub fn solve_formula(
     prime: BigUint,
     formula: &Formula,
@@ -52,10 +45,8 @@ pub fn solve_formula(
     cdclt_loop(&mut sat, &mut theory, cancel)
 }
 
-/// Maximum CDCL(T) main-loop iterations before [`cdclt_loop`] gives
-/// up and returns `Unknown`. Each iteration performs at most one SAT
-/// propagate, one theory check, or one decision. Set via the
-/// `PICUS_CDCLT_ITER_CAP` environment variable (default `1_000_000`).
+/// Max CDCL(T) main-loop iterations before [`cdclt_loop`] returns
+/// `Unknown`. Override via `PICUS_CDCLT_ITER_CAP` (default `1_000_000`).
 pub fn iter_cap() -> u64 {
     std::env::var("PICUS_CDCLT_ITER_CAP")
         .ok()
@@ -63,8 +54,6 @@ pub fn iter_cap() -> u64 {
         .unwrap_or(1_000_000)
 }
 
-/// Run the CDCL(T) interleaving loop. Returns the same outcome shape
-/// as [`solve_formula`].
 fn cdclt_loop(
     sat: &mut Solver,
     theory: &mut FfTheory<'_>,
@@ -84,7 +73,6 @@ fn cdclt_loop(
             return SolveOutcome::Unknown;
         }
 
-        // Step 1: SAT propagation.
         if let Some(conflict) = sat.propagate() {
             if sat.decision_level() == 0 {
                 return SolveOutcome::Unsat(Vec::new());
@@ -92,14 +80,14 @@ fn cdclt_loop(
             let (learnt, bt) = sat.analyze(conflict);
             sat.backtrack_to(bt);
             sat.learn_clause(learnt);
-            // Theory state must mirror the new decision level.
+            if sat.should_restart() {
+                sat.perform_restart();
+            }
             sync_theory_after_backtrack(sat, theory, &mut theory_levels);
             notified = notified.min(sat.trail_len());
             continue;
         }
 
-        // Step 2: Sync theory pushes with SAT's decision level, then
-        // notify of any new trail entries.
         sync_theory_after_propagate(sat, theory, &mut theory_levels);
         let trail = sat.trail();
         while notified < trail.len() {
@@ -108,14 +96,10 @@ fn cdclt_loop(
             notified += 1;
         }
 
-        // Step 3: At full assignment, ask theory for a verdict.
         if sat.all_assigned() {
             match theory.post_check(Effort::Full) {
                 CheckOutcome::Sat => {
                     let mut model = build_full_model(sat, theory);
-                    // Merge atom-level Boolean truth values into model
-                    // only as a debug aid: actual FF variable values
-                    // come from the theory's collect_model.
                     if let Some(theory_model) = theory.collect_model() {
                         for (k, v) in theory_model {
                             model.insert(k, v);
@@ -142,31 +126,26 @@ fn cdclt_loop(
     }
 }
 
-/// Turn a theory-reported atom core into a SAT-level conflict clause
-/// (negation of each atom's current value) and feed it back via
-/// [`Solver::add_theory_lemma`]. Returns `false` if the lemma forces
-/// root-level UNSAT.
+/// Turn an atom-core into a SAT lemma (negation of each atom's current
+/// value) and feed it via [`Solver::add_theory_lemma`]. Returns `false`
+/// when the lemma forces root-level UNSAT. Core variables must be
+/// assigned; an Undef core var indicates the theory's push/pop state
+/// diverged from SAT's and is treated as an invariant violation.
 fn apply_theory_conflict(sat: &mut Solver, core: &[Var]) -> bool {
     let mut lits: Vec<Lit> = Vec::with_capacity(core.len());
     for &v in core {
         match sat.value(v) {
             LBool::True => lits.push(Lit::neg(v)),
             LBool::False => lits.push(Lit::pos(v)),
-            LBool::Undef => {
-                // Defensive: an unassigned core variable means the
-                // theory's notion of "current assignment" diverged
-                // from SAT's. Skip without adding the conflict
-                // clause; the orchestrator will treat this as
-                // failure-to-progress and bail.
-                return false;
-            }
+            LBool::Undef => unreachable!(
+                "theory core var {:?} is Undef: theory/SAT push/pop diverged",
+                v
+            ),
         }
     }
     sat.add_theory_lemma(lits)
 }
 
-/// After SAT propagation is quiet, the theory should have one `push`
-/// per SAT decision level. If theory_levels < decision_level, push.
 fn sync_theory_after_propagate(
     sat: &Solver,
     theory: &mut FfTheory<'_>,
@@ -179,7 +158,6 @@ fn sync_theory_after_propagate(
     }
 }
 
-/// After SAT backtracks, the theory should pop in sync.
 fn sync_theory_after_backtrack(
     sat: &Solver,
     theory: &mut FfTheory<'_>,
@@ -192,9 +170,6 @@ fn sync_theory_after_backtrack(
     }
 }
 
-/// Compose the final user-facing model. Atom-level Boolean truth is
-/// for inspection only; the actual FF variable bindings come from the
-/// theory's `collect_model`.
 fn build_full_model(_sat: &Solver, _theory: &FfTheory<'_>) -> HashMap<String, BigUint> {
     HashMap::new()
 }
@@ -295,16 +270,21 @@ mod tests {
 
     #[test]
     fn iter_cap_returns_unknown_on_pathological_input() {
-        // Force the cap down to 1. Any non-trivial CDCL(T) interaction
-        // hits the limit and bails out as Unknown.
-        unsafe { std::env::set_var("PICUS_CDCLT_ITER_CAP", "1"); }
-        let f = Formula::And(vec![
-            Formula::Or(vec![eq(1, "x", 0), eq(1, "x", 1)]),
-            Formula::Or(vec![eq(1, "y", 0), eq(1, "y", 1)]),
-            eq(1, "x", 5),
-        ]);
+        // Cap = 0 forces an immediate Unknown bail-out. ENV_TEST_LOCK
+        // serializes against the boolean.rs DNF-cap test.
+        let _env_lock = crate::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        struct EnvGuard(&'static str);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                unsafe { std::env::remove_var(self.0); }
+            }
+        }
+        unsafe { std::env::set_var("PICUS_CDCLT_ITER_CAP", "0"); }
+        let _g = EnvGuard("PICUS_CDCLT_ITER_CAP");
+        let f = Formula::Or(vec![eq(1, "x", 5), eq(1, "x", 6)]);
         let r = solve_formula(BigUint::from(101u32), &f, &CancelToken::none());
         assert!(matches!(r, SolveOutcome::Unknown));
-        unsafe { std::env::remove_var("PICUS_CDCLT_ITER_CAP"); }
     }
 }

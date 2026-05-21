@@ -44,6 +44,33 @@ pub struct Solver {
     /// Persisted UNSAT flag (set by `add_clause` when an input clause
     /// is empty, or by `propagate` at decision level 0).
     unsat: bool,
+    /// VSIDS activity score per variable. Bumped when the variable
+    /// participates in conflict-clause resolution; decayed implicitly
+    /// by growing `var_inc`.
+    var_activity: Vec<f64>,
+    /// Current activity bump amount. Multiplied by `var_decay` after
+    /// each conflict so newer conflicts dominate older ones.
+    var_inc: f64,
+    /// Decay multiplier applied to `var_inc` per conflict (>1.0).
+    var_decay: f64,
+    /// Saved polarity per variable (last value assigned, kept across
+    /// backtracks). Used by `pick_decision` for phase saving.
+    saved_phase: Vec<LBool>,
+    /// Cumulative conflict count. Incremented by `analyze`.
+    n_conflicts: u64,
+    /// Next conflict count at which a restart should fire.
+    restart_step: u64,
+    /// Base restart interval (conflicts) multiplied by the Luby
+    /// sequence to derive successive thresholds.
+    restart_base: u64,
+    /// 1-indexed Luby sequence position for the next restart.
+    luby_idx: u64,
+    /// Max-heap on `var_activity` for [`Self::pick_decision`]. Vars
+    /// are popped when selected, re-inserted on backtrack.
+    order_heap: Vec<Var>,
+    /// Index of each variable in `order_heap`, or `usize::MAX` when
+    /// absent. Enables O(log n) percolate-up after a bump.
+    heap_pos: Vec<usize>,
 }
 
 impl Solver {
@@ -59,6 +86,16 @@ impl Solver {
             arena: ClauseArena::new(),
             watches: Vec::new(),
             unsat: false,
+            var_activity: Vec::new(),
+            var_inc: 1.0,
+            var_decay: 1.05,
+            saved_phase: Vec::new(),
+            n_conflicts: 0,
+            restart_step: 100,
+            restart_base: 100,
+            luby_idx: 1,
+            order_heap: Vec::new(),
+            heap_pos: Vec::new(),
         }
     }
 
@@ -71,8 +108,143 @@ impl Solver {
         self.reason.push(None);
         self.watches.push(Vec::new());
         self.watches.push(Vec::new());
+        self.var_activity.push(0.0);
+        self.saved_phase.push(LBool::Undef);
+        self.heap_pos.push(usize::MAX);
+        self.heap_insert(v);
         v
     }
+
+    fn bump_var_activity(&mut self, v: Var) {
+        self.var_activity[v.index()] += self.var_inc;
+        if self.var_activity[v.index()] > 1e100 {
+            for a in self.var_activity.iter_mut() {
+                *a *= 1e-100;
+            }
+            self.var_inc *= 1e-100;
+        }
+        let pos = self.heap_pos[v.index()];
+        if pos != usize::MAX {
+            self.heap_percolate_up(pos);
+        }
+    }
+
+    fn heap_insert(&mut self, v: Var) {
+        if self.heap_pos[v.index()] != usize::MAX {
+            return;
+        }
+        let pos = self.order_heap.len();
+        self.order_heap.push(v);
+        self.heap_pos[v.index()] = pos;
+        self.heap_percolate_up(pos);
+    }
+
+    fn heap_remove_max(&mut self) -> Option<Var> {
+        let n = self.order_heap.len();
+        if n == 0 {
+            return None;
+        }
+        let top = self.order_heap[0];
+        self.heap_pos[top.index()] = usize::MAX;
+        let last = self.order_heap.pop().expect("heap non-empty");
+        if n > 1 {
+            self.order_heap[0] = last;
+            self.heap_pos[last.index()] = 0;
+            self.heap_percolate_down(0);
+        }
+        Some(top)
+    }
+
+    fn heap_percolate_up(&mut self, mut i: usize) {
+        let v = self.order_heap[i];
+        let v_act = self.var_activity[v.index()];
+        while i > 0 {
+            let parent = (i - 1) / 2;
+            let p = self.order_heap[parent];
+            if self.var_activity[p.index()] >= v_act {
+                break;
+            }
+            self.order_heap[i] = p;
+            self.heap_pos[p.index()] = i;
+            i = parent;
+        }
+        self.order_heap[i] = v;
+        self.heap_pos[v.index()] = i;
+    }
+
+    /// Sift element at index `i` down while a child has higher activity.
+    fn heap_percolate_down(&mut self, mut i: usize) {
+        let n = self.order_heap.len();
+        let v = self.order_heap[i];
+        let v_act = self.var_activity[v.index()];
+        loop {
+            let l = 2 * i + 1;
+            if l >= n {
+                break;
+            }
+            let r = l + 1;
+            let best = if r < n
+                && self.var_activity[self.order_heap[r].index()]
+                    > self.var_activity[self.order_heap[l].index()]
+            {
+                r
+            } else {
+                l
+            };
+            if self.var_activity[self.order_heap[best].index()] <= v_act {
+                break;
+            }
+            let b = self.order_heap[best];
+            self.order_heap[i] = b;
+            self.heap_pos[b.index()] = i;
+            i = best;
+        }
+        self.order_heap[i] = v;
+        self.heap_pos[v.index()] = i;
+    }
+
+    fn decay_var_activity(&mut self) {
+        self.var_inc *= self.var_decay;
+    }
+
+    /// Cumulative conflict count.
+    pub fn n_conflicts(&self) -> u64 {
+        self.n_conflicts
+    }
+
+    /// `true` iff the conflict count has reached the next Luby
+    /// restart threshold.
+    pub fn should_restart(&self) -> bool {
+        self.n_conflicts >= self.restart_step
+    }
+
+    /// Backtrack to level 0 and bump the next Luby restart threshold.
+    /// Callers in CDCL(T) must also pop any theory-level state down
+    /// to match the new decision level.
+    pub fn perform_restart(&mut self) {
+        self.backtrack_to(0);
+        let factor = luby(self.luby_idx);
+        self.luby_idx += 1;
+        self.restart_step = self.n_conflicts.saturating_add(self.restart_base.saturating_mul(factor));
+    }
+}
+
+/// `i`-th element of the Luby sequence (1-indexed):
+/// `1, 1, 2, 1, 1, 2, 4, 1, 1, 2, 1, 1, 2, 4, 8, …`.
+fn luby(mut i: u64) -> u64 {
+    loop {
+        let mut k: u32 = 1;
+        while (1u64 << k) - 1 < i {
+            k += 1;
+        }
+        if (1u64 << k) - 1 == i {
+            return 1u64 << (k - 1);
+        }
+        i = i - (1u64 << (k - 1)) + 1;
+    }
+}
+
+impl Solver {
 
     pub fn n_vars(&self) -> usize {
         self.n_vars
@@ -202,10 +374,12 @@ impl Solver {
         let v = lit.var();
         match self.assigns[v.index()] {
             LBool::Undef => {
-                self.assigns[v.index()] = LBool::from_bool(lit.is_positive());
+                let polarity = lit.is_positive();
+                self.assigns[v.index()] = LBool::from_bool(polarity);
                 self.level[v.index()] = self.decision_level();
                 self.reason[v.index()] = reason;
                 self.trail.push(lit);
+                self.saved_phase[v.index()] = LBool::from_bool(polarity);
                 true
             }
             LBool::True => lit.is_positive(),
@@ -213,30 +387,14 @@ impl Solver {
         }
     }
 
-    /// Propagate the queue of just-assigned literals to fixed point.
-    /// Returns `Some(conflict)` if a clause has all literals False
-    /// under the current assignment; `None` otherwise (queue drained,
-    /// no conflict).
-    ///
-    /// Watched-literal scheme (MiniSAT-style):
-    /// * Each clause watches two non-False literals.
-    /// * When `lit` is enqueued True, every clause currently watching
-    ///   `-lit` is revisited; the watcher tries to find a new
-    ///   non-False literal to watch instead.
-    /// * If the OTHER watched literal is already True the clause is
-    ///   satisfied and the watch on `-lit` stays put.
-    /// * If no replacement is available and the other watched literal
-    ///   is Undef, the clause becomes unit and the other watched
-    ///   literal is propagated.
-    /// * If no replacement is available and the other watched literal
-    ///   is False the clause is a conflict.
+    /// Watched-literal unit propagation. Returns `Some(conflict)` for
+    /// the first clause whose literals are all False under the current
+    /// assignment, or `None` when the queue drains without conflict.
     pub fn propagate(&mut self) -> Option<ClauseRef> {
         while self.qhead < self.trail.len() {
             let p = self.trail[self.qhead];
             self.qhead += 1;
-            // Take the watch list for `-p`: clauses where `-p` is one
-            // of the two watched literals. Move it out so we can mutate
-            // `self` while iterating.
+            // Take `watches[-p]` out so we can mutate `self` while iterating.
             let neg_p_idx = (-p).index();
             let mut watchers = std::mem::take(&mut self.watches[neg_p_idx]);
             let mut write = 0usize;
@@ -245,8 +403,7 @@ impl Solver {
             'next_clause: while read < watchers.len() {
                 let cref = watchers[read];
                 read += 1;
-                // Position `-p` into slot 1; pull the other watched
-                // literal into `other`.
+                // Place `-p` at index 1; the other watched literal is at 0.
                 let other;
                 let lits_len;
                 {
@@ -298,13 +455,8 @@ impl Solver {
                     conflict = Some(cref);
                     break 'next_clause;
                 }
-                // Unit propagation.
                 let ok = self.enqueue(other, Some(cref));
-                debug_assert!(
-                    ok,
-                    "enqueue conflict on unit-propagated literal should be impossible \
-                     here — the assignment was checked Undef immediately above"
-                );
+                debug_assert!(ok, "unit-propagated literal must be Undef");
             }
             watchers.truncate(write);
             self.watches[neg_p_idx] = watchers;
@@ -333,23 +485,12 @@ impl Solver {
         &self.trail
     }
 
-    /// Add a theory-supplied lemma clause. The clause must be currently
-    /// all-False (the orchestrator reports a theory conflict over the
-    /// existing trail). Steps:
-    ///
-    /// 1. Sort literals by descending decision level. `lits[0]` is the
-    ///    highest-level literal (the assertion slot after backtrack).
-    /// 2. Compute the assertion level: the largest literal-level
-    ///    **strictly less than** `max_level`, or `max_level - 1` when
-    ///    every literal sits at `max_level` (otherwise backtracking to
-    ///    `max_level` would be a no-op and the lemma would not assert
-    ///    anything).
-    /// 3. If `max_level` is 0 the formula is root-level UNSAT.
-    /// 4. Backtrack to the assertion level so `lits[0]` becomes Undef,
-    ///    then call [`Self::learn_clause`] to register the clause and
-    ///    enqueue the asserting literal.
-    ///
-    /// Returns `false` on root-level UNSAT.
+    /// Add a theory-supplied lemma clause. All literals must currently
+    /// be False. Sorts by descending decision level, computes the
+    /// assertion level (largest literal-level strictly less than the
+    /// max, or `max_level - 1` if every literal sits at the max),
+    /// backtracks, then registers via [`Self::learn_clause`]. Returns
+    /// `false` when the lemma forces root-level UNSAT.
     pub fn add_theory_lemma(&mut self, mut lits: Vec<Lit>) -> bool {
         if lits.is_empty() {
             self.unsat = true;
@@ -384,23 +525,20 @@ impl Solver {
         self.trail.len() == self.n_vars
     }
 
-    /// 1-UIP conflict analysis.
-    ///
-    /// Walks backward through the trail resolving the conflict clause
-    /// against the reasons of the most-recently-assigned variables at
-    /// the current decision level until exactly one such variable
-    /// (the 1-UIP) remains. Returns `(learnt, bt_level)`:
-    /// * `learnt[0]` is the asserting literal (the negation of the 1-UIP),
-    /// * `learnt[1..]` are the remaining literals from lower decision
-    ///   levels,
-    /// * `bt_level` is the second-highest level among the learnt
-    ///   literals (or 0 if `learnt.len() == 1`), i.e. where the new
-    ///   clause becomes unit after backtracking.
-    pub fn analyze(&self, conflict: ClauseRef) -> (Vec<Lit>, i32) {
+    /// 1-UIP conflict analysis. Returns `(learnt, bt_level)` where
+    /// `learnt[0]` is the asserting literal (negated 1-UIP), `learnt[1..]`
+    /// are lower-level literals, and `bt_level` is the second-highest
+    /// decision level among the learnt clause (0 if length 1).
+    pub fn analyze(&mut self, conflict: ClauseRef) -> (Vec<Lit>, i32) {
         let cur_level = self.decision_level();
         debug_assert!(cur_level > 0, "analyze called at root level");
+        self.n_conflicts += 1;
 
         let mut seen = vec![false; self.n_vars];
+        // `seen` is cleared during the trail walk; `to_bump` records the
+        // full touched set so VSIDS bumps the 1-UIP and intermediate
+        // resolved vars too, not only the `learnt[1..]` survivors.
+        let mut to_bump = vec![false; self.n_vars];
         let mut learnt: Vec<Lit> = vec![Lit::pos(Var(0)); 1]; // placeholder at index 0
         let mut counter: i32 = 0;
         let mut pivot: Option<Lit> = None;
@@ -420,18 +558,17 @@ impl Solver {
                 }
                 let lvl = self.level[vq.index()];
                 if lvl <= 0 {
-                    // Root-level literals contribute nothing to the
-                    // learnt clause (they would simplify away).
+                    // Root-level literals simplify away.
                     continue;
                 }
                 seen[vq.index()] = true;
+                to_bump[vq.index()] = true;
                 if lvl == cur_level {
                     counter += 1;
                 } else {
                     learnt.push(q);
                 }
             }
-            // Find the next literal on the trail whose variable we have seen.
             let next_lit = loop {
                 debug_assert!(trail_idx > 0, "trail exhausted before 1-UIP");
                 trail_idx -= 1;
@@ -447,14 +584,10 @@ impl Solver {
                 break;
             }
             conf = self.reason[next_lit.var().index()];
-            debug_assert!(
-                conf.is_some(),
-                "non-final pivot must have a reason clause (it was propagated)"
-            );
+            debug_assert!(conf.is_some(), "non-final pivot must have a reason");
             pivot = Some(next_lit);
         }
 
-        // Asserting literal is the negation of the 1-UIP.
         let asserting = -pivot.expect("pivot set on loop exit");
         learnt[0] = asserting;
 
@@ -467,13 +600,22 @@ impl Solver {
                 .max()
                 .unwrap_or(0)
         };
+
+        for i in 0..self.n_vars {
+            if to_bump[i] {
+                self.bump_var_activity(Var(i as u32));
+            }
+        }
+        self.decay_var_activity();
+
         (learnt, bt_level)
     }
 
     /// Cancel assignments down to (but not including) `level + 1`, so
     /// the next decision will be at level `level + 1`. `qhead` is reset
     /// to the current trail length so propagation re-examines the
-    /// surviving prefix.
+    /// surviving prefix. Any variable unassigned here is re-inserted
+    /// into the activity heap so [`Self::pick_decision`] can pick it.
     pub fn backtrack_to(&mut self, level: i32) {
         debug_assert!(level >= 0);
         debug_assert!(level <= self.decision_level());
@@ -487,6 +629,7 @@ impl Solver {
             self.assigns[v.index()] = LBool::Undef;
             self.level[v.index()] = -1;
             self.reason[v.index()] = None;
+            self.heap_insert(v);
         }
         self.trail_lim.truncate(level as usize);
         self.qhead = self.trail.len();
@@ -529,19 +672,26 @@ impl Solver {
                         let (learnt, bt) = self.analyze(conflict);
                         self.backtrack_to(bt);
                         self.learn_clause(learnt);
+                        if self.should_restart() {
+                            self.perform_restart();
+                            break;
+                        }
                     }
                 }
             }
         }
     }
 
-    /// Pick the next decision literal. Default policy: lowest-index
-    /// `Undef` variable, positive polarity. Replace via a subclassed
-    /// solver / activity vector when richer heuristics are desired.
-    pub fn pick_decision(&self) -> Option<Lit> {
-        for i in 0..self.n_vars {
-            if matches!(self.assigns[i], LBool::Undef) {
-                return Some(Lit::pos(Var(i as u32)));
+    /// Pop the highest-activity Undef variable from the heap, applying
+    /// the saved phase (positive when none was saved).
+    pub fn pick_decision(&mut self) -> Option<Lit> {
+        while let Some(v) = self.heap_remove_max() {
+            if matches!(self.assigns[v.index()], LBool::Undef) {
+                let lit = match self.saved_phase[v.index()] {
+                    LBool::False => Lit::neg(v),
+                    _ => Lit::pos(v),
+                };
+                return Some(lit);
             }
         }
         None
@@ -553,19 +703,15 @@ impl Solver {
     /// `lits[0]` is currently Undef).
     pub fn learn_clause(&mut self, lits: Vec<Lit>) -> ClauseRef {
         debug_assert!(!lits.is_empty(), "cannot learn empty clause");
-        // Pick the two literals to watch. For length 1 (root unit) we
-        // just enqueue without watches.
         let asserting = lits[0];
         if lits.len() == 1 {
-            // Unit learnt clause: bind at root level.
             let cref = self.arena.add(Clause::new(lits, true));
             let ok = self.enqueue(asserting, Some(cref));
             debug_assert!(ok, "asserting literal must be Undef before learning");
             return cref;
         }
-        // Standard case: 1-UIP at lits[0], next-highest-level at lits[1]
-        // (caller's analyze() guarantees lits[1] has the second-largest
-        // level, so it's the right second watch).
+        // Watch lits[0] (1-UIP) and lits[1] (next-highest level, per
+        // analyze()'s ordering invariant).
         let cref = self.arena.add(Clause::new(lits, true));
         let lits_ref = &self.arena.get(cref).lits;
         let w0 = lits_ref[0];
@@ -913,5 +1059,112 @@ mod tests {
         assert_eq!(s.value(v[0]), LBool::Undef);
         assert_eq!(s.value(v[1]), LBool::True);
         assert_eq!(s.value(v[2]), LBool::Undef);
+    }
+
+    // ─────────── Luby sequence ───────────
+
+    #[test]
+    fn luby_first_15_values() {
+        // Standard 1-indexed Luby sequence (cvc5 minisat/core/Solver.cc).
+        let expected: [u64; 15] = [1, 1, 2, 1, 1, 2, 4, 1, 1, 2, 1, 1, 2, 4, 8];
+        for (i, &want) in expected.iter().enumerate() {
+            let got = luby((i + 1) as u64);
+            assert_eq!(got, want, "luby({}) = {}; expected {}", i + 1, got, want);
+        }
+    }
+
+    // ─────────── Phase saving + restart ───────────
+
+    #[test]
+    fn phase_saving_remembers_after_backtrack() {
+        // Decide x = False, then backtrack to root. The next decision
+        // on x should reuse the saved (False) phase.
+        let mut s = Solver::new();
+        let v = vars(&mut s, 1);
+        assert!(s.decide(Lit::neg(v[0])));
+        assert_eq!(s.value(v[0]), LBool::False);
+        s.backtrack_to(0);
+        assert_eq!(s.value(v[0]), LBool::Undef);
+        let pick = s.pick_decision().expect("undef var available");
+        assert_eq!(pick, Lit::neg(v[0]), "saved phase should drive negative pick");
+    }
+
+    #[test]
+    fn vsids_prefers_higher_activity_variable() {
+        let mut s = Solver::new();
+        let v = vars(&mut s, 4);
+        assert!(s.add_clause(vec![Lit::neg(v[0]), Lit::pos(v[3])]));
+        assert!(s.add_clause(vec![Lit::neg(v[0]), Lit::neg(v[3])]));
+        assert!(s.decide(Lit::pos(v[0])));
+        let conflict = s.propagate().expect("conflict expected");
+        let (learnt, bt) = s.analyze(conflict);
+        assert_eq!(learnt.len(), 1);
+        assert_eq!(learnt[0], Lit::neg(v[0]));
+        assert_eq!(bt, 0);
+        assert!(s.var_activity[0] > 0.0, "1-UIP v[0] must be bumped");
+        assert!(s.var_activity[3] > 0.0, "intermediate v[3] must be bumped");
+        assert_eq!(s.var_activity[1], 0.0);
+        assert_eq!(s.var_activity[2], 0.0);
+        s.backtrack_to(0);
+        s.learn_clause(learnt);
+        assert!(s.propagate().is_none());
+        assert_eq!(s.value(v[0]), LBool::False);
+        let pick = s.pick_decision().expect("undef var available");
+        assert_eq!(pick.var(), v[3]);
+    }
+
+    #[test]
+    fn vsids_bumps_intermediate_resolved_variables() {
+        // Regression: under the old bump-on-survivors-only scheme, a
+        // length-1 learnt clause produced zero bumps. The 1-UIP and
+        // intermediate resolved vars must also be bumped.
+        let mut s = Solver::new();
+        let v = vars(&mut s, 3);
+        assert!(s.add_clause(vec![Lit::pos(v[0]), Lit::pos(v[1])]));
+        assert!(s.add_clause(vec![Lit::pos(v[0]), Lit::pos(v[2])]));
+        assert!(s.add_clause(vec![Lit::neg(v[1]), Lit::neg(v[2])]));
+        assert!(s.decide(Lit::neg(v[0])));
+        let conflict = s.propagate().expect("conflict expected");
+        let (learnt, _) = s.analyze(conflict);
+        assert_eq!(learnt.len(), 1, "test premise: 1-UIP collapses to a unit");
+        for i in 0..3 {
+            assert!(
+                s.var_activity[i] > 0.0,
+                "v[{}] participated in resolution; activity must be > 0 (got {})",
+                i,
+                s.var_activity[i],
+            );
+        }
+    }
+
+    #[test]
+    fn restart_preserves_root_level_units() {
+        let mut s = Solver::new();
+        let v = vars(&mut s, 4);
+        assert!(s.add_clause(vec![Lit::pos(v[0])]));
+        assert!(s.add_clause(vec![Lit::neg(v[1])]));
+        assert!(s.decide(Lit::pos(v[2])));
+        assert!(s.decide(Lit::pos(v[3])));
+        assert_eq!(s.decision_level(), 2);
+        s.perform_restart();
+        assert_eq!(s.decision_level(), 0);
+        assert_eq!(s.value(v[0]), LBool::True);
+        assert_eq!(s.value(v[1]), LBool::False);
+        assert_eq!(s.value(v[2]), LBool::Undef);
+        assert_eq!(s.value(v[3]), LBool::Undef);
+    }
+
+    #[test]
+    fn perform_restart_resets_decision_level() {
+        let mut s = Solver::new();
+        let v = vars(&mut s, 3);
+        assert!(s.add_clause(vec![Lit::pos(v[0]), Lit::pos(v[1])]));
+        assert!(s.decide(Lit::neg(v[0])));
+        assert!(s.propagate().is_none());
+        assert_eq!(s.decision_level(), 1);
+        s.perform_restart();
+        assert_eq!(s.decision_level(), 0, "restart must return to root");
+        // v[0] was a decision (level 1), so it should be cleared.
+        assert_eq!(s.value(v[0]), LBool::Undef);
     }
 }

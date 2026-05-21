@@ -523,3 +523,169 @@ fn matrix_triple_negation() {
 "#;
     cross_validate("triple_negation_unsat", src, Verdict::Unsat);
 }
+
+// ──────────── Property-based cross-validation (CDCL(T) vs DNF) ─────────────
+
+/// Assert CDCL(T) and DNF agree, skipping when DNF gave up at the
+/// size cap.
+fn cross_validate_agreement(name: &str, src: &str) {
+    let q = picus_solver::smt2::parse_boolean(src)
+        .unwrap_or_else(|e| panic!("[{}] parse: {:?}", name, e));
+    let cdclt = picus_solver::cdclt::solve_formula(
+        q.prime.clone(),
+        &q.formula,
+        &picus_solver::timeout::CancelToken::none(),
+    );
+    let dnf = picus_solver::boolean::solve_boolean_query_dnf(
+        &q,
+        &picus_solver::timeout::CancelToken::none(),
+    );
+    let cv = verdict(&cdclt);
+    let dv = verdict(&dnf);
+    if dv == Verdict::Unknown {
+        return;
+    }
+    assert_eq!(cv, dv, "[{}] CDCL(T)={:?} DNF={:?}", name, cdclt, dnf);
+}
+
+/// Tiny xorshift used to build deterministic random Boolean inputs.
+fn xorshift(state: &mut u64) -> u64 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    *state
+}
+
+fn rand_3cnf(seed: u64, n_vars: usize, n_clauses: usize) -> String {
+    let mut s = format!("(set-logic QF_FF)\n(define-sort F () (_ FiniteField 7))\n");
+    for i in 0..n_vars {
+        s.push_str(&format!("(declare-fun x{} () F)\n", i));
+    }
+    let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
+    for _ in 0..n_clauses {
+        s.push_str("(assert (or");
+        for _ in 0..3 {
+            let v = (xorshift(&mut state) as usize) % n_vars;
+            let c = (xorshift(&mut state) as usize) % 3;
+            let neg = xorshift(&mut state) & 1 == 1;
+            let lit = format!(" (= x{} (as ff{} F))", v, c);
+            if neg {
+                s.push_str(" (not");
+                s.push_str(&lit);
+                s.push(')');
+            } else {
+                s.push_str(&lit);
+            }
+        }
+        s.push_str("))\n");
+    }
+    s.push_str("(check-sat)\n");
+    s
+}
+
+fn rand_implies_chain(seed: u64, n_steps: usize) -> String {
+    let mut state = seed.wrapping_mul(0xC2B2_AE3D_27D4_EB4F).wrapping_add(1);
+    let mut s = String::from("(set-logic QF_FF)\n(define-sort F () (_ FiniteField 11))\n");
+    let n_vars = (n_steps + 1).max(2);
+    for i in 0..n_vars {
+        s.push_str(&format!("(declare-fun x{} () F)\n", i));
+    }
+    let v0 = (xorshift(&mut state) as usize) % 3;
+    s.push_str(&format!("(assert (= x0 (as ff{} F)))\n", v0));
+    for i in 0..n_steps {
+        let a_idx = i;
+        let b_idx = i + 1;
+        let a_const = (xorshift(&mut state) as usize) % 3;
+        let b_const = (xorshift(&mut state) as usize) % 3;
+        s.push_str(&format!(
+            "(assert (=> (= x{} (as ff{} F)) (= x{} (as ff{} F))))\n",
+            a_idx, a_const, b_idx, b_const,
+        ));
+    }
+    s.push_str("(check-sat)\n");
+    s
+}
+
+#[test]
+fn cross_validate_random_3cnf_sweep() {
+    for seed in 0..8u64 {
+        for &(nv, nc) in &[(3usize, 5usize), (4, 8), (5, 10), (6, 12)] {
+            let src = rand_3cnf(seed * 9973 + (nv * 100 + nc) as u64, nv, nc);
+            cross_validate_agreement(
+                &format!("random_3cnf_seed={}_vars={}_clauses={}", seed, nv, nc),
+                &src,
+            );
+        }
+    }
+}
+
+#[test]
+fn cross_validate_random_implies_chain_sweep() {
+    for seed in 0..8u64 {
+        for n_steps in [1usize, 3, 5, 8] {
+            let src = rand_implies_chain(seed * 31337 + n_steps as u64, n_steps);
+            cross_validate_agreement(
+                &format!("random_implies_seed={}_steps={}", seed, n_steps),
+                &src,
+            );
+        }
+    }
+}
+
+#[test]
+fn cross_validate_dense_atom_reuse() {
+    // Stress atom interning + mutex emission: many ors that reuse the
+    // same variables with various constants. Verifies CDCL(T) and DNF
+    // agree even when SAT prunes assignments via mutex clauses.
+    let src = r#"
+(set-logic QF_FF)
+(define-sort F () (_ FiniteField 13))
+(declare-fun a () F)
+(declare-fun b () F)
+(declare-fun c () F)
+(assert (or (= a (as ff0 F)) (= a (as ff1 F)) (= a (as ff2 F))))
+(assert (or (= b (as ff0 F)) (= b (as ff1 F))))
+(assert (or (= c (as ff0 F)) (= c (as ff2 F))))
+(assert (=> (= a (as ff1 F)) (= b (as ff0 F))))
+(assert (=> (= b (as ff0 F)) (= c (as ff0 F))))
+(check-sat)
+"#;
+    cross_validate_agreement("dense_atom_reuse", src);
+}
+
+#[test]
+fn cross_validate_mutex_pin_unsat() {
+    // Non-bit constants block `rewrite_disjunctive_bit`, leaving the
+    // OR branches as distinct single-var-eq atoms; mutex clauses then
+    // make `(= a 7)` conflict with both disjuncts.
+    let src = r#"
+(set-logic QF_FF)
+(define-sort F () (_ FiniteField 13))
+(declare-fun a () F)
+(declare-fun b () F)
+(declare-fun c () F)
+(assert (or (= a (as ff5 F)) (= a (as ff6 F))))
+(assert (or (= b (as ff5 F)) (= b (as ff6 F))))
+(assert (or (= c (as ff5 F)) (= c (as ff6 F))))
+(assert (= a (as ff7 F)))
+(check-sat)
+"#;
+    cross_validate("mutex_pin_unsat", src, Verdict::Unsat);
+}
+
+#[test]
+fn cross_validate_repeated_intern_no_extra_clauses() {
+    // Same atom appears many times. CDCL(T) and DNF must still agree
+    // (and CDCL(T) should not blow up on redundant atom interning).
+    let src = r#"
+(set-logic QF_FF)
+(define-sort F () (_ FiniteField 7))
+(declare-fun a () F)
+(assert (or (= a (as ff0 F)) (= a (as ff1 F))))
+(assert (or (= a (as ff0 F)) (= a (as ff1 F))))
+(assert (or (= a (as ff0 F)) (= a (as ff1 F))))
+(assert (or (= a (as ff0 F)) (= a (as ff1 F))))
+(check-sat)
+"#;
+    cross_validate("repeated_intern", src, Verdict::Sat);
+}
