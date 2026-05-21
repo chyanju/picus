@@ -697,6 +697,38 @@ impl Solver {
         None
     }
 
+    /// Enqueue a theory-propagated literal with a justification clause
+    /// `(lit ∨ ¬r_i …)` added (learnt) and watched. Requires `lit` Undef
+    /// and `reason_facts` non-empty (each currently True); returns
+    /// `false` otherwise.
+    pub fn enqueue_theory(&mut self, lit: Lit, reason_facts: Vec<Lit>) -> bool {
+        if !matches!(self.value(lit.var()), LBool::Undef) {
+            return false;
+        }
+        if reason_facts.is_empty() {
+            return false;
+        }
+        let mut clause_lits: Vec<Lit> = Vec::with_capacity(reason_facts.len() + 1);
+        clause_lits.push(lit);
+        let mut reason_neg: Vec<Lit> = reason_facts.iter().map(|&r| -r).collect();
+        // lits[1] = highest-level reason negation, mirroring `learn_clause`.
+        reason_neg.sort_by_key(|&l| std::cmp::Reverse(self.level[l.var().index()]));
+        for r in &reason_neg {
+            debug_assert!(
+                matches!(self.lit_value(*r), LBool::False),
+                "negated reason fact must be currently False"
+            );
+        }
+        clause_lits.extend(reason_neg);
+        let cref = self.arena.add(Clause::new(clause_lits, true));
+        let lits_ref = &self.arena.get(cref).lits;
+        let w0 = lits_ref[0];
+        let w1 = lits_ref[1];
+        self.watches[w0.index()].push(cref);
+        self.watches[w1.index()].push(cref);
+        self.enqueue(lit, Some(cref))
+    }
+
     /// Add a learnt clause and enqueue its asserting literal (`lits[0]`).
     /// Assumes the solver has already backtracked to the asserting
     /// level (i.e. all literals in `lits[1..]` are currently False and
@@ -1152,6 +1184,93 @@ mod tests {
         assert_eq!(s.value(v[1]), LBool::False);
         assert_eq!(s.value(v[2]), LBool::Undef);
         assert_eq!(s.value(v[3]), LBool::Undef);
+    }
+
+    #[test]
+    fn enqueue_theory_assigns_with_reason() {
+        let mut s = Solver::new();
+        let v = vars(&mut s, 2);
+        assert!(s.decide(Lit::pos(v[0])));
+        let before = s.n_clauses();
+        let ok = s.enqueue_theory(Lit::pos(v[1]), vec![Lit::pos(v[0])]);
+        assert!(ok);
+        assert_eq!(s.value(v[1]), LBool::True);
+        assert_eq!(s.n_clauses(), before + 1);
+        s.backtrack_to(0);
+        assert_eq!(s.value(v[0]), LBool::Undef);
+        assert_eq!(s.value(v[1]), LBool::Undef);
+    }
+
+    #[test]
+    fn enqueue_theory_with_multi_level_reasons_sorts_highest_as_second_watch() {
+        let mut s = Solver::new();
+        let v = vars(&mut s, 5);
+        assert!(s.decide(Lit::pos(v[0])));
+        assert!(s.decide(Lit::pos(v[1])));
+        assert!(s.decide(Lit::pos(v[2])));
+        let n_before = s.n_clauses();
+        assert!(s.enqueue_theory(
+            Lit::pos(v[3]),
+            vec![Lit::pos(v[0]), Lit::pos(v[1]), Lit::pos(v[2])],
+        ));
+        let cref = s.reason[v[3].index()].expect("reason set");
+        let clause_lits = &s.arena.get(cref).lits;
+        assert_eq!(clause_lits[0], Lit::pos(v[3]));
+        // Highest-level reason (v[2] at level 3) → lits[1].
+        assert_eq!(clause_lits[1], Lit::neg(v[2]));
+        assert_eq!(s.n_clauses(), n_before + 1);
+    }
+
+    #[test]
+    fn enqueue_theory_propagates_again_after_backtrack_via_reason_clause() {
+        // Reason clause persists across backtrack and re-fires on
+        // re-decision of its reason facts.
+        let mut s = Solver::new();
+        let v = vars(&mut s, 3);
+        assert!(s.decide(Lit::pos(v[0])));
+        assert!(s.decide(Lit::pos(v[1])));
+        assert!(s.enqueue_theory(Lit::pos(v[2]), vec![Lit::pos(v[0]), Lit::pos(v[1])]));
+        s.backtrack_to(1);
+        assert_eq!(s.value(v[1]), LBool::Undef);
+        assert_eq!(s.value(v[2]), LBool::Undef);
+        assert!(s.decide(Lit::pos(v[1])));
+        assert!(s.propagate().is_none());
+        assert_eq!(s.value(v[2]), LBool::True);
+    }
+
+    #[test]
+    fn enqueue_theory_reason_clause_shape_and_reason_pointer() {
+        let mut s = Solver::new();
+        let v = vars(&mut s, 2);
+        assert!(s.decide(Lit::pos(v[0])));
+        assert!(s.enqueue_theory(Lit::pos(v[1]), vec![Lit::pos(v[0])]));
+        let cref = s.reason[v[1].index()].expect("reason pointer set");
+        let lits = &s.arena.get(cref).lits;
+        assert_eq!(lits.len(), 2);
+        assert_eq!(lits[0], Lit::pos(v[1]));
+        assert_eq!(lits[1], Lit::neg(v[0]));
+    }
+
+    #[test]
+    fn enqueue_theory_rejects_empty_reason() {
+        // Empty reason would yield a length-1 unwatched reason clause.
+        let mut s = Solver::new();
+        let v = vars(&mut s, 1);
+        let before = s.n_clauses();
+        assert!(!s.enqueue_theory(Lit::pos(v[0]), Vec::new()));
+        assert_eq!(s.value(v[0]), LBool::Undef);
+        assert_eq!(s.n_clauses(), before);
+    }
+
+    #[test]
+    fn enqueue_theory_rejects_assigned_lit() {
+        let mut s = Solver::new();
+        let v = vars(&mut s, 2);
+        assert!(s.decide(Lit::pos(v[0])));
+        assert!(s.decide(Lit::pos(v[1])));
+        let before = s.n_clauses();
+        assert!(!s.enqueue_theory(Lit::pos(v[1]), vec![Lit::pos(v[0])]));
+        assert_eq!(s.n_clauses(), before);
     }
 
     #[test]

@@ -689,3 +689,256 @@ fn cross_validate_repeated_intern_no_extra_clauses() {
 "#;
     cross_validate("repeated_intern", src, Verdict::Sat);
 }
+
+// ───────── Theory propagation (pinned-var linear substitution) ─────────
+
+#[test]
+fn cross_validate_theory_prop_linear_sat() {
+    // x=3 + (x+y=7) forces y=4; OR satisfied by y=4 branch.
+    let src = r#"
+(set-logic QF_FF)
+(define-sort F () (_ FiniteField 101))
+(declare-fun x () F)
+(declare-fun y () F)
+(assert (= x (as ff3 F)))
+(assert (or (= y (as ff4 F)) (= y (as ff5 F))))
+(assert (= (ff.add x y) (as ff7 F)))
+(check-sat)
+"#;
+    cross_validate("theory_prop_linear_sat", src, Verdict::Sat);
+}
+
+#[test]
+fn cross_validate_theory_prop_linear_unsat() {
+    // x=3, x+y=7 ⇒ y=4; OR over y ∈ {5, 6} excludes y=4 ⇒ UNSAT.
+    let src = r#"
+(set-logic QF_FF)
+(define-sort F () (_ FiniteField 101))
+(declare-fun x () F)
+(declare-fun y () F)
+(assert (= x (as ff3 F)))
+(assert (or (= y (as ff5 F)) (= y (as ff6 F))))
+(assert (= (ff.add x y) (as ff7 F)))
+(check-sat)
+"#;
+    cross_validate("theory_prop_linear_unsat", src, Verdict::Unsat);
+}
+
+#[test]
+fn cross_validate_theory_prop_chain_unsat() {
+    // x=2, x+y=10 ⇒ y=8; y+z=20 ⇒ z=12; contradicts z=4.
+    let src = r#"
+(set-logic QF_FF)
+(define-sort F () (_ FiniteField 101))
+(declare-fun x () F)
+(declare-fun y () F)
+(declare-fun z () F)
+(assert (= x (as ff2 F)))
+(assert (= (ff.add x y) (as ff10 F)))
+(assert (= (ff.add y z) (as ff20 F)))
+(assert (= z (as ff4 F)))
+(check-sat)
+"#;
+    cross_validate("theory_prop_chain_unsat", src, Verdict::Unsat);
+}
+
+#[test]
+fn cross_validate_theory_prop_three_branch_sat() {
+    // 3-way OR over b; theory propagation picks the matching branch.
+    let src = r#"
+(set-logic QF_FF)
+(define-sort F () (_ FiniteField 13))
+(declare-fun a () F)
+(declare-fun b () F)
+(assert (= a (as ff5 F)))
+(assert (or (= b (as ff1 F)) (= b (as ff2 F)) (= b (as ff3 F))))
+(assert (= (ff.add a b) (as ff7 F)))
+(check-sat)
+"#;
+    cross_validate("theory_prop_three_branch_sat", src, Verdict::Sat);
+}
+
+#[test]
+fn cross_validate_theory_prop_three_branch_unsat() {
+    // 3-way OR over b; every branch contradicts the sum.
+    let src = r#"
+(set-logic QF_FF)
+(define-sort F () (_ FiniteField 13))
+(declare-fun a () F)
+(declare-fun b () F)
+(assert (= a (as ff5 F)))
+(assert (or (= b (as ff7 F)) (= b (as ff8 F)) (= b (as ff9 F))))
+(assert (= (ff.add a b) (as ff7 F)))
+(check-sat)
+"#;
+    cross_validate("theory_prop_three_branch_unsat", src, Verdict::Unsat);
+}
+
+#[test]
+fn cross_validate_negated_eq_does_not_drive_pinning() {
+    // Negative-polarity literals must not contribute to pinning.
+    let src = r#"
+(set-logic QF_FF)
+(define-sort F () (_ FiniteField 101))
+(declare-fun x () F)
+(declare-fun y () F)
+(assert (not (= x (as ff5 F))))
+(assert (= (ff.add x y) (as ff10 F)))
+(check-sat)
+"#;
+    cross_validate("negated_eq_no_pinning", src, Verdict::Sat);
+}
+
+#[test]
+fn cross_validate_degree_two_pinned_sat() {
+    // x=3, (x*x = 9): theory evaluates 3*3 = 9 ⇒ True.
+    let src = r#"
+(set-logic QF_FF)
+(define-sort F () (_ FiniteField 101))
+(declare-fun x () F)
+(assert (= x (as ff3 F)))
+(assert (= (ff.mul x x) (as ff9 F)))
+(check-sat)
+"#;
+    cross_validate("degree_two_pinned_sat", src, Verdict::Sat);
+}
+
+#[test]
+fn cross_validate_degree_two_pinned_unsat() {
+    // x=3, (x*x = 8) over GF(101): 3*3 ≠ 8 ⇒ UNSAT.
+    let src = r#"
+(set-logic QF_FF)
+(define-sort F () (_ FiniteField 101))
+(declare-fun x () F)
+(assert (= x (as ff3 F)))
+(assert (= (ff.mul x x) (as ff8 F)))
+(check-sat)
+"#;
+    cross_validate("degree_two_pinned_unsat", src, Verdict::Unsat);
+}
+
+// ───────── Tier 2: linear-residue propagation through asserted atoms ─────────
+
+#[test]
+fn cross_validate_tier2_linear_residue_sat() {
+    // Tier 2: x=3 + (x+y=7) ⇒ y=4 propagated against the OR.
+    let src = r#"
+(set-logic QF_FF)
+(define-sort F () (_ FiniteField 101))
+(declare-fun x () F)
+(declare-fun y () F)
+(assert (= x (as ff3 F)))
+(assert (= (ff.add x y) (as ff7 F)))
+(assert (or (= y (as ff4 F)) (= y (as ff5 F))))
+(check-sat)
+"#;
+    cross_validate("tier2_linear_residue_sat", src, Verdict::Sat);
+}
+
+#[test]
+fn cross_validate_tier2_linear_residue_unsat() {
+    // Same shape but the OR over y excludes the derived value (=4).
+    let src = r#"
+(set-logic QF_FF)
+(define-sort F () (_ FiniteField 101))
+(declare-fun x () F)
+(declare-fun y () F)
+(assert (= x (as ff3 F)))
+(assert (= (ff.add x y) (as ff7 F)))
+(assert (or (= y (as ff5 F)) (= y (as ff6 F))))
+(check-sat)
+"#;
+    cross_validate("tier2_linear_residue_unsat", src, Verdict::Unsat);
+}
+
+#[test]
+fn cross_validate_tier2_chain_sat() {
+    // Tier 2 cascade: x=2 ⇒ y=8 ⇒ z=12; OR picks the z=12 branch.
+    let src = r#"
+(set-logic QF_FF)
+(define-sort F () (_ FiniteField 101))
+(declare-fun x () F)
+(declare-fun y () F)
+(declare-fun z () F)
+(assert (= x (as ff2 F)))
+(assert (= (ff.add x y) (as ff10 F)))
+(assert (= (ff.add y z) (as ff20 F)))
+(assert (or (= z (as ff4 F)) (= z (as ff12 F))))
+(check-sat)
+"#;
+    cross_validate("tier2_chain_sat", src, Verdict::Sat);
+}
+
+#[test]
+fn cross_validate_tier2_nonunit_coefficient_sat() {
+    // x=4 + (x*y = 12) ⇒ 4y = 12 ⇒ y = 3 (Fermat-based inverse).
+    let src = r#"
+(set-logic QF_FF)
+(define-sort F () (_ FiniteField 101))
+(declare-fun x () F)
+(declare-fun y () F)
+(assert (= x (as ff4 F)))
+(assert (= (ff.mul x y) (as ff12 F)))
+(assert (or (= y (as ff3 F)) (= y (as ff5 F))))
+(check-sat)
+"#;
+    cross_validate("tier2_nonunit_coeff_sat", src, Verdict::Sat);
+}
+
+#[test]
+fn cross_validate_tier2_multi_unpinned_falls_back_to_post_check() {
+    // Two unpinned vars under x pinned ⇒ Tier 2 bails; verdict via
+    // SAT + post_check.
+    let src = r#"
+(set-logic QF_FF)
+(define-sort F () (_ FiniteField 101))
+(declare-fun x () F)
+(declare-fun y () F)
+(declare-fun z () F)
+(assert (= x (as ff3 F)))
+(assert (= (ff.add x (ff.add y z)) (as ff10 F)))
+(assert (or (= y (as ff2 F)) (= y (as ff5 F))))
+(assert (or (= z (as ff5 F)) (= z (as ff2 F))))
+(check-sat)
+"#;
+    cross_validate("tier2_multi_unpinned", src, Verdict::Sat);
+}
+
+#[test]
+fn cross_validate_theory_prop_random_linear_sweep() {
+    // 20 random `(x=c_x, y=c_y, x+y=c_sum)` instances over GF(13).
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    let prime: u64 = 13;
+    for _ in 0..20 {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let cx = (state as u64) % prime;
+        let cy = (state.wrapping_mul(0x100000001B3)) % prime;
+        let csum = (state.wrapping_mul(0xCBF29CE484222325)) % prime;
+        let expected = if (cx + cy) % prime == csum {
+            Verdict::Sat
+        } else {
+            Verdict::Unsat
+        };
+        let src = format!(
+            "(set-logic QF_FF)\n\
+             (define-sort F () (_ FiniteField {p}))\n\
+             (declare-fun x () F)\n\
+             (declare-fun y () F)\n\
+             (assert (= x (as ff{cx} F)))\n\
+             (assert (= y (as ff{cy} F)))\n\
+             (assert (= (ff.add x y) (as ff{csum} F)))\n\
+             (check-sat)\n",
+            p = prime,
+            cx = cx,
+            cy = cy,
+            csum = csum,
+        );
+        cross_validate(
+            &format!("theory_prop_rand_linear cx={cx} cy={cy} csum={csum}"),
+            &src,
+            expected,
+        );
+    }
+}

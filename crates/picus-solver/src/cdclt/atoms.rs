@@ -219,6 +219,21 @@ impl AtomTable {
         self.by_var.get(v.index()).and_then(|o| o.as_ref())
     }
 
+    /// Length of the variable-indexed atom slot vector. Callers iterate
+    /// `0..n_atom_slots()` and use `atom(Var(i))` to skip aux slots.
+    pub fn n_atom_slots(&self) -> usize {
+        self.by_var.len()
+    }
+
+    /// Registered single-variable equalities for `var_name` as
+    /// `(value, atom_var)` pairs in insertion order.
+    pub fn atoms_for_var(&self, var_name: &str) -> &[(BigUint, Var)] {
+        self.single_var_eq
+            .get(var_name)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
     /// `true` iff `v` is a Tseitin / orchestration auxiliary
     /// variable rather than an FF atom.
     pub fn is_auxiliary(&self, v: Var) -> bool {

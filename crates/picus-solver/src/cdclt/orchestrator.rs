@@ -96,6 +96,17 @@ fn cdclt_loop(
             notified += 1;
         }
 
+        match run_theory_propagation(sat, theory) {
+            TheoryStep::Progressed => continue,
+            TheoryStep::Conflict => {
+                sync_theory_after_backtrack(sat, theory, &mut theory_levels);
+                notified = notified.min(sat.trail_len());
+                continue;
+            }
+            TheoryStep::RootUnsat => return SolveOutcome::Unsat(Vec::new()),
+            TheoryStep::Idle => {}
+        }
+
         if sat.all_assigned() {
             match theory.post_check(Effort::Full) {
                 CheckOutcome::Sat => {
@@ -123,6 +134,67 @@ fn cdclt_loop(
         let next = sat.pick_decision().expect("not all assigned ⇒ Undef var exists");
         let ok = sat.decide(next);
         debug_assert!(ok);
+    }
+}
+
+enum TheoryStep {
+    /// No new derivation fired this round.
+    Idle,
+    /// At least one new literal was enqueued.
+    Progressed,
+    /// Lemma learnt and SAT backtracked; caller must sync theory.
+    Conflict,
+    /// Lemma forced root-level UNSAT.
+    RootUnsat,
+}
+
+/// One round of theory propagation. Each derived `(atom, polarity)`
+/// becomes a no-op (SAT agrees), an `enqueue_theory` (SAT Undef), or a
+/// theory lemma (SAT disagrees).
+fn run_theory_propagation(sat: &mut Solver, theory: &mut FfTheory<'_>) -> TheoryStep {
+    let props = theory.propagate();
+    if props.is_empty() {
+        return TheoryStep::Idle;
+    }
+    let mut progressed = false;
+    for (atom_var, polarity) in props {
+        let prop_lit = if polarity {
+            Lit::pos(atom_var)
+        } else {
+            Lit::neg(atom_var)
+        };
+        match sat.value(atom_var) {
+            LBool::Undef => {
+                let reason_facts = theory.explain(atom_var, polarity);
+                let reason_lits: Vec<Lit> = reason_facts
+                    .iter()
+                    .map(|&(v, p)| if p { Lit::pos(v) } else { Lit::neg(v) })
+                    .collect();
+                if sat.enqueue_theory(prop_lit, reason_lits) {
+                    progressed = true;
+                }
+            }
+            LBool::True if polarity => {}
+            LBool::False if !polarity => {}
+            _ => {
+                let reason_facts = theory.explain(atom_var, polarity);
+                let mut lemma: Vec<Lit> = Vec::with_capacity(reason_facts.len() + 1);
+                lemma.push(prop_lit);
+                for (fav, fpol) in reason_facts {
+                    let fl = if fpol { Lit::pos(fav) } else { Lit::neg(fav) };
+                    lemma.push(-fl);
+                }
+                if !sat.add_theory_lemma(lemma) {
+                    return TheoryStep::RootUnsat;
+                }
+                return TheoryStep::Conflict;
+            }
+        }
+    }
+    if progressed {
+        TheoryStep::Progressed
+    } else {
+        TheoryStep::Idle
     }
 }
 
