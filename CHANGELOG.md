@@ -4,6 +4,102 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.23] - 2026-05-21
+
+### Added
+
+- `picus-solver::sat::Solver::enqueue_theory(lit, reason_facts)`.
+  Enqueues a theory-propagated literal with a learnt reason clause
+  `(lit ∨ ¬r_i …)`. The clause is added to the arena and watched
+  on `lit` and the highest-level reason negation so backtrack-aware
+  unit propagation re-fires correctly. Rejects empty `reason_facts`
+  (a length-1 unit clause cannot be watched) and already-assigned
+  `lit`.
+- `picus-solver::cdclt::atoms::AtomTable::n_atom_slots()` and
+  `AtomTable::atoms_for_var(var_name) -> &[(BigUint, Var)]`. The
+  latter exposes the existing `single_var_eq` index so theory
+  propagation can look up single-variable-equals-constant atoms by
+  FF variable name.
+- `picus-solver::cdclt::ff_theory::FfTheory` theory propagation
+  implementation in two tiers:
+  - **Tier 1**: for each atom not on the trail whose canonical
+    polynomial reduces to a constant under the pinned variables,
+    derive its truth value (zero ⇒ True, non-zero ⇒ False). Reason
+    = pinning sources for the variables used by the atom.
+  - **Tier 2**: for each positive multi-variable atom `A` on the
+    trail, substitute pinned variables into `A`'s polynomial. If
+    the result reduces to `a·v + c = 0` with a single unpinned
+    linear variable `v` and a non-zero coefficient `a`, solve
+    `v = −c · a⁻¹ mod p` via Fermat. For each registered
+    single-variable-equals-constant atom `(= v c')` not on the
+    trail, propagate True (when `c' == derived_value`) or False
+    (otherwise). Reason = `[A] + pinning sources for the other
+    variables in A`.
+  - `FfTheory::pending_reasons: HashMap<Var, Vec<(Var, bool)>>`
+    caches reasons across `propagate()` / `explain()` and is
+    cleared on `propagate()` entry and `pop()`. `explain()` returns
+    only cached reasons; an empty result from a cache miss is
+    treated as a contract violation and rejected by
+    `enqueue_theory`.
+- `picus-solver::cdclt::orchestrator::run_theory_propagation`. New
+  step between the trail-notify loop and `post_check(Full)`. Each
+  `theory.propagate()` result either no-ops (SAT agrees),
+  `enqueue_theory`s into SAT (SAT had it Undef), or emits a theory
+  lemma via `add_theory_lemma` (SAT disagrees).
+
+### Changed
+
+- `picus-solver::cdclt::ff_theory::FfTheory` gains a
+  `pending_reasons` field and rewrites `propagate()` / `explain()`
+  around the two-tier propagation above. `pinned_vars` now returns
+  `HashMap<String, (BigUint, Var)>` so reason construction can
+  attribute each pinning to its source atom.
+- `picus-solver::cdclt::orchestrator::cdclt_loop` invokes
+  `run_theory_propagation` after the notify loop on each main-loop
+  iteration; `TheoryStep::Progressed` re-enters the loop,
+  `Conflict` syncs and continues, `RootUnsat` terminates,
+  `Idle` falls through to `post_check`.
+
+### Tests
+
+- 379 lib + integration tests (358 in the library / 50 in
+  `cdclt_regression`; up from 342 at 1.7.22).
+  - 14 new `cdclt::ff_theory` tests: tier-1 negative-fact / aux-var
+    filters, degree-2 atoms, equivalent-canonical-form idempotence,
+    constant-only atoms, tier-2 linear residue derivation, tier-2
+    skip on multi-unpinned / degree-2-unpinned, tier-2 explain
+    reason coverage, tier-2 non-unit pinned-factor coefficient.
+  - 4 new `sat::solver` tests: `enqueue_theory` assign + reason
+    pointer + multi-level reason sort + post-backtrack re-fire,
+    rejection of empty reason and already-assigned literals.
+  - 9 new `cdclt_regression` cross-validation tests: linear
+    residue, chain, three-branch SAT/UNSAT, negated-equality
+    pinning, degree-2 SAT/UNSAT, tier-2 linear / chain / non-unit
+    coefficient / multi-unpinned, 20-instance random linear sweep.
+
+### Fixed
+
+- `picus-solver::cdclt::ff_theory::compute_tier1` skips atoms with
+  no variables. Without the guard, such atoms would produce an
+  empty-reason propagation that fed a length-1 reason clause
+  through `enqueue_theory` (unwatchable by the two-literal scheme,
+  stranding the literal Undef after backtrack).
+- `picus-solver::sat::Solver::enqueue_theory` refuses empty
+  `reason_facts` instead of silently constructing an unwatched
+  unit reason clause.
+- `picus-solver::cdclt::ff_theory::FfTheory::explain` returns only
+  cached reasons; the previous legacy fallback could attribute
+  Tier 2 derivations to single-var-eq pinning facts alone, missing
+  the multi-variable source atom.
+
+### Notes
+
+- Two-tier theory propagation reaches verdicts that previously
+  needed a full `post_check(Full)` GB call. The tier 1.5
+  limitation noted in 1.7.22 (skip when any variable is unpinned)
+  is replaced by tier 2, which solves the single-unpinned linear
+  case directly.
+
 ## [1.7.22] - 2026-05-21
 
 ### Added
