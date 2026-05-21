@@ -30,6 +30,9 @@ pub mod gb_homog;
 pub mod smt2;
 pub mod rewriter;
 pub mod boolean;
+pub mod sat;
+pub mod cdclt;
+pub mod bench_fixtures;
 
 use num_bigint::BigUint;
 use std::collections::HashMap;
