@@ -4,6 +4,81 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.20] - 2026-05-20
+
+### Added
+
+- `picus-solver` module `rewriter`. `normalize_term_list(&mut Vec<PolyTerm>, &BigUint)`
+  sorts variables inside each term, sorts terms by variable list, merges
+  like terms (sum of coefficients mod `prime`), drops zero-coefficient
+  terms. `rewrite_system(&mut ConstraintSystem)` applies it to every
+  equality and drops equalities whose normalized term list is empty.
+  Mirrors cvc5 `theory_ff_rewriter` (pre/post-rewrites for FfAdd, FfMult,
+  FfNeg, FfEq) at the flat-term-list granularity picus-solver works in.
+- `picus-solver` module `boolean`. `Formula` AST over `Literal`
+  (`Eq`/`Neq` over `PolyTerm` lists) plus `And`/`Or`/`Not`/`True`/`False`.
+  `Formula::nnf` and `Formula::to_dnf` produce a `Vec<Vec<Literal>>`
+  disjunctive normal form. `BooleanQuery::from_formula` runs the
+  `rewrite_disjunctive_bit` preprocessing pass then `nnf` + `to_dnf`;
+  `to_disjunct_systems` returns one `ConstraintSystem` per DNF disjunct,
+  each routed through `rewriter::rewrite_system`. `solve_boolean_query`
+  dispatches to `solve_encoded_with_cancel` per disjunct and returns
+  `Sat` on the first SAT, `Unsat` if every disjunct is UNSAT, `Unknown`
+  if any disjunct returned `Unknown`.
+- `picus-solver::boolean::rewrite_disjunctive_bit`. Walks a `Formula`
+  and rewrites every `Or` whose two children match `(= x 0)` and
+  `(= x 1)` (in either order, same variable) to the literal
+  `Eq([1·x·x], [1·x])`. Equivalent of cvc5
+  `preprocessing/passes/ff_disjunctive_bit.cpp`.
+- `picus-solver::smt2::parse_boolean(&str) -> Result<BooleanQuery, ParseError>`.
+  Top-level parser accepting `and`, `or`, `not`, `=>`, and
+  assertion-level `ite` in addition to the existing equality / `not eq`
+  subset that `parse` handles.
+- `picus-solver::split_gb::split_gb_cancel_traced` and
+  `picus-solver::split_gb::TracedSplitGb`. Variant of `split_gb_cancel`
+  that takes per-input original-poly dependency sets and, when any
+  partition becomes the whole ring during fixpoint, returns the precise
+  subset of original input indices that derived the trivial element.
+  Uses `Ideal::extend_with_cancel_traced` (which feeds a `GbTracer`)
+  per partition; cross-partition propagations carry the source poly's
+  current orig-deps forward.
+
+### Changed
+
+- `encoder::encode`, `encoder::encode_constraint_side`, and
+  `encoder::encode_no_auto_bitsum` now run `rewriter::rewrite_system`
+  on a cloned `ConstraintSystem` before `auto_extract_bitsums` and
+  `encode_impl`. `smt2::parse` runs the same rewrite on its result
+  before returning.
+- `core::solve_split_gb_cancel` now calls `split_gb_cancel_traced` with
+  initial deps (bitsum polys have empty deps; each original poly
+  contributes its index). When a partition is whole-ring, the returned
+  `SolveOutcome::Unsat(core)` uses the precise traced core in place of
+  the prior `(0..original_polys.len()).collect()` placeholder.
+
+### Tests
+
+- 231 lib + integration tests pass (was 212 at 1.7.19):
+  - +8 in `rewriter::tests` (term-list merge, coefficient reduction,
+    variable canonicalization, zero-coefficient drop, system-level
+    triviality drop).
+  - +6 in `boolean::tests` (NNF distribution, DNF combinatorics,
+    True/False propagation, disjunctive-bit pattern rewrite and
+    non-match, three end-to-end smt2 → `solve_boolean_query` cases).
+  - +2 in `boolean::tests` for the disjunctive-bit pass (positive and
+    negative pattern match).
+  - +1 `core::tests::test_split_gb_traced_unsat_core_non_trivial`:
+    three-input UNSAT where only two inputs cause the conflict; the
+    returned core has `len() < 3`.
+
+### Notes
+
+- The PLDI/circomlib-cff5ab6 suite (68 circuits) at 5 s per-query was
+  re-run against the alignment-only changes; verdict matches the
+  baseline on every circuit. The 10 timeout circuits (Edwards-curve /
+  Pedersen / scalar-mul family) still time out — consistent with cvc5
+  timing out on the same circuits under the same budget.
+
 ## [1.7.19] - 2026-05-20
 
 ### Added

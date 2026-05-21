@@ -30,7 +30,7 @@ mod fixpoint;
 mod search;
 
 pub use branching::apply_rule;
-pub use fixpoint::{split_gb, split_gb_cancel};
+pub use fixpoint::{split_gb, split_gb_cancel, split_gb_cancel_traced, TracedSplitGb};
 pub(crate) use fixpoint::split_gb_extend_cancel;
 pub use search::{split_zero_extend, split_zero_extend_cancel};
 

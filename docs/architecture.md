@@ -98,11 +98,13 @@ Pure-Rust finite field (QF_FF) solver. In-tree Buchberger engine
 GB library dependency.
 
 - **`core.rs`** — High-level API (`solve_split_gb`, `solve_single_gb`, `SolverMode`, `SolveOutcome`).
-- **`split_gb/`** — Split GB algorithm with inter-basis propagation.
+- **`split_gb/`** — Split GB algorithm with inter-basis propagation. `split_gb_cancel_traced` carries per-polynomial original-input dependency sets through the fixpoint so the whole-ring detection can report a precise UNSAT core.
 - **`gb.rs`** — Single GB solver (DegRevLex → Lex) with cooperative timeout.
 - **`ideal.rs`** — Ideal operations (GB computation, membership, reduce, zero-dim check, minimal polynomial).
 - **`tracer.rs`** — UNSAT core tracing via `BuchbergerObserver` hooks. Builds a dependency DAG to identify the input subset responsible for unsatisfiability.
-- **`encoder.rs`** — `ConstraintSystem` → polynomial encoding. Runs `auto_extract_bitsums` to route bitsum-defining polynomials into `bitsum_polys` (basis 0 only).
+- **`encoder.rs`** — `ConstraintSystem` → polynomial encoding. Runs `rewriter::rewrite_system` then `auto_extract_bitsums` before `encode_impl`; the latter routes bitsum-defining polynomials into `bitsum_polys` (basis 0 only).
+- **`rewriter.rs`** — Flat term-list canonicalization (`normalize_term_list`, `rewrite_system`): sort vars within each term, sort terms by vars, merge like terms mod prime, drop zero-coefficient terms, drop `0 = 0` equalities. Equivalent of cvc5 `theory_ff_rewriter`.
+- **`boolean.rs`** — `Formula` AST over `Eq`/`Neq` literals plus `And`/`Or`/`Not`/`True`/`False`. `nnf` + `to_dnf` produce a DNF; `BooleanQuery::from_formula` runs `rewrite_disjunctive_bit` then NNF/DNF; `solve_boolean_query` dispatches each disjunct to `solve_encoded_with_cancel`. `rewrite_disjunctive_bit` is the equivalent of cvc5 `preprocessing/passes/ff_disjunctive_bit.cpp` (`(or (= x 0) (= x 1))` → `x*x = x`).
 - **`model.rs`** — Model construction via iterative ideal augmentation (univariate roots, minimal polynomial, round-robin).
 - **`bitprop.rs`** — Bit propagation (constant + equal bitsum) across split bases.
 - **`parse.rs`** — Pattern detection (`bit_constraint`, `linear_monomial`, `bit_sums`).
@@ -110,7 +112,7 @@ GB library dependency.
 - **`incremental_context.rs`** — `IncrementalSolverContext`: split-GB cache keyed on the constraint side; resumable mid-build state.
 - **`roots.rs`** — Univariate root finding (Cantor-Zassenhaus, in-tree implementation in `ff/univariate.rs`).
 - **`timeout.rs`** — `CancelToken` (atomic cancellation threaded through Buchberger).
-- **`smt2.rs`** — QF_FF SMT-LIB v2 parser; `pub fn parse(&str) -> Result<ConstraintSystem, ParseError>`.
+- **`smt2.rs`** — QF_FF SMT-LIB v2 parser. `parse(&str) -> Result<ConstraintSystem, ParseError>` handles the conjunctive subset (`=`, `not =`); `parse_boolean(&str) -> Result<BooleanQuery, ParseError>` additionally accepts `and`, `or`, `not`, `=>`, and assertion-level `ite`.
 - **`bin/run_smt2.rs`** — Standalone CLI: reads a QF_FF SMT2 file, solves it, prints verdict (and optional timing).
 
 ## Data Flow

@@ -1,10 +1,7 @@
 //! Finite field GF(p) — re-exports from [`crate::ff::field`].
 //!
-//! Historically this module wrapped the underlying [`PrimeField`] in a
-//! thin `FfField` struct that stored the prime as a `BigUint` field
-//! alongside the inner field. That wrapper has been removed; `FfField`
-//! is now a type alias for [`PrimeField`]. Callers reach the prime via
-//! [`PrimeField::prime`].
+//! `FfField` is a type alias for [`PrimeField`]; callers reach the
+//! prime via [`PrimeField::prime`].
 
 pub use crate::ff::field::{FieldElem as FfEl, PrimeField};
 
