@@ -110,6 +110,46 @@ impl Formula {
             }
         }
     }
+
+    /// Upper-bound estimate of `self.to_dnf().len()`, computed without
+    /// materializing the DNF. Saturates at `cap` (returned as `cap`).
+    /// `True` evaluates to 1, `False` to 0. Caller must have applied
+    /// [`Formula::nnf`] (only the NNF Lit/And/Or/True/False shape is
+    /// handled).
+    pub fn dnf_size_estimate(&self, cap: u64) -> u64 {
+        match self {
+            Formula::Lit(_) => 1,
+            Formula::True => 1,
+            Formula::False => 0,
+            Formula::And(fs) => {
+                let mut acc: u64 = 1;
+                for f in fs {
+                    let s = f.dnf_size_estimate(cap);
+                    if s == 0 {
+                        return 0;
+                    }
+                    acc = acc.saturating_mul(s);
+                    if acc >= cap {
+                        return cap;
+                    }
+                }
+                acc
+            }
+            Formula::Or(fs) => {
+                let mut acc: u64 = 0;
+                for f in fs {
+                    acc = acc.saturating_add(f.dnf_size_estimate(cap));
+                    if acc >= cap {
+                        return cap;
+                    }
+                }
+                acc
+            }
+            Formula::Not(_) => {
+                panic!("Formula::dnf_size_estimate called on non-NNF input")
+            }
+        }
+    }
 }
 
 /// A parsed Boolean QF_FF query. `formula` is the preprocessed-NNF
@@ -360,12 +400,29 @@ pub fn solve_boolean_query(query: &BooleanQuery, cancel: &CancelToken) -> SolveO
     }
 }
 
+/// Maximum DNF disjunct count before [`solve_boolean_query_dnf`]
+/// gives up and returns `Unknown`. Set via the `PICUS_DNF_CAP`
+/// environment variable (default `100_000`).
+pub fn dnf_size_cap() -> u64 {
+    std::env::var("PICUS_DNF_CAP")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(100_000)
+}
+
 /// DNF-enumeration path: try each DNF disjunct in order through the
 /// GB solver. Returns `Sat` on the first SAT disjunct, `Unsat` only
 /// if every disjunct is UNSAT (with an empty core — per-disjunct
 /// cores index into different polynomial sets), or `Unknown` if any
 /// disjunct came back `Unknown` and none came back SAT.
+///
+/// Returns `Unknown` without materializing the DNF when the formula's
+/// estimated DNF size exceeds [`dnf_size_cap`].
 pub fn solve_boolean_query_dnf(query: &BooleanQuery, cancel: &CancelToken) -> SolveOutcome {
+    let cap = dnf_size_cap();
+    if query.formula.dnf_size_estimate(cap) >= cap {
+        return SolveOutcome::Unknown;
+    }
     let systems = query.to_disjunct_systems();
     if systems.is_empty() {
         return SolveOutcome::Unsat(Vec::new());
@@ -627,5 +684,71 @@ mod tests {
         let q = crate::smt2::parse_boolean(src).expect("parse");
         let outcome = solve_boolean_query(&q, &CancelToken::none());
         assert!(matches!(outcome, SolveOutcome::Unsat(_)));
+    }
+
+    #[test]
+    fn dnf_size_estimate_lit_is_one() {
+        let p = BigUint::from(101u32);
+        let f = Formula::Lit(Literal::Eq(vec![t(1, &["x"])], vec![t(0, &[])]));
+        assert_eq!(f.dnf_size_estimate(1_000), 1);
+    }
+
+    #[test]
+    fn dnf_size_estimate_and_of_ors_multiplies() {
+        // 5 fold and-of-ors with each or having 2 disjuncts → 2^5 = 32.
+        let p = BigUint::from(101u32);
+        let lit = |v: &str, c: u64| {
+            Formula::Lit(Literal::Eq(vec![t(1, &[v])], vec![t(c, &[])]))
+        };
+        let ors: Vec<Formula> = (0..5)
+            .map(|i| {
+                let name = format!("a{}", i);
+                Formula::Or(vec![lit(&name, 0), lit(&name, 1)])
+            })
+            .collect();
+        let f = Formula::And(ors).nnf();
+        assert_eq!(f.dnf_size_estimate(1_000), 32);
+        // Real DNF length matches.
+        assert_eq!(f.to_dnf().len(), 32);
+    }
+
+    #[test]
+    fn dnf_size_estimate_saturates_at_cap() {
+        // 30 fold and-of-ors → 2^30, well over any reasonable cap.
+        let lit = |v: &str, c: u64| {
+            Formula::Lit(Literal::Eq(vec![t(1, &[v])], vec![t(c, &[])]))
+        };
+        let ors: Vec<Formula> = (0..30)
+            .map(|i| {
+                let name = format!("a{}", i);
+                Formula::Or(vec![lit(&name, 0), lit(&name, 1)])
+            })
+            .collect();
+        let f = Formula::And(ors).nnf();
+        let est = f.dnf_size_estimate(100_000);
+        assert_eq!(est, 100_000); // saturated, never expanded
+    }
+
+    #[test]
+    fn solve_boolean_query_dnf_returns_unknown_past_cap() {
+        // Non-bit constants (5, 6) keep `rewrite_disjunctive_bit`
+        // from folding the disjunctions: 4 ors × 2 = DNF length 16.
+        // Cap of 8 ⇒ DNF path returns Unknown immediately.
+        unsafe { std::env::set_var("PICUS_DNF_CAP", "8"); }
+        let src = r#"
+(define-sort F () (_ FiniteField 101))
+(declare-fun a () F)
+(declare-fun b () F)
+(declare-fun c () F)
+(declare-fun d () F)
+(assert (or (= a (as ff5 F)) (= a (as ff6 F))))
+(assert (or (= b (as ff5 F)) (= b (as ff6 F))))
+(assert (or (= c (as ff5 F)) (= c (as ff6 F))))
+(assert (or (= d (as ff5 F)) (= d (as ff6 F))))
+"#;
+        let q = crate::smt2::parse_boolean(src).expect("parse");
+        let outcome = solve_boolean_query_dnf(&q, &CancelToken::none());
+        assert!(matches!(outcome, SolveOutcome::Unknown));
+        unsafe { std::env::remove_var("PICUS_DNF_CAP"); }
     }
 }

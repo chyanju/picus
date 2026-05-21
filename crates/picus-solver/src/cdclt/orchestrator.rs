@@ -52,6 +52,17 @@ pub fn solve_formula(
     cdclt_loop(&mut sat, &mut theory, cancel)
 }
 
+/// Maximum CDCL(T) main-loop iterations before [`cdclt_loop`] gives
+/// up and returns `Unknown`. Each iteration performs at most one SAT
+/// propagate, one theory check, or one decision. Set via the
+/// `PICUS_CDCLT_ITER_CAP` environment variable (default `1_000_000`).
+pub fn iter_cap() -> u64 {
+    std::env::var("PICUS_CDCLT_ITER_CAP")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(1_000_000)
+}
+
 /// Run the CDCL(T) interleaving loop. Returns the same outcome shape
 /// as [`solve_formula`].
 fn cdclt_loop(
@@ -60,10 +71,16 @@ fn cdclt_loop(
     cancel: &CancelToken,
 ) -> SolveOutcome {
     let mut notified: usize = 0;
-    let mut theory_levels: usize = 0; // how many sat decision levels theory has been pushed for
+    let mut theory_levels: usize = 0;
+    let cap = iter_cap();
+    let mut iters: u64 = 0;
 
     loop {
         if cancel.is_cancelled() {
+            return SolveOutcome::Unknown;
+        }
+        iters += 1;
+        if iters > cap {
             return SolveOutcome::Unknown;
         }
 
@@ -274,5 +291,20 @@ mod tests {
         ]);
         let r = solve_formula(BigUint::from(101u32), &f, &CancelToken::none());
         assert!(matches!(r, SolveOutcome::Unsat(_)));
+    }
+
+    #[test]
+    fn iter_cap_returns_unknown_on_pathological_input() {
+        // Force the cap down to 1. Any non-trivial CDCL(T) interaction
+        // hits the limit and bails out as Unknown.
+        unsafe { std::env::set_var("PICUS_CDCLT_ITER_CAP", "1"); }
+        let f = Formula::And(vec![
+            Formula::Or(vec![eq(1, "x", 0), eq(1, "x", 1)]),
+            Formula::Or(vec![eq(1, "y", 0), eq(1, "y", 1)]),
+            eq(1, "x", 5),
+        ]);
+        let r = solve_formula(BigUint::from(101u32), &f, &CancelToken::none());
+        assert!(matches!(r, SolveOutcome::Unknown));
+        unsafe { std::env::remove_var("PICUS_CDCLT_ITER_CAP"); }
     }
 }
