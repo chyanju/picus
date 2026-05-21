@@ -104,7 +104,9 @@ GB library dependency.
 - **`tracer.rs`** — UNSAT core tracing via `BuchbergerObserver` hooks. Builds a dependency DAG to identify the input subset responsible for unsatisfiability.
 - **`encoder.rs`** — `ConstraintSystem` → polynomial encoding. Runs `rewriter::rewrite_system` then `auto_extract_bitsums` before `encode_impl`; the latter routes bitsum-defining polynomials into `bitsum_polys` (basis 0 only).
 - **`rewriter.rs`** — Flat term-list canonicalization (`normalize_term_list`, `rewrite_system`): sort vars within each term, sort terms by vars, merge like terms mod prime, drop zero-coefficient terms, drop `0 = 0` equalities. Equivalent of cvc5 `theory_ff_rewriter`.
-- **`boolean.rs`** — `Formula` AST over `Eq`/`Neq` literals plus `And`/`Or`/`Not`/`True`/`False`. `nnf` + `to_dnf` produce a DNF; `BooleanQuery::from_formula` runs `rewrite_disjunctive_bit` then NNF/DNF; `solve_boolean_query` dispatches each disjunct to `solve_encoded_with_cancel`. `rewrite_disjunctive_bit` is the equivalent of cvc5 `preprocessing/passes/ff_disjunctive_bit.cpp` (`(or (= x 0) (= x 1))` → `x*x = x`).
+- **`boolean.rs`** — `Formula` AST over `Eq`/`Neq` literals plus `And`/`Or`/`Not`/`True`/`False`. `nnf` + `to_dnf` produce a DNF; `BooleanQuery::from_formula` runs `rewrite_disjunctive_bit` then NNF/DNF. `solve_boolean_query` dispatches to `cdclt::solve_formula`; `PICUS_BOOLEAN=dnf` selects `solve_boolean_query_dnf`, which runs each DNF disjunct through `solve_encoded_with_cancel`. `rewrite_disjunctive_bit` matches cvc5 `preprocessing/passes/ff_disjunctive_bit.cpp` (`(or (= x 0) (= x 1))` → `x*x = x`).
+- **`sat/`** — In-tree CDCL Boolean SAT solver. `lit` (Var / Lit / LBool), `clause` (Clause / ClauseArena), `solver` (Solver). Watched-literal unit propagation, 1-UIP conflict analysis, clause learning, theory-lemma intake (`add_theory_lemma` backtracks to the conflict's second-highest decision level and enqueues the asserting literal).
+- **`cdclt/`** — CDCL(T) orchestration. `atoms` (canonical FF atom interning with sign-flip canonicalization so `(= a b)` and `(= b a)` share one SAT var), `cnf` (Tseitin transformation), `theory` (plug-in trait with `notify_fact` / `pre_check` / `post_check` / `propagate` / `explain` / `push` / `pop` / `collect_model`), `ff_theory` (concrete plug-in wrapping `solve_encoded_with_cancel`), `orchestrator` (`solve_formula` interleaves SAT propagation, theory notification, full-effort theory check, and theory-conflict learning). Mirrors cvc5's `theory_ff.{h,cpp}` + `sub_theory.{h,cpp}` layering.
 - **`model.rs`** — Model construction via iterative ideal augmentation (univariate roots, minimal polynomial, round-robin).
 - **`bitprop.rs`** — Bit propagation (constant + equal bitsum) across split bases.
 - **`parse.rs`** — Pattern detection (`bit_constraint`, `linear_monomial`, `bit_sums`).
@@ -113,7 +115,9 @@ GB library dependency.
 - **`roots.rs`** — Univariate root finding (Cantor-Zassenhaus, in-tree implementation in `ff/univariate.rs`).
 - **`timeout.rs`** — `CancelToken` (atomic cancellation threaded through Buchberger).
 - **`smt2.rs`** — QF_FF SMT-LIB v2 parser. `parse(&str) -> Result<ConstraintSystem, ParseError>` handles the conjunctive subset (`=`, `not =`); `parse_boolean(&str) -> Result<BooleanQuery, ParseError>` additionally accepts `and`, `or`, `not`, `=>`, and assertion-level `ite`.
+- **`bench_fixtures.rs`** — Programmatic SMT-LIB QF_FF source builders for the bench corpus (`conjunction`, `single_or`, `disj_bit`, `and_of_ors_{sat,unsat}`, `implies_chain_unsat`, `bit_sum`, `random_3cnf`, `or_of_ands`). `corpus()` returns the full `(family, label, source)` list shared by `cdclt_bench` and `cvc5_compare`.
 - **`bin/run_smt2.rs`** — Standalone CLI: reads a QF_FF SMT2 file, solves it, prints verdict (and optional timing).
+- **`bin/cvc5_compare.rs`** — Standalone CLI: runs every `bench_fixtures::corpus` entry through `cdclt::solve_formula` and through an external cvc5 process (`--ff-solver split`), prints a side-by-side wall-time table. Flags: `--cvc5 <path>`, `--timeout-ms <N>`, `--iters <K>`.
 
 ## Data Flow
 

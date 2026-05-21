@@ -4,6 +4,125 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.21] - 2026-05-20
+
+### Added
+
+- `picus-solver::sat` module. CDCL SAT engine: `lit` (`Var`, `Lit`,
+  `LBool`), `clause` (`Clause`, `ClauseArena`, `ClauseRef`), `solver`
+  (`Solver`). Public API: `new_var`, `add_clause`, `decide`,
+  `propagate`, `analyze`, `backtrack_to`, `learn_clause`,
+  `add_theory_lemma`, `solve`. Two-literal watching for propagation;
+  1-UIP conflict analysis; decision heuristic = lowest-index Undef
+  variable, positive polarity.
+- `picus-solver::cdclt` module. Submodules:
+  - `atoms::AtomTable`: canonical FF equality atom interning.
+    `AtomKey::from_eq` normalizes `lhs − rhs` mod prime via
+    `rewriter::normalize_term_list`, then flips signs when the
+    leading coefficient exceeds `p/2`. `new_aux` allocates Tseitin
+    auxiliary SAT variables.
+  - `cnf::tseitin`: `Formula` → CNF + top-level literal. Folds
+    `True`/`False` constants; emits `t ↔ ⋀lᵢ` / `t ↔ ⋁lᵢ` clauses
+    for non-leaf nodes.
+  - `theory::Theory` trait: `notify_fact`, `pre_check`,
+    `post_check`, `propagate`, `explain`, `push`, `pop`,
+    `collect_model`. Matches the cvc5 `theory_ff` interface shape.
+  - `ff_theory::FfTheory`: level-indexed fact trail; on
+    `post_check(Full)` builds a `ConstraintSystem` from the trail,
+    calls `core::solve_encoded_with_cancel`, maps `original_polys`
+    indices in the returned UNSAT core back to atom variables.
+  - `orchestrator::solve_formula(prime, &Formula, &CancelToken) ->
+    SolveOutcome`. Loop: SAT propagate → if conflict, analyze and
+    backtrack; → if full assignment, run `post_check(Full)`; → on
+    theory UNSAT, build a SAT clause from negated core literals and
+    feed via `Solver::add_theory_lemma` (sorted by descending level,
+    backtrack to the second-highest level, enqueue the asserting
+    literal).
+- `boolean::solve_boolean_query_dnf`: DNF-enumeration entry; selected
+  when `PICUS_BOOLEAN=dnf` is in the environment.
+- `crates/picus-solver/tests/cdclt_regression.rs`: integration tests
+  that run both `solve_formula` and `solve_boolean_query_dnf` on the
+  same `BooleanQuery` and assert the verdicts agree and match the
+  expected value. Inputs: hand-written Boolean shapes, parameter
+  sweeps for each `bench_fixtures` family, and the cvc5
+  `regress0/ff` ports compatible with the picus-solver SMT-LIB
+  parser (`negneg`, `univar_conjunction_sat`,
+  `univar_conjunction_unsat`, `elim_disjunctive_bit_constraints`,
+  `issue10937`).
+- `crates/picus-solver/benches/cdclt_bench.rs`: Criterion bench
+  pairing `cdclt::solve_formula` and
+  `boolean::solve_boolean_query_dnf` on every fixture in
+  `bench_fixtures::corpus`.
+- `crates/picus-solver/benches/smt2_bench.rs`: Criterion bench embeds
+  `benches/smt2/*.smt2` via `include_str!` and times
+  `parse_boolean` and `solve_formula` separately on each.
+- `picus-solver::bench_fixtures` module. Programmatic SMT-LIB v2
+  QF_FF source builders for the bench corpus: `conjunction`,
+  `single_or`, `disj_bit`, `and_of_ors_sat`, `and_of_ors_unsat`,
+  `implies_chain_unsat`, `bit_sum`, `random_3cnf`, `or_of_ands`.
+  Used by `cdclt_bench.rs` and the `cvc5_compare` binary.
+- `crates/picus-solver/src/bin/cvc5_compare.rs`. Binary that runs
+  the `bench_fixtures::corpus()` workloads through both
+  picus-solver's `cdclt::solve_formula` and an external cvc5
+  binary (`--ff-solver split`), prints median wall-times and
+  ratios. Flags: `--cvc5 <path>`, `--timeout-ms <N>`, `--iters <K>`.
+
+### Changed
+
+- `boolean::BooleanQuery` carries `formula: Formula` and a
+  `OnceLock`-backed lazy DNF. Use `BooleanQuery::dnf()` to materialize.
+- `boolean::solve_boolean_query` dispatches to
+  `cdclt::solve_formula`; `PICUS_BOOLEAN=dnf` selects
+  `solve_boolean_query_dnf`.
+
+### Removed
+
+- `crates/picus-solver/benches/benchmark_native.sh`.
+- `crates/picus-solver/benches/benchmark_cvc5.sh`.
+- `crates/picus-solver/benches/smt2/simple.smt2` and
+  `crates/picus-solver/benches/smt2/bigff_is_zero_sound.smt2`
+  (require Boolean-typed declarations, term-level `ite`, or Boolean
+  iff; not in the SMT-LIB subset accepted by `smt2::parse_boolean`).
+
+### Fixed
+
+- `Solver::add_theory_lemma`: when every literal in the supplied
+  conflict clause sits at the same decision level, the assertion
+  level is computed as `max_level - 1` instead of `max_level`.
+  Otherwise `backtrack_to` is a no-op, `learn_clause`'s asserting
+  literal stays False (not Undef), and the orchestrator spins in
+  the SAT-propagate / theory-check loop without progress.
+- `boolean::BooleanQuery::from_formula` no longer materializes the
+  DNF expansion eagerly. The `dnf` field is replaced by a
+  `OnceLock`-backed `dnf()` method. DNF size grows as `O(3^k)` for
+  k-clause CNF inputs and the eager expansion was consuming
+  multi-GB heap on random 3-CNF workloads even when the only
+  consumer (CDCL(T)) does not require DNF.
+
+### Tests
+
+- 317 lib + integration tests (231 at 1.7.20):
+  - 29 in `sat`.
+  - 16 in `cdclt::atoms` and `cdclt::cnf`.
+  - 5 in `cdclt::ff_theory`.
+  - 6 in `cdclt::orchestrator`.
+  - 4 cross-validation tests in `boolean::tests`.
+  - 31 in `cdclt_regression` (matrix sweeps + explicit shapes +
+    cvc5 `regress0/ff` ports).
+
+### Notes
+
+- `core::solve_encoded_with_cancel` is reachable from both the
+  existing R1CS path and the new `cdclt::solve_formula` entry; its
+  signature, semantics, and `SolveOutcome` shape are unchanged.
+- Full PLDI/circomlib-cff5ab6 suite (68 circuits) re-run at 5 s
+  per-query, 30 s wall: 0 verdict differences, identical 50/7/9/2
+  safe/unsafe/walltimeout/unknown counts. Median per-circuit wall
+  +1.0 ms (+3.3%), mean +3.5 ms (+2.2%).
+- Criterion `--save-baseline v1.7.20` then `--baseline v1.7.20` on
+  `solver_bench`: all 10 measurement groups report `p > 0.05`,
+  `|Δ%| ≤ 8`.
+
 ## [1.7.20] - 2026-05-20
 
 ### Added

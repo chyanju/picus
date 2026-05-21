@@ -112,26 +112,41 @@ impl Formula {
     }
 }
 
-/// A parsed Boolean QF_FF query in DNF.
+/// A parsed Boolean QF_FF query. `formula` is the preprocessed-NNF
+/// representation consumed by the CDCL(T) path; [`BooleanQuery::dnf`]
+/// computes the DNF expansion on demand (size `O(3^k)` for k-clause
+/// CNF inputs).
 #[derive(Debug)]
 pub struct BooleanQuery {
     pub prime: BigUint,
     pub var_names: Vec<String>,
-    pub dnf: Vec<Vec<Literal>>,
+    /// Result of `rewrite_disjunctive_bit` + `nnf`. Suitable for
+    /// Tseitin CNF conversion.
+    pub formula: Formula,
+    dnf_cell: std::sync::OnceLock<Vec<Vec<Literal>>>,
 }
 
 impl BooleanQuery {
     /// Build a `BooleanQuery` from a Boolean formula. Applies the
-    /// `ff_disjunctive_bit` preprocessing pass before NNF/DNF expansion.
+    /// `ff_disjunctive_bit` preprocessing pass and NNF normalization;
+    /// the DNF expansion is deferred until [`BooleanQuery::dnf`] is
+    /// called.
     pub fn from_formula(prime: BigUint, var_names: Vec<String>, f: Formula) -> Self {
         let preprocessed = rewrite_disjunctive_bit(f, &prime);
         let nnf = preprocessed.nnf();
-        let dnf = nnf.to_dnf();
         BooleanQuery {
             prime,
             var_names,
-            dnf,
+            formula: nnf,
+            dnf_cell: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Compute (or return the cached) DNF expansion of `self.formula`.
+    /// May allocate `O(3^k)` literal containers for k-CNF inputs.
+    pub fn dnf(&self) -> &Vec<Vec<Literal>> {
+        self.dnf_cell
+            .get_or_init(|| self.formula.clone().to_dnf())
     }
 
     /// Translate each DNF disjunct (a conjunction of literals) into a
@@ -139,7 +154,7 @@ impl BooleanQuery {
     /// field's zero for any disjunct that contains a disequality.
     pub fn to_disjunct_systems(&self) -> Vec<ConstraintSystem> {
         let mut diseq_seq: usize = 0;
-        self.dnf
+        self.dnf()
             .iter()
             .map(|disjunct| {
                 let mut equalities: Vec<Vec<PolyTerm>> = Vec::new();
@@ -330,16 +345,27 @@ pub fn rewrite_disjunctive_bit(f: Formula, prime: &BigUint) -> Formula {
     }
 }
 
-/// Dispatch a [`BooleanQuery`] to the GB solver: try each DNF
-/// disjunct in order. Returns `Sat` on the first SAT disjunct,
-/// `Unsat` only if every disjunct is UNSAT (with the union of input
-/// indices as the core — coarsened over disjuncts), or `Unknown` if
-/// any disjunct came back `Unknown` and none came back SAT.
+/// Solve a [`BooleanQuery`].
 ///
-/// `Unsat` returns an empty core because the per-disjunct cores index
-/// into different polynomial sets — coalescing them into a single core
-/// index list is not meaningful.
+/// Default path: CDCL(T) over the original formula via
+/// [`crate::cdclt::solve_formula`]. The DNF-enumeration path is
+/// retained as a baseline and is selected by setting the environment
+/// variable `PICUS_BOOLEAN=dnf` (used for cross-validation tests).
 pub fn solve_boolean_query(query: &BooleanQuery, cancel: &CancelToken) -> SolveOutcome {
+    let use_dnf = std::env::var_os("PICUS_BOOLEAN").map_or(false, |v| v == "dnf");
+    if use_dnf {
+        solve_boolean_query_dnf(query, cancel)
+    } else {
+        crate::cdclt::solve_formula(query.prime.clone(), &query.formula, cancel)
+    }
+}
+
+/// DNF-enumeration path: try each DNF disjunct in order through the
+/// GB solver. Returns `Sat` on the first SAT disjunct, `Unsat` only
+/// if every disjunct is UNSAT (with an empty core — per-disjunct
+/// cores index into different polynomial sets), or `Unknown` if any
+/// disjunct came back `Unknown` and none came back SAT.
+pub fn solve_boolean_query_dnf(query: &BooleanQuery, cancel: &CancelToken) -> SolveOutcome {
     let systems = query.to_disjunct_systems();
     if systems.is_empty() {
         return SolveOutcome::Unsat(Vec::new());
@@ -457,7 +483,7 @@ mod tests {
 (assert (or (= x (as ff0 F)) (= x (as ff1 F))))
 ";
         let q = crate::smt2::parse_boolean(src).expect("parse");
-        assert_eq!(q.dnf.len(), 1, "disjunctive-bit pass should collapse to one disjunct");
+        assert_eq!(q.dnf().len(), 1, "disjunctive-bit pass should collapse to one disjunct");
         let outcome = solve_boolean_query(&q, &CancelToken::none());
         assert!(matches!(outcome, SolveOutcome::Sat(_)));
     }
@@ -481,6 +507,80 @@ mod tests {
             }
             _ => panic!("expected single Eq literal after disjunctive-bit rewrite"),
         }
+    }
+
+    /// Match outcome shape (SAT / UNSAT / Unknown) without comparing
+    /// model contents — different solver paths may return different
+    /// witnesses for the same SAT formula.
+    fn outcome_kind(o: &SolveOutcome) -> &'static str {
+        match o {
+            SolveOutcome::Sat(_) => "sat",
+            SolveOutcome::Unsat(_) => "unsat",
+            SolveOutcome::Unknown => "unknown",
+        }
+    }
+
+    fn assert_cdclt_dnf_agree(src: &str) {
+        let q = crate::smt2::parse_boolean(src).expect("parse");
+        let cdclt_out = crate::cdclt::solve_formula(
+            q.prime.clone(),
+            &q.formula,
+            &CancelToken::none(),
+        );
+        let dnf_out = solve_boolean_query_dnf(&q, &CancelToken::none());
+        assert_eq!(
+            outcome_kind(&cdclt_out),
+            outcome_kind(&dnf_out),
+            "CDCL(T) and DNF disagree on\n{}\nCDCL(T): {:?}\nDNF: {:?}",
+            src,
+            cdclt_out,
+            dnf_out,
+        );
+    }
+
+    #[test]
+    fn cross_validate_disjunctive_bit() {
+        let src = "\
+(define-sort F () (_ FiniteField 101))
+(declare-fun x () F)
+(assert (or (= x (as ff0 F)) (= x (as ff1 F))))
+";
+        assert_cdclt_dnf_agree(src);
+    }
+
+    #[test]
+    fn cross_validate_unsat_chain() {
+        let src = "\
+(define-sort F () (_ FiniteField 101))
+(declare-fun x () F)
+(declare-fun y () F)
+(assert (= x (as ff0 F)))
+(assert (=> (= x (as ff0 F)) (= y (as ff0 F))))
+(assert (not (= y (as ff0 F))))
+";
+        assert_cdclt_dnf_agree(src);
+    }
+
+    #[test]
+    fn cross_validate_or_with_distinct_branches() {
+        let src = "\
+(define-sort F () (_ FiniteField 101))
+(declare-fun x () F)
+(assert (or (= x (as ff5 F)) (= x (as ff6 F))))
+";
+        assert_cdclt_dnf_agree(src);
+    }
+
+    #[test]
+    fn cross_validate_three_or_unsat() {
+        // (or (= x 0) (= x 1) (= x 2)) ∧ (= x 7) on GF(101): UNSAT
+        let src = "\
+(define-sort F () (_ FiniteField 101))
+(declare-fun x () F)
+(assert (or (= x (as ff0 F)) (= x (as ff1 F)) (= x (as ff2 F))))
+(assert (= x (as ff7 F)))
+";
+        assert_cdclt_dnf_agree(src);
     }
 
     #[test]
