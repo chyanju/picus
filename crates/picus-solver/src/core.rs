@@ -16,7 +16,7 @@ use crate::gb::{compute_gb_with_timeout_traced, GbResultTraced};
 use crate::model;
 use crate::parse;
 use crate::poly::{FfPolyRing, Poly};
-use crate::split_gb::{admit, split_find_zero_cancel, split_gb_cancel};
+use crate::split_gb::{admit, split_find_zero_cancel};
 use crate::timeout::CancelToken;
 
 /// An UNSAT core: indices into the input fact list that suffice for UNSAT.
@@ -172,26 +172,47 @@ pub fn solve_split_gb_cancel<'r>(
     cancel: &CancelToken,
 ) -> SolveOutcome {
     let nl_gens: Vec<Poly> = original_polys.iter().map(|p| poly_ring.ring.clone_el(p)).collect();
+    let mut nl_deps: Vec<std::collections::BTreeSet<usize>> = Vec::with_capacity(original_polys.len());
+    for i in 0..original_polys.len() {
+        let mut s = std::collections::BTreeSet::new();
+        s.insert(i);
+        nl_deps.push(s);
+    }
     let mut l_gens: Vec<Poly> = Vec::new();
+    let mut l_deps: Vec<std::collections::BTreeSet<usize>> = Vec::new();
     for p in bitsum_polys {
         l_gens.push(poly_ring.ring.clone_el(p));
+        l_deps.push(std::collections::BTreeSet::new());
     }
-    for p in original_polys {
+    for (i, p) in original_polys.iter().enumerate() {
         if admit(poly_ring, 0, p) {
             l_gens.push(poly_ring.ring.clone_el(p));
+            let mut s = std::collections::BTreeSet::new();
+            s.insert(i);
+            l_deps.push(s);
         }
     }
 
     let mut bit_prop = BitProp::new(poly_ring);
     populate_bitprop(poly_ring, original_polys, &mut bit_prop);
     populate_bitprop(poly_ring, bitsum_polys, &mut bit_prop);
-    let split_basis = match split_gb_cancel(poly_ring, vec![l_gens, nl_gens], &mut bit_prop, cancel) {
-        Ok(b) => b,
+    let traced = match crate::split_gb::split_gb_cancel_traced(
+        poly_ring,
+        vec![l_gens, nl_gens],
+        vec![l_deps, nl_deps],
+        &mut bit_prop,
+        cancel,
+    ) {
+        Ok(t) => t,
         Err(_) => return SolveOutcome::Unknown,
     };
+    let split_basis = traced.split_basis;
 
     if split_basis.iter().any(|b| b.is_whole_ring()) {
-        return SolveOutcome::Unsat((0..original_polys.len()).collect());
+        let core = traced
+            .unsat_core
+            .unwrap_or_else(|| (0..original_polys.len()).collect());
+        return SolveOutcome::Unsat(core);
     }
 
     match split_find_zero_cancel(poly_ring, split_basis, &mut bit_prop, cancel) {
@@ -284,6 +305,33 @@ mod tests {
                 // this may still include 2, but it must be <= 3 elements.
                 assert!(core.len() <= 3, "core should be bounded by total inputs");
                 log::info!("UNSAT core: {:?} (ideal: [0, 1])", core);
+            }
+            _ => panic!("expected UNSAT"),
+        }
+    }
+
+    #[test]
+    fn test_split_gb_traced_unsat_core_non_trivial() {
+        // System: x = 2, x = 3, y = 1  in GF(7).
+        // The UNSAT comes from the first two constraints only.
+        // The split-GB traced path must return a core that is a strict
+        // subset of all inputs (or at least doesn't include input 2 — y=1).
+        let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
+        let two = pr.field.from_int(2);
+        let three = pr.field.from_int(3);
+        let one = pr.field.from_int(1);
+        let p0 = pr.sub(pr.var(0), pr.constant(two));
+        let p1 = pr.sub(pr.var(0), pr.constant(three));
+        let p2 = pr.sub(pr.var(1), pr.constant(one));
+        match solve_split_gb(&pr, &[p0, p1, p2], &[]) {
+            SolveOutcome::Unsat(core) => {
+                assert!(core.contains(&0), "core must contain input 0 (x=2)");
+                assert!(core.contains(&1), "core must contain input 1 (x=3)");
+                assert!(
+                    core.len() < 3,
+                    "split-GB traced core should not be all 3 inputs; got {:?}",
+                    core
+                );
             }
             _ => panic!("expected UNSAT"),
         }

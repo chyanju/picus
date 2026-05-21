@@ -47,12 +47,20 @@ AB0 is an internal query-construction pass and is not exposed via
 
 ### Non-trivial UNSAT core tracing (`ffTraceGb`)
 
-Implemented for `SolverMode::SingleGb`. The in-tree GB engine
-(`src/ff/buchberger/`) exposes `BuchbergerObserver` callbacks
-(`on_initial_reducers`, `on_initial_basis`, `on_new_poly`,
-`on_inter_reduce`). The `tracer` module builds a polynomial dependency
-DAG from these callbacks and extracts the subset of input polynomial
-indices responsible for the trivial element (UNSAT proof).
+Implemented for both `SolverMode::SingleGb` and `SolverMode::SplitGb`.
+The in-tree GB engine (`src/ff/buchberger/`) exposes
+`BuchbergerObserver` callbacks (`on_initial_reducers`,
+`on_initial_basis`, `on_new_poly`, `on_inter_reduce`). The `tracer`
+module builds a polynomial dependency DAG from these callbacks and
+extracts the subset of input polynomial indices responsible for the
+trivial element (UNSAT proof).
+
+For Split-GB, `split_gb::split_gb_cancel_traced` wires
+`Ideal::extend_with_cancel_traced` into the fixpoint loop, maintaining
+a per-active-basis-element `BTreeSet<usize>` of original-input deps.
+Cross-partition propagations carry the source poly's deps forward; on
+whole-ring detection the trivial element's tracer-input indices are
+flattened back to original-input indices.
 
 Limitations:
 
@@ -62,4 +70,8 @@ Limitations:
 - Reduction-step-level tracking (which polynomials are used as divisors
   during S-poly reduction) is not implemented; only S-polynomial parent
   indices are tracked.
-- Split-GB mode returns trivial (all-input) cores.
+- Cross-iteration tracer events for an already-extended split partition
+  re-register existing basis polys as fresh tracer inputs, so the
+  per-iteration dep map is coarsened to the union of basis-deps and
+  new-poly-deps; precise per-poly tracking within Buchberger is
+  preserved per-call but the union is taken across iterations.

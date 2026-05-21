@@ -28,6 +28,8 @@ pub mod profile;
 pub mod homog;
 pub mod gb_homog;
 pub mod smt2;
+pub mod rewriter;
+pub mod boolean;
 
 use num_bigint::BigUint;
 use std::collections::HashMap;

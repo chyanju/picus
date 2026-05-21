@@ -95,7 +95,9 @@ impl ConstraintSystem {
 /// get rewritten as `c · aux` and the bitsum definition is appended to
 /// `system.bitsums`. Use [`encode_no_auto_bitsum`] to skip the rewrite.
 pub fn encode(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
-    let extracted = auto_extract_bitsums(system);
+    let mut rewritten = system.clone();
+    crate::rewriter::rewrite_system(&mut rewritten);
+    let extracted = auto_extract_bitsums(&rewritten);
     encode_impl(&extracted, true)
 }
 
@@ -112,13 +114,17 @@ pub fn encode(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
 ///
 /// Also runs [`auto_extract_bitsums`] before encoding.
 pub fn encode_constraint_side(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
-    let extracted = auto_extract_bitsums(system);
+    let mut rewritten = system.clone();
+    crate::rewriter::rewrite_system(&mut rewritten);
+    let extracted = auto_extract_bitsums(&rewritten);
     encode_impl(&extracted, false)
 }
 
 /// Same as [`encode`] but skips [`auto_extract_bitsums`].
 pub fn encode_no_auto_bitsum(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
-    encode_impl(system, true)
+    let mut rewritten = system.clone();
+    crate::rewriter::rewrite_system(&mut rewritten);
+    encode_impl(&rewritten, true)
 }
 
 /// Shared encoder body. When `emit_rabinowitsch` is false, the witness
@@ -159,9 +165,7 @@ fn encode_impl(
 
     let field = FfField::new(system.prime.clone());
 
-    // Check that the variable count is within the GB ring's working capacity.
-    // Historically the underlying ring required C(n_vars + max_deg, n_vars) < 2^64;
-    // we keep a conservative cap to avoid pathological monomial-table blow-up.
+    // Conservative cap to keep monomial-table allocations bounded.
     let n_vars = var_names.len();
     if n_vars > 5000 {
         return Err(format!(

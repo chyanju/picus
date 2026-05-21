@@ -9,11 +9,14 @@
 //! - Field constants: `ffN`, `#fNmP`
 //! - Decimal integer literals (reduced mod the active prime)
 //!
-//! Boolean operators (`and`, `or`, `=>`, `ite`) inside `(assert ...)`
-//! return [`ParseError::BooleanInAssert`].
+//! [`parse`] handles the conjunctive subset and returns a
+//! [`ConstraintSystem`] consumable by [`crate::encoder::encode`]. It
+//! rejects Boolean operators (`and`, `or`, `=>`, `ite`) inside
+//! `(assert ...)` with [`ParseError::BooleanInAssert`].
 //!
-//! [`parse`] returns a [`ConstraintSystem`] consumable by
-//! [`crate::encoder::encode`].
+//! [`parse_boolean`] handles the full Boolean structure (`and`, `or`,
+//! `not`, `=>`, and assertion-level `ite`) and returns a
+//! [`crate::boolean::BooleanQuery`] in DNF.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -473,14 +476,191 @@ pub fn parse(src: &str) -> Result<ConstraintSystem, ParseError> {
         assignments.push(("__zero".into(), BigUint::zero()));
     }
 
-    Ok(ConstraintSystem {
+    let mut sys = ConstraintSystem {
         prime,
         equalities,
         disequalities: diseqs,
         assignments,
         add_field_polys: false,
         bitsums: vec![],
-    })
+    };
+    crate::rewriter::rewrite_system(&mut sys);
+    Ok(sys)
+}
+
+// ─────────────────────── Boolean structure parser ────────────────────────
+
+use crate::boolean::{BooleanQuery, Formula, Literal};
+
+fn assert_to_formula(
+    s: &Sexpr,
+    prime: &BigUint,
+    vars: &HashMap<String, ()>,
+) -> Result<Formula, ParseError> {
+    let list = match s {
+        Sexpr::List(l) => l,
+        _ => return Err(ParseError::Malformed("non-list assert body".into())),
+    };
+    let head = match list.first() {
+        Some(Sexpr::Atom(a)) => a.as_str(),
+        _ => return Err(ParseError::Malformed("non-atom head in assert".into())),
+    };
+    match head {
+        "true" => Ok(Formula::True),
+        "false" => Ok(Formula::False),
+        "=" => {
+            if list.len() != 3 {
+                return Err(ParseError::Malformed("'=' arity".into()));
+            }
+            let a = build_poly(&list[1], prime, vars)?;
+            let b = build_poly(&list[2], prime, vars)?;
+            Ok(Formula::Lit(Literal::Eq(a, b)))
+        }
+        "not" => {
+            if list.len() != 2 {
+                return Err(ParseError::Malformed("'not' arity".into()));
+            }
+            let inner = assert_to_formula(&list[1], prime, vars)?;
+            Ok(Formula::Not(Box::new(inner)))
+        }
+        "and" => {
+            let mut children = Vec::with_capacity(list.len() - 1);
+            for c in &list[1..] {
+                children.push(assert_to_formula(c, prime, vars)?);
+            }
+            Ok(Formula::And(children))
+        }
+        "or" => {
+            let mut children = Vec::with_capacity(list.len() - 1);
+            for c in &list[1..] {
+                children.push(assert_to_formula(c, prime, vars)?);
+            }
+            Ok(Formula::Or(children))
+        }
+        "=>" => {
+            if list.len() < 3 {
+                return Err(ParseError::Malformed("'=>' arity".into()));
+            }
+            let mut tail = assert_to_formula(list.last().unwrap(), prime, vars)?;
+            for ant in list[1..list.len() - 1].iter().rev() {
+                let a = assert_to_formula(ant, prime, vars)?;
+                tail = Formula::Or(vec![Formula::Not(Box::new(a)), tail]);
+            }
+            Ok(tail)
+        }
+        "ite" => {
+            if list.len() != 4 {
+                return Err(ParseError::Malformed("'ite' arity".into()));
+            }
+            let c = assert_to_formula(&list[1], prime, vars)?;
+            let t = assert_to_formula(&list[2], prime, vars)?;
+            let e = assert_to_formula(&list[3], prime, vars)?;
+            Ok(Formula::Or(vec![
+                Formula::And(vec![c.clone(), t]),
+                Formula::And(vec![Formula::Not(Box::new(c)), e]),
+            ]))
+        }
+        other => Err(ParseError::Malformed(format!(
+            "unsupported assert head '{}'",
+            other
+        ))),
+    }
+}
+
+/// Parse an SMT-LIB v2 QF_FF source with full Boolean structure
+/// (`and`, `or`, `not`, `=>`, assertion-level `ite`). Returns a
+/// [`BooleanQuery`] containing the DNF expansion.
+pub fn parse_boolean(src: &str) -> Result<BooleanQuery, ParseError> {
+    let toks = tokenize(src);
+    let sexprs = parse_sexprs(&toks)?;
+
+    let mut prime: Option<BigUint> = None;
+    let mut vars: HashMap<String, ()> = HashMap::new();
+    let mut formulas: Vec<Formula> = Vec::new();
+
+    for s in &sexprs {
+        let list = match s {
+            Sexpr::List(l) => l,
+            Sexpr::Atom(_) => continue,
+        };
+        if list.is_empty() {
+            continue;
+        }
+        let head = match list.first() {
+            Some(Sexpr::Atom(a)) => a.as_str(),
+            _ => continue,
+        };
+        match head {
+            "set-logic" | "set-info" | "set-option" | "check-sat" | "exit" | "get-model"
+            | "push" | "pop" | "echo" => {}
+            "define-sort" => {
+                if list.len() < 4 {
+                    continue;
+                }
+                let body = &list[3];
+                if let Sexpr::List(inner) = body {
+                    if inner.len() == 3 {
+                        if let (Sexpr::Atom(u), Sexpr::Atom(ff), Sexpr::Atom(p)) =
+                            (&inner[0], &inner[1], &inner[2])
+                        {
+                            if u == "_" && ff == "FiniteField" {
+                                let n = p.parse::<BigUint>().map_err(|_| {
+                                    ParseError::Malformed(format!("bad prime: {}", p))
+                                })?;
+                                prime = Some(n);
+                            }
+                        }
+                    }
+                }
+            }
+            "declare-fun" | "declare-const" => {
+                if list.len() < 2 {
+                    continue;
+                }
+                if let Sexpr::Atom(name) = &list[1] {
+                    vars.insert(name.clone(), ());
+                }
+                let sort_sexpr = if head == "declare-fun" {
+                    list.get(3)
+                } else {
+                    list.get(2)
+                };
+                if prime.is_none() {
+                    if let Some(Sexpr::List(inner)) = sort_sexpr {
+                        if inner.len() == 3 {
+                            if let (Sexpr::Atom(u), Sexpr::Atom(ff), Sexpr::Atom(p)) =
+                                (&inner[0], &inner[1], &inner[2])
+                            {
+                                if u == "_" && ff == "FiniteField" {
+                                    if let Ok(n) = p.parse::<BigUint>() {
+                                        prime = Some(n);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            "assert" => {
+                if list.len() != 2 {
+                    return Err(ParseError::Malformed("'assert' arity".into()));
+                }
+                let p = prime.as_ref().ok_or(ParseError::MissingPrime)?;
+                formulas.push(assert_to_formula(&list[1], p, &vars)?);
+            }
+            _ => {}
+        }
+    }
+    let prime = prime.ok_or(ParseError::MissingPrime)?;
+    let var_names: Vec<String> = vars.keys().cloned().collect();
+    let combined = if formulas.is_empty() {
+        Formula::True
+    } else if formulas.len() == 1 {
+        formulas.pop().unwrap()
+    } else {
+        Formula::And(formulas)
+    };
+    Ok(BooleanQuery::from_formula(prime, var_names, combined))
 }
 
 #[cfg(test)]
