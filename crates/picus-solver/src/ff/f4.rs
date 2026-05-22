@@ -390,8 +390,9 @@ pub fn process_batch_with_workspace(
         }
         let lt_col = row[0].0;
         if reducer_cols.contains(&lt_col) {
-            // After correct echelon a row whose LT lands on a reducer
-            // pivot should already have been eliminated; defensive skip.
+            // Correct echelon eliminates any row whose LT matches a
+            // reducer pivot. This branch is unreachable from sound
+            // input; skip rather than emit a redundant generator.
             continue;
         }
         let poly = sparse_row_to_poly(row, &col_to_monomial, ring);
@@ -739,21 +740,6 @@ fn sparse_sub_scaled_consume_a(
     }
 }
 
-/// Non-consuming variant retained for tests / external callers; it
-/// clones `a` into a temporary then delegates. Hot-path callers use
-/// [`sparse_sub_scaled_consume_a`] directly.
-#[cfg(test)]
-fn sparse_sub_scaled(
-    a: &SparseRow,
-    b: &SparseRow,
-    scale: &FieldElem,
-    field: &PrimeField,
-) -> SparseRow {
-    let mut out = SparseRow::new();
-    sparse_sub_scaled_consume_a(a.clone(), b, scale, field, &mut out);
-    out
-}
-
 /// Wrapper around `Monomial` providing `Ord`/`Eq` keyed by a fixed
 /// monomial order. Required because `Monomial` itself implements `Eq`
 /// only on raw exponent equality (no order context).
@@ -993,15 +979,14 @@ mod tests {
             }
         }
 
-        // Compare LT sets — F4 may produce DIFFERENT (but ideal-equivalent)
-        // representatives, but their LEADING TERMS w.r.t. the basis must
-        // agree once we further reduce by the basis.
-        //
-        // Both sets, after reduction by the original basis, must:
-        // (a) generate the same ideal extension (we don't check this
-        //     directly; instead we check leading terms agree as a
-        //     necessary condition).
-        // (b) yield a non-empty set iff the other does.
+        // F4 may produce ideal-equivalent but different representatives
+        // than the per-pair path. Compare leading-term sets after
+        // reducing each F4 output by the original basis: ideal-
+        // equivalent residues share a leading term, so the LT sets
+        // are equal iff both paths produced the same new generators
+        // up to basis-normalisation. LT-set equality is necessary
+        // but not sufficient for ideal equality; the cross-check
+        // catches LT-level divergence as a regression guard.
         let f4_lts: std::collections::HashSet<Vec<u16>> = f4_polys
             .iter()
             .map(|o| {

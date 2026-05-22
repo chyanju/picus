@@ -100,7 +100,10 @@ impl BuchbergerObserver for NoObserver {}
 pub(super) struct BasisElement {
     pub(super) poly: Polynomial,
     pub(super) lt: Monomial,
-    #[allow(dead_code)] // reserved for future Gebauer-Möller chain criterion
+    /// Divisibility fingerprint of `lt`. Read by `run_f4` when
+    /// constructing `F4BasisRef`; the F4 symbolic-preprocessing
+    /// path uses it as a constant-time prefilter before the
+    /// O(n_vars) `Monomial::divides` check.
     pub(super) lt_divmask: DivMask,
     /// Lazily deactivated when superseded by a smaller-LT element.
     pub(super) active: bool,

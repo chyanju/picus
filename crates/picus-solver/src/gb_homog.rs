@@ -11,12 +11,12 @@
 //! 4. Dehomogenize each basis element back to `P` (`h := 1`).
 //! 5. Interreduce in `P` (drop LM-divisible duplicates, normal-form survivors).
 //!
-//! Why: in `Ph`, every input is degree-`d_i` exactly, so feanor's
-//! sugar-degree-driven S-pair selector sees `sugar = wdeg` (no
-//! mis-prediction), processes pairs in strict ascending degree, and
-//! avoids the "intermediate expression swell" that kills bit-decomp
-//! ideals (R3 §5).  Empirically (CoCoA's own primary-decomp adoption)
-//! 5–50× faster on the bit-cube + bitsum + chunked-add shape.
+//! Rationale: in `Ph`, every input is exactly degree `d_i`, so the
+//! in-tree sugar-degree S-pair selector ([`ff::buchberger`]) has
+//! `sugar = wdeg` without mispredictions; pairs are processed in
+//! strict ascending degree, avoiding the "intermediate expression
+//! swell" that kills bit-decomposition ideals (R3 §5). CoCoA reports
+//! 5–50× speedups on the bit-cube + bitsum + chunked-add shape.
 
 use crate::ff::monomial::MonomialOrder;
 use crate::homog::HomogRing;

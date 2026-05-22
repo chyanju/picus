@@ -4,6 +4,68 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.29] - 2026-05-22
+
+Documentation-only release: comment and module-doc audit across the
+picus-solver crate. No behavioural or performance changes.
+
+### Changed
+
+- `picus-solver::ff::buchberger::BasisElement::lt_divmask`: removed
+  the stale `#[allow(dead_code)] // reserved for future
+  Gebauer-Möller chain criterion` attribute and comment. The field
+  is read at `run_f4` (line ~1042) when constructing `F4BasisRef`;
+  F4 symbolic preprocessing uses it as a constant-time prefilter.
+  Replaced with a doc comment describing the current use.
+- `picus-solver::sat::solver` module doc rewritten. The prior text
+  ("Skeleton at this point: only declares the public types …; the
+  actual CDCL loop is added in the next phase") predated the full
+  CDCL implementation now present in the file. New doc describes
+  BCP / 1-UIP analysis / VSIDS / Luby restarts / backjumping and
+  the theory-lemma entry points.
+- `picus-solver::gb_homog` module doc: attribution updated from
+  "feanor's sugar-degree-driven S-pair selector" to
+  "`ff::buchberger`" (the in-tree Buchberger this code has used
+  since the feanor dependency was removed).
+- `picus-solver::homog::HomogRing::new` doc: replaced the
+  feanor-`Zn`-based soundness argument with one stated in terms of
+  the current `PrimeField` dispatch.
+- `picus-solver::roots` module doc tightened; "Both steps are now
+  handled inside …" rewritten as a direct delegation note.
+- Narrative phrasing scrubbed from comments in `bitprop.rs`,
+  `ideal.rs`, `incremental_context.rs`, `poly.rs`,
+  `ff/f4.rs`, `ff/field.rs`, `ff/univariate.rs`, and one
+  `tests/cvc5_unit_split_gb.rs` test header. Replacements describe
+  current behaviour without referencing prior implementations,
+  development history, or speculative future work.
+
+### Removed
+
+- `picus-solver::ff::f4::sparse_sub_scaled` (the non-consuming
+  `#[cfg(test)]` wrapper). No callers in tests or production; the
+  hot path uses `sparse_sub_scaled_consume_a` directly. Removing
+  the function also clears the only `dead_code` warning under
+  `cargo build --tests --release`.
+
+### Tests
+
+- 339 lib tests + 1 ignored pass under both `PICUS_USE_F4=0` and
+  `PICUS_USE_F4=1`. 77 integration tests + 6 cdclt_regression tests
+  pass under `PICUS_USE_F4=1`. `cargo build --tests --release` is
+  warning-free.
+
+### Performance
+
+- `cvc5_compare` 38-fixture corpus (cvc5 1.3.1 `--ff-solver split`,
+  5 iters each): geomean cvc5/picus = 11.25× (within run-to-run
+  variance of the 12.03× reported at v1.7.28). All 38 verdicts
+  match cvc5.
+- `picus check --solver native --theory ff` on the 68-circuit
+  circomlib-cff5ab6 corpus (60s wall-clock cap, 5000 ms per-query
+  timeout, `PICUS_USE_F4=1`): total 580.05 s vs the v1.7.27
+  baseline 579.29 s (+0.13%, noise). All 69 verdicts identical to
+  the prior baseline.
+
 ## [1.7.28] - 2026-05-22
 
 ### Added

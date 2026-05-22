@@ -647,7 +647,8 @@ impl PrimeField {
         }
     }
 
-    /// Clone an element. Provided for API parity.
+    /// Clone an element. Equivalent to `a.clone()`; named for
+    /// compatibility with the feanor `RingBase`-style API.
     #[inline]
     pub fn clone_el(&self, a: &FieldElem) -> FieldElem {
         a.clone()

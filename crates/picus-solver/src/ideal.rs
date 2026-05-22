@@ -100,12 +100,12 @@ impl<'r> Ideal<'r> {
 
     /// Build an ideal by computing its DegRevLex Groebner basis.
     pub fn new(poly_ring: &'r FfPolyRing, generators: Vec<Poly>) -> Self {
-        // Delegate to the cancel-aware variant with a never-firing token
-        // so the two entry points produce identical bases (including the
-        // explicit `interreduce_basis` pass after Buchberger's own
-        // internal finalisation). The `Err` arm is unreachable with a
-        // none cancel token, but we fall back to an empty ideal
-        // defensively.
+        // Delegates to the cancel-aware variant with a never-firing
+        // token so both entry points produce identical bases
+        // (including the `interreduce_basis` pass after Buchberger's
+        // internal finalisation). The `Err` arm is unreachable with
+        // a never-firing token; the empty-ideal fallback keeps `new`
+        // total.
         Self::new_with_cancel(poly_ring, generators, &CancelToken::none())
             .unwrap_or_else(|_| Ideal { poly_ring, basis: Vec::new() })
     }
@@ -497,13 +497,11 @@ pub fn compute_gb_with_order(
     basis
 }
 
-/// Incremental GB extension. Computes GB of `<known_gb> + <new_polys>`,
-/// reusing `known_gb` as a *trusted reduced GB seed*: no S-pairs among
-/// `known_gb` elements need to be processed (Buchberger criterion), so the
-/// seeding pass only generates and discharges S-pairs *between* `known_gb`
-/// and `new_polys`, plus among `new_polys` themselves. This is the genuine
-/// incremental Buchberger path that the legacy concat-and-rerun version
-/// emulated only superficially.
+/// Incremental GB extension. Computes GB of `<known_gb> + <new_polys>`
+/// using `known_gb` as a trusted reduced GB seed: S-pairs internal to
+/// `known_gb` are skipped (Buchberger criterion), and only S-pairs
+/// between `known_gb` × `new_polys` and among `new_polys` themselves
+/// are generated and discharged.
 pub fn compute_gb_incremental_with_order(
     poly_ring: &FfPolyRing,
     known_gb: Vec<Poly>,
