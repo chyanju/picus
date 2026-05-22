@@ -112,9 +112,21 @@ pub(super) fn sparse_echelon(
         if cancel.map(|c| c.is_cancelled()).unwrap_or(false) {
             return;
         }
+        // Inner-loop cancel cadence: a wide row can chain dozens of
+        // pivot applications, each O(row length); without an inner
+        // check Ctrl-C would only get serviced at the next outer
+        // iteration. Pre-phase-5, this was a noticeable stall point.
+        const CANCEL_PERIOD: u32 = 16;
+        let mut inner_steps: u32 = 0;
         loop {
             if rows[i].is_empty() {
                 break;
+            }
+            inner_steps = inner_steps.wrapping_add(1);
+            if inner_steps % CANCEL_PERIOD == 0
+                && cancel.map(|c| c.is_cancelled()).unwrap_or(false)
+            {
+                return;
             }
             let lead_col = rows[i][0].0;
             let pivot_row = match pivots.get(&lead_col) {

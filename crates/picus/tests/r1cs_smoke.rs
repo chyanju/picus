@@ -60,12 +60,26 @@ fn verdict_str(r: &CheckResult) -> &'static str {
 fn r1cs_smoke_native_ff() {
     let dir = circuit_dir();
     if !dir.exists() {
-        eprintln!(
-            "r1cs_smoke: {} not present — initialise the submodule and \
-             compile the circuits (see test docstring); skipping.",
+        // Pre-Phase-6 this was a silent `return` — the test would
+        // count as PASS even when the submodule was missing, so a
+        // forgotten submodule init looked like a green run. Now we
+        // fail loudly. `PICUS_SKIP_PLDI_SMOKE=1` keeps the escape
+        // hatch for contributors who deliberately don't initialise
+        // the benchmarks submodule.
+        if std::env::var_os("PICUS_SKIP_PLDI_SMOKE").is_some() {
+            eprintln!(
+                "r1cs_smoke: {} not present and PICUS_SKIP_PLDI_SMOKE=1 — skipping",
+                dir.display()
+            );
+            return;
+        }
+        panic!(
+            "r1cs_smoke: {} not present.\n\
+             Initialise the submodule and compile the circuits (see\n\
+             the test docstring), or set PICUS_SKIP_PLDI_SMOKE=1 to\n\
+             skip this test locally.",
             dir.display()
         );
-        return;
     }
 
     let cfg = Config {

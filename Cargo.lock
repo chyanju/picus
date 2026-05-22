@@ -680,6 +680,7 @@ name = "picus-smt"
 version = "1.7.30"
 dependencies = [
  "cvc5-ff",
+ "inventory",
  "log",
  "num-bigint",
  "num-traits",

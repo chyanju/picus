@@ -598,8 +598,21 @@ impl BuchbergerState {
             .collect();
 
         // For each i, build refs from workspace skipping i. Note we skip
-        // ALREADY-zero entries to avoid wasted work.
+        // ALREADY-zero entries to avoid wasted work. Each dense reduce
+        // can take O(seconds) on a fat basis, so honour cancellation —
+        // pre-phase-5 this loop was a known stall point on Ctrl-C.
+        let cancel_owned;
+        let cancel: &crate::timeout::CancelToken = match self.cfg.cancel_token.as_ref() {
+            Some(c) => c,
+            None => {
+                cancel_owned = crate::timeout::CancelToken::none();
+                &cancel_owned
+            }
+        };
         for i in 0..workspace.len() {
+            if cancel.is_cancelled() {
+                return;
+            }
             let others: Vec<&Polynomial> = workspace.iter()
                 .enumerate()
                 .filter(|(j, p)| *j != i && !p.is_zero())
@@ -608,7 +621,7 @@ impl BuchbergerState {
             if others.is_empty() {
                 continue;
             }
-            let red = workspace[i].reduce_by_refs(&others, &self.ring);
+            let red = workspace[i].reduce_by_refs_cancel(&others, &self.ring, cancel);
             workspace[i] = red;
         }
 

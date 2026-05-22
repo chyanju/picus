@@ -199,11 +199,11 @@ fn basis2_does_not_overreport_when_bitwidth_exceeds_prime() {
 }
 
 /// End-to-end: with the native FF backend the analyzer must find the
-/// two distinct witnesses and report `Unsafe`. Currently blocked by
-/// `NativeFfBackend`'s hard-coded `add_field_polys: false`, which
-/// makes GB on small primes incomplete. Un-ignore after Phase 4.
+/// two distinct witnesses and report `Unsafe`. Pre-Phase-4 this hit
+/// `NativeFfBackend`'s hard-coded `add_field_polys: false`, returning
+/// a spurious UNSAT on small primes; phase 4 gates the flag on
+/// `prime ≤ 1000` and the test passes.
 #[test]
-#[ignore = "blocked by native_ff add_field_polys hard-code; fix in Phase 4"]
 fn aboz_native_ff_finds_counterexample() {
     let r1cs = aboz_trap_r1cs();
     let result = run_dpvl(&r1cs, &native_ff_config()).expect("DPVL should not error");
@@ -215,13 +215,32 @@ fn aboz_native_ff_finds_counterexample() {
 }
 
 #[test]
-#[ignore = "blocked by native_ff add_field_polys hard-code; fix in Phase 4"]
+#[ignore = "native_ff returns UNSAT on this query even after add_field_polys is enabled; \
+            cvc5 finds the witness pair, so the test setup is sound. A second native_ff \
+            bug (separate from add_field_polys) needs investigating — likely in Rabinowitsch \
+            encoding or the way binary constraints interact with field polys on GF(11)."]
 fn basis2_native_ff_finds_counterexample() {
     let r1cs = basis2_trap_r1cs();
     let result = run_dpvl(&r1cs, &native_ff_config()).expect("DPVL should not error");
     assert!(
         matches!(result, DpvlResult::Unsafe(_)),
         "expected Unsafe from native_ff, got {:?}",
+        result
+    );
+}
+
+/// Same trap as `basis2_native_ff_finds_counterexample`, but via cvc5
+/// QF_FF — confirms the test setup itself is sound and the native_ff
+/// failure is a backend bug rather than an incorrect synthetic R1CS.
+#[test]
+fn basis2_cvc5_ff_finds_counterexample() {
+    let r1cs = basis2_trap_r1cs();
+    let mut cfg = native_ff_config();
+    cfg.solver = SolverKind::Cvc5;
+    let result = run_dpvl(&r1cs, &cfg).expect("DPVL should not error");
+    assert!(
+        matches!(result, DpvlResult::Unsafe(_)),
+        "expected Unsafe from cvc5 QF_FF, got {:?}",
         result
     );
 }

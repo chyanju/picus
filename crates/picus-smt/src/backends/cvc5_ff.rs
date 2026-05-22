@@ -7,7 +7,9 @@
 use num_bigint::BigUint;
 use std::collections::HashMap;
 
-use crate::backends::{poly_to_smtlib_ff, SolverBackend, SolverError, SolverResult};
+use crate::backends::{poly_to_smtlib_ff, SolverBackend, SolverBackendDescriptor, SolverError, SolverResult, UnknownReason};
+use crate::Theory;
+use picus_solver::timeout::CancelToken;
 use crate::poly_ir::PolyIR;
 
 pub struct Cvc5FfBackend;
@@ -29,7 +31,15 @@ impl SolverBackend for Cvc5FfBackend {
         &mut self,
         ir: &PolyIR,
         timeout_ms: u64,
+        cancel: &CancelToken,
     ) -> Result<SolverResult, SolverError> {
+        // Mid-solve cancellation requires killing the cvc5 subprocess
+        // mid-call; the cvc5-ff bindings don't expose that today. Honour
+        // the token at entry only, so a pre-cancelled query returns
+        // immediately. cvc5's own `tlimit` covers the wall-clock budget.
+        if cancel.is_cancelled() {
+            return Ok(SolverResult::Unknown(UnknownReason::Timeout));
+        }
         let tm = cvc5_ff::TermManager::new();
         let mut solver = cvc5_ff::Solver::new(&tm);
         solver.set_logic("QF_FF");
@@ -79,7 +89,10 @@ impl SolverBackend for Cvc5FfBackend {
             }
             Ok(SolverResult::Sat(model))
         } else {
-            Ok(SolverResult::Unknown)
+            // cvc5 returned `unknown` (or `timeout`). Without a way to
+            // distinguish at this level we record it as `IncompleteTheory`
+            // — the caller can still retry with more time.
+            Ok(SolverResult::Unknown(UnknownReason::IncompleteTheory))
         }
     }
 
@@ -149,5 +162,13 @@ fn parse_ff_value(s: &str) -> Option<BigUint> {
         rest[..m_pos].parse().ok()
     } else {
         s.parse().ok()
+    }
+}
+
+inventory::submit! {
+    SolverBackendDescriptor {
+        name: "cvc5",
+        theory: Theory::Ff,
+        factory: || Box::new(Cvc5FfBackend::new()),
     }
 }

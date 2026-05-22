@@ -34,12 +34,15 @@ enum Commands {
         #[arg(long)]
         r1cs: PathBuf,
 
-        /// Solver backend: cvc5, z3, native (pure Rust GB), or none (propagation only)
-        #[arg(long, default_value = "cvc5", value_parser = ["z3", "cvc5", "native", "none"])]
+        /// Solver backend. Names are looked up against the inventory of
+        /// registered `SolverBackendDescriptor`s, so a downstream crate
+        /// can ship a new backend without touching the CLI. Built-in
+        /// names: cvc5, z3, native, none.
+        #[arg(long, default_value = "cvc5")]
         solver: String,
 
-        /// SMT theory
-        #[arg(long, default_value = "ff", value_parser = ["ff", "nia"])]
+        /// SMT theory: ff (finite field) or nia (nonlinear integer arithmetic).
+        #[arg(long, default_value = "ff")]
         theory: String,
 
         /// Per-query solver timeout in milliseconds
@@ -77,6 +80,37 @@ enum Commands {
         /// causes intermediate expression swell.
         #[arg(long, default_value = "off", value_parser = ["off", "on", "auto"])]
         gb_by_homog: String,
+
+        /// Use F4 matrix reduction for batched same-sugar S-pairs
+        /// (native FF backend only). Research flag.
+        #[arg(long)]
+        use_f4: bool,
+
+        /// Pick DNF instead of CNF for the boolean layer (native FF
+        /// backend only). Research flag.
+        #[arg(long)]
+        dnf: bool,
+
+        /// DNF expansion cap; native FF returns Unknown beyond this
+        /// disjunct count.
+        #[arg(long, default_value = "100000")]
+        dnf_cap: u64,
+
+        /// CDCL(T) outer-iteration cap. `0` = immediate Unknown
+        /// (test helper); large values = effectively unbounded.
+        #[arg(long, default_value = "1000000")]
+        cdclt_iter_cap: u64,
+
+        /// Emit GB trace events for the in-flight basis to stderr
+        /// (native FF backend only).
+        #[arg(long)]
+        gb_trace: bool,
+
+        /// Disable the native FF backend's incremental Buchberger
+        /// cache between successive solve() calls. Useful for
+        /// benchmarking or for diagnosing cache bugs.
+        #[arg(long)]
+        no_cache: bool,
     },
 
     /// Print R1CS circuit information
@@ -112,6 +146,12 @@ fn main() {
             format,
             profile,
             gb_by_homog,
+            use_f4,
+            dnf,
+            dnf_cap,
+            cdclt_iter_cap,
+            gb_trace,
+            no_cache,
         } => {
             // Env-var fallbacks: PICUS_PROFILE and PICUS_GB_STATS still
             // turn on the respective dump (matches pre-Phase-2 behavior
@@ -124,9 +164,17 @@ fn main() {
                 "auto" => GbStrategy::Auto,
                 _ => GbStrategy::Direct,
             };
+            let extras = CheckExtras {
+                use_f4,
+                dnf_enabled: dnf,
+                dnf_cap,
+                cdclt_iter_cap,
+                gb_trace,
+                cache_enabled: !no_cache,
+            };
             cmd_check(
                 r1cs, &solver, &theory, timeout, &selector, &lemmas, dump_smt, format,
-                profile_on, gb_stats_on, gb_strategy,
+                profile_on, gb_stats_on, gb_strategy, extras,
             )
         }
         Commands::Info {
@@ -251,6 +299,17 @@ fn install_profile_signal_handler() {
 // check command
 // ============================================================
 
+/// Advanced / research flags grouped together so `cmd_check`'s
+/// signature doesn't grow past one screen.
+struct CheckExtras {
+    use_f4: bool,
+    dnf_enabled: bool,
+    dnf_cap: u64,
+    cdclt_iter_cap: u64,
+    gb_trace: bool,
+    cache_enabled: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_check(
     r1cs_path: PathBuf,
@@ -264,6 +323,7 @@ fn cmd_check(
     profile_on: bool,
     gb_stats_on: bool,
     gb_strategy: GbStrategy,
+    extras: CheckExtras,
 ) {
     let solver: SolverKind = solver_str.parse().unwrap_or_else(|e: String| exit_error(&e));
     let theory: Theory = theory_str.parse().unwrap_or_else(|e: String| exit_error(&e));
@@ -289,6 +349,12 @@ fn cmd_check(
         gb_strategy,
         profile: profile_on,
         gb_stats: gb_stats_on,
+        use_f4: extras.use_f4,
+        dnf_enabled: extras.dnf_enabled,
+        dnf_cap: extras.dnf_cap,
+        cdclt_iter_cap: extras.cdclt_iter_cap,
+        gb_trace: extras.gb_trace,
+        cache_enabled: extras.cache_enabled,
     };
 
     let result = check_r1cs(&r1cs, config).unwrap_or_else(|e| exit_error(&e.to_string()));

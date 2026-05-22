@@ -7,14 +7,26 @@ license.workspace = true
 repository.workspace = true
 edition.workspace = true
 
+[features]
+# Both external SMT backends are on by default; disable with
+# `--no-default-features` to drop the cvc5 / z3 build chains and rely
+# entirely on the in-tree native FF backend (no external SMT, no
+# cvc5 build (~15-20 min), no z3 vendored build). `--features native`
+# is the name picus exposes for "I only want the native FF solver".
+default = ["cvc5", "z3"]
+native = []
+cvc5 = ["dep:cvc5-ff"]
+z3 = ["dep:z3"]
+
 [dependencies]
 picus-r1cs = { path = "../picus-r1cs" }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
+inventory = { workspace = true }
 
 # Solver backends
-z3 = { version = "0.20", features = ["vendored"] }
-cvc5-ff = { path = "../cvc5-ff" }
+z3 = { version = "0.20", features = ["vendored"], optional = true }
+cvc5-ff = { path = "../cvc5-ff", optional = true }
 picus-solver = { path = "../picus-solver" }

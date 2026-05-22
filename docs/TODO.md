@@ -2,21 +2,25 @@
 
 ## Known Limitations
 
-### AB0 optimization disabled for cvc5 QF_FF
+### `basis2` over a small prime where `2^n > p`
 
-AB0 rewrites `A * B = 0` to `or(A = 0, B = 0)`. The rewrite is sound over
-a field but is disabled for the cvc5 backend: cvc5 1.2.0–1.3.3 returns
-inconsistent models for `or` disjunctions in QF_FF (one or more assertions
-violated by the returned model).
+`basis2` skips when the number of bits would let two distinct
+patterns sum to the same target modulo `p`. This is the correct
+behaviour for soundness, but it leaves no propagation handle on
+small-prime bit-decomposition shapes; SMT does the work. If a future
+research lemma needs to exploit this pattern soundly, it would need
+range refinement that rules out the wrap-around.
 
-`ab0_optimize_z3` in `picus-smt/src/optimizer.rs` retains the
-rewrite pattern. To re-enable for cvc5 once the upstream `or`/QF_FF
-bug is fixed, port the rewrite (dropping the `(mod _ p)` wrappers
-that the cvc5 path drops elsewhere) and route `optimize_p0` to it
-for `SolverKind::Cvc5`.
+### `native_ff` over small primes returns spurious UNSAT on some queries
 
-AB0 is an internal query-construction pass and is not exposed via
-`--lemmas` (which controls propagation lemmas).
+The Phase 1 / Phase 4 regression suite contains an `#[ignore]`d test
+(`basis2_native_ff_finds_counterexample`) where `native_ff` returns
+UNSAT on a GF(11) bit-decomposition uniqueness query that the cvc5
+QF_FF backend correctly resolves to SAT. The aboz analogue on GF(7)
+works, so the bug is structural — likely in the way Rabinowitsch
+disequality interacts with the small-prime field polynomials, or in
+the bitsum handling of the encoder. Needs investigation before
+landing more multi-prime work.
 
 ## Removed Components
 
@@ -26,6 +30,7 @@ AB0 is an internal query-construction pass and is not exposed via
 | Constraint graph | `constraint_graph.rs` | v1.3.0 | Fully implemented; no callers |
 | Compositional counter-example generation | `cex.rs` | v1.3.0 | Was an unimplemented stub |
 | Precondition system | `precondition.rs` | v1.2.0 / v1.3.0 | JSON-based known-set seeding |
+| AB0 optimizer (`ab0_optimize_z3`) | `picus-smt/src/optimizer.rs` | v1.7.30 | Replaced by direct PolyIR lowering |
 
 ## Planned
 

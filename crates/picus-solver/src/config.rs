@@ -37,6 +37,12 @@ pub struct RuntimeConfig {
     pub gb_trace_enabled: bool,
     /// Enable the phase profiler (`ScopedTimer`).
     pub profile_enabled: bool,
+    /// Reuse the incremental Buchberger cache between successive
+    /// `solve()` calls in the same `NativeFfBackend` instance. The cache
+    /// amortises split-GB across calls whose constraint set didn't
+    /// change. Disabling it forces every call to rebuild the basis from
+    /// scratch — useful for benchmarking or for diagnosing cache bugs.
+    pub cache_enabled: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -50,6 +56,7 @@ impl Default for RuntimeConfig {
             gb_stats_enabled: false,
             gb_trace_enabled: false,
             profile_enabled: false,
+            cache_enabled: true,
         }
     }
 }
@@ -83,6 +90,9 @@ impl RuntimeConfig {
         }
         if std::env::var_os("PICUS_PROFILE").is_some() {
             c.profile_enabled = true;
+        }
+        if std::env::var_os("PICUS_NO_INCREMENTAL_CACHE").is_some() {
+            c.cache_enabled = false;
         }
         c
     }

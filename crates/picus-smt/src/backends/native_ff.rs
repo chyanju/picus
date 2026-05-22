@@ -8,8 +8,9 @@
 
 use num_bigint::BigUint;
 
-use crate::backends::{SolverBackend, SolverError, SolverResult};
+use crate::backends::{SolverBackend, SolverBackendDescriptor, SolverError, SolverResult, UnknownReason};
 use crate::poly_ir::PolyIR;
+use crate::Theory;
 
 use picus_solver::core::{solve_encoded_with_cancel, SolveOutcome};
 use picus_solver::encoder::{encode, ConstraintSystem, PolyTerm};
@@ -21,10 +22,11 @@ pub struct NativeFfBackend {
     /// count consecutive-same-digest streaks for telemetry.
     last_cs_digest: Option<u64>,
     /// Amortises split-GB across `solve` calls whose constraint side
-    /// has not changed. Default-on; disable by setting
-    /// `PICUS_NO_INCREMENTAL_CACHE=1`.
+    /// has not changed. Whether to actually consult it is read from
+    /// `RuntimeConfig::cache_enabled` at each `solve` call rather than
+    /// cached on the struct, so a `ConfigGuard` override applies
+    /// immediately to in-flight backend instances.
     cache: IncrementalSolverContext,
-    cache_enabled: bool,
 }
 
 impl Default for NativeFfBackend {
@@ -35,11 +37,9 @@ impl Default for NativeFfBackend {
 
 impl NativeFfBackend {
     pub fn new() -> Self {
-        let cache_enabled = std::env::var_os("PICUS_NO_INCREMENTAL_CACHE").is_none();
         NativeFfBackend {
             last_cs_digest: None,
             cache: IncrementalSolverContext::new(),
-            cache_enabled,
         }
     }
 }
@@ -71,6 +71,14 @@ fn ir_to_constraint_system(ir: &PolyIR) -> ConstraintSystem {
         }
     }
 
+    // Field polynomials `x^p - x = 0` are essential for sound GB
+    // reasoning over small primes (otherwise the GB engine treats `x`
+    // as ranging over the algebraic closure, not GF(p)), but are
+    // prohibitively expensive for cryptographic primes. The encoder
+    // refuses to materialise them past `prime > 1000` anyway, so just
+    // mirror its gate here.
+    let small_prime_threshold = num_bigint::BigUint::from(1000u32);
+    let add_field_polys = prime <= small_prime_threshold;
     ConstraintSystem {
         prime,
         equalities,
@@ -82,7 +90,7 @@ fn ir_to_constraint_system(ir: &PolyIR) -> ConstraintSystem {
         // straight into `equalities`, so no explicit assignments are
         // required by the encoder.
         assignments: Vec::new(),
-        add_field_polys: false, // BN128 prime is too large for field polys
+        add_field_polys,
         bitsums: vec![],
     }
 }
@@ -97,7 +105,11 @@ impl SolverBackend for NativeFfBackend {
         &mut self,
         ir: &PolyIR,
         timeout_ms: u64,
+        cancel: &CancelToken,
     ) -> Result<SolverResult, SolverError> {
+        if cancel.is_cancelled() {
+            return Ok(SolverResult::Unknown(UnknownReason::Timeout));
+        }
         let cs = ir_to_constraint_system(ir);
         let stats_on = picus_solver::profile::gb_stats_enabled();
         let cs_digest = if stats_on {
@@ -124,10 +136,17 @@ impl SolverBackend for NativeFfBackend {
         // unexpected panics inside the solver (e.g., degree overflow).
         let prev_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {})); // silence repeated panics
-        let cache_enabled = self.cache_enabled;
+        let cache_enabled = picus_solver::config::with(|c| c.cache_enabled);
         let cache = &mut self.cache;
+        // Combine the external cancel (Ctrl-C / parent-process abort)
+        // with the per-call timeout into a single token the GB engine
+        // polls. Either source fires → GB exits cooperatively. Pre-
+        // Phase-5b this only honoured external cancel at entry; the
+        // inner solve only saw the timeout.
+        let external = cancel.clone();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let cancel = CancelToken::with_timeout(std::time::Duration::from_millis(timeout_ms));
+            let timeout_tok = CancelToken::with_timeout(std::time::Duration::from_millis(timeout_ms));
+            let cancel = CancelToken::either(&external, &timeout_tok);
             let solve_t0 = if stats_on {
                 Some(std::time::Instant::now())
             } else {
@@ -170,7 +189,7 @@ impl SolverBackend for NativeFfBackend {
             match outcome {
                 SolveOutcome::Sat(model) => Ok(SolverResult::Sat(model)),
                 SolveOutcome::Unsat(_) => Ok(SolverResult::Unsat),
-                SolveOutcome::Unknown => Ok(SolverResult::Unknown),
+                SolveOutcome::Unknown => Ok(SolverResult::Unknown(UnknownReason::Timeout)),
             }
         }));
         std::panic::set_hook(prev_hook);
@@ -181,7 +200,9 @@ impl SolverBackend for NativeFfBackend {
                 log::warn!(
                     "native-ff: solver panicked (likely degree overflow); returning Unknown"
                 );
-                Ok(SolverResult::Unknown)
+                Ok(SolverResult::Unknown(UnknownReason::BackendError(
+                    "native-ff solver panicked".into(),
+                )))
             }
         }
     }
@@ -212,5 +233,13 @@ impl SolverBackend for NativeFfBackend {
             out.push_str(" = 0\n");
         }
         out
+    }
+}
+
+inventory::submit! {
+    SolverBackendDescriptor {
+        name: "native",
+        theory: Theory::Ff,
+        factory: || Box::new(NativeFfBackend::new()),
     }
 }

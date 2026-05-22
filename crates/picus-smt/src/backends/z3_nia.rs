@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use z3::ast::Int;
 use z3::{Params, SatResult, Solver};
 
-use crate::backends::{poly_to_smtlib_nia, SolverBackend, SolverError, SolverResult};
+use crate::backends::{poly_to_smtlib_nia, SolverBackend, SolverBackendDescriptor, SolverError, SolverResult, UnknownReason};
+use crate::Theory;
+use picus_solver::timeout::CancelToken;
 use crate::poly_ir::PolyIR;
 
 pub struct Z3NiaBackend;
@@ -27,7 +29,12 @@ impl SolverBackend for Z3NiaBackend {
         &mut self,
         ir: &PolyIR,
         timeout_ms: u64,
+        cancel: &CancelToken,
     ) -> Result<SolverResult, SolverError> {
+        // Entry-only cancellation; see comment on `Cvc5FfBackend::solve`.
+        if cancel.is_cancelled() {
+            return Ok(SolverResult::Unknown(UnknownReason::Timeout));
+        }
         let solver = Solver::new();
         let mut params = Params::new();
         params.set_u32("timeout", timeout_ms.min(u32::MAX as u64) as u32);
@@ -72,7 +79,7 @@ impl SolverBackend for Z3NiaBackend {
                 }
                 Ok(SolverResult::Sat(result))
             }
-            SatResult::Unknown => Ok(SolverResult::Unknown),
+            SatResult::Unknown => Ok(SolverResult::Unknown(UnknownReason::IncompleteTheory)),
         }
     }
 
@@ -127,4 +134,12 @@ fn build_poly_z3(vars: &HashMap<String, Int>, ir: &PolyIR, poly: &picus_solver::
         sum = Int::add(&[&sum, &product]);
     }
     sum
+}
+
+inventory::submit! {
+    SolverBackendDescriptor {
+        name: "z3",
+        theory: Theory::Nia,
+        factory: || Box::new(Z3NiaBackend::new()),
+    }
 }

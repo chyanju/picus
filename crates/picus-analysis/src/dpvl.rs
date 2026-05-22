@@ -158,7 +158,8 @@ pub fn run_dpvl(r1cs: &R1csFile, config: &DpvlConfig) -> Result<DpvlResult, Stri
     // Lower R1CS → PolyIR once per DPVL run. The target signal stored in
     // the IR is a placeholder; propagation only consumes the constraint
     // set and metadata, not `target_signal`.
-    let mut ir = r1cs_to_poly_ir(r1cs, &ks, 0);
+    let mut ir = r1cs_to_poly_ir(r1cs, &ks, 0)
+        .map_err(|e| format!("R1CS lowering failed: {}", e))?;
 
     // Instantiate enabled lemma plugins.
     let mut lemma_instances: Vec<Box<dyn PropagationLemma>> = all_descriptors()
@@ -357,7 +358,11 @@ impl DpvlContext {
             }
         }
 
-        match backend.solve(ir, self.timeout_ms) {
+        // DPVL doesn't yet thread an external cancel token through;
+        // pass a never-firing token so per-call `timeout_ms` is the
+        // only budget. A future phase will plumb a real cancel.
+        let cancel = picus_solver::timeout::CancelToken::none();
+        match backend.solve(ir, self.timeout_ms, &cancel) {
             Ok(SolverResult::Unsat) => SolveResult::Verified,
             Ok(SolverResult::Sat(model)) => {
                 if self.target_set.contains(&sid) {
@@ -366,7 +371,10 @@ impl DpvlContext {
                     SolveResult::Skip
                 }
             }
-            Ok(SolverResult::Unknown) => SolveResult::Skip,
+            Ok(SolverResult::Unknown(reason)) => {
+                log::debug!("solver returned Unknown for wire {}: {:?}", sid, reason);
+                SolveResult::Skip
+            }
             Err(e) => {
                 log::warn!("Solver error: {}", e);
                 SolveResult::Skip

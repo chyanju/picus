@@ -29,6 +29,22 @@ use picus_r1cs::field_reduce;
 use picus_r1cs::grammar::{ConstraintBlock, R1csFile};
 use picus_solver::field::FfField;
 use picus_solver::poly::{FfPolyRing, Poly};
+use thiserror::Error;
+
+/// Reasons the R1CS-to-PolyIR lowering can fail. Lowering used to
+/// `log::warn!` + silently skip a malformed constraint block; the
+/// resulting `PolyIR` was missing equalities the caller had no way to
+/// detect, so any downstream verdict was untrustworthy. We now surface
+/// the failure explicitly.
+#[derive(Debug, Error)]
+pub enum LowerError {
+    #[error("wire id {wire} out of bounds (n_wires = {n_wires}) in {ctx}")]
+    WireOutOfBounds {
+        wire: usize,
+        n_wires: usize,
+        ctx: &'static str,
+    },
+}
 
 /// Picus uniqueness query in polynomial form.
 pub struct PolyIR {
@@ -122,8 +138,11 @@ impl PolyIR {
     /// `monomial_vars` is a flat `Vec<String>` listing each variable's
     /// canonical name once per degree (e.g. `x*x` ⇒ `["x", "x"]`,
     /// `x*y` ⇒ `["x", "y"]`). Constant terms yield an empty `Vec`.
-    /// Backends use this to translate the polynomial into their
-    /// solver-native form.
+    ///
+    /// SMT-LIB emitters (cvc5 / z3 backends) use this form because
+    /// they need variable names anyway. New backends that don't need
+    /// names should prefer [`Self::poly_terms_idx`], which avoids
+    /// O(degree) String clones per monomial.
     pub fn poly_terms<'a>(
         &'a self,
         poly: &'a Poly,
@@ -143,6 +162,35 @@ impl PolyIR {
             (coeff, vars)
         })
     }
+
+    /// Iterate every term of `poly` as `(coeff, vars_with_exp)` where
+    /// `vars_with_exp` lists the variables that actually appear in
+    /// this monomial together with their exponents. The list is
+    /// sparse: a constant term yields an empty `Vec`; `x * x` yields
+    /// `[(x_idx, 2)]`; `x * y` yields `[(x_idx, 1), (y_idx, 1)]`.
+    /// Indices map back to wires via [`Self::var_to_wire`].
+    ///
+    /// Preferred over [`Self::poly_terms`] for new backends and
+    /// pattern-matching code: no String allocation, no
+    /// `0..n_vars` scan.
+    pub fn poly_terms_idx<'a>(
+        &'a self,
+        poly: &'a Poly,
+    ) -> impl Iterator<Item = (BigUint, Vec<(usize, u16)>)> + 'a {
+        let ring = &self.ring.ring;
+        let n_vars = ring.n_vars();
+        ring.terms(poly).map(move |(coeff_el, m)| {
+            let coeff = self.ring.field.to_biguint(coeff_el);
+            let mut vars = Vec::new();
+            for v in 0..n_vars {
+                let e = ring.exponent_at(&m, v);
+                if e > 0 {
+                    vars.push((v, e as u16));
+                }
+            }
+            (coeff, vars)
+        })
+    }
 }
 
 /// Construct a [`PolyIR`] from a parsed R1CS file. Performs the
@@ -157,7 +205,7 @@ pub fn r1cs_to_poly_ir(
     r1cs: &R1csFile,
     known_signals: &HashSet<usize>,
     target_signal: usize,
-) -> PolyIR {
+) -> Result<PolyIR, LowerError> {
     let n_wires = r1cs.n_wires() as usize;
     let input_indices: HashSet<usize> = r1cs.inputs.iter().copied().collect();
     let prime = &r1cs.header.prime_number;
@@ -177,13 +225,13 @@ pub fn r1cs_to_poly_ir(
 
     // Original-copy constraints.
     for c in &r1cs.constraints.constraints {
-        if let Some(eq) = constraint_to_poly(&ring, &c.a, &c.b, &c.c, &input_indices, /*is_alt=*/ false, prime) {
+        if let Some(eq) = constraint_to_poly(&ring, &c.a, &c.b, &c.c, &input_indices, /*is_alt=*/ false, prime)? {
             equalities.push(eq);
         }
     }
     // Alt-copy constraints.
     for c in &r1cs.constraints.constraints {
-        if let Some(eq) = constraint_to_poly(&ring, &c.a, &c.b, &c.c, &input_indices, /*is_alt=*/ true, prime) {
+        if let Some(eq) = constraint_to_poly(&ring, &c.a, &c.b, &c.c, &input_indices, /*is_alt=*/ true, prime)? {
             equalities.push(eq);
         }
     }
@@ -202,7 +250,7 @@ pub fn r1cs_to_poly_ir(
     // explicit `x_i - y_i = 0` equality is required: `y_i` for input
     // wires is simply never referenced.
 
-    PolyIR {
+    Ok(PolyIR {
         ring,
         n_wires,
         input_indices,
@@ -210,12 +258,13 @@ pub fn r1cs_to_poly_ir(
         disjunctions: Vec::new(),
         known_signals: known_signals.clone(),
         target_signal,
-    }
+    })
 }
 
 /// Lower one R1CS constraint `A * B = C` into a polynomial equality
 /// `expand(A) * expand(B) - expand(C) = 0` in the given copy. Returns
-/// `None` when the resulting polynomial is the zero polynomial.
+/// `Ok(None)` when the resulting polynomial is the zero polynomial,
+/// `Err` when any block references an out-of-bounds wire id.
 fn constraint_to_poly(
     ring: &Arc<FfPolyRing>,
     a: &ConstraintBlock,
@@ -224,16 +273,16 @@ fn constraint_to_poly(
     input_indices: &HashSet<usize>,
     is_alt: bool,
     prime: &BigUint,
-) -> Option<Poly> {
-    let sum_a = block_to_linear(ring, a, input_indices, is_alt, prime);
-    let sum_b = block_to_linear(ring, b, input_indices, is_alt, prime);
-    let sum_c = block_to_linear(ring, c, input_indices, is_alt, prime);
+) -> Result<Option<Poly>, LowerError> {
+    let sum_a = block_to_linear(ring, a, input_indices, is_alt, prime, "A")?;
+    let sum_b = block_to_linear(ring, b, input_indices, is_alt, prime, "B")?;
+    let sum_c = block_to_linear(ring, c, input_indices, is_alt, prime, "C")?;
     let ab = ring.mul(sum_a, sum_b);
     let eq = ring.sub(ab, sum_c);
     if ring.is_zero(&eq) {
-        None
+        Ok(None)
     } else {
-        Some(eq)
+        Ok(Some(eq))
     }
 }
 
@@ -254,18 +303,18 @@ fn block_to_linear(
     input_indices: &HashSet<usize>,
     is_alt: bool,
     prime: &BigUint,
-) -> Poly {
+    ctx: &'static str,
+) -> Result<Poly, LowerError> {
     let n_wires = ring.n_vars / 2;
     let mut acc = ring.zero();
     for (&wire_id, factor) in block.wire_ids.iter().zip(block.factors.iter()) {
         let wid = wire_id as usize;
         if wid >= n_wires {
-            log::warn!(
-                "wire ID {} out of bounds (n_wires={}), skipping",
-                wid,
-                n_wires
-            );
-            continue;
+            return Err(LowerError::WireOutOfBounds {
+                wire: wid,
+                n_wires,
+                ctx,
+            });
         }
         let coeff = field_reduce(factor, prime);
         let coeff_el = ring.field.from_biguint(&coeff);
@@ -284,5 +333,5 @@ fn block_to_linear(
         };
         acc = ring.add(acc, term);
     }
-    acc
+    Ok(acc)
 }
