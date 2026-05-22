@@ -1,12 +1,16 @@
 //! Inlined finite-field algebra engine.
 //!
-//! This module provides a self-contained, purpose-built implementation of:
-//! * GF(p) arithmetic for BN128-size primes (~254 bits)
-//! * Multivariate polynomials over GF(p) (explicit exponent vectors)
-//! * Buchberger's algorithm
-//! * Univariate polynomial root finding (Cantor-Zassenhaus)
+//! Provides:
+//! * `GF(p)` arithmetic with a dual backend: u64 + u128 buffer for
+//!   primes `<= 2^64`, `rug::Integer` (GMP) for larger primes
+//!   (BN128-size ~254 bits and above). Selected by [`field::PrimeField::new`]
+//!   at ring construction.
+//! * Multivariate polynomials over `GF(p)` (explicit exponent vectors).
+//! * Buchberger's algorithm + F4-lite matrix path.
+//! * Univariate root finding via Cantor-Zassenhaus.
 //!
-//! Designed to replace the dependency on `feanor-math` for the picus-solver crate.
+//! Designed to replace the dependency on `feanor-math` for the
+//! picus-solver crate.
 
 pub mod field;
 pub mod monomial;
