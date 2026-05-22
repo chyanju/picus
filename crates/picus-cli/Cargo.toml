@@ -11,8 +11,17 @@ edition.workspace = true
 name = "picus"
 path = "src/main.rs"
 
+[features]
+# Forward picus's backend features. `default` mirrors picus
+# (cvc5 + z3 on). Pass `--no-default-features` to build a native-only
+# CLI that skips the cvc5 / z3 build chains.
+default = ["cvc5", "z3"]
+native = ["picus/native"]
+cvc5 = ["picus/cvc5"]
+z3 = ["picus/z3"]
+
 [dependencies]
-picus = { path = "../picus" }
+picus = { path = "../picus", default-features = false }
 clap = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }

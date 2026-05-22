@@ -7,9 +7,18 @@ license.workspace = true
 repository.workspace = true
 edition.workspace = true
 
+[features]
+# Forward picus-smt's backend features. `default` mirrors picus-smt
+# (cvc5 + z3 on). `--no-default-features` builds without either
+# external SMT, leaving native FF as the only available backend.
+default = ["cvc5", "z3"]
+native = ["picus-smt/native"]
+cvc5 = ["picus-smt/cvc5"]
+z3 = ["picus-smt/z3"]
+
 [dependencies]
 picus-r1cs = { path = "../picus-r1cs" }
-picus-smt = { path = "../picus-smt" }
+picus-smt = { path = "../picus-smt", default-features = false }
 picus-analysis = { path = "../picus-analysis" }
 picus-solver = { path = "../picus-solver" }
 num-bigint = { workspace = true }

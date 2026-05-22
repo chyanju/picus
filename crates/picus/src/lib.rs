@@ -312,8 +312,12 @@ pub fn dump_gb_stats() {
 // Internal helpers
 // ============================================================
 
-/// Split a raw solver model into two clean witness maps,
-/// filtering out internal constants (ps1, zero, etc.).
+/// Split a raw solver model into two clean witness maps, filtering
+/// out internal constants (ps1, zero, etc.). Routing is by the
+/// PolyIR convention: keys matching `x<digits>` go to witness 1, keys
+/// matching `y<digits>` to witness 2. Anything else (an aux var the
+/// solver invented, a Rabinowitsch witness, ...) is treated as
+/// witness 1 by default rather than misclassified by prefix.
 fn split_model(
     model: &HashMap<String, BigUint>,
 ) -> (HashMap<String, BigUint>, HashMap<String, BigUint>) {
@@ -326,7 +330,9 @@ fn split_model(
         if constants.contains(var.as_str()) {
             continue;
         }
-        if var.starts_with('y') {
+        let is_alt_copy = var.starts_with('y')
+            && picus_r1cs::parse_var_index(var).is_some();
+        if is_alt_copy {
             w2.insert(var.clone(), val.clone());
         } else {
             w1.insert(var.clone(), val.clone());

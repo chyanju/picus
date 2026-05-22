@@ -1,8 +1,16 @@
 //! Solver backend trait and common types.
+//!
+//! The cvc5 and z3 backends are behind Cargo features (default-on).
+//! Disabling them via `--no-default-features` drops the cvc5 / z3
+//! build chains entirely so a native-FF-only build skips the
+//! expensive vendored compiles.
 
+#[cfg(feature = "cvc5")]
 pub mod cvc5_ff;
+#[cfg(feature = "cvc5")]
 pub mod cvc5_nia;
 pub mod native_ff;
+#[cfg(feature = "z3")]
 pub mod z3_nia;
 
 use num_bigint::BigUint;
@@ -133,6 +141,7 @@ pub fn create_backend_by_name(
 /// expression. Each `(coeff, monomial_vars)` term becomes
 /// `(* coeff v1 v2 ...)`; the sum is wrapped in `(+ ...)` when it has
 /// more than one term, and an empty polynomial reduces to literal `0`.
+#[cfg(any(feature = "cvc5", feature = "z3"))]
 pub fn poly_to_smtlib_nia(ir: &PolyIR, poly: &picus_solver::poly::Poly) -> String {
     let parts: Vec<String> = ir
         .poly_terms(poly)
@@ -156,6 +165,7 @@ pub fn poly_to_smtlib_nia(ir: &PolyIR, poly: &picus_solver::poly::Poly) -> Strin
 /// Emit a single `Poly` as an SMT-LIB QF_FF expression, using
 /// `ff.add` / `ff.mul` and `#fNmP` literals over the field defined
 /// by the ring's prime.
+#[cfg(feature = "cvc5")]
 pub fn poly_to_smtlib_ff(ir: &PolyIR, poly: &picus_solver::poly::Poly) -> String {
     let p = ir.ring.field.prime();
     let parts: Vec<String> = ir
