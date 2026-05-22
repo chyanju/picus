@@ -18,10 +18,12 @@ pub fn bn128_prime() -> &'static BigUint {
     &BN128_PRIME
 }
 
-/// Reduce a BigUint modulo the BN128 prime.
+/// Reduce a BigUint modulo `prime`. The caller threads the active
+/// prime — typically `&r1cs.header.prime_number` — through the
+/// computation so non-BN128 circuits behave correctly.
 #[must_use]
-pub fn field_reduce(x: &BigUint) -> BigUint {
-    x % bn128_prime()
+pub fn field_reduce(x: &BigUint, prime: &BigUint) -> BigUint {
+    x % prime
 }
 
 /// Parse a variable name like "x3" or "y12" into its numeric index.

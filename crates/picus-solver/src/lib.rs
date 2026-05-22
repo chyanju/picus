@@ -39,22 +39,15 @@ pub(crate) mod rewriter;
 pub(crate) mod sat;
 pub(crate) mod tracer;
 
-use num_bigint::BigUint;
-use std::collections::HashMap;
 use thiserror::Error;
 
-/// Result of a satisfiability check.
-#[derive(Debug, Clone)]
-pub enum SolverResult {
-    /// The system is unsatisfiable (the target signal is uniquely determined).
-    Unsat,
-    /// The system is satisfiable — two distinct valid witnesses found.
-    Sat(HashMap<String, BigUint>),
-    /// The solver could not determine satisfiability (timeout, etc.).
-    Unknown,
-}
-
-/// Errors that can occur during solving.
+/// Internal error type for the Groebner-basis engine. Used as the
+/// `Err` arm of `Result<_, SolverError>` throughout `ff::buchberger`
+/// and `ideal::*` to surface cooperative cancellation
+/// (`SolverError::Timeout`) and internal failures. The backend-facing
+/// error type — the one returned by [`crate::core::solve_encoded_with_cancel`]
+/// callers and `picus_smt::backends::SolverBackend::solve` — is the
+/// distinct [`picus_smt::backends::SolverError`].
 #[derive(Debug, Error)]
 pub enum SolverError {
     #[error("solver error: {0}")]

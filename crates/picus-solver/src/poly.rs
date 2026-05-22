@@ -87,11 +87,8 @@ pub struct PolyRingFacade {
 
 impl PolyRingFacade {
     pub fn n_vars(&self) -> usize { self.ctx.n_vars }
-    pub fn indeterminate_count(&self) -> usize { self.ctx.n_vars }
 
     pub fn var_names(&self) -> &[String] { &self.ctx.var_names }
-
-    pub fn base_ring(&self) -> &crate::ff::field::PrimeField { &self.ctx.field }
 
     pub fn field(&self) -> &crate::ff::field::PrimeField { &self.ctx.field }
 
@@ -147,17 +144,6 @@ impl PolyRingFacade {
     /// access.
     pub fn appearing_indeterminates(&self, p: &Poly) -> AppearingVars {
         AppearingVars { vars: p.appearing_variables(&self.ctx) }
-    }
-
-    /// Coefficient of `m` inside `p`. Linear scan (used rarely; performance
-    /// non-critical).
-    pub fn coefficient_at(&self, p: &Poly, m: &Monomial) -> FfEl {
-        for t in p.terms(&self.ctx) {
-            if t.monomial() == *m {
-                return self.ctx.field.clone_el(t.coefficient());
-            }
-        }
-        self.ctx.field.zero()
     }
 
     pub fn add(&self, a: Poly, b: Poly) -> Poly { a.add(&b, &self.ctx) }

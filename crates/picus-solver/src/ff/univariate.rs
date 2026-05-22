@@ -217,7 +217,7 @@ impl UnivariatePoly {
             return one.rem(modulus, field);
         }
         let mut result = one;
-        let mut base = self.rem(modulus, field);
+        let base = self.rem(modulus, field);
         // Iterate bits from MSB to LSB.
         let bits = exp.bits();
         for i in (0..bits).rev() {
@@ -226,8 +226,6 @@ impl UnivariatePoly {
                 result = result.mul(&base, field).rem(modulus, field);
             }
         }
-        // (Unused but kept for clarity.)
-        let _ = &mut base;
         result
     }
 }

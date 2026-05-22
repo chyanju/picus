@@ -25,8 +25,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use num_bigint::BigUint;
+use picus_r1cs::field_reduce;
 use picus_r1cs::grammar::{ConstraintBlock, R1csFile};
-use picus_r1cs::{bn128_prime, field_reduce};
 use picus_solver::field::FfField;
 use picus_solver::poly::{FfPolyRing, Poly};
 
@@ -147,7 +147,7 @@ pub fn r1cs_to_poly_ir(
 ) -> PolyIR {
     let n_wires = r1cs.n_wires() as usize;
     let input_indices: HashSet<usize> = r1cs.inputs.iter().copied().collect();
-    let p = bn128_prime();
+    let prime = &r1cs.header.prime_number;
 
     // Build a ring with 2n variables: x_0..x_{n-1}, y_0..y_{n-1}.
     let mut var_names = Vec::with_capacity(2 * n_wires);
@@ -157,20 +157,20 @@ pub fn r1cs_to_poly_ir(
     for i in 0..n_wires {
         var_names.push(format!("y{}", i));
     }
-    let field = FfField::new(p.clone());
+    let field = FfField::new(prime.clone());
     let ring = Arc::new(FfPolyRing::new(field, var_names));
 
     let mut equalities: Vec<Poly> = Vec::new();
 
     // Original-copy constraints.
     for c in &r1cs.constraints.constraints {
-        if let Some(eq) = constraint_to_poly(&ring, &c.a, &c.b, &c.c, &input_indices, /*is_alt=*/ false) {
+        if let Some(eq) = constraint_to_poly(&ring, &c.a, &c.b, &c.c, &input_indices, /*is_alt=*/ false, prime) {
             equalities.push(eq);
         }
     }
     // Alt-copy constraints.
     for c in &r1cs.constraints.constraints {
-        if let Some(eq) = constraint_to_poly(&ring, &c.a, &c.b, &c.c, &input_indices, /*is_alt=*/ true) {
+        if let Some(eq) = constraint_to_poly(&ring, &c.a, &c.b, &c.c, &input_indices, /*is_alt=*/ true, prime) {
             equalities.push(eq);
         }
     }
@@ -210,10 +210,11 @@ fn constraint_to_poly(
     c: &ConstraintBlock,
     input_indices: &HashSet<usize>,
     is_alt: bool,
+    prime: &BigUint,
 ) -> Option<Poly> {
-    let sum_a = block_to_linear(ring, a, input_indices, is_alt);
-    let sum_b = block_to_linear(ring, b, input_indices, is_alt);
-    let sum_c = block_to_linear(ring, c, input_indices, is_alt);
+    let sum_a = block_to_linear(ring, a, input_indices, is_alt, prime);
+    let sum_b = block_to_linear(ring, b, input_indices, is_alt, prime);
+    let sum_c = block_to_linear(ring, c, input_indices, is_alt, prime);
     let ab = ring.mul(sum_a, sum_b);
     let eq = ring.sub(ab, sum_c);
     if ring.is_zero(&eq) {
@@ -228,16 +229,18 @@ fn constraint_to_poly(
 /// (they share the same value); non-inputs use `x_i` in the orig copy
 /// and `y_i` in the alt copy.
 ///
-/// Wire 0 (the R1CS one-wire) folds straight into the constant term so
-/// the lemma layer never sees `(coeff * x_0)` as a distinct linear
-/// monomial — that simplification is the polynomial analogue of the
-/// old SubP optimiser's `x_0 → 1` rewrite, and lemmas like `binary01`
-/// rely on it to match `x^2 - x = 0` after constraint expansion.
+/// Wire 0 (the R1CS one-wire) is `1` by definition, so every
+/// `coeff * x_0` term folds straight into the constant. Keeping the
+/// fold here means the lemma layer sees `b * (b - 1) = 0` as
+/// `b^2 - b = 0` rather than `b^2 + (p-1) * b * x_0 = 0`, and
+/// pattern matchers like `binary01` don't need to track `x_0`
+/// separately.
 fn block_to_linear(
     ring: &Arc<FfPolyRing>,
     block: &ConstraintBlock,
     input_indices: &HashSet<usize>,
     is_alt: bool,
+    prime: &BigUint,
 ) -> Poly {
     let n_wires = ring.n_vars / 2;
     let mut acc = ring.zero();
@@ -251,7 +254,7 @@ fn block_to_linear(
             );
             continue;
         }
-        let coeff = field_reduce(factor);
+        let coeff = field_reduce(factor, prime);
         let coeff_el = ring.field.from_biguint(&coeff);
         let term = if wid == 0 {
             // x_0 = y_0 = 1 (R1CS one-wire); fold the coefficient

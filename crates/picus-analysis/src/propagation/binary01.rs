@@ -9,7 +9,6 @@ use std::collections::{HashMap, HashSet};
 
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
-use picus_r1cs::bn128_prime;
 use picus_smt::poly_ir::PolyIR;
 
 use super::lemma::{LemmaDescriptor, PropagationCtx, PropagationLemma};
@@ -63,7 +62,7 @@ impl PropagationLemma for Binary01Lemma {
     }
 
     fn run(&mut self, ir: &PolyIR, ctx: &mut PropagationCtx) -> bool {
-        let p = bn128_prime();
+        let p = ir.ring.field.prime();
         let p_minus_1 = p - BigUint::one();
         let binary_set: HashSet<BigUint> =
             [BigUint::zero(), BigUint::one()].into_iter().collect();
@@ -145,7 +144,7 @@ fn match_x_squared_minus_x(
 
     // x^2 - x has c1 = 1, c2 = p-1 (so c1 + c2 = 0 mod p). More
     // generally any non-zero c1 with c2 = -c1 works.
-    let p = bn128_prime();
+    let p = ir.ring.field.prime();
     let neg_sq_coeff = if sq_coeff.is_zero() {
         BigUint::zero()
     } else {

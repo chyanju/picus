@@ -1,54 +1,106 @@
 # Propagation Lemmas
 
-The DPVL algorithm alternates between cheap propagation and expensive SMT solving. Propagation applies a set of lemmas that deduce signal uniqueness from the current known-set without invoking the solver. All lemmas are sound: they never incorrectly mark a signal as unique.
+The DPVL outer loop interleaves cheap propagation with calls into the
+configured solver backend. The propagation pass applies a registered
+set of lemmas that deduce wire uniqueness from polynomial structure
+without invoking the solver. Every lemma is sound: a wire is only
+marked known when polynomial structure forces it.
 
-The lemmas run in sequence until a fixed point (no new signals added).
+## Plugin interface
 
-## Linear Lemma
+Lemmas implement
+[`picus_analysis::propagation::lemma::PropagationLemma`]:
 
-**Idea:** If a variable appears linearly in a constraint (not multiplied by another variable), and all other variables in that constraint are known, then it is uniquely determined.
-
-**Implementation:**
-1. Build a *constraint dependency map* (cdmap): for each linearly-deducible variable `v`, record the set of other variables that must be known to deduce `v`.
-2. Invert into a *reverse cdmap* (rcdmap): dependency set -> deducible variables.
-3. Fixed-point iteration: if a dependency set is a subset of the known-set, add all its deducible variables to the known-set.
-
-## Binary01 Lemma
-
-**Idea:** Detect constraints of the form `x * (x - 1) = 0`, which force `x in {0, 1}`.
-
-**Implementation:** Pattern-matches several expanded forms:
-- `x^2 + (p-1)*x = 0` (quadratic form)
-- `or(x = 0, x - 1 = 0)` (after AB0 optimization, z3 only)
-- Handles both numeric (`Int`) and named (`Var("ps1")`) coefficients from the SubP optimizer.
-
-When matched, the signal's range is narrowed to `{0, 1}`. If any signal's range becomes a singleton, it is added to the known-set.
-
-## Basis2 Lemma
-
-**Idea:** If `z = 2^0*x_0 + 2^1*x_1 + ... + 2^n*x_n` where all `x_i in {0,1}`, and `z` is known, then each `x_i` is uniquely determined (binary decomposition is unique).
-
-**Implementation:** Matches constraints where the coefficient set (or their field negations) equals `{1, 2, 4, ..., 2^n}` and all non-target variables have binary range (from Binary01). Handles both `Int` and named constant coefficients, and correctly normalizes coefficients near the field boundary (where `2^k > p/2`).
-
-## ABOZ (All-But-One-Zero) Lemma
-
-**Idea:** Detects selector-style constraint triples:
-```
-y_0 * (x - 0) = 0
-y_1 * (x - 1) = 0
-y_0 + y_1 = c
+```rust
+pub trait PropagationLemma: Send {
+    fn name(&self) -> &'static str;
+    fn run(&mut self, ir: &PolyIR, ctx: &mut PropagationCtx) -> bool;
+}
 ```
 
-If `x` and `c` are known, then `y_0` and `y_1` are uniquely determined.
+Each lemma's source file ends with an `inventory::submit!` block:
 
-**Implementation:** Slides a 3-constraint window over the constraint list and pattern-matches the triple.
+```rust
+inventory::submit! {
+    LemmaDescriptor {
+        name: "linear",
+        factory: || Box::new(LinearLemma::default()),
+    }
+}
+```
 
-## BIM (Big Integer Multiply) Lemma
+The DPVL driver discovers descriptors at link time via
+`inventory::iter::<LemmaDescriptor>`. `LemmaSet::parse` validates the
+`--lemmas` flag against the live registry, so adding a new lemma is
+two edits: one new file under `crates/picus-analysis/src/propagation/`
+plus a one-line `pub mod` declaration in `propagation/mod.rs`.
 
-**Idea:** If a set of linear homogeneous constraints forms a system `Ax = 0` where `A` is a square matrix with non-zero determinant (mod p), then all variables in `x` are zero -- hence uniquely determined.
+`PropagationCtx` exposes four mutable channels:
 
-**Implementation:**
-1. Collect all constraints matching `0 = a_1*x_1 + a_2*x_2 + ...`.
-2. Build the coefficient matrix.
-3. Compute the determinant via Gaussian elimination over the finite field.
-4. If `det != 0`, add all involved signals to the known-set.
+| Field | Use |
+|---|---|
+| `known: &mut HashSet<usize>` | Wires the lemma has proved unique. |
+| `unknown: &mut HashSet<usize>` | Wires still to be checked. |
+| `ranges: &mut HashMap<usize, RangeValue>` | Per-wire value-set constraints (`Bottom` / `Values(set)`). |
+| `learned: &mut Vec<Poly>` | New polynomial equalities the lemma wants the framework to fold into the IR for the next iteration. |
+
+`run` returns `true` iff the call learned something. The outer DPVL
+loop runs every lemma once per iteration; at the end of each iteration
+`ctx.learned` is appended to `ir.equalities` and the iteration repeats
+until no lemma reports progress. Inter-lemma ordering within an
+iteration is therefore irrelevant — the next iteration starts with
+everyone's facts merged.
+
+## Built-in lemmas
+
+All five built-ins operate on `PolyIR` directly; they pattern-match
+on polynomial structure (via `total_degree`,
+`appearing_indeterminates`, `poly_terms`) rather than on an AST.
+
+### `linear`
+
+For each polynomial constraint `p = 0`, partition the variables that
+actually appear into linear-only (every term containing them has
+total degree 1) and nonlinear (appear in some term of total degree
+≥ 2). A purely-linear variable `v` is uniquely determined as soon as
+every other variable in `p` is known, so the lemma records the
+implication `deps(p, v) → wire(v)`. A fixed-point pass over the
+implications grows `ctx.known` while any deps-set becomes fully
+known.
+
+### `binary01`
+
+Detects polynomial equalities `c1 * x^2 + c2 * x = 0` with
+`c1 + c2 ≡ 0 mod p` — i.e. `c1 * (x² - x) = 0`. The constraint pins
+`x ∈ {0, 1}`; the lemma intersects the wire's range with `{0, 1}` in
+`ctx.ranges`. Any wire whose range collapses to a singleton joins
+`ctx.known`.
+
+### `basis2`
+
+Recognises binary-decomposition shapes
+`target + Σ_i (−2^i) · bit_i = 0` (equivalently
+`target = Σ 2^i · bit_i`) where each `bit_i` has already been pinned
+to `{0, 1}` by `binary01`. When the target is known, the bits are
+recoverable bit-by-bit and so move to `ctx.known`. Coefficients are
+checked against the power-of-2 set after both sign normalisations
+(coefficient or its field negation must be a power of 2).
+
+### `aboz`
+
+All-But-One-Zero: detects selector-shaped triples
+`x · y_0 = 0`, `z · y_1 = 0`, `x + y_0 + y_1 + c = 0` (the first two
+are bilinear monomials; the third is a linear sum touching the same
+wires plus at least one additional known partner). When `x` and the
+known partner are in `ctx.known`, both `y_0` and `y_1` are forced and
+join `ctx.known`.
+
+### `bim`
+
+Big Integer Multiply: collects every polynomial equality whose terms
+are all linear monomials with non-zero coefficient (constant terms
+must be exactly zero). If the participating wires form a square
+system over GF(p) and the coefficient matrix has non-zero
+determinant, every wire in the system is uniquely determined and
+joins `ctx.known`. Determinant computation uses Gaussian elimination
+over the finite field with extended-Euclidean modular inverse.

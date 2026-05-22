@@ -4,7 +4,157 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.7.29] - 2026-05-22
+## [1.7.30] - 2026-05-22
+
+Architectural refactor across four phases consolidated into a single
+release. The propagation and solving pipelines share a single
+polynomial IR; propagation lemmas are registered plugins discovered
+at link time via `inventory`; the runtime configuration lives in a
+thread-local `RuntimeConfig` instead of process-global atomics and
+ad-hoc `PICUS_*` env-var reads; and the R1CS lowering uses the prime
+carried by the binary header (no longer hard-coded to BN128).
+
+Behaviour is preserved: all workspace tests pass under both
+`PICUS_USE_F4=0` and `PICUS_USE_F4=1`, including the 17-fixture
+circomlib PLDI smoke (`crates/picus/tests/r1cs_smoke.rs`). A new
+GF(7) smoke test (`crates/picus-smt/tests/multi_prime.rs`) covers
+non-BN128 primes end-to-end through the native FF backend.
+
+### Added
+
+- `picus-smt::poly_ir::PolyIR` — solver-agnostic polynomial IR over
+  GF(p). One polynomial ring with `2 * n_wires` variables (`x_i` at
+  index `i`, `y_i` at `n_wires + i`), a flat `Vec<Poly>` of equality
+  constraints, an optional disjunction list, and metadata
+  (`input_indices`, `known_signals`, `target_signal`).
+  `r1cs_to_poly_ir` performs the equivalent of the prior
+  `expand_r1cs + normalize + optimize_p1` chain in a single pass over
+  the R1CS constraint blocks.
+- `picus-analysis::propagation::lemma::PropagationLemma` trait +
+  `PropagationCtx` (`known` / `unknown` / `ranges` / `learned`
+  buffers) + `LemmaDescriptor` + `inventory::collect!`. The DPVL
+  driver discovers descriptors via `inventory::iter`, instantiates
+  the lemmas selected by `LemmaSet`, and runs them to a fixed point
+  per outer iteration with `ctx.learned` folded back into
+  `ir.equalities` between iterations.
+- `picus-solver::config::RuntimeConfig` — thread-local solver config
+  carrying `gb_strategy`, `use_f4`, `dnf_cap`, `dnf_enabled`,
+  `cdclt_iter_cap`, `gb_stats_enabled`, `gb_trace_enabled`,
+  `profile_enabled`. `RuntimeConfig::from_env` seeds it from the
+  legacy `PICUS_*` environment variables; callers override via
+  `ConfigGuard::with_override` (RAII).
+- `picus-solver::ideal::GbAlgorithm` trait + `BuchbergerDirect` /
+  `BuchbergerByHomog` implementations. `compute_gb_dispatch` routes
+  through the trait; downstream code adding F5 / signature-based GB
+  implements the trait directly.
+- `picus-solver::poly::PolyRingFacade` pattern-matching helpers
+  (`total_degree`, `is_linear`, `sole_variable`,
+  `as_linear_univariate`, `leading_var`) — primitives used by the
+  PolyIR-based lemmas.
+- `picus::Config` gains `gb_strategy: GbStrategy`, `profile: bool`,
+  `gb_stats: bool` fields, plus `picus::dump_profile(tag)` and
+  `picus::dump_gb_stats()` facade helpers so CLI code no longer
+  reaches into `picus_solver::*`.
+- `picus-smt::backends::poly_to_smtlib_nia` /
+  `poly_to_smtlib_ff` — shared `Poly`-to-SMT-LIB-text emitters used
+  by every backend's `dump_smt`.
+- `picus-smt` `SUBP_CONSTANT_NAMES` constant (previously hard-coded
+  in `picus/lib.rs`).
+- `picus-cli` `--profile` / `--gb-by-homog` flags now flow through
+  `picus::Config` (env-var fallbacks `PICUS_PROFILE` and
+  `PICUS_GB_STATS` preserved for benchmark scripts).
+- `crates/cvc5-ff/tests/smoke.rs` — minimal QF_FF SAT/UNSAT smoke
+  test of the FFI wrapper.
+- `crates/cvc5-ff-sys/README.md` — bindgen regenerate workflow.
+
+### Changed
+
+- `picus-smt::backends::SolverBackend` trait now consumes
+  `&PolyIR` for both `solve` and `dump_smt`. Each backend
+  (`native_ff`, `cvc5_ff`, `cvc5_nia`, `z3_nia`) iterates
+  `ir.equalities` once, emits one `(= poly 0)` per constraint, and
+  closes with `(not (= x_target y_target))`. Declared variables come
+  from `ir.ring.ring.var_names()`.
+- `picus-r1cs::parser::parse_constraint_section` takes the prime
+  parameter from `header.prime_number` rather than the hard-coded
+  `bn128_prime()`. `field_reduce(x, &prime)` signature updated
+  similarly. `r1cs_to_poly_ir` uses the parsed prime to build the
+  `FfField`; the propagation lemmas (`binary01`, `basis2`, `bim`)
+  read `ir.ring.field.prime()` instead of `bn128_prime()`.
+- `picus-analysis::dpvl::LemmaSet` switched from per-lemma `bool`
+  fields to `HashSet<String>`. `LemmaSet::parse` validates names
+  against the live `inventory` registry; `--lemmas all` / `all-X` /
+  `none+X` / explicit-list syntax retained.
+- `picus-analysis::selector::SelectorState` no longer holds an
+  `RcdMap`; it accepts a `wire_connectivity_score(&PolyIR)` counter
+  built once by the DPVL driver from the polynomial IR.
+- `picus-cli` dropped its direct `picus-solver` dependency. The
+  `Cargo.toml` edge is gone; `main.rs` imports only from `picus`
+  (and `picus::dump_profile` / `dump_gb_stats`).
+- `picus-solver::profile::dump_to_stderr` and
+  `dump_split_stats_to_stderr` no longer gate on `is_enabled()` /
+  `gb_stats_enabled()`. They print whatever has been accumulated and
+  return early when both the timer table and the counter set are
+  empty.
+- `picus-solver::ideal::compute_gb_dispatch` reads
+  `config::with(|c| c.gb_strategy)` instead of a
+  `static GB_STRATEGY: AtomicU8`. `picus-solver::boolean::dnf_size_cap`,
+  `cdclt::orchestrator::iter_cap`, `ff::buchberger::use_f4_default`,
+  `profile::gb_stats_enabled` / `gb_trace_enabled` / `is_enabled`
+  all route through `RuntimeConfig`.
+- Several large files split into directory modules:
+  `picus-solver/src/smt2.rs` (2694) →
+  `smt2/{mod, tokenizer, session, tests}`;
+  `picus-solver/src/ff/f4.rs` (1918) →
+  `ff/f4/{mod, matrix, tests}`;
+  `picus-solver/src/ff/buchberger/mod.rs` (1479) → main file +
+  separate `tests.rs`.
+- `picus-solver` `lib.rs` tightened: `brancher`, `gb_homog`,
+  `homog_ring`, `model`, `rewriter`, `sat`, `tracer` moved to
+  `pub(crate)`.
+- `picus-solver::homog` renamed to `homog_ring` (clarifies that
+  the module owns the extension-ring data structure; the GB-by-
+  homogenisation algorithm lives in `gb_homog`).
+
+### Removed
+
+- `crates/picus-smt/src/query.rs` — `UniquenessQuery`,
+  `IRConstraint`, `IRTerm`, `IRProductTerm`, `build_query`,
+  `orig_var`, `alt_var` (159 LOC). The PolyIR replaces every caller.
+- `crates/picus-smt/src/optimizer.rs` (359 LOC) and
+  `crates/picus-smt/src/r1cs_parser.rs` (235 LOC). The propagation
+  pipeline no longer goes through `RCmds` AST; the lowering is the
+  single `r1cs_to_poly_ir` pass.
+- `crates/picus-r1cs/src/grammar.rs`: the `RCmds` / `RCmd` / `RExpr`
+  / `VarRef` AST and all its impls (~260 LOC). The binary-file
+  structs (`R1csFile`, `HeaderSection`, ...) survive.
+- `crates/picus-smt/src/backends/mod.rs::constraint_to_smtlib_nia` —
+  replaced by per-`Poly` helpers.
+- `crates/picus-solver/src/stats.rs` (113 LOC) — unused module.
+- `picus-solver::SolverResult` (top-level, dead). The backend-facing
+  `picus-smt::backends::SolverResult` is the live type.
+- `picus-solver::ideal::{gb_strategy, set_gb_strategy}` —
+  `GB_STRATEGY: AtomicU8` is gone; `RuntimeConfig::gb_strategy` is
+  the only source.
+- `picus-solver::lib::ENV_TEST_LOCK` — tests use
+  `ConfigGuard::with_override` instead of `unsafe { env::set_var }`.
+- `picus-solver::poly::PolyRingFacade::{indeterminate_count,
+  base_ring, coefficient_at}` — dead aliases / unused methods.
+- `picus-analysis::propagation::resolve_named_constant` — the
+  PolyIR lemmas read constants from the IR's coefficients directly.
+
+### Tests
+
+- 338 lib tests + 1 ignored pass under both `PICUS_USE_F4=0` and
+  `PICUS_USE_F4=1`. 77 cdclt_regression integration tests pass under
+  both modes. The 17-fixture circomlib PLDI smoke
+  (`r1cs_smoke_native_ff`) passes against the BN128 native backend.
+  The new `multi_prime::*` tests verify the lowering and the native
+  backend over GF(7).
+- `cargo build --release --tests` is warning-free across the
+  workspace.
+
+
 
 Documentation-only release: comment and module-doc audit across the
 picus-solver crate. No behavioural or performance changes.

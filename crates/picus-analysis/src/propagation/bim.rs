@@ -11,7 +11,6 @@ use std::collections::{HashMap, HashSet};
 use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_traits::{One, Zero};
-use picus_r1cs::bn128_prime;
 use picus_smt::poly_ir::PolyIR;
 
 use super::lemma::{LemmaDescriptor, PropagationCtx, PropagationLemma};
@@ -25,7 +24,7 @@ impl PropagationLemma for BimLemma {
     }
 
     fn run(&mut self, ir: &PolyIR, ctx: &mut PropagationCtx) -> bool {
-        let p = bn128_prime();
+        let p = ir.ring.field.prime();
         let equations = collect_linear_homogeneous(ir);
         if equations.is_empty() {
             return false;

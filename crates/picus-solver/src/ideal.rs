@@ -30,6 +30,67 @@ pub enum GbStrategy {
     Auto,
 }
 
+/// Pluggable Groebner-basis algorithm.
+///
+/// Each algorithm consumes the input generators and returns a basis of
+/// the same ideal. The trait is the extension point for swapping in
+/// new algorithms (F5, signature-based, CoCoA-style) without touching
+/// the rest of the solver: implement [`GbAlgorithm::compute`], call it
+/// directly, or — for built-in selection via `--gb-strategy` —
+/// register a new [`GbStrategy`] variant and route to it from
+/// [`compute_gb_dispatch`].
+pub trait GbAlgorithm {
+    /// Stable name for logs / telemetry.
+    fn name(&self) -> &'static str;
+
+    /// Compute a Groebner basis of `<gens>` over the polynomial ring
+    /// `pr`. Honours `cancel` for cooperative time limits.
+    fn compute(
+        &self,
+        pr: &FfPolyRing,
+        gens: Vec<Poly>,
+        cancel: &CancelToken,
+    ) -> Vec<Poly>;
+}
+
+/// Plain DegRevLex Buchberger on `P`. The default.
+pub struct BuchbergerDirect;
+
+impl GbAlgorithm for BuchbergerDirect {
+    fn name(&self) -> &'static str {
+        "buchberger-direct"
+    }
+
+    fn compute(
+        &self,
+        pr: &FfPolyRing,
+        gens: Vec<Poly>,
+        cancel: &CancelToken,
+    ) -> Vec<Poly> {
+        compute_gb_with_order(pr, gens, cancel, FfOrder::DegRevLex)
+    }
+}
+
+/// Homogenise → GB on `P[h]` → dehomogenise → interreduce. Wins on
+/// bit-decomposition shaped ideals where sugar mis-prediction stalls
+/// the direct path.
+pub struct BuchbergerByHomog;
+
+impl GbAlgorithm for BuchbergerByHomog {
+    fn name(&self) -> &'static str {
+        "buchberger-by-homog"
+    }
+
+    fn compute(
+        &self,
+        pr: &FfPolyRing,
+        gens: Vec<Poly>,
+        cancel: &CancelToken,
+    ) -> Vec<Poly> {
+        crate::gb_homog::compute_gb_by_homog(pr, gens, cancel)
+    }
+}
+
 fn is_total_deg_homogeneous(pr: &FfPolyRing, p: &Poly) -> bool {
     let ring = &pr.ring;
     let n = pr.n_vars;
@@ -59,8 +120,8 @@ fn compute_gb_dispatch(pr: &FfPolyRing, gens: Vec<Poly>, cancel: &CancelToken) -
         s => s,
     };
     match strat {
-        GbStrategy::Direct => compute_gb_with_order(pr, gens, cancel, FfOrder::DegRevLex),
-        GbStrategy::ByHomog => crate::gb_homog::compute_gb_by_homog(pr, gens, cancel),
+        GbStrategy::Direct => BuchbergerDirect.compute(pr, gens, cancel),
+        GbStrategy::ByHomog => BuchbergerByHomog.compute(pr, gens, cancel),
         GbStrategy::Auto => unreachable!("Auto resolved above"),
     }
 }
@@ -177,7 +238,7 @@ impl<'r> Ideal<'r> {
     /// The tracer's input numbering matches the order generators are added:
     /// first all elements of `self.basis` (already a reduced GB), then all
     /// surviving `new_polys`.
-    #[allow(dead_code)] // retained for a future tracer-aware solver path
+    #[allow(dead_code)]
     pub(crate) fn extend_with_cancel_traced(
         self,
         new_polys: Vec<Poly>,
@@ -404,8 +465,8 @@ pub fn leading_coefficient(
     _order: FfOrder,
 ) -> FfEl {
     match p.leading_coefficient() {
-        Some(c) => ring.base_ring().clone_el(c),
-        None => ring.base_ring().zero(),
+        Some(c) => ring.field().clone_el(c),
+        None => ring.field().zero(),
     }
 }
 
