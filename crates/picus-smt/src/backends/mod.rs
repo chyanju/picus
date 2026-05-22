@@ -74,6 +74,59 @@ pub trait SolverBackend {
     fn dump_smt(&self, ir: &PolyIR) -> String;
 }
 
+/// Factory closure constructing a fresh backend instance.
+pub type BackendFactory = fn() -> Box<dyn SolverBackend>;
+
+/// Inventory entry for an SMT backend.
+///
+/// Backends register themselves with `inventory::submit!` from their
+/// own module; [`create_backend_by_name`] walks the registry at
+/// dispatch time. Adding a new backend is therefore a single new file
+/// containing the impl plus a submit block — no edits to enums,
+/// match tables, or CLI parsers required. The built-in `SolverKind`
+/// enum is kept for ergonomic library use and matches lowercase
+/// `name` values.
+pub struct SolverBackendDescriptor {
+    /// Stable name used by `--solver`, `SolverKind::from_str`, and
+    /// `dump_smt` log lines.
+    pub name: &'static str,
+    /// Theory this backend serves. `create_backend` filters by
+    /// `(name, theory)`.
+    pub theory: crate::Theory,
+    /// Factory closure constructing a fresh backend instance.
+    pub factory: BackendFactory,
+}
+
+inventory::collect!(SolverBackendDescriptor);
+
+/// Iterate every backend descriptor registered via `inventory`.
+/// Stable order by `(name, theory)` for reproducible dispatch.
+pub fn all_backend_descriptors() -> Vec<&'static SolverBackendDescriptor> {
+    let mut v: Vec<&SolverBackendDescriptor> =
+        inventory::iter::<SolverBackendDescriptor>.into_iter().collect();
+    v.sort_by_key(|d| (d.name, theory_key(d.theory)));
+    v
+}
+
+fn theory_key(t: crate::Theory) -> u8 {
+    match t {
+        crate::Theory::Ff => 0,
+        crate::Theory::Nia => 1,
+    }
+}
+
+/// Look up a backend by `(name, theory)`. Returns the factory's
+/// freshly-built instance, or `None` if no descriptor matches.
+pub fn create_backend_by_name(
+    name: &str,
+    theory: crate::Theory,
+) -> Option<Box<dyn SolverBackend>> {
+    all_backend_descriptors()
+        .into_iter()
+        .find(|d| d.name == name && d.theory == theory)
+        .map(|d| (d.factory)())
+}
+
 // ─── Shared SMT-LIB-text helpers (NIA backends) ────────────────────
 
 /// Emit a single `Poly` as an SMT-LIB nonlinear-integer-arithmetic

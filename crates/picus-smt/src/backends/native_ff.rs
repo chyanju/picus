@@ -8,8 +8,9 @@
 
 use num_bigint::BigUint;
 
-use crate::backends::{SolverBackend, SolverError, SolverResult, UnknownReason};
+use crate::backends::{SolverBackend, SolverBackendDescriptor, SolverError, SolverResult, UnknownReason};
 use crate::poly_ir::PolyIR;
+use crate::Theory;
 
 use picus_solver::core::{solve_encoded_with_cancel, SolveOutcome};
 use picus_solver::encoder::{encode, ConstraintSystem, PolyTerm};
@@ -228,5 +229,13 @@ impl SolverBackend for NativeFfBackend {
             out.push_str(" = 0\n");
         }
         out
+    }
+}
+
+inventory::submit! {
+    SolverBackendDescriptor {
+        name: "native",
+        theory: Theory::Ff,
+        factory: || Box::new(NativeFfBackend::new()),
     }
 }

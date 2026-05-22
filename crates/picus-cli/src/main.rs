@@ -34,12 +34,15 @@ enum Commands {
         #[arg(long)]
         r1cs: PathBuf,
 
-        /// Solver backend: cvc5, z3, native (pure Rust GB), or none (propagation only)
-        #[arg(long, default_value = "cvc5", value_parser = ["z3", "cvc5", "native", "none"])]
+        /// Solver backend. Names are looked up against the inventory of
+        /// registered `SolverBackendDescriptor`s, so a downstream crate
+        /// can ship a new backend without touching the CLI. Built-in
+        /// names: cvc5, z3, native, none.
+        #[arg(long, default_value = "cvc5")]
         solver: String,
 
-        /// SMT theory
-        #[arg(long, default_value = "ff", value_parser = ["ff", "nia"])]
+        /// SMT theory: ff (finite field) or nia (nonlinear integer arithmetic).
+        #[arg(long, default_value = "ff")]
         theory: String,
 
         /// Per-query solver timeout in milliseconds

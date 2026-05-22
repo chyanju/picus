@@ -138,8 +138,11 @@ impl PolyIR {
     /// `monomial_vars` is a flat `Vec<String>` listing each variable's
     /// canonical name once per degree (e.g. `x*x` ⇒ `["x", "x"]`,
     /// `x*y` ⇒ `["x", "y"]`). Constant terms yield an empty `Vec`.
-    /// Backends use this to translate the polynomial into their
-    /// solver-native form.
+    ///
+    /// SMT-LIB emitters (cvc5 / z3 backends) use this form because
+    /// they need variable names anyway. New backends that don't need
+    /// names should prefer [`Self::poly_terms_idx`], which avoids
+    /// O(degree) String clones per monomial.
     pub fn poly_terms<'a>(
         &'a self,
         poly: &'a Poly,
@@ -154,6 +157,35 @@ impl PolyIR {
                 let e = ring.exponent_at(&m, v);
                 for _ in 0..e {
                     vars.push(names[v].clone());
+                }
+            }
+            (coeff, vars)
+        })
+    }
+
+    /// Iterate every term of `poly` as `(coeff, vars_with_exp)` where
+    /// `vars_with_exp` lists the variables that actually appear in
+    /// this monomial together with their exponents. The list is
+    /// sparse: a constant term yields an empty `Vec`; `x * x` yields
+    /// `[(x_idx, 2)]`; `x * y` yields `[(x_idx, 1), (y_idx, 1)]`.
+    /// Indices map back to wires via [`Self::var_to_wire`].
+    ///
+    /// Preferred over [`Self::poly_terms`] for new backends and
+    /// pattern-matching code: no String allocation, no
+    /// `0..n_vars` scan.
+    pub fn poly_terms_idx<'a>(
+        &'a self,
+        poly: &'a Poly,
+    ) -> impl Iterator<Item = (BigUint, Vec<(usize, u16)>)> + 'a {
+        let ring = &self.ring.ring;
+        let n_vars = ring.n_vars();
+        ring.terms(poly).map(move |(coeff_el, m)| {
+            let coeff = self.ring.field.to_biguint(coeff_el);
+            let mut vars = Vec::new();
+            for v in 0..n_vars {
+                let e = ring.exponent_at(&m, v);
+                if e > 0 {
+                    vars.push((v, e as u16));
                 }
             }
             (coeff, vars)

@@ -7,7 +7,8 @@
 use num_bigint::BigUint;
 use std::collections::HashMap;
 
-use crate::backends::{poly_to_smtlib_ff, SolverBackend, SolverError, SolverResult, UnknownReason};
+use crate::backends::{poly_to_smtlib_ff, SolverBackend, SolverBackendDescriptor, SolverError, SolverResult, UnknownReason};
+use crate::Theory;
 use picus_solver::timeout::CancelToken;
 use crate::poly_ir::PolyIR;
 
@@ -161,5 +162,13 @@ fn parse_ff_value(s: &str) -> Option<BigUint> {
         rest[..m_pos].parse().ok()
     } else {
         s.parse().ok()
+    }
+}
+
+inventory::submit! {
+    SolverBackendDescriptor {
+        name: "cvc5",
+        theory: Theory::Ff,
+        factory: || Box::new(Cvc5FfBackend::new()),
     }
 }

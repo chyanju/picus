@@ -3,7 +3,8 @@
 use num_bigint::BigUint;
 use std::collections::HashMap;
 
-use crate::backends::{poly_to_smtlib_nia, SolverBackend, SolverError, SolverResult, UnknownReason};
+use crate::backends::{poly_to_smtlib_nia, SolverBackend, SolverBackendDescriptor, SolverError, SolverResult, UnknownReason};
+use crate::Theory;
 use picus_solver::timeout::CancelToken;
 use crate::poly_ir::PolyIR;
 
@@ -146,5 +147,13 @@ fn build_poly_nia<'a>(
         0 => tm.mk_integer(0),
         1 => sum_parts.into_iter().next().unwrap(),
         _ => tm.mk_term(cvc5_ff::Kind::Add, &sum_parts),
+    }
+}
+
+inventory::submit! {
+    SolverBackendDescriptor {
+        name: "cvc5",
+        theory: Theory::Nia,
+        factory: || Box::new(Cvc5NiaBackend::new()),
     }
 }

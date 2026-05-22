@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use z3::ast::Int;
 use z3::{Params, SatResult, Solver};
 
-use crate::backends::{poly_to_smtlib_nia, SolverBackend, SolverError, SolverResult, UnknownReason};
+use crate::backends::{poly_to_smtlib_nia, SolverBackend, SolverBackendDescriptor, SolverError, SolverResult, UnknownReason};
+use crate::Theory;
 use picus_solver::timeout::CancelToken;
 use crate::poly_ir::PolyIR;
 
@@ -133,4 +134,12 @@ fn build_poly_z3(vars: &HashMap<String, Int>, ir: &PolyIR, poly: &picus_solver::
         sum = Int::add(&[&sum, &product]);
     }
     sum
+}
+
+inventory::submit! {
+    SolverBackendDescriptor {
+        name: "z3",
+        theory: Theory::Nia,
+        factory: || Box::new(Z3NiaBackend::new()),
+    }
 }
