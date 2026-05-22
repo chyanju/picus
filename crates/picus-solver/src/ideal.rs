@@ -3,8 +3,10 @@
 //! Thin shim over the in-tree [`crate::ff`] Buchberger / Ideal
 //! implementation. Public API: [`Ideal`], [`compute_gb_with_order`],
 //! [`compute_gb_with_order_traced`], [`interreduce_basis`],
-//! [`leading_monomial`], [`leading_coefficient`], [`GbStrategy`].
+//! [`leading_monomial`], [`leading_coefficient`], [`GbStrategy`],
+//! [`GbAlgorithm`], [`last_dispatched_algorithm`].
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 
 use crate::ff::buchberger::{
@@ -16,6 +18,8 @@ use crate::ff::monomial::MonomialOrder as FfOrder;
 use crate::field::FfEl;
 use crate::poly::{FfPolyRing, Mono, Poly, PolyRingType};
 use crate::timeout::{CancelToken, Cancelled};
+use crate::tracer::GbTracer;
+use crate::SolverError;
 
 /// Strategy for computing a Groebner basis. Set via
 /// [`crate::config::RuntimeConfig::gb_strategy`].
@@ -32,28 +36,58 @@ pub enum GbStrategy {
 
 /// Pluggable Groebner-basis algorithm.
 ///
-/// Each algorithm consumes the input generators and returns a basis of
-/// the same ideal. The trait is the extension point for swapping in
-/// new algorithms (F5, signature-based, CoCoA-style) without touching
-/// the rest of the solver: implement [`GbAlgorithm::compute`], call it
-/// directly, or — for built-in selection via `--gb-strategy` —
-/// register a new [`GbStrategy`] variant and route to it from
-/// [`compute_gb_dispatch`].
+/// Every public GB entry point (`compute_gb_with_order` and its
+/// traced sibling) routes through [`compute_gb_dispatch`], which
+/// selects an algorithm from [`crate::config::RuntimeConfig::gb_strategy`]
+/// and forwards. Adding a new algorithm (F5, signature-based, CoCoA-
+/// style, …) is therefore a matter of implementing this trait and
+/// teaching dispatch about it; no other entry point needs touching.
+///
+/// Two execution modes are supported. `compute` is the basic call;
+/// `compute_traced` feeds a [`GbTracer`] observer for UNSAT-core
+/// extraction. Algorithms that don't support tracing leave
+/// `supports_tracing` at its default `false`; dispatch then falls back
+/// to [`BuchbergerDirect`] for traced requests so UNSAT-core extraction
+/// keeps working regardless of the configured strategy.
 pub trait GbAlgorithm {
     /// Stable name for logs / telemetry.
     fn name(&self) -> &'static str;
 
-    /// Compute a Groebner basis of `<gens>` over the polynomial ring
-    /// `pr`. Honours `cancel` for cooperative time limits.
+    /// Compute a Groebner basis of `<gens>` over `pr` in `order`.
+    /// Honours `cancel` for cooperative time limits.
     fn compute(
         &self,
         pr: &FfPolyRing,
         gens: Vec<Poly>,
         cancel: &CancelToken,
-    ) -> Vec<Poly>;
+        order: FfOrder,
+    ) -> Result<Vec<Poly>, SolverError>;
+
+    /// Whether this algorithm implements [`Self::compute_traced`].
+    fn supports_tracing(&self) -> bool {
+        false
+    }
+
+    /// Traced variant. Only called when `supports_tracing()` is
+    /// `true`. The default implementation panics — implementors that
+    /// flip `supports_tracing` to `true` must override this method.
+    fn compute_traced(
+        &self,
+        _pr: &FfPolyRing,
+        _gens: Vec<Poly>,
+        _cancel: &CancelToken,
+        _order: FfOrder,
+        _tracer: &mut GbTracer,
+    ) -> Result<Vec<Poly>, SolverError> {
+        unreachable!(
+            "GbAlgorithm {:?}: supports_tracing() returned true but \
+             compute_traced is the default panicking impl",
+            self.name()
+        )
+    }
 }
 
-/// Plain DegRevLex Buchberger on `P`. The default.
+/// Plain Buchberger on `P` in the requested order. The default.
 pub struct BuchbergerDirect;
 
 impl GbAlgorithm for BuchbergerDirect {
@@ -66,14 +100,33 @@ impl GbAlgorithm for BuchbergerDirect {
         pr: &FfPolyRing,
         gens: Vec<Poly>,
         cancel: &CancelToken,
-    ) -> Vec<Poly> {
-        compute_gb_with_order(pr, gens, cancel, FfOrder::DegRevLex)
+        order: FfOrder,
+    ) -> Result<Vec<Poly>, SolverError> {
+        compute_gb_buchberger(pr, gens, cancel, order)
+    }
+
+    fn supports_tracing(&self) -> bool {
+        true
+    }
+
+    fn compute_traced(
+        &self,
+        pr: &FfPolyRing,
+        gens: Vec<Poly>,
+        cancel: &CancelToken,
+        order: FfOrder,
+        tracer: &mut GbTracer,
+    ) -> Result<Vec<Poly>, SolverError> {
+        compute_gb_buchberger_traced(pr, gens, cancel, order, tracer)
     }
 }
 
-/// Homogenise → GB on `P[h]` → dehomogenise → interreduce. Wins on
-/// bit-decomposition shaped ideals where sugar mis-prediction stalls
-/// the direct path.
+/// Homogenise → Buchberger on `P[h]` (DegRevLex) → dehomogenise →
+/// interreduce. Wins on bit-decomposition shaped ideals where sugar
+/// mis-prediction stalls the direct path.
+///
+/// Only meaningful for `DegRevLex` requests. Lex / other orders fall
+/// back to plain `BuchbergerDirect` for that call.
 pub struct BuchbergerByHomog;
 
 impl GbAlgorithm for BuchbergerByHomog {
@@ -86,8 +139,16 @@ impl GbAlgorithm for BuchbergerByHomog {
         pr: &FfPolyRing,
         gens: Vec<Poly>,
         cancel: &CancelToken,
-    ) -> Vec<Poly> {
-        crate::gb_homog::compute_gb_by_homog(pr, gens, cancel)
+        order: FfOrder,
+    ) -> Result<Vec<Poly>, SolverError> {
+        if order == FfOrder::DegRevLex {
+            Ok(crate::gb_homog::compute_gb_by_homog(pr, gens, cancel))
+        } else {
+            // ByHomog only makes sense for DegRevLex; for Lex etc.
+            // route through plain Buchberger so the contract of
+            // returning a basis in `order` holds.
+            BuchbergerDirect.compute(pr, gens, cancel, order)
+        }
     }
 }
 
@@ -111,18 +172,69 @@ fn resolve_auto(pr: &FfPolyRing, gens: &[Poly]) -> GbStrategy {
     if all_homog { GbStrategy::Direct } else { GbStrategy::ByHomog }
 }
 
-fn compute_gb_dispatch(pr: &FfPolyRing, gens: Vec<Poly>, cancel: &CancelToken) -> Vec<Poly> {
+thread_local! {
+    /// Name of the most recent GB algorithm chosen by [`compute_gb_dispatch`]
+    /// on this thread. Used by tests to confirm dispatch is actually
+    /// honouring the configured strategy.
+    static LAST_DISPATCHED: RefCell<Option<&'static str>> = const { RefCell::new(None) };
+}
+
+/// Name of the algorithm that last serviced a GB request on the
+/// current thread, or `None` if no GB call has run yet. Updated by
+/// [`compute_gb_dispatch`] on every non-empty call.
+pub fn last_dispatched_algorithm() -> Option<&'static str> {
+    LAST_DISPATCHED.with(|c| *c.borrow())
+}
+
+fn record_dispatched(name: &'static str) {
+    LAST_DISPATCHED.with(|c| *c.borrow_mut() = Some(name));
+}
+
+/// Pick the configured [`GbAlgorithm`] and run it. When `tracer` is
+/// `Some` but the chosen algorithm cannot honour tracing, falls back
+/// to [`BuchbergerDirect`] so UNSAT-core extraction continues to work.
+fn compute_gb_dispatch(
+    pr: &FfPolyRing,
+    gens: Vec<Poly>,
+    cancel: &CancelToken,
+    order: FfOrder,
+    tracer: Option<&mut GbTracer>,
+) -> Result<Vec<Poly>, SolverError> {
     if gens.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let strat = match crate::config::with(|c| c.gb_strategy) {
         GbStrategy::Auto => resolve_auto(pr, &gens),
         s => s,
     };
-    match strat {
-        GbStrategy::Direct => BuchbergerDirect.compute(pr, gens, cancel),
-        GbStrategy::ByHomog => BuchbergerByHomog.compute(pr, gens, cancel),
+    let direct = BuchbergerDirect;
+    let by_homog = BuchbergerByHomog;
+    let chosen: &dyn GbAlgorithm = match strat {
+        GbStrategy::Direct => &direct,
+        GbStrategy::ByHomog => &by_homog,
         GbStrategy::Auto => unreachable!("Auto resolved above"),
+    };
+    match tracer {
+        None => {
+            record_dispatched(chosen.name());
+            chosen.compute(pr, gens, cancel, order)
+        }
+        Some(t) => {
+            if chosen.supports_tracing() {
+                record_dispatched(chosen.name());
+                chosen.compute_traced(pr, gens, cancel, order, t)
+            } else {
+                // Drop down to Direct to preserve UNSAT-core extraction.
+                if chosen.name() != direct.name() {
+                    log::debug!(
+                        "GbAlgorithm {:?} does not support tracing; falling back to {:?}",
+                        chosen.name(), direct.name()
+                    );
+                }
+                record_dispatched(direct.name());
+                direct.compute_traced(pr, gens, cancel, order, t)
+            }
+        }
     }
 }
 
@@ -163,7 +275,10 @@ impl<'r> Ideal<'r> {
         if generators.is_empty() {
             return Ok(Ideal { poly_ring, basis: Vec::new() });
         }
-        let basis = compute_gb_dispatch(poly_ring, generators, cancel);
+        let basis = compute_gb_dispatch(
+            poly_ring, generators, cancel, FfOrder::DegRevLex, None,
+        )
+        .map_err(|_| Cancelled)?;
         if cancel.is_cancelled() { return Err(Cancelled); }
         let basis = interreduce_basis(poly_ring, basis, cancel);
         if cancel.is_cancelled() { return Err(Cancelled); }
@@ -499,7 +614,10 @@ pub(crate) fn ring_for_order(poly_ring: &FfPolyRing, order: FfOrder) -> std::syn
     )
 }
 
-/// Compute a Groebner basis of `generators` in the requested monomial order.
+/// Compute a Groebner basis of `generators` in the requested monomial
+/// order, routed through [`compute_gb_dispatch`]. Falls back to the
+/// unreduced generators on cancellation or panic so callers can
+/// proceed in best-effort mode.
 pub fn compute_gb_with_order(
     poly_ring: &FfPolyRing,
     generators: Vec<Poly>,
@@ -512,6 +630,38 @@ pub fn compute_gb_with_order(
     }
     let n_gens = generators.len();
     let n_vars = poly_ring.n_vars;
+    let backup: Vec<Poly> = generators.iter().map(|p| p.clone()).collect();
+    let start = std::time::Instant::now();
+    let result = compute_gb_dispatch(poly_ring, generators, cancel, order, None);
+    let elapsed = start.elapsed();
+    let basis = result.unwrap_or_else(|e| {
+        log::debug!(
+            "GB dispatch returned {:?}; falling back to unreduced generators",
+            e
+        );
+        backup
+    });
+    log::trace!(
+        "GB call: {} gens, {} vars → {} basis elems in {:.1}ms",
+        n_gens, n_vars, basis.len(), elapsed.as_secs_f64() * 1000.0
+    );
+    basis
+}
+
+/// Raw Buchberger entry point. Bypasses [`compute_gb_dispatch`] and
+/// is used by algorithm implementations themselves (e.g.
+/// `BuchbergerByHomog` calls this from its inner GB step on `P[h]`).
+/// External callers should prefer [`compute_gb_with_order`].
+pub(crate) fn compute_gb_buchberger(
+    poly_ring: &FfPolyRing,
+    generators: Vec<Poly>,
+    cancel: &CancelToken,
+    order: FfOrder,
+) -> Result<Vec<Poly>, SolverError> {
+    let _t = crate::profile::ScopedTimer::new("compute_gb_buchberger");
+    if generators.is_empty() {
+        return Ok(Vec::new());
+    }
     let ring = ring_for_order(poly_ring, order);
     let cfg = BuchbergerConfig {
         order,
@@ -519,25 +669,17 @@ pub fn compute_gb_with_order(
         abort_on_trivial: true,
         use_f4: crate::ff::buchberger::use_f4_default(),
     };
-    let start = std::time::Instant::now();
-    let backup: Vec<Poly> = generators.iter().map(|p| p.clone()).collect();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         buchberger::groebner_basis(generators, &ring, &cfg)
     }));
-    let elapsed = start.elapsed();
-    let basis = match result {
-        Ok(Ok(GBasis { basis, .. })) => basis,
-        Ok(Err(_)) => backup,
+    match result {
+        Ok(Ok(GBasis { basis, .. })) => Ok(basis),
+        Ok(Err(e)) => Err(e),
         Err(_) => {
-            log::warn!("GB computation panicked; returning generators unreduced");
-            backup
+            log::warn!("GB computation panicked");
+            Err(SolverError::Internal("Buchberger panicked".into()))
         }
-    };
-    log::trace!(
-        "GB call: {} gens, {} vars → {} basis elems in {:.1}ms",
-        n_gens, n_vars, basis.len(), elapsed.as_secs_f64() * 1000.0
-    );
-    basis
+    }
 }
 
 /// Incremental GB extension. Computes GB of `<known_gb> + <new_polys>`
@@ -602,6 +744,10 @@ pub fn compute_gb_incremental_with_order(
 /// be in a fresh state (or have been previously fed exactly `tracer.basis_count()`
 /// initial-basis events corresponding to earlier generators in the same global
 /// input numbering).
+/// Traced sibling of [`compute_gb_with_order`]. Routes through
+/// [`compute_gb_dispatch`] with `Some(tracer)`; if the dispatched
+/// algorithm doesn't support tracing, dispatch silently falls back
+/// to [`BuchbergerDirect`] for that call.
 pub fn compute_gb_with_order_traced(
     poly_ring: &FfPolyRing,
     generators: Vec<Poly>,
@@ -613,6 +759,31 @@ pub fn compute_gb_with_order_traced(
     if generators.is_empty() {
         return Vec::new();
     }
+    let backup: Vec<Poly> = generators.iter().map(|p| p.clone()).collect();
+    let result = compute_gb_dispatch(poly_ring, generators, cancel, order, Some(tracer));
+    result.unwrap_or_else(|e| {
+        log::debug!(
+            "traced GB dispatch returned {:?}; falling back to unreduced generators",
+            e
+        );
+        backup
+    })
+}
+
+/// Raw traced Buchberger entry point. Counterpart to
+/// [`compute_gb_buchberger`]. Used by [`BuchbergerDirect::compute_traced`]
+/// and by future algorithms that opt into tracing.
+pub(crate) fn compute_gb_buchberger_traced(
+    poly_ring: &FfPolyRing,
+    generators: Vec<Poly>,
+    cancel: &CancelToken,
+    order: FfOrder,
+    tracer: &mut crate::tracer::GbTracer,
+) -> Result<Vec<Poly>, SolverError> {
+    let _t = crate::profile::ScopedTimer::new("compute_gb_buchberger_traced");
+    if generators.is_empty() {
+        return Ok(Vec::new());
+    }
     let ring = ring_for_order(poly_ring, order);
     let cfg = BuchbergerConfig {
         order,
@@ -620,17 +791,15 @@ pub fn compute_gb_with_order_traced(
         abort_on_trivial: true,
         use_f4: crate::ff::buchberger::use_f4_default(),
     };
-    let backup: Vec<Poly> = generators.iter().map(|p| p.clone()).collect();
-
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         buchberger::groebner_basis_observed(generators, &ring, &cfg, tracer)
     }));
     match result {
-        Ok(Ok(GBasis { basis, .. })) => basis,
-        Ok(Err(_)) => backup,
+        Ok(Ok(GBasis { basis, .. })) => Ok(basis),
+        Ok(Err(e)) => Err(e),
         Err(_) => {
-            log::warn!("GB computation panicked; returning generators unreduced");
-            backup
+            log::warn!("traced GB computation panicked");
+            Err(SolverError::Internal("traced Buchberger panicked".into()))
         }
     }
 }
