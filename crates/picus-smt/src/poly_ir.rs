@@ -58,6 +58,19 @@ impl PolyIR {
         self.n_wires + wire
     }
 
+    /// Map a ring variable index back to its underlying wire index.
+    /// `x_i` (index `i`) and `y_i` (index `n_wires + i`) both refer to
+    /// the same wire `i` from a propagation standpoint, so callers
+    /// pattern-matching on polynomial structure normally don't care
+    /// which copy a variable belongs to.
+    pub fn var_to_wire(&self, var: usize) -> usize {
+        if var < self.n_wires {
+            var
+        } else {
+            var - self.n_wires
+        }
+    }
+
     /// Canonical name for the original-copy variable of wire `wire`
     /// (e.g. `x5`).
     pub fn x_name(&self, wire: usize) -> &str {

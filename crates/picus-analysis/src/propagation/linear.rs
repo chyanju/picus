@@ -20,10 +20,14 @@ use super::lemma::{LemmaDescriptor, PropagationCtx, PropagationLemma};
 #[derive(Default)]
 pub struct LinearLemma {
     /// `wire_index → list-of-dependency-sets`. Built lazily on the
-    /// first `run` from the equality constraints and cached for the
-    /// lifetime of the lemma instance; the IR doesn't shrink during a
-    /// DPVL run, so the implications stay valid.
+    /// first `run` from the equality constraints and cached; the DPVL
+    /// driver appends learned equalities to `ir.equalities` between
+    /// iterations, so the cache invalidates whenever the equality
+    /// vector grows and is rebuilt on the next call.
     cdmap: Option<HashMap<usize, Vec<HashSet<usize>>>>,
+    /// `ir.equalities.len()` at the moment `cdmap` was last built.
+    /// `None` whenever `cdmap` is `None`.
+    cdmap_len: Option<usize>,
 }
 
 impl PropagationLemma for LinearLemma {
@@ -32,8 +36,14 @@ impl PropagationLemma for LinearLemma {
     }
 
     fn run(&mut self, ir: &PolyIR, ctx: &mut PropagationCtx) -> bool {
-        if self.cdmap.is_none() {
+        // Rebuild the implication map when either it doesn't exist yet
+        // or the IR's equality vector has grown since the last build —
+        // either case means new constraints are visible that the cache
+        // doesn't reflect.
+        let cur_len = ir.equalities.len();
+        if self.cdmap.is_none() || self.cdmap_len != Some(cur_len) {
             self.cdmap = Some(build_cdmap(ir));
+            self.cdmap_len = Some(cur_len);
         }
         let cdmap = self.cdmap.as_ref().unwrap();
 
@@ -71,11 +81,11 @@ fn build_cdmap(ir: &PolyIR) -> HashMap<usize, Vec<HashSet<usize>>> {
         let (linear, nonlinear, all) = classify_poly_vars(ir, poly);
         let linear_only: Vec<usize> = linear.difference(&nonlinear).copied().collect();
         for v in linear_only {
-            let wire = var_to_wire(ir, v);
+            let wire = ir.var_to_wire(v);
             let deps: HashSet<usize> = all
                 .iter()
                 .filter(|&&u| u != v)
-                .map(|&u| var_to_wire(ir, u))
+                .map(|&u| ir.var_to_wire(u))
                 .filter(|&w| w != wire)
                 .collect();
             cdmap.entry(wire).or_default().push(deps);
@@ -125,17 +135,6 @@ fn classify_poly_vars(
         }
     }
     (linear, nonlinear, all)
-}
-
-/// Map a PolyIR variable index back to its underlying wire index. The
-/// ring carries `x_i` at index `i` and `y_i` at index `n_wires + i`;
-/// both copies refer to the same wire from a propagation standpoint.
-fn var_to_wire(ir: &PolyIR, var: usize) -> usize {
-    if var < ir.n_wires {
-        var
-    } else {
-        var - ir.n_wires
-    }
 }
 
 inventory::submit! {

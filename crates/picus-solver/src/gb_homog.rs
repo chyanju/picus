@@ -6,8 +6,11 @@
 //! 2. Lift every input `f_i ∈ P` into `Ph`, then homogenize to its top
 //!    total degree (so every generator is `d_i`-homogeneous in `Ph`).
 //! 3. Run plain DegRevLex Buchberger on `Ph` (via the existing
-//!    [`crate::ideal::compute_gb_with_order`] path — same Buchberger,
-//!    same observers, same cancellation).
+//!    [`crate::ideal::compute_gb_buchberger`] path — same Buchberger,
+//!    same observers, same cancellation). Calling the raw Buchberger
+//!    entry rather than the dispatching `compute_gb_with_order` is
+//!    deliberate: otherwise dispatch would recurse back into ByHomog
+//!    on the homogenised ring.
 //! 4. Dehomogenize each basis element back to `P` (`h := 1`).
 //! 5. Interreduce in `P` (drop LM-divisible duplicates, normal-form survivors).
 //!
@@ -20,7 +23,7 @@
 
 use crate::ff::monomial::MonomialOrder;
 use crate::homog_ring::HomogRing;
-use crate::ideal::{compute_gb_with_order, interreduce_basis};
+use crate::ideal::{compute_gb_buchberger, interreduce_basis};
 use crate::poly::{FfPolyRing, Poly};
 use crate::timeout::CancelToken;
 
@@ -63,8 +66,18 @@ pub fn compute_gb_by_homog(
         return Vec::new();
     }
 
-    // Step 3: plain DegRevLex GB on Ph.
-    let gb_h = compute_gb_with_order(&h.ext, gh, cancel, MonomialOrder::DegRevLex);
+    // Step 3: plain DegRevLex Buchberger on Ph. Use the raw entry
+    // (not the dispatching `compute_gb_with_order`) so the chosen
+    // strategy doesn't bounce back into this routine.
+    let gb_h_backup: Vec<Poly> = gh.iter().map(|p| h.ext.clone_poly(p)).collect();
+    let gb_h = compute_gb_buchberger(&h.ext, gh, cancel, MonomialOrder::DegRevLex)
+        .unwrap_or_else(|e| {
+            log::debug!(
+                "homogenised GB returned {:?}; falling back to unreduced generators",
+                e
+            );
+            gb_h_backup
+        });
 
     if cancel.is_cancelled() {
         // Best-effort: dehom + interreduce what we have; consumers will

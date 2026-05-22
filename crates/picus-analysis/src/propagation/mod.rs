@@ -4,9 +4,10 @@ pub mod bim;
 pub mod binary01;
 pub mod lemma;
 pub mod linear;
+pub mod range;
 
-pub use binary01::RangeValue;
 pub use lemma::{all_descriptors, all_names, LemmaDescriptor, PropagationCtx, PropagationLemma};
+pub use range::{initial_ranges, RangeValue};
 
 use picus_smt::poly_ir::PolyIR;
 use std::collections::HashMap;

@@ -138,8 +138,8 @@ fn match_basis2_pattern(
             bit_vars.push(*v);
         }
         if is_power_of_2_sequence(&bit_coeffs) {
-            let target_wire = var_to_wire(ir, *cand_var);
-            let mut wires: Vec<usize> = bit_vars.iter().map(|&v| var_to_wire(ir, v)).collect();
+            let target_wire = ir.var_to_wire(*cand_var);
+            let mut wires: Vec<usize> = bit_vars.iter().map(|&v| ir.var_to_wire(v)).collect();
             wires.sort();
             wires.dedup();
             return Some((target_wire, wires));
@@ -167,14 +167,6 @@ fn is_power_of_2_sequence(coeffs: &[BigUint]) -> bool {
 
 fn is_power_of_2(n: &BigUint) -> bool {
     !n.is_zero() && (n & (n - BigUint::one())).is_zero()
-}
-
-fn var_to_wire(ir: &PolyIR, var: usize) -> usize {
-    if var < ir.n_wires {
-        var
-    } else {
-        var - ir.n_wires
-    }
 }
 
 inventory::submit! {

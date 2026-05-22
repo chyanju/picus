@@ -114,8 +114,7 @@ fn collect_linear_homogeneous(ir: &PolyIR) -> Vec<Vec<(usize, BigUint)>> {
                 }
             } else {
                 let v = single_var.unwrap();
-                let wire = if v < ir.n_wires { v } else { v - ir.n_wires };
-                row.push((wire, field.to_biguint(c)));
+                row.push((ir.var_to_wire(v), field.to_biguint(c)));
             }
         }
         if !row.is_empty() {
