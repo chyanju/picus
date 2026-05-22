@@ -47,6 +47,19 @@ impl RangeValue {
     pub fn is_empty(&self) -> bool {
         matches!(self, RangeValue::Values(v) if v.is_empty())
     }
+
+    /// Proves the wire's value is not zero in every satisfying witness.
+    /// `Bottom` (unconstrained) and an empty value set both return
+    /// `false`: an empty set encodes a contradictory state, where
+    /// drawing further conclusions risks unsoundness if the
+    /// contradiction is later resolved by other learned facts.
+    #[must_use]
+    pub fn excludes_zero(&self) -> bool {
+        match self {
+            RangeValue::Bottom => false,
+            RangeValue::Values(v) => !v.is_empty() && !v.contains(&BigUint::zero()),
+        }
+    }
 }
 
 #[derive(Default)]

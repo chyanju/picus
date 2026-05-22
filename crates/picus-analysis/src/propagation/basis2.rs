@@ -6,6 +6,12 @@
 //! pinned to `{0, 1}` by [`super::binary01::Binary01Lemma`]. When
 //! `target` is known the bits are recoverable bit-by-bit and so are
 //! also known.
+//!
+//! Soundness depends on `2^n ≤ p`, where `n` is the number of bits.
+//! When `2^n > p` two distinct bit assignments can sum to the same
+//! target modulo `p` (e.g. `0` and `(1,1,...,1)` with `2^n - 1 ≡ 0
+//! mod p`), so target uniqueness no longer implies bit uniqueness.
+//! The lemma checks this bound before firing.
 
 use std::collections::HashSet;
 
@@ -24,9 +30,17 @@ impl PropagationLemma for Basis2Lemma {
     }
 
     fn run(&mut self, ir: &PolyIR, ctx: &mut PropagationCtx) -> bool {
+        let p = ir.ring.field.prime();
         let mut progress = false;
         for poly in &ir.equalities {
             if let Some((target_wire, bit_wires)) = match_basis2_pattern(ir, poly) {
+                // Soundness gate: `2^n > p` admits colliding bit
+                // patterns under mod-p reduction. Without `2^n ≤ p`,
+                // two distinct bit assignments may share a target.
+                let two_pow_n: BigUint = BigUint::one() << bit_wires.len();
+                if &two_pow_n > p {
+                    continue;
+                }
                 let all_binary = bit_wires
                     .iter()
                     .all(|w| matches!(ctx.ranges.get(w), Some(r) if r.is_binary()));

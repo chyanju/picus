@@ -4,11 +4,13 @@
 //! plus a linear "constant-and-mux-bits" sum that ties them together;
 //! after polynomial lowering each `A * B = 0` is a single bilinear
 //! monomial. We look for triples
-//!     `x * y0 = 0`,  `z * y1 = 0`,  `x + y0 + y1 + c = 0`
-//! where `x` and `c` are known. From `x * y0 = 0` and `x ≠ 0` we
-//! conclude `y0 = 0`; symmetrically `y1 = 0`. (When `x = 0` the
-//! constraint is vacuous but the conclusion is still consistent with
-//! the witnessed `ks` set.)
+//!     `x * y0 = 0`,  `x * y1 = 0`,  `x + y0 + y1 + c = 0`
+//! where `x` and `c` are known. From `x * y_i = 0` and `x ≠ 0` we
+//! conclude `y_i = 0`. The lemma only fires when `x`'s range proves
+//! `x ≠ 0`; without that gate, two witnesses with `x = 0` can disagree
+//! on `y_0` / `y_1` (the bilinear constraints become vacuous and the
+//! linear sum admits a one-parameter family of solutions), so marking
+//! them as uniquely determined would be unsound.
 
 use std::collections::HashSet;
 
@@ -74,6 +76,18 @@ impl PropagationLemma for AbozLemma {
                         continue;
                     }
                     if !ctx.known.contains(&x) {
+                        continue;
+                    }
+                    // Soundness gate: `x * y_i = 0` only forces
+                    // `y_i = 0` when `x ≠ 0`. Without a range proving
+                    // `x` cannot be zero, two witnesses with `x = 0`
+                    // can disagree on `y_0` / `y_1` while satisfying
+                    // every constraint.
+                    if !ctx
+                        .ranges
+                        .get(&x)
+                        .map_or(false, |r| r.excludes_zero())
+                    {
                         continue;
                     }
                     // Promote y0, y1 to known if they were unknown.
