@@ -78,7 +78,8 @@ pub fn read_r1cs(data: &[u8]) -> Result<R1csFile, R1csParseError> {
     let header = parse_header_section(&header_sec.data)?;
     let field_size = header.field_size;
     let m_constraints = header.m_constraints;
-    let constraints = parse_constraint_section(&constraint_sec.data, field_size, m_constraints)?;
+    let constraints =
+        parse_constraint_section(&constraint_sec.data, field_size, m_constraints, &header.prime_number)?;
     let w2l = parse_w2l_section(&w2l_sec.data)?;
 
     // Compute input/output lists. Ecne convention (1-based):
@@ -187,14 +188,14 @@ fn parse_constraint_section(
     data: &[u8],
     field_size: u32,
     m_constraints: u32,
+    prime: &BigUint,
 ) -> Result<ConstraintSection, R1csParseError> {
     let fs = field_size as usize;
-    let p = crate::bn128_prime();
     let mut constraints = Vec::with_capacity(m_constraints as usize);
     let mut pos = 0;
 
     while pos < data.len() {
-        let (new_pos, constraint) = parse_single_constraint(&data[pos..], fs, p)?;
+        let (new_pos, constraint) = parse_single_constraint(&data[pos..], fs, prime)?;
         constraints.push(constraint);
         pos += new_pos;
     }

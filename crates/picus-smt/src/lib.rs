@@ -1,11 +1,10 @@
 pub mod backends;
 pub mod poly_ir;
 
-/// Names that used to be introduced into the SMT-emitted constraint
-/// system as named field constants by the legacy R1CS-to-SMT lowering.
-/// Retained so the `picus` witness post-processor can still filter
-/// these out of solver-produced models when running against an old
-/// snapshot or against the SMT dump emitted by `--dump-smt`.
+/// Reserved variable names for field constants the witness post-
+/// processor must filter out of solver-produced models. `p` is the
+/// field prime; `ps1`..`ps5` are `p-1`..`p-5`; `zero` and `one` are
+/// the obvious field elements.
 pub const SUBP_CONSTANT_NAMES: &[&str] =
     &["p", "ps1", "ps2", "ps3", "ps4", "ps5", "zero", "one"];
 

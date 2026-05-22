@@ -1,21 +1,16 @@
 //! Runtime configuration for the solver.
 //!
-//! Aggregates every knob that was previously read from a `PICUS_*`
-//! environment variable or a `static AtomicU8`. The active config is
-//! stored thread-local so concurrent solves on different threads can
-//! pick distinct settings, and so callers (the `picus` facade, CLI,
-//! library consumers, tests) can override individual fields without
-//! mutating process-global state.
+//! Single thread-local [`RuntimeConfig`] aggregates every runtime
+//! knob: GB strategy, F4 toggle, DNF cap, CDCL(T) iteration cap,
+//! GB-stats / GB-trace / phase-profile flags. Production code reads
+//! values via [`with`] at the point of use so no cached snapshot can
+//! drift from the active config. Callers override fields via
+//! [`set`] (one-shot) or [`ConfigGuard`] (RAII scope); per-thread
+//! storage keeps concurrent solves on different threads independent.
 //!
-//! Defaults come from [`RuntimeConfig::from_env`], which reads the
-//! same `PICUS_*` variables the prior implementation honoured. Callers
-//! that need different values pass a fresh [`RuntimeConfig`] through
-//! [`set`] (one-shot) or [`ConfigGuard`] (RAII scope).
-//!
-//! Soundness invariant: every field is read by the production code via
-//! [`with`] at the point of use, never cached into a long-lived value.
-//! Tests that mutate the config restore the previous value with
-//! `ConfigGuard` so they don't leak settings into sibling tests.
+//! [`RuntimeConfig::from_env`] seeds the defaults from the
+//! `PICUS_*` environment variables so existing benchmark scripts
+//! and CLI invocations keep their behaviour without code changes.
 
 use std::cell::RefCell;
 

@@ -62,11 +62,10 @@
 //! misses / stales and the F4 batch-size distribution.
 //!
 //! [`super::hilbert::hilbert_numerator`] is available as a building
-//! block for monomial-ideal heuristics. A prior F4-vs-per-pair
-//! gating signal built on top of it was removed because the
-//! Gebauer–Möller M-criterion in `gm_insert` collapses same-LCM
-//! pairs before they reach the F4 batch, so the score is
-//! `Ω(batch.len())` on every input that survives GM.
+//! block for monomial-ideal heuristics. F4 batch dispatch does not
+//! gate on it: the Gebauer–Möller M-criterion in `gm_insert` already
+//! collapses same-LCM pairs before they reach the batch, leaving a
+//! Hilbert-based gate `Ω(batch.len())` on every surviving input.
 
 mod matrix;
 

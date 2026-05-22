@@ -11,7 +11,6 @@ use std::collections::HashSet;
 
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
-use picus_r1cs::bn128_prime;
 use picus_smt::poly_ir::PolyIR;
 
 use super::lemma::{LemmaDescriptor, PropagationCtx, PropagationLemma};
@@ -58,7 +57,7 @@ fn match_basis2_pattern(
     let ring = &ir.ring.ring;
     let n_vars = ring.n_vars();
     let field = &ir.ring.field;
-    let p = bn128_prime();
+    let p = ir.ring.field.prime();
 
     // Collect linear-only terms (each containing exactly one variable
     // at exponent 1).

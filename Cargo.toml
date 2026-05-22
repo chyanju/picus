@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.7.29"
+version = "1.7.30"
 authors = ["Yanju Chen <chyanju@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/chyanju/Picus"
