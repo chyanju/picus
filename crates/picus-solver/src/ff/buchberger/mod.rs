@@ -988,12 +988,16 @@ impl BuchbergerState {
             }
 
             // Build F4BasisRef array (same indexing as self.basis).
+            // `lt_divmask` is the precomputed divisibility fingerprint
+            // that lets `symbolic_preprocess` short-circuit most
+            // divisibility checks in O(1) instead of O(n_vars).
             let basis_refs: Vec<super::f4::F4BasisRef> = self
                 .basis
                 .iter()
                 .map(|e| super::f4::F4BasisRef {
                     poly: &e.poly,
                     lt: &e.lt,
+                    lt_divmask: e.lt_divmask,
                     active: e.active,
                 })
                 .collect();
@@ -1016,15 +1020,24 @@ impl BuchbergerState {
                 self.stats.reductions_useless += (batch.len() - new_polys.len()) as u64;
             }
 
-            // Integrate each new poly as a basis element. Mirror the
-            // run() path's integration step exactly. F4 already monic-
-            // normalized each output and the matrix echelon ensures
-            // each residue's LT is not divisible by any active basis
-            // LT (provided symbolic preprocessing closed under
-            // reducibility — which it does by BFS over reducer tails).
+            // Integrate each new generator. F4 monic-normalises every
+            // output and the matrix echelon guarantees the residue's
+            // LT is not divisible by any active basis LT (symbolic
+            // preprocessing is closed under reducibility).
+            //
+            // Provenance routing: each [`F4Output`] names the input
+            // pairs and reducer basis indices whose rows linearly
+            // combined into this generator. The observer contract
+            // takes a single `from_pair: (usize, usize)` plus a
+            // separate `on_pair_reducers(&[basis_idx])`. The first
+            // contributing pair anchors `from_pair`; every other
+            // contributing pair's `i` / `j` plus all reducer basis
+            // indices feed `on_pair_reducers`. `GbTracer` unions
+            // both sides into the new entry's deps.
             let batch_sugar = lowest_sugar;
-            for poly in new_polys {
+            for output in new_polys {
                 self.check_cancel()?;
+                let super::f4::F4Output { poly, from_pairs, from_reducers } = output;
                 if poly.is_zero() {
                     continue;
                 }
@@ -1041,10 +1054,22 @@ impl BuchbergerState {
                 );
                 let sugar = batch_sugar;
                 let new_idx = self.basis.len();
-                // Use sentinel from-pair indices (0, 0) — F4 batches don't
-                // map back to a specific pair; tracer paths don't run on
-                // F4 anyway.
-                observer.on_new_poly(new_idx, &poly, (0, 0));
+                let (from_pair, mut reducer_deps) = match from_pairs.first() {
+                    Some(&pi) if pi < batch.len() => {
+                        let mut extras: Vec<usize> = Vec::new();
+                        for &other_pi in from_pairs.iter().skip(1) {
+                            if other_pi < batch.len() {
+                                extras.push(batch[other_pi].i);
+                                extras.push(batch[other_pi].j);
+                            }
+                        }
+                        ((batch[pi].i, batch[pi].j), extras)
+                    }
+                    _ => ((0, 0), Vec::new()),
+                };
+                reducer_deps.extend(from_reducers.into_iter());
+                observer.on_pair_reducers(&reducer_deps);
+                observer.on_new_poly(new_idx, &poly, from_pair);
 
                 if poly.is_constant() {
                     self.trivial = true;
