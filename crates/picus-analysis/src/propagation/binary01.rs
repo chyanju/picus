@@ -1,10 +1,18 @@
-//! Binary01 propagation lemma — detects x*(x-1)=0 patterns.
+//! Binary01 propagation lemma — detect wires forced to `{0, 1}`.
+//!
+//! Recognises any polynomial equality of the form `x^2 - x = 0` (in
+//! field form, `x^2 + (p-1) * x` with no other terms). The constraint
+//! pins the wire's value to `{0, 1}`. Once a wire's range collapses
+//! to a singleton, it joins the known set.
+
+use std::collections::{HashMap, HashSet};
 
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
-use picus_r1cs::grammar::*;
-use picus_r1cs::{bn128_prime, parse_var_index};
-use std::collections::HashSet;
+use picus_r1cs::bn128_prime;
+use picus_smt::poly_ir::PolyIR;
+
+use super::lemma::{LemmaDescriptor, PropagationCtx, PropagationLemma};
 
 /// Per-signal range: unconstrained (Bottom) or a finite set of values.
 #[derive(Debug, Clone)]
@@ -42,161 +50,136 @@ impl RangeValue {
     }
 }
 
-/// Apply the binary01 lemma. Mutates `ks`, `us`, and `range_vec` in place.
-pub fn apply_lemma(
-    ks: &mut HashSet<usize>,
-    us: &mut HashSet<usize>,
-    cnsts: &RCmds,
-    range_vec: &mut [RangeValue],
-) {
-    let p = bn128_prime();
-    let p_minus_1 = p - BigUint::one();
-    let binary_set: HashSet<BigUint> = [BigUint::zero(), BigUint::one()].into_iter().collect();
-
-    for cmd in &cnsts.commands {
-        if let RCmd::Assert(expr) = cmd
-            && let Some(signal_id) = match_binary01_pattern(expr, &p_minus_1)
-                && signal_id < range_vec.len() {
-                    range_vec[signal_id].intersect(binary_set.clone());
-                }
-    }
-
-    for (sig, range) in range_vec.iter().enumerate() {
-        if range.is_singleton() && us.remove(&sig) {
-            ks.insert(sig);
-        }
-    }
+#[derive(Default)]
+pub struct Binary01Lemma {
+    /// Set of wires we've already classified as binary; avoids
+    /// re-running the pattern match on every iteration.
+    binary_wires: HashSet<usize>,
 }
 
-fn match_binary01_pattern(expr: &RExpr, p_minus_1: &BigUint) -> Option<usize> {
-    match expr {
-        // Pattern A: Or([eq_zero_expr, eq_zero_expr]) — from AB0 optimization
-        // After AB0, x*(x-1)=0 becomes or(A=0, B=0) where:
-        //   - One branch contains just `x` (i.e., Eq(0, x))
-        //   - The other branch contains a linear expression with `x`
-        //     (e.g., Eq(0, ps1 + x) which means x = -(p-1) = 1)
-        // Both branches have the same signal, proving x ∈ {0, 1}.
-        RExpr::Or(vs) if vs.len() == 2 => {
-            let sigs0 = extract_signals_from_eq_zero(&vs[0]);
-            let sigs1 = extract_signals_from_eq_zero(&vs[1]);
+impl PropagationLemma for Binary01Lemma {
+    fn name(&self) -> &'static str {
+        "binary01"
+    }
 
-            for &s0 in &sigs0 {
-                for &s1 in &sigs1 {
-                    if s0 == s1 {
-                        return Some(s0);
-                    }
-                }
+    fn run(&mut self, ir: &PolyIR, ctx: &mut PropagationCtx) -> bool {
+        let p = bn128_prime();
+        let p_minus_1 = p - BigUint::one();
+        let binary_set: HashSet<BigUint> =
+            [BigUint::zero(), BigUint::one()].into_iter().collect();
+
+        let mut progress = false;
+        for poly in &ir.equalities {
+            if let Some(wire) = match_x_squared_minus_x(ir, poly, &p_minus_1)
+                && self.binary_wires.insert(wire)
+            {
+                let entry = ctx.ranges.entry(wire).or_insert(RangeValue::Bottom);
+                entry.intersect(binary_set.clone());
             }
-            None
         }
 
-        // Pattern B: Eq(quadratic_in_x, 0) — direct x^2 + (p-1)*x = 0
-        RExpr::Eq(lhs, rhs) => try_match_quadratic(lhs, rhs, p_minus_1)
-            .or_else(|| try_match_quadratic(rhs, lhs, p_minus_1)),
-
-        _ => None,
-    }
-}
-
-/// Extract all signal indices from an `Eq(0, expr)` or `Eq(expr, 0)` expression.
-fn extract_signals_from_eq_zero(expr: &RExpr) -> Vec<usize> {
-    if let RExpr::Eq(lhs, rhs) = expr {
-        let inner = if lhs.is_zero() {
-            rhs.as_ref()
-        } else if rhs.is_zero() {
-            lhs.as_ref()
-        } else {
-            return vec![];
-        };
-        // Collect all signal indices from the non-zero side
-        return collect_signal_indices(inner);
-    }
-    vec![]
-}
-
-/// Recursively collect all signal indices from an expression.
-fn collect_signal_indices(expr: &RExpr) -> Vec<usize> {
-    match expr {
-        RExpr::Var(name) => parse_var_index(name).into_iter().collect(),
-        RExpr::Add(vs) | RExpr::Mul(vs) | RExpr::Sub(vs) => {
-            vs.iter().flat_map(collect_signal_indices).collect()
+        // Promote any singleton-ranged unknown wire to known.
+        let mut newly_known: Vec<usize> = Vec::new();
+        for (&wire, range) in ctx.ranges.iter() {
+            if range.is_singleton() && ctx.unknown.contains(&wire) {
+                newly_known.push(wire);
+            }
         }
-        RExpr::Mod(inner, _) | RExpr::Neg(inner) => collect_signal_indices(inner),
-        _ => vec![],
+        for wire in newly_known {
+            if ctx.unknown.remove(&wire) {
+                ctx.known.insert(wire);
+                progress = true;
+            }
+        }
+        progress
     }
 }
 
-fn try_match_quadratic(lhs: &RExpr, rhs: &RExpr, p_minus_1: &BigUint) -> Option<usize> {
-    let inner_lhs = lhs.strip_mod();
-    let inner_rhs = rhs.strip_mod();
+/// Match `c1 * x^2 + c2 * x = 0` with `c1, c2` such that `c1 + c2 = 0`
+/// mod p — i.e. the equation `c1 * (x^2 - x) = 0`. Returns the wire
+/// index. Variables `y_i` (alt-copy) map back to wire `i`.
+fn match_x_squared_minus_x(
+    ir: &PolyIR,
+    poly: &picus_solver::poly::Poly,
+    p_minus_1: &BigUint,
+) -> Option<usize> {
+    let ring = &ir.ring.ring;
+    let n_vars = ring.n_vars();
+    let field = &ir.ring.field;
 
-    if !inner_rhs.is_zero() {
+    // Two-term degree-2 polynomial: gather terms and check the shape.
+    let mut terms: Vec<(BigUint, Vec<(usize, usize)>)> = Vec::new();
+    for (c, m) in ring.terms(poly) {
+        let mut exps = Vec::new();
+        for v in 0..n_vars {
+            let e = ring.exponent_at(&m, v);
+            if e > 0 {
+                exps.push((v, e));
+            }
+        }
+        terms.push((field.to_biguint(c), exps));
+    }
+    if terms.len() != 2 {
         return None;
     }
 
-    if let RExpr::Add(terms) = inner_lhs
-        && terms.len() == 2 {
-            return try_extract_binary_signal(&terms[0], &terms[1], p_minus_1)
-                .or_else(|| try_extract_binary_signal(&terms[1], &terms[0], p_minus_1));
-        }
-    None
-}
-
-fn try_extract_binary_signal(
-    term_sq: &RExpr,
-    term_lin: &RExpr,
-    p_minus_1: &BigUint,
-) -> Option<usize> {
-    let sq_var = extract_squared_var(term_sq)?;
-    let (coeff, lin_var) = extract_linear_term(term_lin)?;
-    if sq_var == lin_var && (coeff == *p_minus_1 || coeff == BigUint::one()) {
-        return Some(sq_var);
-    }
-    None
-}
-
-fn extract_squared_var(expr: &RExpr) -> Option<usize> {
-    if let RExpr::Mul(vs) = expr {
-        let vars: Vec<usize> = vs.iter().filter_map(extract_signal_id).collect();
-        if vars.len() == 2 && vars[0] == vars[1] {
-            return Some(vars[0]);
+    // Identify the quadratic and linear terms.
+    let mut sq_idx = None;
+    let mut lin_idx = None;
+    for (i, (_, exps)) in terms.iter().enumerate() {
+        let total: usize = exps.iter().map(|&(_, e)| e).sum();
+        if total == 2 && exps.len() == 1 && exps[0].1 == 2 {
+            sq_idx = Some(i);
+        } else if total == 1 && exps.len() == 1 && exps[0].1 == 1 {
+            lin_idx = Some(i);
         }
     }
-    None
-}
+    let (sq_idx, lin_idx) = (sq_idx?, lin_idx?);
+    let (sq_coeff, sq_exps) = &terms[sq_idx];
+    let (lin_coeff, lin_exps) = &terms[lin_idx];
 
-fn extract_linear_term(expr: &RExpr) -> Option<(BigUint, usize)> {
-    if let RExpr::Mul(vs) = expr {
-        let mut coeff = BigUint::one();
-        let mut var_id = None;
-        for v in vs {
-            match v {
-                RExpr::Int(n) => {
-                    coeff = n.clone();
-                }
-                RExpr::Var(name) => {
-                    if let Some(id) = parse_var_index(name) {
-                        var_id = Some(id);
-                    } else if let Some(c) = super::resolve_named_constant(name) {
-                        // Named constant like "ps1" = p-1
-                        coeff = c;
-                    }
-                }
-                _ => {}
-            }
-        }
-        if let Some(vid) = var_id {
-            return Some((coeff, vid));
-        }
+    if sq_exps[0].0 != lin_exps[0].0 {
+        return None;
     }
-    None
-}
+    let var = sq_exps[0].0;
 
-
-pub fn extract_signal_id(expr: &RExpr) -> Option<usize> {
-    if let RExpr::Var(name) = expr {
-        parse_var_index(name)
+    // x^2 - x has c1 = 1, c2 = p-1 (so c1 + c2 = 0 mod p). More
+    // generally any non-zero c1 with c2 = -c1 works.
+    let p = bn128_prime();
+    let neg_sq_coeff = if sq_coeff.is_zero() {
+        BigUint::zero()
     } else {
-        None
+        p - sq_coeff
+    };
+    if lin_coeff == &neg_sq_coeff || (sq_coeff == &BigUint::one() && lin_coeff == p_minus_1) {
+        return Some(var_to_wire(ir, var));
+    }
+    None
+}
+
+fn var_to_wire(ir: &PolyIR, var: usize) -> usize {
+    if var < ir.n_wires {
+        var
+    } else {
+        var - ir.n_wires
+    }
+}
+
+/// Seed ranges with the values forced by the IR's structural pins
+/// (wire 0 = 1). Called once by the DPVL driver before the propagation
+/// loop starts.
+pub fn initial_ranges() -> HashMap<usize, RangeValue> {
+    let mut ranges = HashMap::new();
+    ranges.insert(
+        0,
+        RangeValue::Values([BigUint::from(1u32)].into_iter().collect()),
+    );
+    ranges
+}
+
+inventory::submit! {
+    LemmaDescriptor {
+        name: "binary01",
+        factory: || Box::new(Binary01Lemma::default()),
     }
 }

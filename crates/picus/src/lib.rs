@@ -286,7 +286,7 @@ pub fn dump_gb_stats() {
 fn split_model(
     model: &HashMap<String, BigUint>,
 ) -> (HashMap<String, BigUint>, HashMap<String, BigUint>) {
-    let constants: HashSet<&str> = picus_smt::optimizer::SUBP_CONSTANT_NAMES.iter().copied().collect();
+    let constants: HashSet<&str> = picus_smt::SUBP_CONSTANT_NAMES.iter().copied().collect();
 
     let mut w1 = HashMap::new();
     let mut w2 = HashMap::new();

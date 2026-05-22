@@ -1,7 +1,13 @@
 pub mod backends;
+pub mod poly_ir;
 pub mod query;
-pub mod r1cs_parser;
-pub mod optimizer;
+
+/// Names introduced into the constraint system as named field
+/// constants by the legacy R1CS-to-SMT lowering. Downstream code (the
+/// `picus` witness post-processor) uses this list to filter these names
+/// out, since they are not circuit signals.
+pub const SUBP_CONSTANT_NAMES: &[&str] =
+    &["p", "ps1", "ps2", "ps3", "ps4", "ps5", "zero", "one"];
 
 /// Solver backend selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

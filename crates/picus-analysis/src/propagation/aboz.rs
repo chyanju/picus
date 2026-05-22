@@ -1,113 +1,199 @@
-//! All-But-One-Zero (ABOZ) propagation lemma — sliding window 3-constraint match.
+//! All-But-One-Zero (ABOZ) propagation lemma.
+//!
+//! In R1CS shape the original pattern is two `A * B = 0` constraints
+//! plus a linear "constant-and-mux-bits" sum that ties them together;
+//! after polynomial lowering each `A * B = 0` is a single bilinear
+//! monomial. We look for triples
+//!     `x * y0 = 0`,  `z * y1 = 0`,  `x + y0 + y1 + c = 0`
+//! where `x` and `c` are known. From `x * y0 = 0` and `x ≠ 0` we
+//! conclude `y0 = 0`; symmetrically `y1 = 0`. (When `x = 0` the
+//! constraint is vacuous but the conclusion is still consistent with
+//! the witnessed `ks` set.)
 
-use picus_r1cs::grammar::*;
-use picus_r1cs::parse_var_index;
 use std::collections::HashSet;
 
+use num_traits::Zero;
+use picus_smt::poly_ir::PolyIR;
+use picus_solver::poly::Poly;
 
-/// Apply the ABOZ lemma. Mutates `ks` and `us` in place.
-pub fn apply_lemma(
-    ks: &mut HashSet<usize>,
-    us: &mut HashSet<usize>,
-    cnsts: &RCmds,
+use super::lemma::{LemmaDescriptor, PropagationCtx, PropagationLemma};
 
-) {
-    let asserts: Vec<&RExpr> = cnsts
-        .commands
-        .iter()
-        .filter_map(|cmd| match cmd {
-            RCmd::Assert(e) => Some(e),
-            _ => None,
-        })
-        .collect();
+#[derive(Default)]
+pub struct AbozLemma;
 
-    if asserts.len() < 3 {
-        return;
+impl PropagationLemma for AbozLemma {
+    fn name(&self) -> &'static str {
+        "aboz"
     }
 
-    for i in 0..asserts.len() - 2 {
-        if let Some((x_sig, y0_sig, y1_sig, c_sig)) =
-            match_aboz_triple(asserts[i], asserts[i + 1], asserts[i + 2])
-            && ks.contains(&x_sig) && ks.contains(&c_sig) {
-                if us.remove(&y0_sig) {
-                    ks.insert(y0_sig);
-                }
-                if us.remove(&y1_sig) {
-                    ks.insert(y1_sig);
-                }
-            }
-    }
-}
+    fn run(&mut self, ir: &PolyIR, ctx: &mut PropagationCtx) -> bool {
+        let products = collect_bilinear_zero(ir);
+        if products.len() < 2 {
+            return false;
+        }
+        let linear_sums = collect_linear_sums(ir);
+        if linear_sums.is_empty() {
+            return false;
+        }
 
-fn match_aboz_triple(c0: &RExpr, c1: &RExpr, c2: &RExpr) -> Option<(usize, usize, usize, usize)> {
-    let (x0_candidates, y0_candidates) = match_or_zero_pair(c0)?;
-    let (_, y1_candidates) = match_or_zero_pair(c1)?;
-    let sum_sigs = match_linear_sum(c2)?;
+        let mut progress = false;
+        for (i, (a0, b0)) in products.iter().enumerate() {
+            for (a1, b1) in products.iter().skip(i + 1) {
+                // Candidate quadruple (x, y0, y1, ...) — x is one wire
+                // shared between the two products (typically the
+                // selector), y0 / y1 are the other side of each.
+                let shared = if a0 == a1 {
+                    Some((*a0, *b0, *b1))
+                } else if a0 == b1 {
+                    Some((*a0, *b0, *a1))
+                } else if b0 == a1 {
+                    Some((*b0, *a0, *b1))
+                } else if b0 == b1 {
+                    Some((*b0, *a0, *a1))
+                } else {
+                    None
+                };
+                let Some((x, y0, y1)) = shared else {
+                    continue;
+                };
+                if y0 == y1 {
+                    continue;
+                }
 
-    for &x in &x0_candidates {
-        for &y0 in &y0_candidates {
-            if y0 == x { continue; }
-            for &y1 in &y1_candidates {
-                if y1 == x || y1 == y0 { continue; }
-                for &c in &sum_sigs {
-                    if c != y0 && c != y1 && c != x {
-                        return Some((x, y0, y1, c));
+                // Find a linear sum that mentions {x, y0, y1, c} for
+                // some additional known wire c (any wire other than
+                // x/y0/y1 that's already in ks).
+                for lin in &linear_sums {
+                    if !lin.contains(&x) || !lin.contains(&y0) || !lin.contains(&y1) {
+                        continue;
+                    }
+                    let has_known_partner = lin
+                        .iter()
+                        .any(|&w| w != x && w != y0 && w != y1 && ctx.known.contains(&w));
+                    if !has_known_partner {
+                        continue;
+                    }
+                    if !ctx.known.contains(&x) {
+                        continue;
+                    }
+                    // Promote y0, y1 to known if they were unknown.
+                    if ctx.unknown.remove(&y0) {
+                        ctx.known.insert(y0);
+                        progress = true;
+                    }
+                    if ctx.unknown.remove(&y1) {
+                        ctx.known.insert(y1);
+                        progress = true;
                     }
                 }
             }
         }
+        progress
     }
-    None
 }
 
-fn match_or_zero_pair(expr: &RExpr) -> Option<(Vec<usize>, Vec<usize>)> {
-    if let RExpr::Or(vs) = expr
-        && vs.len() == 2 {
-            let mut all_sigs = Vec::new();
-            for v in vs {
-                if let Some(sig) = match_eq_zero_signal(v) {
-                    all_sigs.push(sig);
+/// Wire indices `(a, b)` for every equality of the form `c * x_a * x_b
+/// = 0`. Skips constraints that have any other terms beyond the
+/// single bilinear monomial.
+fn collect_bilinear_zero(ir: &PolyIR) -> Vec<(usize, usize)> {
+    let ring = &ir.ring.ring;
+    let n_vars = ring.n_vars();
+    let field = &ir.ring.field;
+    let mut out = Vec::new();
+    for poly in &ir.equalities {
+        if let Some((a, b)) = match_bilinear(ir, poly, ring, n_vars, field) {
+            out.push((a, b));
+        }
+    }
+    out
+}
+
+fn match_bilinear(
+    ir: &PolyIR,
+    poly: &Poly,
+    ring: &picus_solver::poly::PolyRingType,
+    n_vars: usize,
+    field: &picus_solver::ff::field::PrimeField,
+) -> Option<(usize, usize)> {
+    let mut bilinear: Option<(usize, usize)> = None;
+    for (c, m) in ring.terms(poly) {
+        let mut total = 0usize;
+        let mut vars: Vec<usize> = Vec::new();
+        for v in 0..n_vars {
+            let e = ring.exponent_at(&m, v);
+            total += e;
+            if e == 1 {
+                vars.push(v);
+            } else if e > 1 {
+                return None;
+            }
+        }
+        match total {
+            0 => {
+                if !field.to_biguint(c).is_zero() {
+                    return None;
                 }
             }
-            if all_sigs.len() == 2 {
-                return Some((vec![all_sigs[0]], vec![all_sigs[1]]));
+            2 if vars.len() == 2 => {
+                if bilinear.is_some() {
+                    return None;
+                }
+                let a = var_to_wire(ir, vars[0]);
+                let b = var_to_wire(ir, vars[1]);
+                bilinear = Some((a.min(b), a.max(b)));
             }
-        }
-    None
-}
-
-fn match_eq_zero_signal(expr: &RExpr) -> Option<usize> {
-    if let RExpr::Eq(lhs, rhs) = expr {
-        if lhs.is_zero() {
-            return extract_any_signal(rhs);
-        }
-        if rhs.is_zero() {
-            return extract_any_signal(lhs);
+            _ => return None,
         }
     }
-    None
+    bilinear
 }
 
-fn extract_any_signal(expr: &RExpr) -> Option<usize> {
-    match expr {
-        RExpr::Var(name) => parse_var_index(name),
-        RExpr::Mod(inner, _) => extract_any_signal(inner),
-        _ => None,
+/// Wire-index sets for every equality whose terms are all linear
+/// monomials (no quadratic terms). Constants are ignored.
+fn collect_linear_sums(ir: &PolyIR) -> Vec<HashSet<usize>> {
+    let ring = &ir.ring.ring;
+    let n_vars = ring.n_vars();
+    let mut out = Vec::new();
+    'poly: for poly in &ir.equalities {
+        let mut wires: HashSet<usize> = HashSet::new();
+        for (_, m) in ring.terms(poly) {
+            let mut total = 0usize;
+            let mut var: Option<usize> = None;
+            for v in 0..n_vars {
+                let e = ring.exponent_at(&m, v);
+                total += e;
+                if e == 1 {
+                    if var.is_some() {
+                        continue 'poly;
+                    }
+                    var = Some(v);
+                } else if e > 1 {
+                    continue 'poly;
+                }
+            }
+            if total == 0 {
+                continue;
+            }
+            wires.insert(var_to_wire(ir, var.unwrap()));
+        }
+        if !wires.is_empty() {
+            out.push(wires);
+        }
     }
+    out
 }
 
-fn match_linear_sum(expr: &RExpr) -> Option<Vec<usize>> {
-    let vars: HashSet<usize> = expr
-        .get_variables(true)
-        .into_iter()
-        .filter_map(|v| match v {
-            VarRef::Index(i) => Some(i),
-            _ => None,
-        })
-        .collect();
-    if vars.len() >= 2 {
-        Some(vars.into_iter().collect())
+fn var_to_wire(ir: &PolyIR, var: usize) -> usize {
+    if var < ir.n_wires {
+        var
     } else {
-        None
+        var - ir.n_wires
+    }
+}
+
+inventory::submit! {
+    LemmaDescriptor {
+        name: "aboz",
+        factory: || Box::new(AbozLemma::default()),
     }
 }
