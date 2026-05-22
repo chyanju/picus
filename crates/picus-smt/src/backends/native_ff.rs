@@ -107,9 +107,6 @@ impl SolverBackend for NativeFfBackend {
         timeout_ms: u64,
         cancel: &CancelToken,
     ) -> Result<SolverResult, SolverError> {
-        // Honour external cancellation at entry. Mid-solve external
-        // cancel would require combining the caller's token with the
-        // internal `with_timeout` token; deferred to phase 5.
         if cancel.is_cancelled() {
             return Ok(SolverResult::Unknown(UnknownReason::Timeout));
         }
@@ -141,8 +138,15 @@ impl SolverBackend for NativeFfBackend {
         std::panic::set_hook(Box::new(|_| {})); // silence repeated panics
         let cache_enabled = picus_solver::config::with(|c| c.cache_enabled);
         let cache = &mut self.cache;
+        // Combine the external cancel (Ctrl-C / parent-process abort)
+        // with the per-call timeout into a single token the GB engine
+        // polls. Either source fires → GB exits cooperatively. Pre-
+        // Phase-5b this only honoured external cancel at entry; the
+        // inner solve only saw the timeout.
+        let external = cancel.clone();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let cancel = CancelToken::with_timeout(std::time::Duration::from_millis(timeout_ms));
+            let timeout_tok = CancelToken::with_timeout(std::time::Duration::from_millis(timeout_ms));
+            let cancel = CancelToken::either(&external, &timeout_tok);
             let solve_t0 = if stats_on {
                 Some(std::time::Instant::now())
             } else {

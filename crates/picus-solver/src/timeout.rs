@@ -73,6 +73,49 @@ impl CancelToken {
     pub fn cancel(&self) {
         self.flag.store(true, Ordering::Release);
     }
+
+    /// Combine two cancellation sources into a single token that
+    /// fires when **either** source fires.
+    ///
+    /// A lightweight background watcher polls both source flags with
+    /// exponential backoff (1 ms → 50 ms cap). When either source
+    /// fires, the watcher sets the new token's flag and exits.
+    ///
+    /// If both sources become unreachable (their `Arc`s drop to the
+    /// watcher's clones only), the watcher exits without firing — a
+    /// dangling token that simply never gets cancelled, which is the
+    /// expected behaviour when nobody can request cancellation.
+    pub fn either(a: &CancelToken, b: &CancelToken) -> Self {
+        let combined = Self::new();
+        // Fast path: if either is already cancelled, skip the thread.
+        if a.is_cancelled() || b.is_cancelled() {
+            combined.cancel();
+            return combined;
+        }
+        let combined_flag = combined.flag.clone();
+        let a_flag = a.flag.clone();
+        let b_flag = b.flag.clone();
+        std::thread::spawn(move || {
+            let mut delay = Duration::from_millis(1);
+            let cap = Duration::from_millis(50);
+            loop {
+                if a_flag.load(Ordering::Acquire) || b_flag.load(Ordering::Acquire) {
+                    combined_flag.store(true, Ordering::Release);
+                    return;
+                }
+                // Exit when both sources are unreachable from anyone
+                // other than us; nobody can fire either token, so
+                // there's nothing left to watch. `strong_count == 1`
+                // means our clone is the only `Arc` remaining.
+                if Arc::strong_count(&a_flag) == 1 && Arc::strong_count(&b_flag) == 1 {
+                    return;
+                }
+                std::thread::sleep(delay);
+                delay = (delay * 2).min(cap);
+            }
+        });
+        combined
+    }
 }
 
 impl Default for CancelToken {
@@ -124,5 +167,50 @@ mod tests {
     fn test_cancel_token_pre_cancelled() {
         let t = CancelToken::cancelled();
         assert!(t.is_cancelled());
+    }
+
+    #[test]
+    fn either_fires_when_first_source_fires() {
+        let a = CancelToken::new();
+        let b = CancelToken::new();
+        let c = CancelToken::either(&a, &b);
+        assert!(!c.is_cancelled());
+        a.cancel();
+        // Allow the watcher one polling tick (≤ 1 ms initial delay + slack).
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(c.is_cancelled(), "combined token should fire when a fires");
+    }
+
+    #[test]
+    fn either_fires_when_second_source_fires() {
+        let a = CancelToken::new();
+        let b = CancelToken::new();
+        let c = CancelToken::either(&a, &b);
+        b.cancel();
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(c.is_cancelled(), "combined token should fire when b fires");
+    }
+
+    #[test]
+    fn either_fast_path_when_source_pre_cancelled() {
+        let a = CancelToken::cancelled();
+        let b = CancelToken::new();
+        // No sleep — pre-cancelled source is the fast path.
+        let c = CancelToken::either(&a, &b);
+        assert!(c.is_cancelled());
+    }
+
+    #[test]
+    fn either_with_timeout_short_circuits_on_external() {
+        // Internal timeout is generous; external cancel fires almost
+        // immediately. The combined token should reflect the external,
+        // not wait for the timeout.
+        let external = CancelToken::new();
+        let timeout = CancelToken::with_timeout(Duration::from_secs(60));
+        let combined = CancelToken::either(&external, &timeout);
+        assert!(!combined.is_cancelled());
+        external.cancel();
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(combined.is_cancelled());
     }
 }

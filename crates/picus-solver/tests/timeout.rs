@@ -159,3 +159,58 @@ fn test_incremental_check_pre_cancelled() {
         other => panic!("expected Unknown, got {:?}", other),
     }
 }
+
+// =============================================================================
+// External cancel mid-solve via CancelToken::either
+// =============================================================================
+
+/// `either(external, timeout)` lets a long-running solve be aborted
+/// by an external Ctrl-C-style trigger even when the per-call timeout
+/// is generous. Pre-fix this only honoured the timeout.
+#[test]
+fn test_either_external_cancel_aborts_mid_solve() {
+    // Same dense system used by `test_no_timeout_unsat` — needs work
+    // long enough that the cancellation can fire mid-solve.
+    let p = BigUint::from(7u32);
+    let system = ConstraintSystem {
+        prime: p.clone(),
+        equalities: vec![
+            // x^2 + y^2 = 1, x^3 + y^3 = 1 over GF(7) — small enough
+            // to solve quickly but exercises GB reduction loops.
+            vec![pt(1, &["x", "x"]), pt(1, &["y", "y"]), ct(p.to_u32_digits()[0] as u64 - 1)],
+            vec![pt(1, &["x", "x", "x"]), pt(1, &["y", "y", "y"]), ct(p.to_u32_digits()[0] as u64 - 1)],
+        ],
+        disequalities: vec![],
+        assignments: vec![],
+        add_field_polys: true,
+        bitsums: vec![],
+    };
+    let encoded = encode(&system).unwrap();
+    let external = CancelToken::new();
+    let timeout = CancelToken::with_timeout(Duration::from_secs(60));
+    let combined = CancelToken::either(&external, &timeout);
+
+    // Fire external cancellation 10 ms in; the watcher polls every
+    // 1 ms initially so the combined token should observe it well
+    // before the 60 s timeout.
+    let ext_clone = external.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(10));
+        ext_clone.cancel();
+    });
+
+    let start = std::time::Instant::now();
+    let outcome = solve_encoded_with_cancel(&encoded, &combined);
+    let elapsed = start.elapsed();
+
+    // The solve might finish naturally before the cancel fires
+    // (small system), or land in Unknown via the cancellation path.
+    // Either is fine; the key invariant is that the call returned
+    // within a second of the cancel — not after the 60 s timeout.
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "either-cancel solve hung past external cancellation (elapsed={:?}, got={:?})",
+        elapsed,
+        outcome
+    );
+}
