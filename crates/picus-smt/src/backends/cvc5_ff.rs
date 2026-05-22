@@ -1,10 +1,14 @@
-//! CVC5 backend using QF_FF (native finite field theory).
+//! cvc5 backend using QF_FF (native finite-field theory).
+//!
+//! Lowers each polynomial equality in the IR to a cvc5 `ff.add` of
+//! `ff.mul` products, then asserts `(= 0 ...)`. The target wire's
+//! disequality `(not (= x_t y_t))` closes the query.
 
 use num_bigint::BigUint;
 use std::collections::HashMap;
 
-use crate::backends::{SolverBackend, SolverError, SolverResult};
-use crate::query::*;
+use crate::backends::{poly_to_smtlib_ff, SolverBackend, SolverError, SolverResult};
+use crate::poly_ir::PolyIR;
 
 pub struct Cvc5FfBackend;
 
@@ -23,7 +27,7 @@ impl Cvc5FfBackend {
 impl SolverBackend for Cvc5FfBackend {
     fn solve(
         &mut self,
-        query: &UniquenessQuery,
+        ir: &PolyIR,
         timeout_ms: u64,
     ) -> Result<SolverResult, SolverError> {
         let tm = cvc5_ff::TermManager::new();
@@ -32,66 +36,32 @@ impl SolverBackend for Cvc5FfBackend {
         solver.set_option("produce-models", "true");
         solver.set_option("tlimit", &timeout_ms.to_string());
 
-        let p_str = query.prime.to_string();
+        let prime = ir.ring.field.prime();
+        let p_str = prime.to_string();
         let ff = tm.mk_ff_sort(&p_str, 10);
 
+        // Declare every ring variable (both `x_i` and `y_i`). The IR's
+        // input equalities will collapse `x_i = y_i` for inputs during
+        // solving; we don't special-case them at declaration time.
         let mut vars: HashMap<String, cvc5_ff::Term> = HashMap::new();
-
-        // Declare all variables
-        for i in 0..query.n_wires {
-            let xname = orig_var(i);
-            let x = tm.mk_const(ff.clone(), &xname);
-            vars.insert(xname, x);
-        }
-        for i in 0..query.n_wires {
-            if !query.input_indices.contains(&i) {
-                let yname = format!("y{}", i);
-                let y = tm.mk_const(ff.clone(), &yname);
-                vars.insert(yname, y);
-            }
+        for name in ir.ring.ring.var_names() {
+            let v = tm.mk_const(ff.clone(), name);
+            vars.insert(name.clone(), v);
         }
 
-        // Named constants
-        for (name, val) in &query.constants {
-            let c = tm.mk_const(ff.clone(), name);
-            let val_term = tm.mk_ff_elem(&val.to_string(), ff.clone(), 10);
-            solver.assert_formula(tm.mk_term(cvc5_ff::Kind::Equal, &[c.clone(), val_term]));
-            vars.insert(name.clone(), c);
+        let zero = tm.mk_ff_elem("0", ff.clone(), 10);
+
+        // Equalities.
+        for poly in &ir.equalities {
+            let lhs = build_poly_term(&tm, &vars, ir, poly, ff.clone());
+            solver.assert_formula(tm.mk_term(cvc5_ff::Kind::Equal, &[lhs, zero.clone()]));
         }
 
-        // x0 = 1
-        let one = tm.mk_ff_elem("1", ff.clone(), 10);
-        if let Some(x0) = vars.get("x0") {
-            solver.assert_formula(tm.mk_term(cvc5_ff::Kind::Equal, &[x0.clone(), one]));
-        }
-
-        // Constraints
-        for constraint in &query.orig_constraints {
-            if let Some(ast) = build_constraint_ff(&tm, &vars, constraint, ff.clone()) {
-                solver.assert_formula(ast);
-            }
-        }
-        for constraint in &query.alt_constraints {
-            if let Some(ast) = build_constraint_ff(&tm, &vars, constraint, ff.clone()) {
-                solver.assert_formula(ast);
-            }
-        }
-
-        // Known equalities
-        for &j in &query.known_signals {
-            let xname = orig_var(j);
-            let yname = format!("y{}", j);
-            if let (Some(x), Some(y)) = (vars.get(&xname), vars.get(&yname)) {
-                solver.assert_formula(tm.mk_term(cvc5_ff::Kind::Equal, &[x.clone(), y.clone()]));
-            }
-        }
-
-        // Target inequality
-        let sid = query.target_signal;
-        let xname = orig_var(sid);
-        let yname = format!("y{}", sid);
-        if let (Some(x), Some(y)) = (vars.get(&xname), vars.get(&yname)) {
-            let eq = tm.mk_term(cvc5_ff::Kind::Equal, &[x.clone(), y.clone()]);
+        // Target disequality.
+        let target_x = vars.get(ir.x_name(ir.target_signal)).cloned();
+        let target_y = vars.get(ir.y_name(ir.target_signal)).cloned();
+        if let (Some(x), Some(y)) = (target_x, target_y) {
+            let eq = tm.mk_term(cvc5_ff::Kind::Equal, &[x, y]);
             solver.assert_formula(tm.mk_term(cvc5_ff::Kind::Not, &[eq]));
         }
 
@@ -113,157 +83,62 @@ impl SolverBackend for Cvc5FfBackend {
         }
     }
 
-    fn dump_smt(&self, query: &UniquenessQuery) -> String {
-        let p = &query.prime;
+    fn dump_smt(&self, ir: &PolyIR) -> String {
+        let p = ir.ring.field.prime();
         let mut lines = Vec::new();
-
         lines.push("(set-logic QF_FF)".to_string());
         lines.push(format!("(define-sort F () (_ FiniteField {}))", p));
-
-        for (name, val) in &query.constants {
+        for name in ir.ring.ring.var_names() {
             lines.push(format!("(declare-const {} F)", name));
-            lines.push(format!("(assert (= {} #f{}m{}))", name, val, p));
         }
-
-        for i in 0..query.n_wires {
-            lines.push(format!("(declare-const x{} F)", i));
+        for poly in &ir.equalities {
+            lines.push(format!(
+                "(assert (= #f0m{} {}))",
+                p,
+                poly_to_smtlib_ff(ir, poly)
+            ));
         }
-        for i in 0..query.n_wires {
-            if !query.input_indices.contains(&i) {
-                lines.push(format!("(declare-const y{} F)", i));
-            }
-        }
-
-        lines.push(format!("(assert (= x0 #f1m{}))", p));
-
-        for c in &query.orig_constraints {
-            lines.push(format!("(assert {})", constraint_to_smtlib_ff(c, p)));
-        }
-        for c in &query.alt_constraints {
-            lines.push(format!("(assert {})", constraint_to_smtlib_ff(c, p)));
-        }
-
-        for &j in &query.known_signals {
-            if !query.input_indices.contains(&j) {
-                lines.push(format!("(assert (= x{} y{}))", j, j));
-            }
-        }
-
-        let sid = query.target_signal;
-        lines.push(format!("(assert (not (= x{} y{})))", sid, sid));
+        let s = ir.target_signal;
+        lines.push(format!(
+            "(assert (not (= {} {})))",
+            ir.x_name(s),
+            ir.y_name(s)
+        ));
         lines.push("(check-sat)".to_string());
         lines.push("(get-model)".to_string());
-
         lines.join("\n")
     }
 }
 
-fn build_constraint_ff<'a>(
+fn build_poly_term<'a>(
     tm: &'a cvc5_ff::TermManager,
     vars: &HashMap<String, cvc5_ff::Term<'a>>,
-    constraint: &IRConstraint,
-    ff: cvc5_ff::Sort<'a>,
-) -> Option<cvc5_ff::Term<'a>> {
-    match constraint {
-        IRConstraint::Linear(terms) => {
-            let zero = tm.mk_ff_elem("0", ff.clone(), 10);
-            let sum = build_ff_linear_sum(tm, vars, terms, ff)?;
-            Some(tm.mk_term(cvc5_ff::Kind::Equal, &[sum, zero]))
-        }
-        IRConstraint::NonLinear { lhs_terms, rhs_terms } => {
-            let zero = tm.mk_ff_elem("0", ff.clone(), 10);
-            let mut lhs_parts = Vec::new();
-            for term in lhs_terms {
-                let c = tm.mk_ff_elem(&term.coeff.to_string(), ff.clone(), 10);
-                let va = vars.get(&term.var_a)?.clone();
-                let vb = vars.get(&term.var_b)?.clone();
-                lhs_parts.push(tm.mk_term(cvc5_ff::Kind::FiniteFieldMult, &[c, va, vb]));
-            }
-            let lhs = ff_add_terms(tm, &lhs_parts, ff.clone());
-
-            let rhs = if rhs_terms.is_empty() {
-                zero
-            } else {
-                build_ff_linear_sum(tm, vars, rhs_terms, ff)?
-            };
-
-            Some(tm.mk_term(cvc5_ff::Kind::Equal, &[lhs, rhs]))
-        }
-        IRConstraint::Or(subs) => {
-            let terms: Vec<cvc5_ff::Term> = subs
-                .iter()
-                .filter_map(|c| build_constraint_ff(tm, vars, c, ff.clone()))
-                .collect();
-            match terms.len() {
-                0 => None,
-                1 => Some(terms.into_iter().next().unwrap()),
-                _ => Some(tm.mk_term(cvc5_ff::Kind::Or, &terms)),
-            }
-        }
-        IRConstraint::VarEq(var, val) => {
-            let v = vars.get(var)?.clone();
-            let val_term = tm.mk_ff_elem(&val.to_string(), ff, 10);
-            Some(tm.mk_term(cvc5_ff::Kind::Equal, &[v, val_term]))
-        }
-        IRConstraint::VarNeq(var_a, var_b) => {
-            let a = vars.get(var_a)?.clone();
-            let b = vars.get(var_b)?.clone();
-            let eq = tm.mk_term(cvc5_ff::Kind::Equal, &[a, b]);
-            Some(tm.mk_term(cvc5_ff::Kind::Not, &[eq]))
-        }
-    }
-}
-
-fn build_ff_linear_sum<'a>(
-    tm: &'a cvc5_ff::TermManager,
-    vars: &HashMap<String, cvc5_ff::Term<'a>>,
-    terms: &[IRTerm],
-    ff: cvc5_ff::Sort<'a>,
-) -> Option<cvc5_ff::Term<'a>> {
-    let mut parts = Vec::new();
-    for term in terms {
-        let c = tm.mk_ff_elem(&term.coeff.to_string(), ff.clone(), 10);
-        let v = vars.get(&term.var)?.clone();
-        parts.push(tm.mk_term(cvc5_ff::Kind::FiniteFieldMult, &[c, v]));
-    }
-    Some(ff_add_terms(tm, &parts, ff))
-}
-
-fn ff_add_terms<'a>(
-    tm: &'a cvc5_ff::TermManager,
-    parts: &[cvc5_ff::Term<'a>],
+    ir: &PolyIR,
+    poly: &picus_solver::poly::Poly,
     ff: cvc5_ff::Sort<'a>,
 ) -> cvc5_ff::Term<'a> {
-    match parts.len() {
-        0 => tm.mk_ff_elem("0", ff, 10),
-        1 => parts[0].clone(),
-        _ => tm.mk_term(cvc5_ff::Kind::FiniteFieldAdd, parts),
+    let mut sum_parts: Vec<cvc5_ff::Term<'a>> = Vec::new();
+    for (coeff, var_names) in ir.poly_terms(poly) {
+        let c = tm.mk_ff_elem(&coeff.to_string(), ff.clone(), 10);
+        if var_names.is_empty() {
+            sum_parts.push(c);
+            continue;
+        }
+        let mut factors: Vec<cvc5_ff::Term<'a>> = Vec::with_capacity(var_names.len() + 1);
+        factors.push(c);
+        for n in var_names {
+            factors.push(
+                vars.get(&n)
+                    .cloned()
+                    .unwrap_or_else(|| tm.mk_const(ff.clone(), &n)),
+            );
+        }
+        sum_parts.push(tm.mk_term(cvc5_ff::Kind::FiniteFieldMult, &factors));
     }
-}
-
-fn constraint_to_smtlib_ff(c: &IRConstraint, p: &BigUint) -> String {
-    match c {
-        IRConstraint::Linear(terms) => {
-            let inner: Vec<String> = terms
-                .iter()
-                .map(|t| format!("(ff.mul #f{}m{} {})", t.coeff, p, t.var))
-                .collect();
-            let sum = if inner.len() == 1 { inner[0].clone() } else { format!("(ff.add {})", inner.join(" ")) };
-            format!("(= #f0m{} {})", p, sum)
-        }
-        IRConstraint::NonLinear { lhs_terms, rhs_terms } => {
-            let lhs: Vec<String> = lhs_terms.iter().map(|t| format!("(ff.mul #f{}m{} {} {})", t.coeff, p, t.var_a, t.var_b)).collect();
-            let rhs: Vec<String> = rhs_terms.iter().map(|t| format!("(ff.mul #f{}m{} {})", t.coeff, p, t.var)).collect();
-            let lhs_str = if lhs.len() == 1 { lhs[0].clone() } else { format!("(ff.add {})", lhs.join(" ")) };
-            let rhs_str = if rhs.is_empty() { format!("#f0m{}", p) } else if rhs.len() == 1 { rhs[0].clone() } else { format!("(ff.add {})", rhs.join(" ")) };
-            format!("(= {} {})", lhs_str, rhs_str)
-        }
-        IRConstraint::Or(subs) => {
-            let inner: Vec<String> = subs.iter().map(|s| constraint_to_smtlib_ff(s, p)).collect();
-            format!("(or {})", inner.join(" "))
-        }
-        IRConstraint::VarEq(var, val) => format!("(= {} #f{}m{})", var, val, p),
-        IRConstraint::VarNeq(a, b) => format!("(not (= {} {}))", a, b),
+    match sum_parts.len() {
+        0 => tm.mk_ff_elem("0", ff, 10),
+        1 => sum_parts.into_iter().next().unwrap(),
+        _ => tm.mk_term(cvc5_ff::Kind::FiniteFieldAdd, &sum_parts),
     }
 }
 

@@ -13,14 +13,15 @@
 //!    uniqueness (UNSAT ⇒ verified). A SAT result on a target signal
 //!    is reported back as a counter-example.
 //!
-//! Backends still consume the legacy [`UniquenessQuery`] in Phase 3a;
-//! the conversion of backends to PolyIR is deferred to Phase 3b.
+//! Backends consume the same [`PolyIR`] the propagation layer builds;
+//! before each solve the driver appends `x_w - y_w = 0` equalities for
+//! every newly-proved-unique wire and sets `target_signal` so the
+//! backend's closing `(not (= x_target y_target))` matches.
 
 use num_bigint::BigUint;
 use picus_r1cs::grammar::*;
 use picus_smt::backends::{SolverBackend, SolverResult};
 use picus_smt::poly_ir::{r1cs_to_poly_ir, PolyIR};
-use picus_smt::query::{self};
 use picus_smt::{SolverKind, Theory};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -172,7 +173,6 @@ pub fn run_dpvl(r1cs: &R1csFile, config: &DpvlConfig) -> Result<DpvlResult, Stri
     let backend = picus_smt::create_backend(config.solver, config.theory)?;
     let mut ctx = DpvlContext {
         target_set,
-        r1cs: r1cs.clone(),
         selector: SelectorState::new(config.selector, connectivity),
         backend,
         timeout_ms: config.timeout_ms,
@@ -183,7 +183,6 @@ pub fn run_dpvl(r1cs: &R1csFile, config: &DpvlConfig) -> Result<DpvlResult, Stri
 
 struct DpvlContext {
     target_set: HashSet<usize>,
-    r1cs: R1csFile,
     selector: SelectorState,
     backend: Option<Box<dyn SolverBackend>>,
     timeout_ms: u64,
@@ -202,6 +201,12 @@ impl DpvlContext {
         loop {
             if !lemmas.is_empty() {
                 self.propagate(ir, lemmas, ks, us, ranges);
+            }
+
+            // Sync newly-known wires from propagation into the IR so
+            // the next backend call sees `x_w - y_w = 0` for them.
+            for &w in ks.iter() {
+                ir.add_known_wire(w);
             }
 
             if self.target_set.iter().all(|t| ks.contains(t)) {
@@ -231,13 +236,14 @@ impl DpvlContext {
                     sid,
                     self.target_set.contains(&sid)
                 );
-                let result = self.solve(ks, sid);
+                let result = self.solve(ir, sid);
 
                 match result {
                     SolveResult::Verified => {
                         self.selector.feedback(sid, SolverFeedback::Verified);
                         ks.insert(sid);
                         us.remove(&sid);
+                        ir.add_known_wire(sid);
                         made_progress = true;
                         break;
                     }
@@ -300,15 +306,15 @@ impl DpvlContext {
         }
     }
 
-    fn solve(&mut self, ks: &HashSet<usize>, sid: usize) -> SolveResult {
+    fn solve(&mut self, ir: &mut PolyIR, sid: usize) -> SolveResult {
         let backend = match self.backend.as_mut() {
             Some(b) => b,
             None => return SolveResult::Skip,
         };
-        let query_ir = query::build_query(&self.r1cs, ks, sid);
+        ir.set_target(sid);
 
         if let Some(ref dir) = self.dump_smt {
-            let smt_str = backend.dump_smt(&query_ir);
+            let smt_str = backend.dump_smt(ir);
             let ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -321,7 +327,7 @@ impl DpvlContext {
             }
         }
 
-        match backend.solve(&query_ir, self.timeout_ms) {
+        match backend.solve(ir, self.timeout_ms) {
             Ok(SolverResult::Unsat) => SolveResult::Verified,
             Ok(SolverResult::Sat(model)) => {
                 if self.target_set.contains(&sid) {
