@@ -1,20 +1,23 @@
-//! Stand-alone CLI that solves a QF_FF SMT-LIB v2 file via picus-solver.
+//! Stand-alone CLI driving a QF_FF SMT-LIB v2 script through
+//! [`picus_solver::smt2::SmtSession`].
 //!
 //! Usage:
 //!   run_smt2 <file.smt2> [iters]
 //!
-//! With `iters` omitted or 1: prints one of `sat` / `unsat` / `unknown`.
-//! With `iters >= 2`: also prints a CSV-style timing line:
-//!   `file,verdict,iters,encode_us,gb_med_us,gb_min_us,gb_max_us,total_med_us`
-//! where `encode_us` is the one-shot encode time, `gb_*` are over
-//! `iters` solve invocations on a single encoded system, and
-//! `total_med_us` is the median over `iters` encode+solve cycles.
+//! Default (`iters` omitted or 1): the script is evaluated once and
+//! every non-silent command's response is printed in source order
+//! using SMT-LIB-compatible formatting (`sat` / `unsat` / `unknown`,
+//! `(model ...)` blocks, `(get-value ...)` responses, `(echo ...)`).
+//!
+//! With `iters >= 2`: the script is re-evaluated `iters` times, and a
+//! CSV-style timing line is printed instead:
+//!   `file,verdicts,iters,med_us,min_us,max_us`
+//! where `verdicts` is a `|`-separated list of every `(check-sat)`
+//! response from the first run.
 
 use std::time::Instant;
 
-use picus_solver::core::{solve_encoded, SolveOutcome};
-use picus_solver::encoder::encode;
-use picus_solver::smt2;
+use picus_solver::smt2::{SessionOutput, SessionVerdict, SmtSession};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -29,58 +32,54 @@ fn main() {
         eprintln!("read {}: {}", path, e);
         std::process::exit(1);
     });
-    let cs = smt2::parse(&src).unwrap_or_else(|e| {
-        eprintln!("parse {}: {}", path, e);
-        std::process::exit(1);
-    });
-
-    let t0 = Instant::now();
-    let encoded = encode(&cs).unwrap_or_else(|e| {
-        eprintln!("encode {}: {}", path, e);
-        std::process::exit(1);
-    });
-    let encode_us = t0.elapsed().as_micros() as u64;
-
-    let outcome = solve_encoded(&encoded);
-    let verdict = match outcome {
-        SolveOutcome::Sat(_) => "sat",
-        SolveOutcome::Unsat(_) => "unsat",
-        SolveOutcome::Unknown => "unknown",
-    };
 
     if iters <= 1 {
-        println!("{}", verdict);
+        let mut sess = SmtSession::new();
+        let outs = sess.eval_script(&src).unwrap_or_else(|e| {
+            eprintln!("eval {}: {:?}", path, e);
+            std::process::exit(1);
+        });
+        for o in &outs {
+            let line = o.to_smtlib();
+            if !line.is_empty() {
+                println!("{}", line);
+            }
+        }
         return;
     }
 
-    // iters >= 2: emit a CSV-style timing line.
-    let mut solve_times = Vec::with_capacity(iters);
-    for _ in 0..iters {
-        let t = Instant::now();
-        let _ = solve_encoded(&encoded);
-        solve_times.push(t.elapsed().as_micros() as u64);
-    }
-    solve_times.sort();
-    let med = solve_times[iters / 2];
-    let min = *solve_times.first().unwrap();
-    let max = *solve_times.last().unwrap();
+    // Timed mode. Evaluate once to collect verdicts, then time `iters`
+    // additional runs.
+    let mut sess = SmtSession::new();
+    let outs = sess.eval_script(&src).unwrap_or_else(|e| {
+        eprintln!("eval {}: {:?}", path, e);
+        std::process::exit(1);
+    });
+    let verdicts: Vec<&str> = outs
+        .iter()
+        .filter_map(|o| match o {
+            SessionOutput::CheckSat(SessionVerdict::Sat) => Some("sat"),
+            SessionOutput::CheckSat(SessionVerdict::Unsat) => Some("unsat"),
+            SessionOutput::CheckSat(SessionVerdict::Unknown) => Some("unknown"),
+            _ => None,
+        })
+        .collect();
+    let verdict_str = verdicts.join("|");
 
-    let mut total_times = Vec::with_capacity(iters);
+    let mut times = Vec::with_capacity(iters);
     for _ in 0..iters {
+        let mut s = SmtSession::new();
         let t = Instant::now();
-        let enc = encode(&cs).expect("encode");
-        let _ = solve_encoded(&enc);
-        total_times.push(t.elapsed().as_micros() as u64);
+        let _ = s.eval_script(&src);
+        times.push(t.elapsed().as_micros() as u64);
     }
-    total_times.sort();
-    let total_med = total_times[iters / 2];
-
+    times.sort();
+    let med = times[iters / 2];
+    let min = *times.first().unwrap();
+    let max = *times.last().unwrap();
     let name = std::path::Path::new(path)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or(path);
-    println!(
-        "{},{},{},{},{},{},{},{}",
-        name, verdict, iters, encode_us, med, min, max, total_med
-    );
+    println!("{},{},{},{},{},{}", name, verdict_str, iters, med, min, max);
 }

@@ -43,6 +43,20 @@ AB0 is an internal query-construction pass and is not exposed via
 - **Multiple counter-examples.** Re-invoke the solver with previously
   found CEXes banned to enumerate alternatives.
 
+## SMT-LIB v2 frontend
+
+The `picus-solver::smt2::SmtSession` evaluator covers every command
+used by the `cvc5/test/regress/cli/regress0/ff/` suite (`set-logic`,
+`set-info`, `set-option` including `:tlimit-per`, `define-sort`,
+`declare-fun` / `declare-const`, `define-fun`, `assert` with
+`(! ... :named NAME)` annotations, `push n` / `pop n`, `check-sat`,
+`get-value`) plus `get-model`, `get-unsat-core`, `echo`, `reset`,
+`reset-assertions`, `exit`. The remaining SMT-LIB spec edges that
+cvc5 supports but no cvc5 FF regression exercises (a strictly
+minimal `get-unsat-core`, multi-prime systems in a single query,
+`get-proof`, whitespace-bearing `echo` strings) are deferred until a
+real workload requires them.
+
 ## Partially Implemented
 
 ### Non-trivial UNSAT core tracing (`ffTraceGb`)
