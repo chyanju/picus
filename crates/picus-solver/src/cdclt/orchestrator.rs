@@ -114,12 +114,14 @@ fn cdclt_loop(
         if sat.all_assigned() {
             match theory.post_check(Effort::Full) {
                 CheckOutcome::Sat => {
-                    let mut model = build_full_model(sat, theory);
-                    if let Some(theory_model) = theory.collect_model() {
-                        for (k, v) in theory_model {
-                            model.insert(k, v);
-                        }
-                    }
+                    // The model returned by the theory's final
+                    // `post_check(Full)` already covers every named
+                    // variable: Bool vars are encoded as FF elements
+                    // in {0, 1} in the polynomial namespace, so they
+                    // come through the GB SAT point alongside the FF
+                    // vars. SAT-only aux vars (Tseitin literals) are
+                    // intentionally not surfaced.
+                    let model = theory.collect_model().unwrap_or_default();
                     return SolveOutcome::Sat(model);
                 }
                 CheckOutcome::Unsat { core } => {
@@ -248,10 +250,6 @@ fn sync_theory_after_backtrack(
         theory.pop();
         *theory_levels -= 1;
     }
-}
-
-fn build_full_model(_sat: &Solver, _theory: &FfTheory<'_>) -> HashMap<String, BigUint> {
-    HashMap::new()
 }
 
 #[cfg(test)]

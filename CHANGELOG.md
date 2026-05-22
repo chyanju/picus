@@ -4,6 +4,102 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.25] - 2026-05-21
+
+### Added
+
+- `picus-solver::smt2::SmtSession`. Persistent SMT-LIB v2 session
+  evaluator. Commands accepted: `set-logic`, `set-info`,
+  `set-option` (including `:tlimit-per <ms>` for per-`check-sat`
+  cancellation budget), `define-sort`, `declare-fun` /
+  `declare-const`, `define-fun`, `assert` with
+  `(! term :named NAME [other attrs])` annotations, `push n` /
+  `pop n`, `check-sat`, `get-model`, `get-value`,
+  `get-unsat-core`, `echo`, `reset`, `reset-assertions`, `exit`.
+  `eval_script(src)` returns one [`SessionOutput`] per non-silent
+  command in source order; `(exit)` truncates the response stream.
+- `picus-solver::smt2::SessionOutput`. Tagged union over
+  `Silent` / `CheckSat(SessionVerdict)` / `Model(String)` /
+  `Values(Vec<(String, String)>)` / `UnsatCore(Vec<String>)` /
+  `Echo(String)`. `to_smtlib()` renders each variant in the SMT-LIB
+  v2 response shape: `sat`/`unsat`/`unknown`, the multi-line
+  `(...)` model block, the `(get-value …)` pair list, the
+  `(get-unsat-core)` name list, and the echo string.
+- `picus-solver::smt2::SessionVerdict::{Sat, Unsat, Unknown}` and
+  `SmtSession::{last_verdict, last_model, decision_level}`
+  introspection accessors.
+- `:named` annotation plumbing: `assert_names: Vec<Option<String>>`
+  runs parallel to the `formulas` vector, is truncated by
+  `(pop n)`, and feeds the `(get-unsat-core)` response. When
+  `(check-sat)` returns UNSAT, every `:named` assert in scope at
+  that moment is reported as the core (SMT-LIB §4.2.2 allows any
+  sufficient subset; minimality is not produced).
+- Per-check timeout via `(set-option :tlimit-per <ms>)`: each
+  `(check-sat)` constructs a fresh
+  [`crate::timeout::CancelToken::with_timeout(Duration::from_millis(ms))`].
+  `:tlimit-per 0` disables the timeout.
+- `crates/picus-solver/tests/run_smt2_smoke.rs`. Six binary
+  integration tests that spawn the compiled `run_smt2` binary on
+  a tempfile and assert the stdout response shape for
+  `check-sat`, `get-model`, `get-value`, `push`/`pop`,
+  `:named` + `get-unsat-core`, and `(exit)` truncation.
+- 30 `smt2::tests::session_*` unit tests covering SAT / UNSAT
+  verdicts, `(get-model)` printing for FF and Bool variables,
+  `(get-value (…))` formatting (including the
+  skip-undeclared-name rule), `(get-unsat-core)` for SAT / UNSAT /
+  no-check / mixed named-and-unnamed asserts, `(push n)` and
+  `(pop n)` arity handling (including past-root pops),
+  declaration / macro / `__ite_N` skolem / side-constraint
+  restore on `pop`, deterministic Bool-var bit-constraint
+  emission ordering, `(reset)` vs `(reset-assertions)` semantics,
+  `(exit)` truncation, `set-option :tlimit-per` overwrite and
+  non-numeric tolerance, and `to_smtlib()` formatting for every
+  output variant.
+- 6 `cdclt_regression::cdclt_sat_model_*` integration tests
+  asserting that `solve_formula` returns a model containing the
+  declared FF variable, the declared Bool variable (both asserted
+  polarities), free Bool variables, mixed Bool + FF systems, and
+  the FF variables touched by a term-level `(ite c x y)` skolem.
+
+### Changed
+
+- `picus-solver::bin::run_smt2` rewritten on top of `SmtSession`.
+  Single-run mode emits one SMT-LIB response per non-silent
+  command in source order. Timed mode (`iters >= 2`) emits a CSV
+  line where the verdict column is the `|`-separated sequence of
+  every `(check-sat)` outcome captured from the first evaluation.
+- `picus-solver::cdclt::orchestrator::cdclt_loop`: the
+  SAT branch no longer routes through a `build_full_model` helper.
+  `theory.collect_model()` already covers every named variable
+  because Bool vars live in the polynomial namespace as FF
+  elements; the SAT branch returns
+  `theory.collect_model().unwrap_or_default()`.
+
+### Fixed
+
+- `SmtSession::check_sat` iterated `&self.vars` (HashMap) to emit
+  Bool-var bit constraints `b*b = b`. HashMap iteration order is
+  not stable; this leaked into the atom-interning order. Now
+  iterates `&self.var_order` (declaration order).
+- `SmtSession::eval_get_value` fabricated a zero-valued response
+  for names not declared in the session
+  (`(get-value (undeclared)) → ((undeclared #f0mP))`). Undeclared
+  names are now skipped instead of being given a false value.
+- `SmtSession::eval_script` continued evaluating commands after
+  `(exit)`. `(exit)` now truncates the response stream and leaves
+  later commands unprocessed.
+- `(reset-assertions)` collapsed into `(reset)` — both wiped
+  declarations, macros, the logic, and options. Per SMT-LIB v2
+  §4.2.1 the former preserves declarations, macros, the prime,
+  and options; only the assertion stack and the push trail are
+  now cleared.
+
+### Removed
+
+- `picus-solver::cdclt::orchestrator::build_full_model`. The
+  function returned `HashMap::new()` and the indirection added
+  no value over calling `theory.collect_model()` directly.
+
 ## [1.7.24] - 2026-05-21
 
 ### Added
