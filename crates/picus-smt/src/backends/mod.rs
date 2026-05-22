@@ -10,13 +10,33 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 use crate::poly_ir::PolyIR;
+use picus_solver::timeout::CancelToken;
+
+/// Why a solver could not commit to `Sat` or `Unsat`. Discriminating
+/// these lets callers retry with a longer budget (`Timeout`),
+/// downgrade the verdict (`IncompleteTheory`), or surface a hard
+/// failure to the user (`BackendError`).
+#[derive(Debug, Clone)]
+pub enum UnknownReason {
+    /// The budget (wall-clock timeout or cancel token) fired before
+    /// the solver finished.
+    Timeout,
+    /// The solver's theory can't decide this query (e.g. cvc5 QF_FF
+    /// returning `unknown` on an `or` clause it doesn't currently
+    /// handle, or a GB engine missing field polys for a small prime).
+    IncompleteTheory,
+    /// Internal solver failure: panic recovery, process crash,
+    /// malformed model, etc. The string carries the original message
+    /// for logs / debugging.
+    BackendError(String),
+}
 
 /// Result from a solver invocation.
 #[derive(Debug, Clone)]
 pub enum SolverResult {
     Unsat,
     Sat(HashMap<String, BigUint>),
-    Unknown,
+    Unknown(UnknownReason),
 }
 
 #[derive(Debug, Error)]
@@ -38,10 +58,17 @@ pub enum SolverError {
 /// `HashMap<String, BigUint>` keyed by the ring's canonical variable
 /// names (`x0`, `y3`, ...).
 pub trait SolverBackend {
+    /// Run the SMT query encoded by `ir`. The backend honours **both**
+    /// `timeout_ms` (its own per-call budget) and `cancel` (an external
+    /// cancellation channel, e.g. Ctrl-C reaching the analyser). Either
+    /// firing should land in `SolverResult::Unknown(UnknownReason::Timeout)`.
+    /// Backends that only support one of the two should document that
+    /// limitation rather than silently ignoring the other.
     fn solve(
         &mut self,
         ir: &PolyIR,
         timeout_ms: u64,
+        cancel: &CancelToken,
     ) -> Result<SolverResult, SolverError>;
 
     fn dump_smt(&self, ir: &PolyIR) -> String;

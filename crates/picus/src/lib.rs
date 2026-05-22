@@ -114,6 +114,25 @@ pub struct Config {
     pub profile: bool,
     /// Emit per-run GB statistics to stderr. Default: `false`.
     pub gb_stats: bool,
+    /// Use F4 matrix reduction for batched same-sugar S-pairs (native
+    /// FF backend only). Default: `false`.
+    pub use_f4: bool,
+    /// Pick DNF instead of CNF for the boolean layer (native FF
+    /// backend only). Default: `false`.
+    pub dnf_enabled: bool,
+    /// DNF expansion cap; native FF returns `Unknown` beyond this
+    /// disjunct count. Default: `100_000`.
+    pub dnf_cap: u64,
+    /// CDCL(T) outer-iteration cap; `0` forces immediate `Unknown`
+    /// (test helper), `u64::MAX` for effectively unbounded.
+    /// Default: `1_000_000`.
+    pub cdclt_iter_cap: u64,
+    /// Emit GB trace events for the in-flight basis to stderr.
+    /// Default: `false`.
+    pub gb_trace: bool,
+    /// Reuse the incremental Buchberger cache between native FF
+    /// `solve()` calls. Default: `true`.
+    pub cache_enabled: bool,
 }
 
 impl Default for Config {
@@ -128,6 +147,12 @@ impl Default for Config {
             gb_strategy: GbStrategy::Direct,
             profile: false,
             gb_stats: false,
+            use_f4: false,
+            dnf_enabled: false,
+            dnf_cap: 100_000,
+            cdclt_iter_cap: 1_000_000,
+            gb_trace: false,
+            cache_enabled: true,
         }
     }
 }
@@ -226,6 +251,12 @@ pub fn check_r1cs(
         c.gb_strategy = config.gb_strategy;
         c.profile_enabled = config.profile;
         c.gb_stats_enabled = config.gb_stats;
+        c.use_f4 = config.use_f4;
+        c.dnf_enabled = config.dnf_enabled;
+        c.dnf_cap = config.dnf_cap;
+        c.cdclt_iter_cap = config.cdclt_iter_cap;
+        c.gb_trace_enabled = config.gb_trace;
+        c.cache_enabled = config.cache_enabled;
     });
 
     // Build internal DPVL config

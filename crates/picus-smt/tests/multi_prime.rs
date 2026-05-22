@@ -74,7 +74,7 @@ fn build_x1_squared_eq_x2() -> R1csFile {
 fn poly_ir_lowering_honours_non_bn128_prime() {
     let r1cs = build_x1_squared_eq_x2();
     let known: HashSet<usize> = r1cs.inputs.iter().copied().collect();
-    let ir = r1cs_to_poly_ir(&r1cs, &known, 2);
+    let ir = r1cs_to_poly_ir(&r1cs, &known, 2).expect("lowering should succeed");
 
     // Ring prime matches the R1CS header.
     assert_eq!(
@@ -92,12 +92,13 @@ fn poly_ir_lowering_honours_non_bn128_prime() {
 fn native_ff_solves_over_gf7() {
     let r1cs = build_x1_squared_eq_x2();
     let known: HashSet<usize> = r1cs.inputs.iter().copied().collect();
-    let mut ir = r1cs_to_poly_ir(&r1cs, &known, 2);
+    let mut ir = r1cs_to_poly_ir(&r1cs, &known, 2).expect("lowering should succeed");
     ir.set_target(2);
 
     let mut backend = picus_smt::backends::native_ff::NativeFfBackend::new();
+    let cancel = picus_solver::timeout::CancelToken::none();
     let outcome = backend
-        .solve(&ir, 5000)
+        .solve(&ir, 5000, &cancel)
         .expect("native_ff backend should not error on GF(7)");
     // x_1^2 uniquely determines x_2 (function), so target wire 2's
     // disequality is UNSAT.
