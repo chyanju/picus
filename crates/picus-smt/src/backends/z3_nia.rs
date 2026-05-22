@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use z3::ast::Int;
 use z3::{Params, SatResult, Solver};
 
-use crate::backends::{SolverBackend, SolverError, SolverResult};
-use crate::query::*;
+use crate::backends::{poly_to_smtlib_nia, SolverBackend, SolverError, SolverResult};
+use crate::poly_ir::PolyIR;
 
 pub struct Z3NiaBackend;
 
@@ -25,75 +25,35 @@ impl Z3NiaBackend {
 impl SolverBackend for Z3NiaBackend {
     fn solve(
         &mut self,
-        query: &UniquenessQuery,
+        ir: &PolyIR,
         timeout_ms: u64,
     ) -> Result<SolverResult, SolverError> {
         let solver = Solver::new();
-
         let mut params = Params::new();
         params.set_u32("timeout", timeout_ms.min(u32::MAX as u64) as u32);
         solver.set_params(&params);
 
-        let p_ast = bigint(&query.prime);
+        let prime = ir.ring.field.prime();
+        let p_ast = bigint(prime);
 
-        // Declare variables with range constraints
+        // Declare every ring variable with a `[0, p)` range constraint.
         let mut vars: HashMap<String, Int> = HashMap::new();
-
-        for i in 0..query.n_wires {
-            let xname = orig_var(i);
-            let x = Int::new_const(xname.as_str());
-            solver.assert(x.ge(Int::from_u64(0)));
-            solver.assert(x.lt(&p_ast));
-            vars.insert(xname, x);
-        }
-        for i in 0..query.n_wires {
-            if !query.input_indices.contains(&i) {
-                let yname = format!("y{}", i);
-                let y = Int::new_const(yname.as_str());
-                solver.assert(y.ge(Int::from_u64(0)));
-                solver.assert(y.lt(&p_ast));
-                vars.insert(yname, y);
-            }
+        for name in ir.ring.ring.var_names() {
+            let v = Int::new_const(name.as_str());
+            solver.assert(v.ge(Int::from_u64(0)));
+            solver.assert(v.lt(&p_ast));
+            vars.insert(name.clone(), v);
         }
 
-        // Named constants
-        for (name, val) in &query.constants {
-            let c = Int::new_const(name.as_str());
-            solver.assert(c.eq(bigint(val)));
-            vars.insert(name.clone(), c);
+        // Equalities: `(rem poly p) = 0`.
+        for poly in &ir.equalities {
+            let sum = build_poly_z3(&vars, ir, poly);
+            solver.assert(sum.rem(&p_ast).eq(Int::from_u64(0)));
         }
 
-        // x0 = 1
-        if let Some(x0) = vars.get("x0") {
-            solver.assert(x0.eq(Int::from_u64(1)));
-        }
-
-        // Constraints
-        for constraint in &query.orig_constraints {
-            if let Some(ast) = build_constraint_z3(&vars, constraint, &p_ast) {
-                solver.assert(&ast);
-            }
-        }
-        for constraint in &query.alt_constraints {
-            if let Some(ast) = build_constraint_z3(&vars, constraint, &p_ast) {
-                solver.assert(&ast);
-            }
-        }
-
-        // Known equalities
-        for &j in &query.known_signals {
-            let xname = orig_var(j);
-            let yname = format!("y{}", j);
-            if let (Some(x), Some(y)) = (vars.get(&xname), vars.get(&yname)) {
-                solver.assert(x.eq(y));
-            }
-        }
-
-        // Target inequality
-        let sid = query.target_signal;
-        let xname = orig_var(sid);
-        let yname = format!("y{}", sid);
-        if let (Some(x), Some(y)) = (vars.get(&xname), vars.get(&yname)) {
+        // Target disequality.
+        let s = ir.target_signal;
+        if let (Some(x), Some(y)) = (vars.get(ir.x_name(s)), vars.get(ir.y_name(s))) {
             solver.assert(x.eq(y).not());
         }
 
@@ -116,111 +76,55 @@ impl SolverBackend for Z3NiaBackend {
         }
     }
 
-    fn dump_smt(&self, query: &UniquenessQuery) -> String {
-        let p = &query.prime;
+    fn dump_smt(&self, ir: &PolyIR) -> String {
+        let p = ir.ring.field.prime();
         let mut lines = Vec::new();
         lines.push("(set-logic QF_NIA)".to_string());
-
-        for (name, val) in &query.constants {
+        for name in ir.ring.ring.var_names() {
             lines.push(format!("(declare-const {} Int)", name));
-            lines.push(format!("(assert (= {} {}))", name, val));
+            lines.push(format!("(assert (and (>= {0} 0) (< {0} {1})))", name, p));
         }
-
-        for i in 0..query.n_wires {
-            lines.push(format!("(declare-const x{} Int)", i));
-            lines.push(format!("(assert (and (>= x{0} 0) (< x{0} {1})))", i, p));
+        for poly in &ir.equalities {
+            lines.push(format!(
+                "(assert (= (rem {} {}) 0))",
+                poly_to_smtlib_nia(ir, poly),
+                p
+            ));
         }
-        for i in 0..query.n_wires {
-            if !query.input_indices.contains(&i) {
-                lines.push(format!("(declare-const y{} Int)", i));
-                lines.push(format!("(assert (and (>= y{0} 0) (< y{0} {1})))", i, p));
-            }
-        }
-
-        lines.push("(assert (= x0 1))".to_string());
-
-        for c in &query.orig_constraints {
-            lines.push(format!("(assert {})", super::constraint_to_smtlib_nia(c, p, "rem")));
-        }
-        for c in &query.alt_constraints {
-            lines.push(format!("(assert {})", super::constraint_to_smtlib_nia(c, p, "rem")));
-        }
-
-        for &j in &query.known_signals {
-            if !query.input_indices.contains(&j) {
-                lines.push(format!("(assert (= x{} y{}))", j, j));
-            }
-        }
-
-        let sid = query.target_signal;
-        lines.push(format!("(assert (not (= x{} y{})))", sid, sid));
+        let s = ir.target_signal;
+        lines.push(format!(
+            "(assert (not (= {} {})))",
+            ir.x_name(s),
+            ir.y_name(s)
+        ));
         lines.push("(check-sat)".to_string());
         lines.push("(get-model)".to_string());
-
         lines.join("\n")
     }
 }
 
 fn bigint(val: &BigUint) -> Int {
-    val.to_string().parse::<Int>().expect("BigUint should produce valid z3 Int")
+    val.to_string()
+        .parse::<Int>()
+        .expect("BigUint should produce valid z3 Int")
 }
 
-fn build_constraint_z3(
-    vars: &HashMap<String, Int>,
-    constraint: &IRConstraint,
-    p: &Int,
-) -> Option<z3::ast::Bool> {
-    match constraint {
-        IRConstraint::Linear(terms) => {
-            let mut sum = Int::from_u64(0);
-            for term in terms {
-                if let Some(v) = vars.get(&term.var) {
-                    let c = bigint(&term.coeff);
-                    sum = Int::add(&[&sum, &Int::mul(&[&c, v])]);
-                }
-            }
-            Some(sum.rem(p).eq(Int::from_u64(0)))
+fn build_poly_z3(vars: &HashMap<String, Int>, ir: &PolyIR, poly: &picus_solver::poly::Poly) -> Int {
+    let mut sum = Int::from_u64(0);
+    for (coeff, var_names) in ir.poly_terms(poly) {
+        let c = bigint(&coeff);
+        let mut factors: Vec<Int> = Vec::with_capacity(var_names.len() + 1);
+        factors.push(c);
+        for n in var_names {
+            factors.push(vars.get(&n).cloned().unwrap_or_else(|| Int::new_const(n.as_str())));
         }
-        IRConstraint::NonLinear { lhs_terms, rhs_terms } => {
-            let mut lhs = Int::from_u64(0);
-            for term in lhs_terms {
-                if let (Some(va), Some(vb)) = (vars.get(&term.var_a), vars.get(&term.var_b)) {
-                    let c = bigint(&term.coeff);
-                    let product = Int::mul(&[&c, va, vb]);
-                    lhs = Int::add(&[&lhs, &product]);
-                }
-            }
-            let mut rhs = Int::from_u64(0);
-            for term in rhs_terms {
-                if let Some(v) = vars.get(&term.var) {
-                    let c = bigint(&term.coeff);
-                    rhs = Int::add(&[&rhs, &Int::mul(&[&c, v])]);
-                }
-            }
-            Some(lhs.rem(p).eq(rhs.rem(p)))
-        }
-        IRConstraint::Or(subs) => {
-            let bools: Vec<z3::ast::Bool> = subs
-                .iter()
-                .filter_map(|c| build_constraint_z3(vars, c, p))
-                .collect();
-            if bools.is_empty() {
-                None
-            } else {
-                let refs: Vec<&z3::ast::Bool> = bools.iter().collect();
-                Some(z3::ast::Bool::or(&refs))
-            }
-        }
-        IRConstraint::VarEq(var, val) => {
-            vars.get(var).map(|v| v.eq(bigint(val)))
-        }
-        IRConstraint::VarNeq(var_a, var_b) => {
-            if let (Some(a), Some(b)) = (vars.get(var_a), vars.get(var_b)) {
-                Some(a.eq(b).not())
-            } else {
-                None
-            }
-        }
+        let refs: Vec<&Int> = factors.iter().collect();
+        let product = if refs.len() == 1 {
+            factors.into_iter().next().unwrap()
+        } else {
+            Int::mul(&refs)
+        };
+        sum = Int::add(&[&sum, &product]);
     }
+    sum
 }
-

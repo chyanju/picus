@@ -58,6 +58,18 @@ impl PolyIR {
         self.n_wires + wire
     }
 
+    /// Canonical name for the original-copy variable of wire `wire`
+    /// (e.g. `x5`).
+    pub fn x_name(&self, wire: usize) -> &str {
+        &self.ring.var_names[wire]
+    }
+
+    /// Canonical name for the alt-copy variable of wire `wire`
+    /// (e.g. `y5`).
+    pub fn y_name(&self, wire: usize) -> &str {
+        &self.ring.var_names[self.n_wires + wire]
+    }
+
     /// Build a `Poly` representing the linear polynomial `coeff * x` for
     /// variable index `var`. Used by lemmas that need to emit a learned
     /// constraint from a `(var, value)` pair.
@@ -70,6 +82,53 @@ impl PolyIR {
     pub fn constant(&self, c: &BigUint) -> Poly {
         let el = self.ring.field.from_biguint(c);
         self.ring.constant(el)
+    }
+
+    /// Record that wire `w` has been proved unique by the DPVL outer
+    /// loop. Appends `x_w - y_w = 0` to [`Self::equalities`] so the
+    /// next backend call sees it as a regular constraint.
+    pub fn add_known_wire(&mut self, w: usize) {
+        if self.known_signals.insert(w) && !self.input_indices.contains(&w) {
+            // Inputs already had `x_i - y_i = 0` baked in at lowering;
+            // only non-input wires need a fresh equality here.
+            let x = self.ring.var(self.orig_var(w));
+            let y = self.ring.var(self.alt_var(w));
+            self.equalities.push(self.ring.sub(x, y));
+        }
+    }
+
+    /// Set the current uniqueness target. Does not mutate the
+    /// constraint set; backends consume `target_signal` directly when
+    /// emitting the closing disequality.
+    pub fn set_target(&mut self, w: usize) {
+        debug_assert!(w < self.n_wires);
+        self.target_signal = w;
+    }
+
+    /// Iterate every term of `poly` as `(coeff, monomial_vars)`, where
+    /// `monomial_vars` is a flat `Vec<String>` listing each variable's
+    /// canonical name once per degree (e.g. `x*x` ⇒ `["x", "x"]`,
+    /// `x*y` ⇒ `["x", "y"]`). Constant terms yield an empty `Vec`.
+    /// Backends use this to translate the polynomial into their
+    /// solver-native form.
+    pub fn poly_terms<'a>(
+        &'a self,
+        poly: &'a Poly,
+    ) -> impl Iterator<Item = (BigUint, Vec<String>)> + 'a {
+        let ring = &self.ring.ring;
+        let n_vars = ring.n_vars();
+        let names = ring.var_names();
+        ring.terms(poly).map(move |(coeff_el, m)| {
+            let coeff = self.ring.field.to_biguint(coeff_el);
+            let mut vars = Vec::new();
+            for v in 0..n_vars {
+                let e = ring.exponent_at(&m, v);
+                for _ in 0..e {
+                    vars.push(names[v].clone());
+                }
+            }
+            (coeff, vars)
+        })
     }
 }
 
@@ -116,19 +175,19 @@ pub fn r1cs_to_poly_ir(
         }
     }
 
-    // Wire 0 pinned to 1 in both copies. This is implicit in the R1CS
-    // semantics; surfacing it makes the polynomial system self-contained.
+    // Wire 0 pinned to 1. `block_to_linear` already folds `c * x_0`
+    // straight into a constant, so the polynomials never reference
+    // wire 0 — but backends still observe `x_0` as a ring variable
+    // and need an equality to pin it. Wire 0 is an input, so the
+    // alt copy collapses onto `x_0` in `block_to_linear` and `y_0`
+    // is never referenced.
     let one_el = ring.field.one();
-    let one_poly = ring.constant(one_el);
-    equalities.push(ring.sub(ring.var(0), ring.clone_poly(&one_poly)));
-    equalities.push(ring.sub(ring.var(n_wires), one_poly));
+    equalities.push(ring.sub(ring.var(0), ring.constant(one_el)));
 
-    // Input wires: x_i = y_i (the alt copy must agree on inputs).
-    for &i in &input_indices {
-        let x = ring.var(i);
-        let y = ring.var(n_wires + i);
-        equalities.push(ring.sub(x, y));
-    }
+    // Inputs share their value across copies. `block_to_linear` emits
+    // `x_i` (not `y_i`) for input wires in alt-copy constraints, so no
+    // explicit `x_i - y_i = 0` equality is required: `y_i` for input
+    // wires is simply never referenced.
 
     PolyIR {
         ring,
@@ -168,6 +227,12 @@ fn constraint_to_poly(
 /// constraint block. Inputs use the original `x_i` index in both copies
 /// (they share the same value); non-inputs use `x_i` in the orig copy
 /// and `y_i` in the alt copy.
+///
+/// Wire 0 (the R1CS one-wire) folds straight into the constant term so
+/// the lemma layer never sees `(coeff * x_0)` as a distinct linear
+/// monomial — that simplification is the polynomial analogue of the
+/// old SubP optimiser's `x_0 → 1` rewrite, and lemmas like `binary01`
+/// rely on it to match `x^2 - x = 0` after constraint expansion.
 fn block_to_linear(
     ring: &Arc<FfPolyRing>,
     block: &ConstraintBlock,
@@ -188,12 +253,19 @@ fn block_to_linear(
         }
         let coeff = field_reduce(factor);
         let coeff_el = ring.field.from_biguint(&coeff);
-        let var_idx = if is_alt && !input_indices.contains(&wid) {
-            n_wires + wid
+        let term = if wid == 0 {
+            // x_0 = y_0 = 1 (R1CS one-wire); fold the coefficient
+            // directly into the constant term so downstream
+            // polynomials stay free of redundant `c * x_0` monomials.
+            ring.constant(coeff_el)
         } else {
-            wid
+            let var_idx = if is_alt && !input_indices.contains(&wid) {
+                n_wires + wid
+            } else {
+                wid
+            };
+            ring.scale(coeff_el, ring.var(var_idx))
         };
-        let term = ring.scale(coeff_el, ring.var(var_idx));
         acc = ring.add(acc, term);
     }
     acc

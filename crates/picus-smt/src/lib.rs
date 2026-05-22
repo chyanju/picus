@@ -1,11 +1,11 @@
 pub mod backends;
 pub mod poly_ir;
-pub mod query;
 
-/// Names introduced into the constraint system as named field
-/// constants by the legacy R1CS-to-SMT lowering. Downstream code (the
-/// `picus` witness post-processor) uses this list to filter these names
-/// out, since they are not circuit signals.
+/// Names that used to be introduced into the SMT-emitted constraint
+/// system as named field constants by the legacy R1CS-to-SMT lowering.
+/// Retained so the `picus` witness post-processor can still filter
+/// these out of solver-produced models when running against an old
+/// snapshot or against the SMT dump emitted by `--dump-smt`.
 pub const SUBP_CONSTANT_NAMES: &[&str] =
     &["p", "ps1", "ps2", "ps3", "ps4", "ps5", "zero", "one"];
 
