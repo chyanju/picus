@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 use crate::ff::buchberger::BuchbergerObserver;
 use crate::ff::polynomial::{PolyRing, Polynomial};
 
-/// Tracks polynomial derivation history during a Buchberger computation.
+/// Polynomial dependency tracker for a Buchberger computation.
 ///
 /// After the computation finishes, call [`GbTracer::unsat_core_for`] to
 /// extract the input indices responsible for any particular basis
@@ -37,6 +37,11 @@ pub struct GbTracer {
     /// over-approximation when Buchberger's `add_generators` reduces the
     /// new generator before recording it as an initial basis element.
     pending_reducers: Vec<usize>,
+    /// Reducer-basis indices reported by the most recent
+    /// `on_pair_reducers` call. Consumed (and cleared) by the next
+    /// `on_new_poly` event so the new S-pair-derived entry's deps
+    /// include the reducers that participated in NF computation.
+    pending_pair_reducers: Vec<usize>,
 }
 
 impl GbTracer {
@@ -48,6 +53,7 @@ impl GbTracer {
             deps: Vec::new(),
             input_count: 0,
             pending_reducers: Vec::new(),
+            pending_pair_reducers: Vec::new(),
         }
     }
 
@@ -97,6 +103,11 @@ impl GbTracer {
         if saved_input_count <= self.input_count {
             self.input_count = saved_input_count;
         }
+        // Pending caches are transient (consumed by the next observer
+        // event); drop them on restore so a half-completed sequence
+        // doesn't leak across checkpoints.
+        self.pending_reducers.clear();
+        self.pending_pair_reducers.clear();
     }
 
     /// Logical input index assigned to the *next* call to `on_initial_basis`.
@@ -168,8 +179,15 @@ impl BuchbergerObserver for GbTracer {
         self.input_count += 1;
     }
 
+    fn on_pair_reducers(&mut self, reducer_indices: &[usize]) {
+        self.pending_pair_reducers.clear();
+        self.pending_pair_reducers.extend_from_slice(reducer_indices);
+    }
+
     fn on_new_poly(&mut self, _idx: usize, _poly: &Polynomial, from_pair: (usize, usize)) {
-        // New basis element depends on the union of its parents' deps.
+        // New basis element depends on the union of its parents' deps
+        // plus the deps of any reducer that participated in the NF
+        // computation (reported by the preceding `on_pair_reducers`).
         let (i, j) = from_pair;
         let mut combined = BTreeSet::new();
         if i < self.deps.len() {
@@ -182,6 +200,12 @@ impl BuchbergerObserver for GbTracer {
         } else {
             combined.extend(0..self.n_inputs);
         }
+        for &r_idx in &self.pending_pair_reducers {
+            if let Some(set) = self.deps.get(r_idx) {
+                combined.extend(set.iter().copied());
+            }
+        }
+        self.pending_pair_reducers.clear();
         self.deps.push(combined);
     }
 
@@ -245,5 +269,24 @@ mod tests {
         let tracer = GbTracer::new(3);
         assert!(tracer.deps_of(999).is_none());
         assert_eq!(tracer.unsat_core_for(999), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn test_tracer_pair_reducers_fold_into_new_poly_deps() {
+        // Inputs 0..4 all on basis. S-pair (0, 1) is reduced against
+        // active basis members 2 and 3 — those reducers must show up
+        // in the new poly's core.
+        let mut tracer = GbTracer::new(4);
+        let p = Polynomial::zero();
+        for _ in 0..4 {
+            tracer.on_initial_basis(0, &p);
+        }
+        tracer.on_pair_reducers(&[2, 3]);
+        tracer.on_new_poly(4, &p, (0, 1));
+        assert_eq!(tracer.unsat_core_for(4), vec![0, 1, 2, 3]);
+        // Pending should be cleared — the next pair without reducers
+        // should not inherit them.
+        tracer.on_new_poly(5, &p, (0, 1));
+        assert_eq!(tracer.unsat_core_for(5), vec![0, 1]);
     }
 }

@@ -79,6 +79,12 @@ pub trait BuchbergerObserver {
     /// into the new entry.
     fn on_initial_reducers(&mut self, _reducer_indices: &[usize]) {}
     fn on_initial_basis(&mut self, _idx: usize, _poly: &Polynomial) {}
+    /// Called immediately before [`on_new_poly`] to report the
+    /// active-basis indices that contributed to reducing the
+    /// S-polynomial to its normal form. Observers must fold these
+    /// reducers' deps into the new entry; the two pair parents alone
+    /// under-approximate the dependency set.
+    fn on_pair_reducers(&mut self, _reducer_indices: &[usize]) {}
     fn on_new_poly(&mut self, _idx: usize, _poly: &Polynomial, _from_pair: (usize, usize)) {}
     fn on_inter_reduce(&mut self, _old_idx: usize, _new_idx: usize) {}
 }
@@ -753,6 +759,13 @@ impl BuchbergerState {
                 lt.total_degree(), pair.sugar
             );
             let sugar = pair.sugar;
+            let pair_reducers: Vec<usize> = active_idxs
+                .iter()
+                .zip(use_counts.iter())
+                .filter(|&(_, &c)| c > 0)
+                .map(|(&i, _)| i)
+                .collect();
+            observer.on_pair_reducers(&pair_reducers);
             observer.on_new_poly(new_idx, &nf, (pair.i, pair.j));
 
             // Trivial-ideal short-circuit.
@@ -902,6 +915,13 @@ impl BuchbergerState {
             lt.total_degree(), pair.sugar
         );
         let sugar = pair.sugar;
+        let pair_reducers: Vec<usize> = active_idxs
+            .iter()
+            .zip(use_counts.iter())
+            .filter(|&(_, &c)| c > 0)
+            .map(|(&i, _)| i)
+            .collect();
+        observer.on_pair_reducers(&pair_reducers);
         observer.on_new_poly(new_idx, &nf, (pair.i, pair.j));
 
         if nf.is_constant() {

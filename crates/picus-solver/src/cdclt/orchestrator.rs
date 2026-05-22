@@ -79,12 +79,16 @@ fn cdclt_loop(
             }
             let (learnt, bt) = sat.analyze(conflict);
             sat.backtrack_to(bt);
+            // Snapshot trail length before `learn_clause` so the next
+            // notify pass starts at the position the asserting literal
+            // is about to occupy.
+            let trail_pre_lemma = sat.trail_len();
             sat.learn_clause(learnt);
             if sat.should_restart() {
                 sat.perform_restart();
             }
             sync_theory_after_backtrack(sat, theory, &mut theory_levels);
-            notified = notified.min(sat.trail_len());
+            notified = notified.min(trail_pre_lemma).min(sat.trail_len());
             continue;
         }
 
@@ -98,9 +102,9 @@ fn cdclt_loop(
 
         match run_theory_propagation(sat, theory) {
             TheoryStep::Progressed => continue,
-            TheoryStep::Conflict => {
+            TheoryStep::Conflict(trail_pre_lemma) => {
                 sync_theory_after_backtrack(sat, theory, &mut theory_levels);
-                notified = notified.min(sat.trail_len());
+                notified = notified.min(trail_pre_lemma).min(sat.trail_len());
                 continue;
             }
             TheoryStep::RootUnsat => return SolveOutcome::Unsat(Vec::new()),
@@ -119,11 +123,13 @@ fn cdclt_loop(
                     return SolveOutcome::Sat(model);
                 }
                 CheckOutcome::Unsat { core } => {
-                    if !apply_theory_conflict(sat, &core) {
-                        return SolveOutcome::Unsat(Vec::new());
-                    }
+                    let trail_pre_lemma = apply_theory_conflict(sat, &core);
+                    let trail_pre_lemma = match trail_pre_lemma {
+                        Some(n) => n,
+                        None => return SolveOutcome::Unsat(Vec::new()),
+                    };
                     sync_theory_after_backtrack(sat, theory, &mut theory_levels);
-                    notified = notified.min(sat.trail_len());
+                    notified = notified.min(trail_pre_lemma).min(sat.trail_len());
                     continue;
                 }
                 CheckOutcome::Unknown => return SolveOutcome::Unknown,
@@ -143,7 +149,9 @@ enum TheoryStep {
     /// At least one new literal was enqueued.
     Progressed,
     /// Lemma learnt and SAT backtracked; caller must sync theory.
-    Conflict,
+    /// The wrapped value is the trail length right before the lemma's
+    /// asserting literal was enqueued (see `add_theory_lemma_with_trail`).
+    Conflict(usize),
     /// Lemma forced root-level UNSAT.
     RootUnsat,
 }
@@ -184,10 +192,10 @@ fn run_theory_propagation(sat: &mut Solver, theory: &mut FfTheory<'_>) -> Theory
                     let fl = if fpol { Lit::pos(fav) } else { Lit::neg(fav) };
                     lemma.push(-fl);
                 }
-                if !sat.add_theory_lemma(lemma) {
-                    return TheoryStep::RootUnsat;
+                match sat.add_theory_lemma_with_trail(lemma) {
+                    Some(trail_pre) => return TheoryStep::Conflict(trail_pre),
+                    None => return TheoryStep::RootUnsat,
                 }
-                return TheoryStep::Conflict;
             }
         }
     }
@@ -198,12 +206,12 @@ fn run_theory_propagation(sat: &mut Solver, theory: &mut FfTheory<'_>) -> Theory
     }
 }
 
-/// Turn an atom-core into a SAT lemma (negation of each atom's current
-/// value) and feed it via [`Solver::add_theory_lemma`]. Returns `false`
-/// when the lemma forces root-level UNSAT. Core variables must be
-/// assigned; an Undef core var indicates the theory's push/pop state
-/// diverged from SAT's and is treated as an invariant violation.
-fn apply_theory_conflict(sat: &mut Solver, core: &[Var]) -> bool {
+/// Turn an atom-core into a SAT lemma and apply it. On success returns
+/// `Some(trail_len_before_asserting)` (the position the lemma's
+/// asserting literal sits at after the internal backtrack). Returns
+/// `None` if the lemma forces root-level UNSAT. An Undef core var
+/// indicates the theory's push/pop state diverged from SAT's.
+fn apply_theory_conflict(sat: &mut Solver, core: &[Var]) -> Option<usize> {
     let mut lits: Vec<Lit> = Vec::with_capacity(core.len());
     for &v in core {
         match sat.value(v) {
@@ -215,7 +223,7 @@ fn apply_theory_conflict(sat: &mut Solver, core: &[Var]) -> bool {
             ),
         }
     }
-    sat.add_theory_lemma(lits)
+    sat.add_theory_lemma_with_trail(lits)
 }
 
 fn sync_theory_after_propagate(

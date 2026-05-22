@@ -4,8 +4,7 @@
 //! [`Theory::notify_fact`] onto a level-indexed trail. Each
 //! [`Theory::post_check`] at `Effort::Full` builds a
 //! [`ConstraintSystem`] from the current trail, runs the GB solver,
-//! and maps any `original_polys` UNSAT-core indices back to atom
-//! variables.
+//! and maps any returned UNSAT core indices back to atom variables.
 
 use std::collections::HashMap;
 
@@ -51,28 +50,25 @@ impl<'a> FfTheory<'a> {
     }
 
     /// Build a `ConstraintSystem` from the trail, encode, dispatch to
-    /// the GB solver, and map any returned `original_polys` core indices
-    /// back to atom variables.
+    /// the GB solver, and map any returned `original_polys` core
+    /// indices back to atom variables. Encoded-input ordering is
+    /// `equality_atoms ++ disequality_atoms` (see
+    /// `encoder::encode_impl`).
     fn check_full_with_mapping(&mut self) -> CheckOutcome {
         let prime = self.atoms.prime().clone();
 
         let mut equalities: Vec<Vec<PolyTerm>> = Vec::new();
         let mut disequalities: Vec<(String, String)> = Vec::new();
         let mut assignments: Vec<(String, BigUint)> = Vec::new();
-        // Atom var per pushed equality (parallel to `equalities`).
         let mut equality_atoms: Vec<Var> = Vec::new();
-        // Atom var per pushed disequality. `encoder::encode_impl` emits
-        // equalities first then Rabinowitsch polys, so the encoded-input
-        // ordering is `equality_atoms ++ disequality_atoms`.
         let mut disequality_atoms: Vec<Var> = Vec::new();
         let mut diseq_counter: usize = 0;
-        // `__zero = 0` is pinned only when at least one disequality is emitted.
         let mut zero_added = false;
 
         for &(atom_var, polarity) in &self.facts {
             let key = match self.atoms.atom(atom_var) {
                 Some(k) => k,
-                None => continue, // auxiliary var: no FF semantics
+                None => continue,
             };
             if polarity {
                 equalities.push(key.to_poly_terms());
@@ -137,7 +133,6 @@ impl<'a> FfTheory<'a> {
             }
             SolveOutcome::Unsat(core_indices) => {
                 self.has_model = false;
-                // Encoded-input ordering: equality_atoms then disequality_atoms.
                 let mut input_atom_in_encode_order = equality_atoms;
                 input_atom_in_encode_order.extend(disequality_atoms);
                 let mut atom_core: Vec<Var> = core_indices
@@ -372,6 +367,19 @@ impl<'a> Theory for FfTheory<'a> {
         self.facts.push((atom, polarity));
     }
 
+    fn push(&mut self) {
+        self.levels.push(self.facts.len());
+    }
+
+    fn pop(&mut self) {
+        if let Some(saved_len) = self.levels.pop() {
+            self.facts.truncate(saved_len);
+        }
+        self.has_model = false;
+        self.last_model = None;
+        self.pending_reasons.clear();
+    }
+
     fn post_check(&mut self, effort: Effort) -> CheckOutcome {
         if effort != Effort::Full {
             return CheckOutcome::Unknown;
@@ -405,19 +413,6 @@ impl<'a> Theory for FfTheory<'a> {
             .get(&atom)
             .cloned()
             .unwrap_or_default()
-    }
-
-    fn push(&mut self) {
-        self.levels.push(self.facts.len());
-    }
-
-    fn pop(&mut self) {
-        if let Some(saved_len) = self.levels.pop() {
-            self.facts.truncate(saved_len);
-        }
-        self.has_model = false;
-        self.last_model = None;
-        self.pending_reasons.clear();
     }
 
     fn level(&self) -> u32 {

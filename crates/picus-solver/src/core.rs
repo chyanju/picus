@@ -351,4 +351,137 @@ mod tests {
             _ => panic!("expected SAT"),
         }
     }
+
+    #[test]
+    fn ff_is_zero_unsound_subset_is_sat() {
+        // The 3-poly subsystem `{1 - is_zero - m*x, is_zero*m, x}`
+        // over F_17 is SAT (model: x=0, is_zero=1, m=0). GB returning
+        // UNSAT on this subset would be unsound.
+        let pr = FfPolyRing::new(ff(17), vec!["is_zero".into(), "m".into(), "x".into()]);
+        // p0 = 1 - is_zero - m*x
+        let one = pr.one();
+        let mx = pr.mul(pr.var(1), pr.var(2));
+        let p0 = pr.sub(pr.sub(one, pr.var(0)), mx);
+        // p1 = is_zero * m
+        let p1 = pr.mul(pr.var(0), pr.var(1));
+        // p2 = x
+        let p2 = pr.clone_poly(&pr.var(2));
+        match solve_split_gb(&pr, &[p0, p1, p2], &[]) {
+            SolveOutcome::Sat(m) => {
+                assert_eq!(m["x"], BigUint::from(0u32));
+                assert_eq!(m["is_zero"], BigUint::from(1u32));
+                assert_eq!(m["m"], BigUint::from(0u32));
+            }
+            other => panic!("expected SAT, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bit_prop_derived_unsat_core_includes_bit_constraints() {
+        // Inputs:
+        //   p0: x*(x-1) = 0   (bit constraint on x)
+        //   p1: y*(y-1) = 0   (bit constraint on y)
+        //   p2: x + 2*y - 5 = 0   (bitsum saying x + 2y = 5)
+        // With x, y ∈ {0,1} the max of x + 2y is 3, so the system is
+        // UNSAT and the UNSAT core must include p0 and p1 (otherwise
+        // dropping a bit constraint produces a SAT subset, e.g. p0+p2
+        // alone is satisfied by x=5, y=0 in F_7).
+        let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
+        let x = pr.var(0);
+        let y = pr.var(1);
+        let xx = pr.mul(pr.clone_poly(&x), pr.clone_poly(&x));
+        let p0 = pr.sub(xx, pr.clone_poly(&x));
+        let yy = pr.mul(pr.clone_poly(&y), pr.clone_poly(&y));
+        let p1 = pr.sub(yy, pr.clone_poly(&y));
+        let two = pr.field.from_int(2);
+        let five = pr.field.from_int(5);
+        let two_y = pr.scale(two, pr.clone_poly(&y));
+        let sum = pr.add(pr.clone_poly(&x), two_y);
+        let p2 = pr.sub(sum, pr.constant(five));
+        match solve_split_gb(&pr, &[p0, p1, p2], &[]) {
+            SolveOutcome::Unsat(core) => {
+                assert!(
+                    core.contains(&0) && core.contains(&1),
+                    "core must include both bit constraints (p0, p1); got {:?}",
+                    core
+                );
+            }
+            other => panic!("expected UNSAT, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bit_prop_derived_eq_unsat_core_is_sound() {
+        // Inputs:
+        //   p0: x*(x-1) = 0           (bit constraint on x)
+        //   p1: y*(y-1) = 0           (bit constraint on y)
+        //   p2: x + 2*y - 1 = 0       (bitsum saying x + 2y = 1 ⇒ x=1, y=0)
+        //   p3: y - 1 = 0             (asserts y = 1)
+        // Without p0 ∧ p1 the bitsum doesn't fire and {p2, p3}
+        // has a SAT model (e.g. x=6, y=1 in F_7). UNSAT only when
+        // all four constraints participate, so the core must
+        // include every index.
+        let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
+        let x = pr.var(0);
+        let y = pr.var(1);
+        let xx = pr.mul(pr.clone_poly(&x), pr.clone_poly(&x));
+        let p0 = pr.sub(xx, pr.clone_poly(&x));
+        let yy = pr.mul(pr.clone_poly(&y), pr.clone_poly(&y));
+        let p1 = pr.sub(yy, pr.clone_poly(&y));
+        let two = pr.field.from_int(2);
+        let one = pr.field.from_int(1);
+        let two_y = pr.scale(two, pr.clone_poly(&y));
+        let sum = pr.add(pr.clone_poly(&x), two_y);
+        let p2 = pr.sub(sum, pr.constant(one.clone()));
+        let p3 = pr.sub(pr.clone_poly(&y), pr.constant(one));
+        match solve_split_gb(&pr, &[p0, p1, p2, p3], &[]) {
+            SolveOutcome::Unsat(core) => {
+                assert!(
+                    core.contains(&0) && core.contains(&1),
+                    "core must include both bit constraints (p0, p1); got {:?}",
+                    core
+                );
+                assert!(
+                    core.contains(&2),
+                    "core must include bitsum p2; got {:?}",
+                    core
+                );
+                assert!(
+                    core.contains(&3),
+                    "core must include p3 (y=1); got {:?}",
+                    core
+                );
+            }
+            other => panic!("expected UNSAT, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn ff_is_zero_unsound_full_unsat_core_is_sound() {
+        // 4-poly system over F_17 that arises during the
+        // `cvc5_ff_is_zero_unsound_sat` post_check trail:
+        //   p0: 1 - is_zero - m*x = 0
+        //   p1: is_zero * m = 0
+        //   p2: x = 0
+        //   p3: is_zero = 0
+        // `{p0, p2, p3}` is the minimum UNSAT subset; dropping p3
+        // leaves a SAT subset, so the returned core must name p3.
+        let pr = FfPolyRing::new(ff(17), vec!["is_zero".into(), "m".into(), "x".into()]);
+        let one = pr.one();
+        let mx = pr.mul(pr.var(1), pr.var(2));
+        let p0 = pr.sub(pr.sub(one, pr.var(0)), mx);
+        let p1 = pr.mul(pr.var(0), pr.var(1));
+        let p2 = pr.clone_poly(&pr.var(2));
+        let p3 = pr.clone_poly(&pr.var(0));
+        match solve_split_gb(&pr, &[p0, p1, p2, p3], &[]) {
+            SolveOutcome::Unsat(core) => {
+                assert!(
+                    core.contains(&3),
+                    "core must include is_zero=0 (index 3); got {:?}",
+                    core
+                );
+            }
+            other => panic!("expected UNSAT, got {:?}", other),
+        }
+    }
 }

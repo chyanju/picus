@@ -4,6 +4,129 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.24] - 2026-05-21
+
+### Added
+
+- `picus-solver::smt2` accepts `(declare-fun b () Bool)` and treats
+  bare Bool atoms as SAT-only literals. A Bool variable
+  auto-emits a bit-constraint equality `b * b = b` so its FF
+  encoding stays consistent with its Boolean value.
+- `picus-solver::smt2` Boolean-context handling for `=` and
+  `distinct`. When the first operand is detected as Bool (via
+  `is_bool_expr`), `=` lowers to an n-ary iff (`(¬a ∨ b) ∧ (¬b ∨ a)`
+  chain) and `distinct` lowers to xor (2-ary) or constant `False`
+  (3+-ary, vacuously unsatisfiable for Bool).
+- `picus-solver::smt2` term-level `(ite c t e)` inside FF
+  expressions: introduces a fresh FF variable `__ite_N` and two
+  conditional equality constraints `c ⇒ __ite_N = t` and
+  `¬c ⇒ __ite_N = e`. Handles arbitrarily nested ite via
+  `build_poly_with_ctx`.
+- `picus-solver::smt2` `(define-fun name ((p1 T1) ...) ret body)`
+  parsed into a `MacroDef` and expanded alpha-renamed at each use
+  site, both in FF term position (`build_poly_with_ctx`) and
+  assertion position (`assert_to_formula`).
+- `picus-solver::smt2` n-ary `(xor a b c ...)` lowers to a
+  left-associative binary xor chain `(a ⊕ b) ⊕ c ⊕ ...` where
+  each binary step is `(a ∧ ¬b) ∨ (¬a ∧ b)`.
+- `picus-solver::smt2` recognises negative FF constants
+  `ff-N` and `#f-NmP` as `(p - N) mod p`, and `ff.bitsum` as a
+  weighted sum `a_0 + 2·a_1 + 4·a_2 + …`.
+- `BuchbergerObserver::on_pair_reducers(reducer_indices)`. Mirror
+  of the existing `on_initial_reducers` for the S-pair processing
+  paths in `BuchbergerState::run` and
+  `BuchbergerState::process_pair_geobucket`. Reports the
+  active-basis indices whose `use_count > 0` after
+  `reduce_by_refs_counted`, so observers can fold the reducers'
+  deps into the new entry alongside the two pair parents.
+- `picus-solver::tracer::GbTracer::pending_pair_reducers` field
+  and matching `on_pair_reducers` impl. Cached reducer set is
+  consumed (and cleared) by the next `on_new_poly` event so the
+  new entry's deps include every reducer's transitive deps.
+  `GbTracer::restore` also clears this cache.
+- `picus-solver::sat::Solver::add_theory_lemma_with_trail(lits) ->
+  Option<usize>`. Like `add_theory_lemma`, but returns the trail
+  length immediately after the internal backtrack and before
+  `learn_clause` enqueues the asserting literal. Callers thread
+  this through their `notified` pointer so the asserting literal
+  reaches the theory on the next notify pass.
+- 4 ports of cvc5 `regress0/ff` to `cdclt_regression`:
+  `cvc5_simple_unsat` (Bool/FF bridging via term-level ite),
+  `cvc5_xor_unsound_missing_sat` (xor compilation with missing
+  bit constraint), `cvc5_ff_xor_unsound_sat` (xor compilation
+  overflowing GF(5)), and `cvc5_ff_xor_sound_unsat` (asserting-
+  literal notify regression guard).
+
+### Changed
+
+- `picus-solver::cdclt::orchestrator::cdclt_loop` threads
+  `trail_pre_lemma` (the trail length captured before
+  `learn_clause` enqueues the asserting literal) through every
+  conflict path — `sat::propagate` conflict, theory propagation
+  conflict, and `post_check(Full)` theory conflict — and clamps
+  `notified = notified.min(trail_pre_lemma).min(sat.trail_len())`.
+  Without this, the post-backtrack notify loop skipped the
+  asserting literal, leaving the theory's fact list out of sync
+  with the SAT trail.
+- `picus-solver::cdclt::orchestrator::TheoryStep::Conflict` now
+  wraps `usize` (the `trail_pre_lemma` returned by
+  `add_theory_lemma_with_trail`); `apply_theory_conflict` returns
+  `Option<usize>`.
+- `BuchbergerState::run` (line 756) and
+  `BuchbergerState::process_pair_geobucket` (line 905) collect
+  `pair_reducers` from `active_idxs` filtered by `use_counts > 0`
+  and fire `observer.on_pair_reducers(&pair_reducers)`
+  immediately before the existing `observer.on_new_poly` call.
+- `picus-solver::split_gb::fixpoint::fixpoint_loop` attributes
+  each derived bit equality from `BitProp::get_bit_equalities`
+  conservatively to the union of every current basis element's
+  deps (was: empty set), preventing under-approximated UNSAT
+  cores when bit equalities participate in trivial-element
+  derivation.
+- `picus-solver::cdclt::ff_theory::FfTheory::check_full_with_mapping`
+  maps `core_indices` from `solve_encoded_with_cancel`'s
+  `SolveOutcome::Unsat` back to atom variables via the
+  `equality_atoms ++ disequality_atoms` encoded-input order. With
+  `on_pair_reducers` and the `bit_eqs` deps fix in place, the
+  traced GB core is now sound to use directly.
+
+### Tests
+
+- 359 tests pass across the workspace (278 lib + 81 integration).
+  `cdclt_regression` rises to 71, `cvc5_extended` to 14.
+  - 4 new `cdclt_regression` cases (see Added).
+  - 1 new `tracer::tests::test_tracer_pair_reducers_fold_into_new_poly_deps`
+    asserting that reducer deps are folded into the new entry's
+    deps and that `pending_pair_reducers` clears after each
+    `on_new_poly`.
+  - 3 new `core::tests` cases: `ff_is_zero_unsound_subset_is_sat`
+    (3-poly SAT subset), `ff_is_zero_unsound_full_unsat_core_is_sound`
+    (UNSAT-core must name the asserting literal), and two
+    bit-prop derived-core tests
+    (`bit_prop_derived_unsat_core_includes_bit_constraints`,
+    `bit_prop_derived_eq_unsat_core_is_sound`).
+
+### Fixed
+
+- `picus-solver::cdclt::orchestrator::cdclt_loop` lost the
+  asserting literal from theory lemmas on every conflict path.
+  After backtrack + `learn_clause`, the `notified` pointer was
+  clamped to `sat.trail_len()` which now sat one position past
+  the asserting literal; the theory was never told about that
+  literal's polarity. Manifested as `cvc5_ff_xor_sound_unsat`
+  reporting SAT instead of UNSAT.
+- `picus-solver::split_gb::split_gb_cancel_traced` returned UNSAT
+  cores that named a strict subset which was itself SAT.
+  Root cause: `GbTracer::on_new_poly` folded only the two pair
+  parents' deps, dropping any reducer-basis deps consumed during
+  `reduce_by_refs_counted`. Manifested as `cvc5_ff_is_zero_unsound_sat`
+  reporting UNSAT instead of SAT after the asserting-literal fix
+  exposed more facts to the theory.
+- `picus-solver::split_gb::fixpoint::fixpoint_loop` propagated
+  bit equalities with empty dependency sets; bit-equality-derived
+  trivial elements could trace back to a core that excluded the
+  bit constraints or the bitsum.
+
 ## [1.7.23] - 2026-05-21
 
 ### Added
