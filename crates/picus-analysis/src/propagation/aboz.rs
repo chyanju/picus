@@ -152,8 +152,8 @@ fn match_bilinear(
                 if bilinear.is_some() {
                     return None;
                 }
-                let a = var_to_wire(ir, vars[0]);
-                let b = var_to_wire(ir, vars[1]);
+                let a = ir.var_to_wire(vars[0]);
+                let b = ir.var_to_wire(vars[1]);
                 bilinear = Some((a.min(b), a.max(b)));
             }
             _ => return None,
@@ -188,21 +188,13 @@ fn collect_linear_sums(ir: &PolyIR) -> Vec<HashSet<usize>> {
             if total == 0 {
                 continue;
             }
-            wires.insert(var_to_wire(ir, var.unwrap()));
+            wires.insert(ir.var_to_wire(var.unwrap()));
         }
         if !wires.is_empty() {
             out.push(wires);
         }
     }
     out
-}
-
-fn var_to_wire(ir: &PolyIR, var: usize) -> usize {
-    if var < ir.n_wires {
-        var
-    } else {
-        var - ir.n_wires
-    }
 }
 
 inventory::submit! {

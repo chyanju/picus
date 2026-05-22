@@ -23,13 +23,13 @@ use picus_r1cs::grammar::*;
 use picus_smt::backends::{SolverBackend, SolverResult};
 use picus_smt::poly_ir::{r1cs_to_poly_ir, PolyIR};
 use picus_smt::{SolverKind, Theory};
+use picus_solver::poly::Poly;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::propagation::binary01::RangeValue;
+use crate::propagation::range::{initial_ranges, RangeValue};
 use crate::propagation::{
-    all_descriptors, all_names, binary01, wire_connectivity_score, PropagationCtx,
-    PropagationLemma,
+    all_descriptors, all_names, wire_connectivity_score, PropagationCtx, PropagationLemma,
 };
 use crate::selector::{SelectorKind, SelectorState, SolverFeedback};
 
@@ -153,7 +153,7 @@ pub fn run_dpvl(r1cs: &R1csFile, config: &DpvlConfig) -> Result<DpvlResult, Stri
 
     let mut ks: HashSet<usize> = input_set.clone();
     let mut us: HashSet<usize> = (0..nwires).filter(|i| !ks.contains(i)).collect();
-    let mut ranges: HashMap<usize, RangeValue> = binary01::initial_ranges();
+    let mut ranges: HashMap<usize, RangeValue> = initial_ranges();
 
     // Lower R1CS → PolyIR once per DPVL run. The target signal stored in
     // the IR is a placeholder; propagation only consumes the constraint
@@ -273,9 +273,18 @@ impl DpvlContext {
     }
 
     /// Run every enabled lemma to a fixed point. Each outer iteration
-    /// invokes every lemma once with the current IR snapshot; the
-    /// learned-constraint buffer is then folded back into the IR so
-    /// the next iteration's lemmas see the new facts.
+    /// invokes every lemma once with the current IR snapshot; learned
+    /// equalities and disjunctions are then folded back into the IR
+    /// so the next iteration's lemmas see the new facts.
+    ///
+    /// The fixed-point detector now considers four kinds of progress:
+    ///   * `ks.len()` grew,
+    ///   * some lemma's `run` returned `true`,
+    ///   * the equality out-buffer received a poly,
+    ///   * the disjunction out-buffer received a clause.
+    /// A future range-only or disjunction-only lemma is therefore not
+    /// silently stalled. Per-lemma contribution counts are emitted at
+    /// `debug!` for ablation work.
     fn propagate(
         &mut self,
         ir: &mut PolyIR,
@@ -286,23 +295,44 @@ impl DpvlContext {
     ) {
         loop {
             let ks_before = ks.len();
-            let mut learned = Vec::new();
+            let mut learned_eqs: Vec<Poly> = Vec::new();
+            let mut learned_disjs: Vec<Vec<Poly>> = Vec::new();
+            let mut any_run_progress = false;
             {
                 let mut ctx = PropagationCtx {
                     known: ks,
                     unknown: us,
                     ranges,
-                    learned: &mut learned,
+                    learned: &mut learned_eqs,
+                    learned_disjunctions: &mut learned_disjs,
                 };
                 for lemma in lemmas.iter_mut() {
-                    lemma.run(ir, &mut ctx);
+                    let ks_pre = ctx.known.len();
+                    let ranges_pre = ctx.ranges.len();
+                    let eqs_pre = ctx.learned.len();
+                    let disjs_pre = ctx.learned_disjunctions.len();
+                    let p = lemma.run(ir, &mut ctx);
+                    log::debug!(
+                        "lemma {} fired={} ks+={} ranges+={} eqs+={} disjs+={}",
+                        lemma.name(),
+                        p,
+                        ctx.known.len() - ks_pre,
+                        ctx.ranges.len().saturating_sub(ranges_pre),
+                        ctx.learned.len() - eqs_pre,
+                        ctx.learned_disjunctions.len() - disjs_pre,
+                    );
+                    any_run_progress |= p;
                 }
             }
-            ir.equalities.extend(learned);
-            if ks.len() == ks_before {
+            let learned_any = !learned_eqs.is_empty() || !learned_disjs.is_empty();
+            ir.equalities.extend(learned_eqs);
+            ir.disjunctions.extend(learned_disjs);
+
+            let made_progress = any_run_progress || learned_any || ks.len() != ks_before;
+            if !made_progress {
                 break;
             }
-            log::debug!("Propagation round: ks={}, us={}", ks.len(), us.len());
+            log::debug!("propagation round: ks={}, us={}", ks.len(), us.len());
         }
     }
 

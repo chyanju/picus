@@ -5,62 +5,14 @@
 //! pins the wire's value to `{0, 1}`. Once a wire's range collapses
 //! to a singleton, it joins the known set.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
 use picus_smt::poly_ir::PolyIR;
 
 use super::lemma::{LemmaDescriptor, PropagationCtx, PropagationLemma};
-
-/// Per-signal range: unconstrained (Bottom) or a finite set of values.
-#[derive(Debug, Clone)]
-pub enum RangeValue {
-    Bottom,
-    Values(HashSet<BigUint>),
-}
-
-impl RangeValue {
-    pub fn intersect(&mut self, new_vals: HashSet<BigUint>) {
-        match self {
-            RangeValue::Bottom => *self = RangeValue::Values(new_vals),
-            RangeValue::Values(existing) => {
-                *existing = existing.intersection(&new_vals).cloned().collect();
-            }
-        }
-    }
-
-    #[must_use]
-    pub fn is_singleton(&self) -> bool {
-        matches!(self, RangeValue::Values(v) if v.len() == 1)
-    }
-
-    #[must_use]
-    pub fn is_binary(&self) -> bool {
-        match self {
-            RangeValue::Bottom => false,
-            RangeValue::Values(v) => v.iter().all(|x| x.is_zero() || x == &BigUint::one()),
-        }
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        matches!(self, RangeValue::Values(v) if v.is_empty())
-    }
-
-    /// Proves the wire's value is not zero in every satisfying witness.
-    /// `Bottom` (unconstrained) and an empty value set both return
-    /// `false`: an empty set encodes a contradictory state, where
-    /// drawing further conclusions risks unsoundness if the
-    /// contradiction is later resolved by other learned facts.
-    #[must_use]
-    pub fn excludes_zero(&self) -> bool {
-        match self {
-            RangeValue::Bottom => false,
-            RangeValue::Values(v) => !v.is_empty() && !v.contains(&BigUint::zero()),
-        }
-    }
-}
+use super::range::RangeValue;
 
 #[derive(Default)]
 pub struct Binary01Lemma {
@@ -164,29 +116,9 @@ fn match_x_squared_minus_x(
         p - sq_coeff
     };
     if lin_coeff == &neg_sq_coeff || (sq_coeff == &BigUint::one() && lin_coeff == p_minus_1) {
-        return Some(var_to_wire(ir, var));
+        return Some(ir.var_to_wire(var));
     }
     None
-}
-
-fn var_to_wire(ir: &PolyIR, var: usize) -> usize {
-    if var < ir.n_wires {
-        var
-    } else {
-        var - ir.n_wires
-    }
-}
-
-/// Seed ranges with the values forced by the IR's structural pins
-/// (wire 0 = 1). Called once by the DPVL driver before the propagation
-/// loop starts.
-pub fn initial_ranges() -> HashMap<usize, RangeValue> {
-    let mut ranges = HashMap::new();
-    ranges.insert(
-        0,
-        RangeValue::Values([BigUint::from(1u32)].into_iter().collect()),
-    );
-    ranges
 }
 
 inventory::submit! {
