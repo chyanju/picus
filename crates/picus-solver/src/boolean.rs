@@ -392,8 +392,7 @@ pub fn rewrite_disjunctive_bit(f: Formula, prime: &BigUint) -> Formula {
 /// retained as a baseline and is selected by setting the environment
 /// variable `PICUS_BOOLEAN=dnf` (used for cross-validation tests).
 pub fn solve_boolean_query(query: &BooleanQuery, cancel: &CancelToken) -> SolveOutcome {
-    let use_dnf = std::env::var_os("PICUS_BOOLEAN").map_or(false, |v| v == "dnf");
-    if use_dnf {
+    if crate::config::with(|c| c.dnf_enabled) {
         solve_boolean_query_dnf(query, cancel)
     } else {
         crate::cdclt::solve_formula(query.prime.clone(), &query.formula, cancel)
@@ -401,13 +400,10 @@ pub fn solve_boolean_query(query: &BooleanQuery, cancel: &CancelToken) -> SolveO
 }
 
 /// Maximum DNF disjunct count before [`solve_boolean_query_dnf`]
-/// gives up and returns `Unknown`. Set via the `PICUS_DNF_CAP`
-/// environment variable (default `100_000`).
+/// gives up and returns `Unknown`. Configured via
+/// [`crate::config::RuntimeConfig::dnf_cap`].
 pub fn dnf_size_cap() -> u64 {
-    std::env::var("PICUS_DNF_CAP")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(100_000)
+    crate::config::with(|c| c.dnf_cap)
 }
 
 /// DNF-enumeration path: try each DNF disjunct in order through the
@@ -729,18 +725,12 @@ mod tests {
 
     #[test]
     fn solve_boolean_query_dnf_returns_unknown_past_cap() {
-        // 4 ors × 2 = DNF length 16; cap 8 ⇒ Unknown.
-        let _env_lock = crate::ENV_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        struct EnvGuard(&'static str);
-        impl Drop for EnvGuard {
-            fn drop(&mut self) {
-                unsafe { std::env::remove_var(self.0); }
-            }
-        }
-        unsafe { std::env::set_var("PICUS_DNF_CAP", "8"); }
-        let _g = EnvGuard("PICUS_DNF_CAP");
+        // 4 ors × 2 = DNF length 16; cap 8 ⇒ Unknown. ConfigGuard
+        // scopes the override so we don't need a cross-test lock.
+        let _g = crate::config::ConfigGuard::with_override(|c| {
+            c.dnf_enabled = true;
+            c.dnf_cap = 8;
+        });
         let src = r#"
 (define-sort F () (_ FiniteField 101))
 (declare-fun a () F)

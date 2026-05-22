@@ -476,7 +476,9 @@ impl Solver {
         None
     }
 
-    /// Number of clauses in the arena.
+    /// Number of clauses in the arena. Test-only helper for SAT-layer
+    /// assertions; production code uses observer hooks for counting.
+    #[cfg(test)]
     pub fn n_clauses(&self) -> usize {
         self.arena.len()
     }

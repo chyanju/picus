@@ -13,7 +13,6 @@ path = "src/main.rs"
 
 [dependencies]
 picus = { path = "../picus" }
-picus-solver = { path = "../picus-solver" }
 clap = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }

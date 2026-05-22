@@ -17,35 +17,17 @@ use crate::field::FfEl;
 use crate::poly::{FfPolyRing, Mono, Poly, PolyRingType};
 use crate::timeout::{CancelToken, Cancelled};
 
-// ───────────────────── Process-global GB strategy ─────────────────────────
-
-use std::sync::atomic::{AtomicU8, Ordering};
-
-/// Strategy for computing a Groebner basis. See [`set_gb_strategy`].
+/// Strategy for computing a Groebner basis. Set via
+/// [`crate::config::RuntimeConfig::gb_strategy`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum GbStrategy {
     /// Plain DegRevLex Buchberger on `P`. Default.
-    Direct = 0,
+    Direct,
     /// Homogenize → GB on `P[h]` → dehomogenize → interreduce.
-    ByHomog = 1,
+    ByHomog,
     /// Pick `Direct` if every input is already homogeneous w.r.t. the
     /// total-degree grading; otherwise pick `ByHomog`.
-    Auto = 2,
-}
-
-static GB_STRATEGY: AtomicU8 = AtomicU8::new(GbStrategy::Direct as u8);
-
-#[inline]
-pub fn gb_strategy() -> GbStrategy {
-    match GB_STRATEGY.load(Ordering::Relaxed) {
-        1 => GbStrategy::ByHomog,
-        2 => GbStrategy::Auto,
-        _ => GbStrategy::Direct,
-    }
-}
-
-pub fn set_gb_strategy(s: GbStrategy) {
-    GB_STRATEGY.store(s as u8, Ordering::Relaxed);
+    Auto,
 }
 
 fn is_total_deg_homogeneous(pr: &FfPolyRing, p: &Poly) -> bool {
@@ -72,7 +54,7 @@ fn compute_gb_dispatch(pr: &FfPolyRing, gens: Vec<Poly>, cancel: &CancelToken) -
     if gens.is_empty() {
         return Vec::new();
     }
-    let strat = match gb_strategy() {
+    let strat = match crate::config::with(|c| c.gb_strategy) {
         GbStrategy::Auto => resolve_auto(pr, &gens),
         s => s,
     };

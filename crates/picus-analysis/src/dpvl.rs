@@ -142,23 +142,21 @@ pub fn run_dpvl(
     let output_set: HashSet<usize> = r1cs.outputs.iter().copied().collect();
     let target_set = output_set;
 
-    // --- Propagation pipeline (uses RCmds AST, always z3-style) ---
+    // --- Propagation pipeline (uses RCmds AST) ---
     // The propagation lemmas operate on AST patterns (Or, Mul, Add, etc.)
-    // which are produced by the z3-style parser/optimizer. This is independent
-    // of the actual solver backend — solving uses the IR path (UniquenessQuery),
-    // not the AST. AB0 is enabled here (z3 path) to produce Or patterns that
-    // the binary01 lemma matches.
-    let ast_solver = SolverKind::Z3;
+    // produced by the parser/optimizer. This is independent of the actual
+    // solver backend — solving uses the IR path (UniquenessQuery), not the
+    // AST. AB0 rewriting produces the Or patterns that the binary01 lemma
+    // matches.
+    let parsed = r1cs_parser::parse_r1cs(r1cs, &[]);
 
-    let parsed = r1cs_parser::parse_r1cs(r1cs, &[], ast_solver);
+    let p0cnsts = optimizer::optimize_p0(&parsed.cnsts);
+    let expcnsts = r1cs_parser::expand_r1cs(&p0cnsts);
+    let nrmcnsts = optimizer::normalize(&expcnsts);
+    let (p1cnsts, _) = optimizer::optimize_p1(&nrmcnsts, &parsed.decls, true);
 
-    let p0cnsts = optimizer::optimize_p0(&parsed.cnsts, ast_solver);
-    let expcnsts = r1cs_parser::expand_r1cs(&p0cnsts, ast_solver);
-    let nrmcnsts = optimizer::normalize(&expcnsts, ast_solver);
-    let (p1cnsts, _) = optimizer::optimize_p1(&nrmcnsts, &parsed.decls, ast_solver, true);
-
-    let sdm_exp = r1cs_parser::expand_r1cs(&parsed.cnsts, ast_solver);
-    let sdmcnsts = optimizer::normalize(&sdm_exp, ast_solver);
+    let sdm_exp = r1cs_parser::expand_r1cs(&parsed.cnsts);
+    let sdmcnsts = optimizer::normalize(&sdm_exp);
 
     // Known/unknown sets
     let mut ks: HashSet<usize> = input_set;
