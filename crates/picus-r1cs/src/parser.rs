@@ -81,11 +81,11 @@ pub fn read_r1cs(data: &[u8]) -> Result<R1csFile, R1csParseError> {
     let constraints = parse_constraint_section(&constraint_sec.data, field_size, m_constraints)?;
     let w2l = parse_w2l_section(&w2l_sec.data)?;
 
-    // Compute input/output lists (matching Racket's logic)
-    // Ecne-style 1-based: inputs = [1] ++ [istart..iend]
-    //   istart = 2 + npubout
-    //   iend = 1 + npubout + npubin + nprvin
-    // Then translate to 0-based
+    // Compute input/output lists. Ecne convention (1-based):
+    //   inputs = [1] ++ [istart..iend]
+    //     istart = 2 + npubout
+    //     iend   = 1 + npubout + npubin + nprvin
+    // Translated to 0-based below.
     let n_pub_out = header.n_pub_out as usize;
     let n_pub_in = header.n_pub_in as usize;
     let n_prv_in = header.n_prv_in as usize;
