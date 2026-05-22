@@ -315,6 +315,419 @@ fn cvc5_issue10937_unsat() {
     cross_validate("cvc5_issue10937_unsat", src, Verdict::Unsat);
 }
 
+// ─── cvc5 ports requiring Bool decl / term-level ite / xor / define-fun ───
+
+/// Port of `regress0/ff/simple.smt2` / `bool_nary_or_sound.smt2`: the
+/// Boolean OR is encoded as the FF sum of bit-valued ites being
+/// non-zero; the assertion negates the equivalence between the two
+/// formulations and the result is UNSAT.
+#[test]
+fn cvc5_bool_nary_or_sound_unsat() {
+    let src = r#"
+(set-logic QF_FF)
+(declare-fun a () Bool)
+(declare-fun b () Bool)
+(declare-fun c () Bool)
+(declare-fun __ff () (_ FiniteField 5))
+(assert (not (=
+  (or a b c)
+  (not (= (ff.add
+    (ite a #f1m5 #f0m5)
+    (ite b #f1m5 #f0m5)
+    (ite c #f1m5 #f0m5)
+  ) #f0m5))
+)))
+"#;
+    cross_validate_agreement("cvc5_bool_nary_or_sound_unsat", src);
+}
+
+/// Port of `regress0/ff/ff_is_zero_sound.smt2`: the standard is-zero
+/// trick `(m*x + (p-1) + is_zero = 0) ∧ (is_zero*x = 0)` implies
+/// `is_zero ∈ {0, 1}` and `is_zero = 1 ⇔ x = 0`. UNSAT to negate.
+#[test]
+fn cvc5_ff_is_zero_sound_unsat() {
+    let src = r#"
+(set-logic QF_FF)
+(declare-fun x () (_ FiniteField 17))
+(declare-fun m () (_ FiniteField 17))
+(declare-fun is_zero () (_ FiniteField 17))
+(assert (not (=>
+  (and (= #f0m17 (ff.add (ff.mul m x) #f16m17 is_zero))
+       (= #f0m17 (ff.mul is_zero x)))
+  (and (or (= #f0m17 is_zero) (= #f1m17 is_zero))
+       (= (= #f1m17 is_zero) (= x #f0m17)))
+)))
+"#;
+    cross_validate_agreement("cvc5_ff_is_zero_sound_unsat", src);
+}
+
+/// Port of `regress0/ff/ff_is_zero_unsound.smt2`: same shape as the
+/// sound case but `is_zero*m = 0` (instead of `is_zero*x = 0`). The
+/// (broken) constraint set does NOT imply the conclusion, so the
+/// negation is SAT.
+#[test]
+fn cvc5_ff_is_zero_unsound_sat() {
+    let src = r#"
+(set-logic QF_FF)
+(declare-fun x () (_ FiniteField 17))
+(declare-fun m () (_ FiniteField 17))
+(declare-fun is_zero () (_ FiniteField 17))
+(assert (not (=>
+  (and (= #f0m17 (ff.add (ff.mul m x) #f16m17 is_zero))
+       (= #f0m17 (ff.mul is_zero m)))
+  (and (or (= #f0m17 is_zero) (= #f1m17 is_zero))
+       (= (= #f1m17 is_zero) (= x #f0m17)))
+)))
+"#;
+    cross_validate_agreement("cvc5_ff_is_zero_unsound_sat", src);
+}
+
+/// Term-level ite with FF branches inside a top-level equality. SAT
+/// when c can be set to pick the branch that matches the RHS.
+#[test]
+fn cvc5_ite_term_level_sat() {
+    let src = r#"
+(set-logic QF_FF)
+(declare-fun c () Bool)
+(declare-fun x () (_ FiniteField 101))
+(assert (= (ite c x #f0m101) #f5m101))
+(check-sat)
+"#;
+    cross_validate_agreement("cvc5_ite_term_level_sat", src);
+}
+
+/// `define-fun` macro inlined inside `(assert ...)`.
+#[test]
+fn cvc5_define_fun_double_sat() {
+    let src = r#"
+(set-logic QF_FF)
+(declare-fun x () (_ FiniteField 13))
+(define-fun double ((y (_ FiniteField 13))) (_ FiniteField 13) (ff.add y y))
+(assert (= (double x) #f4m13))
+"#;
+    cross_validate_agreement("cvc5_define_fun_double_sat", src);
+}
+
+/// n-ary `=` chain forcing `x = y = z = constant`.
+#[test]
+fn cvc5_nary_equality_chain_sat() {
+    let src = r#"
+(set-logic QF_FF)
+(declare-fun x () (_ FiniteField 7))
+(declare-fun y () (_ FiniteField 7))
+(declare-fun z () (_ FiniteField 7))
+(assert (= x y z #f3m7))
+"#;
+    cross_validate_agreement("cvc5_nary_equality_chain_sat", src);
+}
+
+/// `distinct` over three FF variables; SAT if the field is large enough.
+#[test]
+fn cvc5_distinct_three_ff_sat() {
+    let src = r#"
+(set-logic QF_FF)
+(declare-fun x () (_ FiniteField 11))
+(declare-fun y () (_ FiniteField 11))
+(declare-fun z () (_ FiniteField 11))
+(assert (distinct x y z))
+"#;
+    cross_validate_agreement("cvc5_distinct_three_ff_sat", src);
+}
+
+/// `xor` over two Bool variables; SAT by setting one True one False.
+#[test]
+fn cvc5_xor_two_bools_sat() {
+    let src = r#"
+(set-logic QF_FF)
+(declare-fun __ff () (_ FiniteField 3))
+(declare-fun a () Bool)
+(declare-fun b () Bool)
+(assert (xor a b))
+"#;
+    cross_validate_agreement("cvc5_xor_two_bools_sat", src);
+}
+
+/// `xor` of an even number of forced-True Bool vars: UNSAT.
+#[test]
+fn cvc5_xor_four_true_unsat() {
+    let src = r#"
+(set-logic QF_FF)
+(declare-fun __ff () (_ FiniteField 3))
+(declare-fun a () Bool)
+(declare-fun b () Bool)
+(declare-fun c () Bool)
+(declare-fun d () Bool)
+(assert a) (assert b) (assert c) (assert d)
+(assert (xor a b c d))
+"#;
+    cross_validate_agreement("cvc5_xor_four_true_unsat", src);
+}
+
+// ─── Further cvc5 ports unlocked by `ff-N` constants and `ff.bitsum` ───
+
+/// Port of `regress0/ff/as.smt2`: `(= ff0 (ff.add ff1 (ff.neg ff1)))`,
+/// SAT trivially.
+#[test]
+fn cvc5_as_sat() {
+    let src = r#"
+(set-logic QF_FF)
+(define-sort F () (_ FiniteField 17))
+(assert (= (as ff0 F) (ff.add (as ff1 F) (ff.neg (as ff1 F)))))
+"#;
+    cross_validate_agreement("cvc5_as_sat", src);
+}
+
+/// Port of `regress0/ff/field_poly.smt2`: `(a - 0)(a - 1)(a - 2) = 1`
+/// over GF(3); by Lagrange / Fermat the LHS is always 0, contradicting
+/// `= 1` ⇒ UNSAT.
+#[test]
+fn cvc5_field_poly_unsat() {
+    let src = r#"
+(set-logic QF_FF)
+(define-sort F3 () (_ FiniteField 3))
+(declare-fun a () F3)
+(assert (= (ff.mul
+    (ff.add a (ff.neg (as ff0 F3)))
+    (ff.add a (ff.neg (as ff1 F3)))
+    (ff.add a (ff.neg (as ff2 F3)))
+    ) (as ff1 F3)))
+"#;
+    cross_validate_agreement("cvc5_field_poly_unsat", src);
+}
+
+/// Port of `regress0/ff/issue11107.smt2`: Bool variables `pre`/`suf`
+/// each defined by iff with FF equalities; assert both true. SAT.
+#[test]
+fn cvc5_issue11107_sat() {
+    let src = r#"
+(set-logic QF_FF)
+(define-sort F () (_ FiniteField 7))
+(declare-fun a () F)
+(declare-fun c () F)
+(declare-fun pre () Bool)
+(declare-fun suf () Bool)
+(assert (= pre (= c (ff.add a (as ff1 F)))))
+(assert (= suf (= (ff.mul (as ff6 F) a) (ff.add (ff.mul (as ff6 F) c) (as ff1 F)))))
+(assert (and pre suf))
+"#;
+    cross_validate_agreement("cvc5_issue11107_sat", src);
+}
+
+/// Port of `regress0/ff/issue12627.smt2`: `(a * b = b * a)` over GF(3),
+/// SAT (commutativity is trivial in any field).
+#[test]
+fn cvc5_issue12627_sat() {
+    let src = r#"
+(set-logic QF_FF)
+(declare-const a (_ FiniteField 3))
+(declare-const b (_ FiniteField 3))
+(assert (= (ff.mul a b) (ff.mul b a)))
+"#;
+    cross_validate_agreement("cvc5_issue12627_sat", src);
+}
+
+/// Port of `regress0/ff/issue11969.smt2`: `v = v² + (−1)` over GF(3)
+/// has solutions v=1 and v=2; SAT.
+#[test]
+fn cvc5_issue11969_sat() {
+    let src = r#"
+(set-logic QF_FF)
+(declare-const v (_ FiniteField 3))
+(assert (= v (ff.bitsum (ff.mul v v) (as ff-1 (_ FiniteField 3)))))
+"#;
+    cross_validate_agreement("cvc5_issue11969_sat", src);
+}
+
+/// Port of `regress0/ff/bitsum_eval.smt2`: a battery of `ff.bitsum`
+/// constant evaluations; all assertions hold ⇒ SAT.
+#[test]
+fn cvc5_bitsum_eval_sat() {
+    let src = r#"
+(set-logic QF_FF)
+(assert (= (ff.bitsum #f0m3 #f0m3 #f0m3) #f0m3))
+(assert (= (ff.bitsum #f1m3 #f0m3 #f0m3) #f1m3))
+(assert (= (ff.bitsum #f0m3 #f1m3 #f0m3) #f2m3))
+(assert (= (ff.bitsum #f0m3 #f0m3 #f1m3) #f1m3))
+(assert (= (ff.bitsum #f0m3 #f1m3 #f1m3) #f0m3))
+(assert (= (ff.bitsum #f1m3 #f2m3 #f0m3) #f2m3))
+"#;
+    cross_validate_agreement("cvc5_bitsum_eval_sat", src);
+}
+
+/// Port of `regress0/ff/rewriter.smt2`: many constant-folding sub-cases
+/// inside a single OR; each sub-clause is independently False under the
+/// FF semantics ⇒ disjunction is False ⇒ assertion False ⇒ UNSAT.
+#[test]
+fn cvc5_rewriter_unsat() {
+    let src = r#"
+(set-logic QF_FF)
+(declare-fun x () (_ FiniteField 5))
+(assert (or
+  (= #f2m5 #f1m5)
+  (not (= #f1m5 #f1m5))
+  (not (= (ff.neg #f1m5) #f4m5))
+  (not (= (ff.add #f0m5 #f1m5 #f2m5 #f3m5) #f1m5))
+  (not (= (ff.add #f0m5 (ff.neg x) x) #f0m5))
+  (not (= (ff.add #f0m5 (ff.mul #f4m5 x) x) #f0m5))
+  (= (ff.mul #f0m5 #f1m5 #f2m5 #f3m5) #f1m5)
+  (= (ff.mul #f0m5 #f1m5 x #f3m5) #f1m5)
+  (not (= (ff.mul #f1m5 #f2m5 #f3m5) #f1m5))
+  (not (= (ff.mul x #f3m5) (ff.add x x x)))
+  (not (= (ff.mul x x #f3m5) (ff.add (ff.mul x x) (ff.mul #f2m5 x x))))
+))
+"#;
+    cross_validate_agreement("cvc5_rewriter_unsat", src);
+}
+
+/// Port of `regress0/ff/ff_xor_sound.smt2`: 4 bit inputs `f_i` summing
+/// to `sum`, plus a 3-bit decomposition `d_i` of `sum`. Premise + bit
+/// constraints imply `d0 ≠ 0 ⇔ xor(f_i ≠ 0)`; the negation is UNSAT.
+#[test]
+fn cvc5_ff_xor_sound_unsat() {
+    let src = r#"
+(set-logic QF_FF)
+(declare-fun f0 () (_ FiniteField 11))
+(declare-fun f1 () (_ FiniteField 11))
+(declare-fun f2 () (_ FiniteField 11))
+(declare-fun f3 () (_ FiniteField 11))
+(declare-fun sum () (_ FiniteField 11))
+(declare-fun d0 () (_ FiniteField 11))
+(declare-fun d1 () (_ FiniteField 11))
+(declare-fun d2 () (_ FiniteField 11))
+(define-fun f_to_b ((f (_ FiniteField 11))) Bool (not (= f #f0m11)))
+(define-fun is_bit ((f (_ FiniteField 11))) Bool (or (= f #f0m11) (= f #f1m11)))
+(assert (not (=>
+  (and (is_bit f0)
+       (is_bit f1)
+       (is_bit f2)
+       (is_bit f3)
+       (= (ff.add f0 f1 f2 f3) sum)
+       (= (ff.add d0 (ff.mul #f2m11 d1) (ff.mul #f4m11 d2)) sum)
+       (is_bit d0)
+       (is_bit d1)
+       (is_bit d2))
+  (= (f_to_b d0) (xor (f_to_b f0) (f_to_b f1) (f_to_b f2) (f_to_b f3)))
+)))
+"#;
+    cross_validate_agreement("cvc5_ff_xor_sound_unsat", src);
+}
+
+/// Port of `regress0/ff/bool_nary_or_unsound.smt2`: a *broken* encoding
+/// of n-ary OR via FF bit decomposition over GF(5) — the field is too
+/// small to safely sum 5 bits, so the equivalence fails ⇒ SAT.
+#[test]
+fn cvc5_bool_nary_or_unsound_sat() {
+    let src = r#"
+(set-logic QF_FF)
+(declare-fun __ff () (_ FiniteField 5))
+(declare-fun a () Bool)
+(declare-fun b () Bool)
+(declare-fun c () Bool)
+(declare-fun d () Bool)
+(declare-fun e () Bool)
+(assert (not (=
+  (or a b c d e)
+  (not (= (ff.add
+    (ite a #f1m5 #f0m5)
+    (ite b #f1m5 #f0m5)
+    (ite c #f1m5 #f0m5)
+    (ite d #f1m5 #f0m5)
+    (ite e #f1m5 #f0m5)
+  ) #f0m5))
+)))
+"#;
+    cross_validate_agreement("cvc5_bool_nary_or_unsound_sat", src);
+}
+
+/// Port of `regress0/ff/simple.smt2`: Bool/FF bridging via term-level
+/// ite — `(or a b c) ⇔ (sum of bool-as-FF ≠ 0)`. UNSAT (the equivalence
+/// holds for GF(5) when the sum can't overflow with only 3 bits).
+#[test]
+fn cvc5_simple_unsat() {
+    let src = r#"
+(set-logic QF_FF)
+(declare-fun a () Bool)
+(declare-fun b () Bool)
+(declare-fun c () Bool)
+(assert (not (=
+  (or a b c)
+  (not (= (ff.add
+    (ite a #f1m5 #f0m5)
+    (ite b #f1m5 #f0m5)
+    (ite c #f1m5 #f0m5)
+  ) #f0m5
+  ))
+)))
+"#;
+    cross_validate_agreement("cvc5_simple_unsat", src);
+}
+
+/// Port of `regress0/ff/xor_unsound_missing.smt2`: same xor compilation
+/// strategy as `ff_xor_sound`, but with `is_bit d2` removed from the
+/// premise — without that constraint the encoding is unsound, so the
+/// negation is SAT.
+#[test]
+fn cvc5_xor_unsound_missing_sat() {
+    let src = r#"
+(set-logic QF_FF)
+(declare-fun f0 () (_ FiniteField 11))
+(declare-fun f1 () (_ FiniteField 11))
+(declare-fun f2 () (_ FiniteField 11))
+(declare-fun f3 () (_ FiniteField 11))
+(declare-fun sum () (_ FiniteField 11))
+(declare-fun d0 () (_ FiniteField 11))
+(declare-fun d1 () (_ FiniteField 11))
+(declare-fun d2 () (_ FiniteField 11))
+(define-fun f_to_b ((f (_ FiniteField 11))) Bool (not (= f #f0m11)))
+(define-fun is_bit ((f (_ FiniteField 11))) Bool (or (= f #f0m11) (= f #f1m11)))
+(assert (not (=>
+  (and (is_bit f0)
+       (is_bit f1)
+       (is_bit f2)
+       (is_bit f3)
+       (= (ff.add f0 f1 f2 f3) sum)
+       (= (ff.add d0 (ff.mul #f2m11 d1) (ff.mul #f4m11 d2)) sum)
+       (is_bit d0)
+       (is_bit d1))
+  (= (f_to_b d0) (xor (f_to_b f0) (f_to_b f1) (f_to_b f2) (f_to_b f3)))
+)))
+"#;
+    cross_validate_agreement("cvc5_xor_unsound_missing_sat", src);
+}
+
+/// Port of `regress0/ff/ff_xor_unsound.smt2`: same xor encoding as
+/// `ff_xor_sound` but over GF(5) — the 4-bit sum can overflow the
+/// 3-bit decomposition, so the equivalence fails ⇒ SAT.
+#[test]
+fn cvc5_ff_xor_unsound_sat() {
+    let src = r#"
+(set-logic QF_FF)
+(declare-fun f0 () (_ FiniteField 5))
+(declare-fun f1 () (_ FiniteField 5))
+(declare-fun f2 () (_ FiniteField 5))
+(declare-fun f3 () (_ FiniteField 5))
+(declare-fun sum () (_ FiniteField 5))
+(declare-fun d0 () (_ FiniteField 5))
+(declare-fun d1 () (_ FiniteField 5))
+(declare-fun d2 () (_ FiniteField 5))
+(define-fun f_to_b ((f (_ FiniteField 5))) Bool (not (= f #f0m5)))
+(define-fun is_bit ((f (_ FiniteField 5))) Bool (or (= f #f0m5) (= f #f1m5)))
+(assert (not (=>
+  (and (is_bit f0)
+       (is_bit f1)
+       (is_bit f2)
+       (is_bit f3)
+       (= (ff.add f0 f1 f2 f3) sum)
+       (= (ff.add d0 (ff.mul #f2m5 d1) (ff.mul #f4m5 d2)) sum)
+       (is_bit d0)
+       (is_bit d1)
+       (is_bit d2))
+  (= (f_to_b d0) (xor (f_to_b f0) (f_to_b f1) (f_to_b f2) (f_to_b f3)))
+)))
+"#;
+    cross_validate_agreement("cvc5_ff_xor_unsound_sat", src);
+}
+
 // ──────────────── Programmatic shape matrix (parameter sweeps) ─────────────
 
 use picus_solver::bench_fixtures::{

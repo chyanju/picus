@@ -491,16 +491,25 @@ impl Solver {
     /// max, or `max_level - 1` if every literal sits at the max),
     /// backtracks, then registers via [`Self::learn_clause`]. Returns
     /// `false` when the lemma forces root-level UNSAT.
-    pub fn add_theory_lemma(&mut self, mut lits: Vec<Lit>) -> bool {
+    pub fn add_theory_lemma(&mut self, lits: Vec<Lit>) -> bool {
+        self.add_theory_lemma_with_trail(lits).is_some()
+    }
+
+    /// Like [`Self::add_theory_lemma`], but on success returns the trail
+    /// length right after the internal backtrack and before
+    /// `learn_clause` enqueues the asserting literal. Callers thread
+    /// this through their `notified` pointer so the asserting literal
+    /// is included in the next theory-notify pass.
+    pub fn add_theory_lemma_with_trail(&mut self, mut lits: Vec<Lit>) -> Option<usize> {
         if lits.is_empty() {
             self.unsat = true;
-            return false;
+            return None;
         }
         lits.sort_by_key(|&l| std::cmp::Reverse(self.level[l.var().index()]));
         let max_level = self.level[lits[0].var().index()];
         if max_level <= 0 {
             self.unsat = true;
-            return false;
+            return None;
         }
         let assertion_level = lits
             .iter()
@@ -510,8 +519,9 @@ impl Solver {
             .max()
             .unwrap_or(max_level - 1);
         self.backtrack_to(assertion_level);
+        let trail_pre_lemma = self.trail.len();
         self.learn_clause(lits);
-        true
+        Some(trail_pre_lemma)
     }
 
     /// Number of literals on the trail.

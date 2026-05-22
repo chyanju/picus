@@ -453,9 +453,20 @@ fn run_fixpoint_traced<'r>(
             return Err(Cancelled);
         }
 
+        // A derived bit equality depends on (a) the bitsum that
+        // reduced to a constant, (b) every basis element used in that
+        // reduction, and (c) the bit constraints on the participating
+        // variables. `BitProp` does not record those contributors
+        // individually, so each bit equality is conservatively attributed
+        // to the union of deps across all current basis elements.
+        let bit_eq_deps: BTreeSet<usize> = basis_deps
+            .iter()
+            .flat_map(|bd| bd.iter())
+            .flat_map(|s| s.iter().copied())
+            .collect();
         let mut to_propagate: Vec<(Poly, BTreeSet<usize>)> = Vec::new();
         for p in bit_eqs {
-            to_propagate.push((p, BTreeSet::new()));
+            to_propagate.push((p, bit_eq_deps.clone()));
         }
         for j in 0..k {
             for (idx, p) in split_basis[j].basis.iter().enumerate() {
