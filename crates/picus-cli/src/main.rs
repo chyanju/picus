@@ -2,8 +2,8 @@ use anstream::println as aprintln;
 use clap::{Parser, Subcommand, ValueEnum};
 use owo_colors::OwoColorize;
 use picus::{
-    check_r1cs, read_r1cs_file, BigUint, CheckResult, Config, LemmaSet,
-    SelectorKind, SolverKind, Theory,
+    check_r1cs, dump_gb_stats, dump_profile, read_r1cs_file, BigUint, CheckResult, Config,
+    GbStrategy, LemmaSet, SelectorKind, SolverKind, Theory,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -113,24 +113,30 @@ fn main() {
             profile,
             gb_by_homog,
         } => {
-            match profile.as_str() {
-                "wall" => picus_solver::profile::enable(),
-                _ => {}
-            }
-            match gb_by_homog.as_str() {
-                "on" => picus_solver::ideal::set_gb_strategy(picus_solver::ideal::GbStrategy::ByHomog),
-                "auto" => picus_solver::ideal::set_gb_strategy(picus_solver::ideal::GbStrategy::Auto),
-                _ => {} // "off" is the default Direct
-            }
-            cmd_check(r1cs, &solver, &theory, timeout, &selector, &lemmas, dump_smt, format)
-        },
+            // Env-var fallbacks: PICUS_PROFILE and PICUS_GB_STATS still
+            // turn on the respective dump (matches pre-Phase-2 behavior
+            // for benchmark scripts that drive picus via env vars).
+            let profile_on = profile.as_str() == "wall"
+                || std::env::var_os("PICUS_PROFILE").is_some();
+            let gb_stats_on = std::env::var_os("PICUS_GB_STATS").is_some();
+            let gb_strategy = match gb_by_homog.as_str() {
+                "on" => GbStrategy::ByHomog,
+                "auto" => GbStrategy::Auto,
+                _ => GbStrategy::Direct,
+            };
+            cmd_check(
+                r1cs, &solver, &theory, timeout, &selector, &lemmas, dump_smt, format,
+                profile_on, gb_stats_on, gb_strategy,
+            )
+        }
         Commands::Info {
             r1cs,
             constraints,
             format,
-        } => cmd_info(r1cs, constraints, format),    }
-    picus_solver::profile::dump_to_stderr("cli");
-    picus_solver::profile::dump_split_stats_to_stderr();
+        } => cmd_info(r1cs, constraints, format),
+    }
+    dump_profile("cli");
+    dump_gb_stats();
 }
 
 // ============================================================
@@ -221,8 +227,9 @@ fn exit_error(msg: &str) -> ! {
     std::process::exit(1);
 }
 
-/// On SIGTERM/SIGINT, dump profile counters to stderr (if PICUS_PROFILE=1)
-/// before exiting. Lets us profile runs that don't terminate cleanly.
+/// On SIGTERM/SIGINT, dump profile counters to stderr before exiting.
+/// Lets us profile runs that don't terminate cleanly. The dumps are
+/// no-ops when no profile/stats data has been recorded.
 fn install_profile_signal_handler() {
     use signal_hook::consts::{SIGINT, SIGTERM};
     use signal_hook::iterator::Signals;
@@ -232,8 +239,8 @@ fn install_profile_signal_handler() {
     };
     std::thread::spawn(move || {
         for sig in signals.forever() {
-            picus_solver::profile::dump_to_stderr(&format!("signal={}", sig));
-            picus_solver::profile::dump_split_stats_to_stderr();
+            dump_profile(&format!("signal={}", sig));
+            dump_gb_stats();
             // Re-raise default behavior: exit with conventional code.
             std::process::exit(128 + sig);
         }
@@ -254,6 +261,9 @@ fn cmd_check(
     lemmas_str: &str,
     dump_smt: Option<PathBuf>,
     format: OutputFormat,
+    profile_on: bool,
+    gb_stats_on: bool,
+    gb_strategy: GbStrategy,
 ) {
     let solver: SolverKind = solver_str.parse().unwrap_or_else(|e: String| exit_error(&e));
     let theory: Theory = theory_str.parse().unwrap_or_else(|e: String| exit_error(&e));
@@ -276,6 +286,9 @@ fn cmd_check(
         lemmas,
         selector,
         dump_smt,
+        gb_strategy,
+        profile: profile_on,
+        gb_stats: gb_stats_on,
     };
 
     let result = check_r1cs(&r1cs, config).unwrap_or_else(|e| exit_error(&e.to_string()));

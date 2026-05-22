@@ -12,6 +12,7 @@ pub mod bench_fixtures;
 pub mod bitprop;
 pub mod boolean;
 pub mod cdclt;
+pub mod config;
 pub mod core;
 pub mod encoder;
 pub mod ff;
@@ -41,11 +42,6 @@ pub(crate) mod tracer;
 use num_bigint::BigUint;
 use std::collections::HashMap;
 use thiserror::Error;
-
-/// Lock for tests that mutate `PICUS_DNF_CAP` / `PICUS_CDCLT_ITER_CAP`.
-/// Acquire before `set_var`; release after the env guard drops.
-#[cfg(test)]
-pub(crate) static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Result of a satisfiability check.
 #[derive(Debug, Clone)]

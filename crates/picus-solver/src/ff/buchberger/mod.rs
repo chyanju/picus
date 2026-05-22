@@ -53,14 +53,12 @@ impl Default for BuchbergerConfig {
     }
 }
 
-/// F4-lite default toggle. Returns `true` iff `PICUS_USE_F4=1` is set
-/// in the environment. Used by all default `BuchbergerConfig`
-/// construction sites so the F4 path is consistently enabled or
-/// disabled across the solver.
+/// F4-lite default toggle. Reads
+/// [`crate::config::RuntimeConfig::use_f4`]. Used by all default
+/// `BuchbergerConfig` construction sites so the F4 path is consistently
+/// enabled or disabled across the solver.
 pub fn use_f4_default() -> bool {
-    use std::sync::OnceLock;
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var_os("PICUS_USE_F4").is_some())
+    crate::config::with(|c| c.use_f4)
 }
 
 /// A computed Groebner basis.
@@ -825,9 +823,10 @@ impl BuchbergerState {
             }
         }
         // Optional GB-engine telemetry: only emit when the user opts in
-        // via `PICUS_GB_STATS=1`. Mirrors the existing `PICUS_PROFILE`
-        // pattern; default-build behavior is unchanged.
-        if std::env::var_os("PICUS_GB_STATS").is_some() {
+        // via `RuntimeConfig::gb_stats_enabled`. Mirrors the
+        // `RuntimeConfig::profile_enabled` pattern; default behavior
+        // is unchanged.
+        if crate::config::with(|c| c.gb_stats_enabled) {
             let s = &self.stats;
             let total_ns = run_start.elapsed().as_nanos() as u64;
             let active_count = self.basis.iter().filter(|e| e.active).count();

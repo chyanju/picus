@@ -624,6 +624,7 @@ dependencies = [
  "picus-analysis",
  "picus-r1cs",
  "picus-smt",
+ "picus-solver",
  "thiserror",
 ]
 
@@ -649,7 +650,6 @@ dependencies = [
  "log",
  "owo-colors",
  "picus",
- "picus-solver",
  "serde",
  "serde_json",
  "signal-hook",

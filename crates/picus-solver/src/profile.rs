@@ -24,12 +24,10 @@
 //! to find which phases dominate, then drop in finer-grained timers as needed.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-static ENABLED: AtomicBool = AtomicBool::new(false);
-static INIT: OnceLock<()> = OnceLock::new();
 /// Monotonic id for active timers.
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -230,20 +228,26 @@ fn observe_max(slot: &AtomicU64, v: u64) {
 
 #[inline]
 pub fn gb_stats_enabled() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var_os("PICUS_GB_STATS").is_some())
+    crate::config::with(|c| c.gb_stats_enabled)
 }
 
 #[inline]
 pub fn gb_trace_enabled() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var_os("PICUS_GB_TRACE").is_some())
+    crate::config::with(|c| c.gb_trace_enabled)
 }
 
 /// Print SplitDfs/SplitGb counters to stderr. Called from the top-level
 /// `solve_encoded` (or `picus-cli`) at termination when `PICUS_GB_STATS=1`.
 pub fn dump_split_stats_to_stderr() {
-    if !gb_stats_enabled() { return; }
+    // No-op when nothing has been recorded — i.e. when
+    // `gb_stats_enabled` was false (or the relevant solver paths
+    // were never exercised) for the entire run.
+    let nothing_recorded = SPLIT_DFS.branches_tried.load(Ordering::Relaxed) == 0
+        && SPLIT_GB.split_gb_extend_calls.load(Ordering::Relaxed) == 0
+        && NATIVE_FF.solve_calls.load(Ordering::Relaxed) == 0;
+    if nothing_recorded {
+        return;
+    }
     let d = &SPLIT_DFS;
     let g = &SPLIT_GB;
     let load = |a: &AtomicU64| a.load(Ordering::Relaxed);
@@ -369,13 +373,6 @@ pub fn dump_split_stats_to_stderr() {
     eprintln!("=== end split-GB stats ===\n");
 }
 
-fn init_from_env() {
-    INIT.get_or_init(|| {
-        if std::env::var_os("PICUS_PROFILE").is_some() {
-            ENABLED.store(true, Ordering::Relaxed);
-        }
-    });
-}
 
 /// Per-site stats: total time, call count.
 #[derive(Default, Clone, Copy)]
@@ -396,17 +393,13 @@ fn active() -> &'static Mutex<HashMap<u64, (&'static str, Instant)>> {
     ACTIVE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Returns true when profiling is active.
+/// Returns true when profiling is active. Reads
+/// [`crate::config::RuntimeConfig::profile_enabled`] on each call so
+/// callers (the picus facade, library users) can flip the knob at
+/// runtime via [`crate::config::ConfigGuard`].
 #[inline]
 pub fn is_enabled() -> bool {
-    init_from_env();
-    ENABLED.load(Ordering::Relaxed)
-}
-
-/// Force-enable the profiler (e.g. from a CLI flag).
-pub fn enable() {
-    init_from_env();
-    ENABLED.store(true, Ordering::Relaxed);
+    crate::config::with(|c| c.profile_enabled)
 }
 
 /// RAII timer for a named code site.  Cheap when profiling is disabled.
@@ -463,12 +456,10 @@ pub fn take() -> Vec<(&'static str, Duration, u64)> {
     rows
 }
 
-/// Dump the accumulated profile to stderr in a fixed-width table.  No-op when
-/// the profiler is disabled or the table is empty.
+/// Dump the accumulated profile to stderr in a fixed-width table.  No-op
+/// when the accumulated table and in-flight set are both empty (which is
+/// the case whenever profiling was never enabled for the current thread).
 pub fn dump_to_stderr(header: &str) {
-    if !is_enabled() {
-        return;
-    }
     // Snapshot in-flight timers so we can show where we are right now.
     let in_flight: Vec<(&'static str, Duration)> = if let Ok(a) = active().lock() {
         a.values().map(|(label, start)| (*label, start.elapsed())).collect()

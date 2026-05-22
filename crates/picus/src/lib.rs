@@ -52,10 +52,14 @@ pub use picus_analysis::dpvl::LemmaSet;
 /// Signal selection strategy.
 pub use picus_analysis::selector::SelectorKind;
 
+/// Groebner basis algorithm strategy used by the native FF backend.
+pub use picus_solver::ideal::GbStrategy;
+
 // Sub-crates exposed for advanced usage (e.g., dump_smt, custom pipelines).
 pub use picus_r1cs;
 pub use picus_smt;
 pub use picus_analysis;
+pub use picus_solver;
 
 // ============================================================
 // Error type
@@ -102,6 +106,14 @@ pub struct Config {
     pub selector: SelectorKind,
     /// If set, dump each SMT query to this directory for debugging.
     pub dump_smt: Option<std::path::PathBuf>,
+    /// Groebner basis algorithm strategy (native FF backend only).
+    /// Default: `GbStrategy::Direct`.
+    pub gb_strategy: GbStrategy,
+    /// Emit per-site wall-clock profile data to stderr at process exit.
+    /// Default: `false`.
+    pub profile: bool,
+    /// Emit per-run GB statistics to stderr. Default: `false`.
+    pub gb_stats: bool,
 }
 
 impl Default for Config {
@@ -113,6 +125,9 @@ impl Default for Config {
             lemmas: LemmaSet::all(),
             selector: SelectorKind::Counter,
             dump_smt: None,
+            gb_strategy: GbStrategy::Direct,
+            profile: false,
+            gb_stats: false,
         }
     }
 }
@@ -203,6 +218,16 @@ pub fn check_r1cs(
         let _ = std::fs::create_dir_all(dir);
     }
 
+    // Apply runtime config to the current thread. ConfigGuard restores
+    // the prior settings when this function returns, so concurrent
+    // callers on other threads are unaffected and overlapping calls on
+    // the same thread can't leak settings into siblings.
+    let _solver_cfg = picus_solver::config::ConfigGuard::with_override(|c| {
+        c.gb_strategy = config.gb_strategy;
+        c.profile_enabled = config.profile;
+        c.gb_stats_enabled = config.gb_stats;
+    });
+
     // Build internal DPVL config
     let dpvl_config = picus_analysis::dpvl::DpvlConfig {
         solver: config.solver,
@@ -229,6 +254,27 @@ pub fn check_r1cs(
         }
         picus_analysis::dpvl::DpvlResult::Unknown => Ok(CheckResult::Unknown),
     }
+}
+
+// ============================================================
+// Internal helpers
+// ============================================================
+
+// ============================================================
+// Profile / stats dumps
+// ============================================================
+
+/// Write the accumulated per-site wall-clock profile to stderr (if
+/// `Config::profile` was set during a previous `check_r1cs` call).
+/// `tag` is a free-form label printed alongside the table.
+pub fn dump_profile(tag: &str) {
+    picus_solver::profile::dump_to_stderr(tag);
+}
+
+/// Write the accumulated split-GB / DFS counters to stderr (if
+/// `Config::gb_stats` was set during a previous `check_r1cs` call).
+pub fn dump_gb_stats() {
+    picus_solver::profile::dump_split_stats_to_stderr();
 }
 
 // ============================================================

@@ -46,12 +46,9 @@ pub fn solve_formula(
 }
 
 /// Max CDCL(T) main-loop iterations before [`cdclt_loop`] returns
-/// `Unknown`. Override via `PICUS_CDCLT_ITER_CAP` (default `1_000_000`).
+/// `Unknown`. Configured via [`crate::config::RuntimeConfig::cdclt_iter_cap`].
 pub fn iter_cap() -> u64 {
-    std::env::var("PICUS_CDCLT_ITER_CAP")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(1_000_000)
+    crate::config::with(|c| c.cdclt_iter_cap)
 }
 
 fn cdclt_loop(
@@ -348,19 +345,11 @@ mod tests {
 
     #[test]
     fn iter_cap_returns_unknown_on_pathological_input() {
-        // Cap = 0 forces an immediate Unknown bail-out. ENV_TEST_LOCK
-        // serializes against the boolean.rs DNF-cap test.
-        let _env_lock = crate::ENV_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        struct EnvGuard(&'static str);
-        impl Drop for EnvGuard {
-            fn drop(&mut self) {
-                unsafe { std::env::remove_var(self.0); }
-            }
-        }
-        unsafe { std::env::set_var("PICUS_CDCLT_ITER_CAP", "0"); }
-        let _g = EnvGuard("PICUS_CDCLT_ITER_CAP");
+        // Cap = 0 forces an immediate Unknown bail-out. ConfigGuard
+        // restores the previous cap on drop, so this test is
+        // thread-local and doesn't need to serialize against other
+        // config-sensitive tests.
+        let _g = crate::config::ConfigGuard::with_override(|c| c.cdclt_iter_cap = 0);
         let f = Formula::Or(vec![eq(1, "x", 5), eq(1, "x", 6)]);
         let r = solve_formula(BigUint::from(101u32), &f, &CancelToken::none());
         assert!(matches!(r, SolveOutcome::Unknown));
