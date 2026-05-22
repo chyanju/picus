@@ -1,47 +1,72 @@
 //! F4-lite: degree-batched matrix reduction (Faugère 1999).
 //!
-//! Where classical Buchberger processes one S-pair at a time, F4
-//! processes a batch of same-sugar S-pairs together:
+//! Algorithm. Per batch of same-sugar S-pairs:
 //!
-//! 1. Build the S-polynomials for the whole batch.
-//! 2. Symbolic preprocessing: any monomial appearing in some S-poly
-//!    that is divisible by an active basis leading term is covered by
-//!    adding a reducer row `(m / LT(b)) * b` to the matrix. Iterate
-//!    until no uncovered divisible monomial remains.
-//! 3. Build a sparse matrix whose rows are the S-polys plus the reducer
-//!    rows, and whose columns are the union of all monomials appearing.
+//! 1. Build the S-polynomials for the batch.
+//! 2. Symbolic preprocessing: for every monomial appearing in some
+//!    S-poly that is divisible by an active basis leading term, add
+//!    a reducer row `(m / LT(b)) * b` to the matrix; iterate until
+//!    no uncovered divisible monomial remains.
+//! 3. Build a sparse matrix over the union of all monomials.
 //! 4. Sparse row-echelon over GF(p).
-//! 5. Each reduced S-poly row whose leading term is not a reducer LT
-//!    (i.e. not divisible by any active basis LT) becomes a new GB
-//!    generator.
+//! 5. Each reduced S-poly row whose LT is not divisible by any
+//!    active basis LT becomes a new generator.
 //!
-//! The per-pair geobucket merge is amortised into a single sparse
-//! factorisation; shared monomials in the batch share reducer rows.
+//! Per-pair selection is lowest-sugar. The sparse row layout is CSR.
+//! Batches with `len < F4_MIN_BATCH` route to the per-pair geobucket
+//! path in `BuchbergerState::run_f4`.
 //!
-//! Provenance tracking. Each output row's [`F4Output`] records the
-//! batch-index of every input S-pair and the basis-index of every
-//! reducer whose row was linearly combined (across `sparse_echelon`)
-//! to produce it. `BuchbergerState::run_f4` threads those into the
-//! observer protocol (`on_pair_reducers` + `on_new_poly`) so the
-//! `GbTracer` UNSAT-core path remains sound when F4 is enabled.
+//! Provenance. Each [`F4Output`] records the batch-index of every
+//! input S-pair and the basis-index of every reducer whose row was
+//! linearly combined to produce it (`RowProv` is unioned per
+//! `sparse_echelon` axpy). `BuchbergerState::run_f4` threads these
+//! into `on_pair_reducers` + `on_new_poly` so the `GbTracer` UNSAT-
+//! core path stays sound under F4.
 //!
-//! Implementation scope. No matrix reuse across batches; selection
-//! strategy is lowest-sugar; layout is plain CSR-style rather than a
-//! structured F4 layout. Symbolic preprocessing uses a `DivMask`
-//! constant-time filter before the O(n_vars) `Monomial::divides`
-//! check. The monomial → column index uses a `HashMap` after one
-//! sort pass rather than per-insertion `BTreeMap` rebalancing.
-//! `sparse_echelon` borrows pivot rows in-place via `split_at_mut`
-//! to skip the per-axpy clone.
+//! Optimisations.
 //!
-//! Performance. Opt-in via `PICUS_USE_F4=1`. The
-//! `tests/bench_perf.rs::bench_f4_vs_per_pair_large` micro-benchmark
-//! (cyclic-N, dense degree-2 ideals) reports median ratios of
-//! F4 / per-pair ≈ 1.01–1.15× depending on workload: dense-30 ties
-//! (~1.01–1.04×); cyclic-5 ~1.07–1.14×. F4-lite does not beat
-//! per-pair on any tested shape, so the default is per-pair.
-//! Further improvements require structural work (cross-batch
-//! matrix reuse, column-blocked sparse layout) tracked separately.
+//! * Symbolic preprocessing applies the `DivMask` constant-time
+//!   filter before the O(n_vars) `Monomial::divides` check.
+//! * The monomial → column index uses a `HashMap` built from a
+//!   single sort pass over the unique monomial set.
+//! * `sparse_echelon` borrows pivot rows in place via `split_at_mut`
+//!   and threads one `SparseRow` scratch buffer through every axpy
+//!   via [`sparse_sub_scaled_consume_a`], which moves `FieldElem`
+//!   coefficients into the merge instead of cloning them.
+//! * [`F4Workspace`] caches `monomial → (basis_idx, reducer_poly)`
+//!   across batches, invalidating entries whose `basis_idx` becomes
+//!   inactive. The same workspace owns the per-batch scratch buffers
+//!   (`handled` / `worklist` in symbolic preprocessing, the
+//!   monomial-set / column-map / reducer-column index built before
+//!   sparse-row encoding); each is `mem::take`d into a local at
+//!   call entry and assigned back at exit so allocator capacity
+//!   persists across batches in the same Buchberger run.
+//!
+//! Performance. Opt-in via `PICUS_USE_F4=1`. F4 / per-pair median
+//! ratios at `F4_MIN_BATCH = 12`
+//! (`tests/bench_perf.rs::bench_f4_vs_per_pair_large` +
+//! `bench_f4_non_cyclic_workloads`):
+//!
+//! | workload | ratio |
+//! |---|---|
+//! | cyclic-4 | 0.82–0.92× |
+//! | cyclic-5 | 0.91–1.12× |
+//! | cyclic-6 | 1.06–1.20× |
+//! | dense-10/20/30 | 0.96–1.02× |
+//! | katsura-3 | 0.77–0.88× |
+//! | katsura-4 | 0.92–1.02× |
+//! | diffuse-4vars | 0.92–1.15× |
+//!
+//! Default is per-pair (`use_f4_default()` returns `true` iff
+//! `PICUS_USE_F4=1`). `PICUS_GB_STATS=1` emits per-run cache hits /
+//! misses / stales and the F4 batch-size distribution.
+//!
+//! [`super::hilbert::hilbert_numerator`] is available as a building
+//! block for monomial-ideal heuristics. A prior F4-vs-per-pair
+//! gating signal built on top of it was removed because the
+//! Gebauer–Möller M-criterion in `gm_insert` collapses same-LCM
+//! pairs before they reach the F4 batch, so the score is
+//! `Ω(batch.len())` on every input that survives GM.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -58,15 +83,15 @@ use crate::timeout::CancelToken;
 /// in the column index, so the first nonzero entry is the row's LT.
 type SparseRow = Vec<(usize, FieldElem)>;
 
-/// Information the F4 driver needs about each basis element.
+/// View of a basis element for F4 consumption.
 ///
-/// Indexed in the same order as `BuchbergerState::basis` so SPair's
-/// `i` / `j` indices remain valid. `active` distinguishes elements
-/// usable as reducers (true) from non-strict-deactivated elements
-/// kept around for S-pair generation history (false). `lt_divmask`
-/// is the 128-bit divisibility fingerprint of `lt`, used as a
-/// constant-time filter inside `symbolic_preprocess` before the
-/// O(n_vars) `Monomial::divides` check.
+/// Indexed parallel to `BuchbergerState::basis` so `SPair::{i, j}`
+/// remain valid. `active = true` means the element is usable as a
+/// reducer; `false` means non-strict-deactivated (retained for
+/// S-pair generation but skipped during symbolic preprocessing).
+/// `lt_divmask` is the 128-bit divisibility fingerprint of `lt`,
+/// used by `symbolic_preprocess` as a constant-time filter before
+/// the O(n_vars) `Monomial::divides` check.
 pub struct F4BasisRef<'a> {
     pub poly: &'a Polynomial,
     pub lt: &'a Monomial,
@@ -74,12 +99,12 @@ pub struct F4BasisRef<'a> {
     pub active: bool,
 }
 
-/// One generator produced by an F4 batch, paired with the set of input
-/// pairs and reducer-basis indices whose rows contributed to it during
-/// matrix reduction. Callers thread these into the `BuchbergerObserver`
-/// callbacks (`on_pair_reducers` + `on_new_poly`) so the dependency
-/// graph used by the UNSAT-core tracer stays accurate when the F4 path
-/// runs in place of the per-pair geobucket reduction.
+/// One generator produced by an F4 batch, with the input pairs and
+/// reducer-basis indices whose rows contributed to it during matrix
+/// reduction. `BuchbergerState::run_f4` forwards `from_pairs` /
+/// `from_reducers` into `BuchbergerObserver::on_pair_reducers` and
+/// `on_new_poly` so the `GbTracer` UNSAT-core dependency graph
+/// stays accurate under F4.
 #[derive(Debug, Clone)]
 pub struct F4Output {
     pub poly: Polynomial,
@@ -112,21 +137,101 @@ impl RowProv {
     }
 }
 
-/// One F4 batch. Produces a list of new basis polynomials (already
-/// monic but not yet inter-reduced; integration into the basis is the
-/// caller's responsibility — same as `BuchbergerState::run` does
-/// per-pair).
+/// Cross-batch state kept by [`BuchbergerState::run_f4`] across
+/// consecutive [`process_batch_with_workspace`] calls in a single
+/// Buchberger run.
 ///
-/// Returns an empty `Vec` if all S-polys reduced to zero (useless
-/// reductions) or if cancel fired mid-way.
+/// Holds two kinds of state:
 ///
-/// `basis` MUST contain only ACTIVE basis elements (the function
-/// doesn't check `active` flags — caller filters first).
+/// 1. A per-monomial reducer cache mapping a monomial to
+///    `(basis_idx, reducer_poly)`, where `reducer_poly` equals
+///    `basis[basis_idx].poly * (monomial / LT(basis[basis_idx]))`.
+///    Symbolic preprocessing iterates active basis elements in index
+///    order and picks the lowest-index match, so the chosen index is
+///    stable as long as `basis[basis_idx].active` stays true and the
+///    basis is append-only (newer additions can never displace an
+///    existing match). The cache verifies the active flag before
+///    reuse and falls through to recomputation if the cached element
+///    has been deactivated.
+/// 2. Per-batch scratch collections (`handled_scratch`,
+///    `worklist_scratch`, the monomial-set / sorted-list / column-map
+///    / reducer-LT-column index, and the `reducer_lts` /
+///    `reducer_basis_idx` lists used during symbolic preprocessing).
+///    Each is `mem::take`-d into a local at function entry and
+///    returned at the end of the call, so the allocator-owned
+///    capacity is reused across batches even though the logical
+///    contents are not.
+///
+/// `F4Workspace::new()` returns an empty workspace. Passing a fresh
+/// workspace on every call disables both the cache and the scratch
+/// reuse — output is unchanged, allocator traffic increases.
+#[derive(Default)]
+pub struct F4Workspace {
+    /// `m -> (basis_idx, reducer_poly)`. The cache is keyed only by
+    /// the monomial because the basis-element choice is uniquely
+    /// determined by `m` and the current active set.
+    reducer_cache: std::collections::HashMap<MonoKey, (usize, Polynomial)>,
+    /// Diagnostic counters; updated by `process_batch_with_workspace`.
+    pub stats: F4WorkspaceStats,
+    // Per-batch scratch collections. `process_batch_with_workspace`
+    // and `symbolic_preprocess` `mem::take` each into a local at
+    // function entry and assign it back at exit. The allocator-
+    // owned capacity carries over between batches; the logical
+    // contents do not.
+    handled_scratch: std::collections::HashSet<MonoKey>,
+    worklist_scratch: Vec<Monomial>,
+    reducer_lts_scratch: Vec<Monomial>,
+    reducer_basis_idx_scratch: Vec<usize>,
+    all_monomials_scratch: std::collections::HashSet<MonoKey>,
+    monomial_sorted_scratch: Vec<MonoKey>,
+    monomial_to_col_scratch: std::collections::HashMap<MonoKey, usize>,
+    col_to_monomial_scratch: Vec<Monomial>,
+    reducer_cols_scratch: std::collections::HashSet<usize>,
+}
+
+/// Cache-hit / miss statistics for diagnostic and benchmark use.
+#[derive(Default, Debug, Clone, Copy)]
+pub struct F4WorkspaceStats {
+    pub reducer_hits: u64,
+    pub reducer_misses: u64,
+    pub reducer_stale: u64,
+}
+
+impl F4Workspace {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Process one F4 batch. Returns the new basis generators produced
+/// by the batch (already monic, not inter-reduced — integration is
+/// the caller's responsibility).
+///
+/// Returns an empty `Vec` when every S-polynomial reduces to zero or
+/// when `cancel` fires mid-call.
+///
+/// `basis` must contain only active basis elements; the function
+/// does not check `active` flags.
 pub fn process_batch(
     batch: &[&SPair],
     basis: &[F4BasisRef],
     ring: &Arc<PolyRing>,
     cancel: Option<&CancelToken>,
+) -> Vec<F4Output> {
+    let mut workspace = F4Workspace::new();
+    process_batch_with_workspace(batch, basis, ring, cancel, &mut workspace)
+}
+
+/// Workspace-threaded variant of [`process_batch`]. Caches the
+/// reducer-row computation across calls in
+/// `workspace.reducer_cache`; output matches [`process_batch`]
+/// exactly for any input.
+pub fn process_batch_with_workspace(
+    batch: &[&SPair],
+    basis: &[F4BasisRef],
+    ring: &Arc<PolyRing>,
+    cancel: Option<&CancelToken>,
+    workspace: &mut F4Workspace,
 ) -> Vec<F4Output> {
     if batch.is_empty() {
         return Vec::new();
@@ -178,9 +283,11 @@ pub fn process_batch(
     }
 
     // Step 2: symbolic preprocessing — add reducer rows to cover every
-    // monomial divisible by some active basis LT.
+    // monomial divisible by some active basis LT. The S-polynomial
+    // vector is moved into `symbolic_preprocess` so it can be reused
+    // as the prefix of `all_polys` without a per-batch clone.
     let (all_polys, n_spolys, reducer_lts, reducer_basis_idx) =
-        symbolic_preprocess(&spolys, basis, ring, cancel);
+        symbolic_preprocess(spolys, basis, ring, cancel, workspace);
     if cancel.map(|c| c.is_cancelled()).unwrap_or(false) {
         return Vec::new();
     }
@@ -191,31 +298,47 @@ pub fn process_batch(
     // monomials in O(N) expected time, a single `sort_unstable_by`
     // produces the descending order, and the lookup map is built
     // by one linear pass.
-    let mut all_monomials: std::collections::HashSet<MonoKey> =
-        std::collections::HashSet::new();
+    //
+    // Scratch reuse: take the workspace's owned scratch collections
+    // into locals via `mem::take`, then move them back into the
+    // workspace at the end of this call. Their allocator-owned
+    // capacity carries across batches even though the logical
+    // contents do not.
+    let mut all_monomials = std::mem::take(&mut workspace.all_monomials_scratch);
+    all_monomials.clear();
     for poly in &all_polys {
         for k in 0..poly.num_terms() {
             let mono = poly.term(k, ring).monomial();
             all_monomials.insert(MonoKey::new(mono, ring.order));
         }
     }
-    let mut sorted: Vec<MonoKey> = all_monomials.into_iter().collect();
+    let mut sorted = std::mem::take(&mut workspace.monomial_sorted_scratch);
+    sorted.clear();
+    sorted.reserve(all_monomials.len());
+    sorted.extend(all_monomials.drain());
     sorted.sort_unstable_by(|a, b| b.cmp(a)); // descending
-    let mut monomial_to_col: std::collections::HashMap<MonoKey, usize> =
-        std::collections::HashMap::with_capacity(sorted.len());
-    let mut col_to_monomial: Vec<Monomial> = Vec::with_capacity(sorted.len());
-    for k in sorted.into_iter() {
+    workspace.all_monomials_scratch = all_monomials;
+
+    let mut monomial_to_col = std::mem::take(&mut workspace.monomial_to_col_scratch);
+    monomial_to_col.clear();
+    monomial_to_col.reserve(sorted.len());
+    let mut col_to_monomial = std::mem::take(&mut workspace.col_to_monomial_scratch);
+    col_to_monomial.clear();
+    col_to_monomial.reserve(sorted.len());
+    for k in sorted.drain(..) {
         let col = col_to_monomial.len();
         col_to_monomial.push(k.mono.clone());
         monomial_to_col.insert(k, col);
     }
+    workspace.monomial_sorted_scratch = sorted;
 
     // Mark which columns correspond to reducer LTs (i.e. monomials
     // divisible by some active basis LT). After row reduction, any
     // S-poly residue whose LT column is in this set is redundant
     // (its LT is divisible by an existing basis element).
-    let mut reducer_cols: std::collections::HashSet<usize> =
-        std::collections::HashSet::with_capacity(reducer_lts.len());
+    let mut reducer_cols = std::mem::take(&mut workspace.reducer_cols_scratch);
+    reducer_cols.clear();
+    reducer_cols.reserve(reducer_lts.len());
     for lt in &reducer_lts {
         let key = MonoKey::new(lt.clone(), ring.order);
         if let Some(&c) = monomial_to_col.get(&key) {
@@ -283,6 +406,15 @@ pub fn process_batch(
             from_reducers: prov.reducers.iter().copied().collect(),
         });
     }
+    // Return owned scratch buffers to the workspace so their
+    // allocator capacity is reused on the next batch in this run.
+    // `reducer_lts` / `reducer_basis_idx` were owned by the
+    // workspace's `*_scratch` Vecs at function entry; put them back.
+    workspace.monomial_to_col_scratch = monomial_to_col;
+    workspace.col_to_monomial_scratch = col_to_monomial;
+    workspace.reducer_cols_scratch = reducer_cols;
+    workspace.reducer_lts_scratch = reducer_lts;
+    workspace.reducer_basis_idx_scratch = reducer_basis_idx;
     out
 }
 
@@ -297,39 +429,92 @@ pub fn process_batch(
 ///   `all_polys[n_spolys..]` slice), the basis index it was built
 ///   from. Caller seeds row provenance from this.
 fn symbolic_preprocess(
-    spolys: &[Polynomial],
+    spolys: Vec<Polynomial>,
     basis: &[F4BasisRef],
     ring: &Arc<PolyRing>,
     cancel: Option<&CancelToken>,
+    workspace: &mut F4Workspace,
 ) -> (Vec<Polynomial>, usize, Vec<Monomial>, Vec<usize>) {
-    let mut all_polys: Vec<Polynomial> = spolys.to_vec();
-    let n_spolys = all_polys.len();
-    let mut handled: std::collections::HashSet<MonoKey> = std::collections::HashSet::new();
-    let mut reducer_lts: Vec<Monomial> = Vec::new();
-    let mut reducer_basis_idx: Vec<usize> = Vec::new();
+    let n_spolys = spolys.len();
+    // Destructure-borrow `workspace` so the reducer cache and the
+    // per-batch scratch buffers are held as independent `&mut`
+    // references. `reducer_lts_scratch` and `reducer_basis_idx_scratch`
+    // are `mem::take`-d here and moved out via the return tuple;
+    // `process_batch_with_workspace` assigns them back into the
+    // workspace at end-of-call so allocator capacity persists.
+    let F4Workspace {
+        reducer_cache,
+        stats,
+        handled_scratch,
+        worklist_scratch,
+        reducer_lts_scratch,
+        reducer_basis_idx_scratch,
+        ..
+    } = workspace;
+    handled_scratch.clear();
+    worklist_scratch.clear();
+    let mut reducer_lts = std::mem::take(reducer_lts_scratch);
+    let mut reducer_basis_idx = std::mem::take(reducer_basis_idx_scratch);
+    reducer_lts.clear();
+    reducer_basis_idx.clear();
 
-    let mut worklist: Vec<Monomial> = Vec::new();
-    for poly in spolys {
+    for poly in &spolys {
         for k in 0..poly.num_terms() {
             let mono = poly.term(k, ring).monomial();
             let key = MonoKey::new(mono.clone(), ring.order);
-            if handled.insert(key) {
-                worklist.push(mono);
+            if handled_scratch.insert(key) {
+                worklist_scratch.push(mono);
             }
         }
     }
+    let mut all_polys: Vec<Polynomial> = spolys;
 
     let mut idx = 0;
-    while idx < worklist.len() {
+    while idx < worklist_scratch.len() {
         if cancel.map(|c| c.is_cancelled()).unwrap_or(false) {
             return (all_polys, n_spolys, reducer_lts, reducer_basis_idx);
         }
-        let m = worklist[idx].clone();
+        let m = worklist_scratch[idx].clone();
         idx += 1;
-        // Precompute the query monomial's divmask once per worklist
-        // entry; every active basis check then short-circuits on a
-        // constant-time bitmask comparison before the full
-        // `Monomial::divides` (O(n_vars)) call.
+        let m_key = MonoKey::new(m.clone(), ring.order);
+
+        // Cache lookup. An entry maps `m` to `(bi, reducer_poly)`
+        // where `bi` was the lowest-index active basis member whose
+        // LT divided `m` at insertion time. Soundness invariant: the
+        // basis is append-only and `m`'s divisor set is monotone
+        // non-decreasing, so the chosen `bi` remains correct while
+        // `basis[bi].active` holds. A deactivated `bi` falls through
+        // to recomputation against the current active set.
+        let cached = reducer_cache.get(&m_key).and_then(|(bi, poly)| {
+            if basis.get(*bi).map(|b| b.active).unwrap_or(false) {
+                Some((*bi, poly.clone()))
+            } else {
+                None
+            }
+        });
+        if let Some((bi, reducer)) = cached {
+            stats.reducer_hits += 1;
+            reducer_lts.push(m.clone());
+            reducer_basis_idx.push(bi);
+            for k in 0..reducer.num_terms() {
+                let mono = reducer.term(k, ring).monomial();
+                let key = MonoKey::new(mono.clone(), ring.order);
+                if handled_scratch.insert(key) {
+                    worklist_scratch.push(mono);
+                }
+            }
+            all_polys.push(reducer);
+            continue;
+        }
+        // A cache entry whose `basis_idx` is no longer active
+        // increments `stats.reducer_stale`. `stats.reducer_misses`
+        // counts first-time lookups that produce a reducer.
+        let was_stale = reducer_cache.contains_key(&m_key);
+        if was_stale {
+            stats.reducer_stale += 1;
+            reducer_cache.remove(&m_key);
+        }
+
         let m_mask = ring.divmask.compute(&m);
         let mut found: Option<usize> = None;
         for (bi, b) in basis.iter().enumerate() {
@@ -354,13 +539,17 @@ fn symbolic_preprocess(
         if reducer.is_zero() {
             continue;
         }
+        if !was_stale {
+            stats.reducer_misses += 1;
+        }
+        reducer_cache.insert(m_key, (bi, reducer.clone()));
         reducer_lts.push(m.clone());
         reducer_basis_idx.push(bi);
         for k in 0..reducer.num_terms() {
             let mono = reducer.term(k, ring).monomial();
             let key = MonoKey::new(mono.clone(), ring.order);
-            if handled.insert(key) {
-                worklist.push(mono);
+            if handled_scratch.insert(key) {
+                worklist_scratch.push(mono);
             }
         }
         all_polys.push(reducer);
@@ -428,6 +617,10 @@ fn sparse_echelon(
     use std::collections::HashMap;
     debug_assert_eq!(rows.len(), provs.len());
     let mut pivots: HashMap<usize, usize> = HashMap::new();
+    // Single scratch row threaded through every axpy in this
+    // echelon pass; `mem::swap`-ped into / out of `rows[i]` per
+    // pivot application.
+    let mut scratch: SparseRow = Vec::new();
 
     for i in 0..rows.len() {
         if cancel.map(|c| c.is_cancelled()).unwrap_or(false) {
@@ -442,26 +635,32 @@ fn sparse_echelon(
                 Some(&p) => p,
                 None => break,
             };
-            // Avoid cloning the pivot row by using `split_at_mut` to
-            // hold an immutable borrow on the pivot and a mutable
-            // borrow on the current row at the same time. The
-            // pivot_row is always less than `i` (pivots are
-            // registered as `i` is processed), so a `split_at_mut`
-            // at `i` puts the pivot in the left half and row[i] in
-            // the right half.
+            // `pivot_row < i` invariant: pivots are registered after
+            // each outer iteration completes, so during this inner
+            // loop every registered pivot points to a strictly-lower
+            // row index. `split_at_mut(i)` then gives a non-aliasing
+            // mutable borrow of the pivot (left half) and the current
+            // row (right half[0]) simultaneously.
             debug_assert!(pivot_row < i, "pivot must be a previously processed row");
             let (left_rows, right_rows) = rows.split_at_mut(i);
             let (left_provs, right_provs) = provs.split_at_mut(i);
             let scale = right_rows[0][0].1.clone();
-            let new_row = sparse_sub_scaled(
-                &right_rows[0],
+            // Move row[i] out (leaving an empty Vec in its place) so
+            // we can consume its `FieldElem` coefficients into the
+            // merge without cloning them. After the merge, swap
+            // `scratch` back into row[i]; the empty placeholder ends
+            // up in `scratch`, ready for the next axpy.
+            let a = std::mem::take(&mut right_rows[0]);
+            sparse_sub_scaled_consume_a(
+                a,
                 &left_rows[pivot_row],
                 &scale,
                 field,
+                &mut scratch,
             );
-            right_rows[0] = new_row;
-            // Union pivot prov into row[i]'s prov without cloning the
-            // pivot's set: extend directly from `left_provs[pivot]`.
+            std::mem::swap(&mut right_rows[0], &mut scratch);
+            // Union pivot prov into row[i]'s prov in-place; no
+            // BTreeSet clone needed.
             let pivot_prov = &left_provs[pivot_row];
             right_provs[0]
                 .pairs
@@ -486,47 +685,72 @@ fn sparse_echelon(
     }
 }
 
-/// Compute `a - scale * b`, returning a new sparse row sorted by
-/// column ascending. Both `a` and `b` are sorted ascending.
-fn sparse_sub_scaled(
-    a: &SparseRow,
+/// Compute `a - scale * b` into `out`, **consuming** `a` so its
+/// `FieldElem` coefficients are moved (not cloned) into the result
+/// when they survive the merge. Both `a` and `b` are
+/// column-ascending; the result is column-ascending. `out` is
+/// cleared first and its existing allocation is reused.
+///
+/// Hot-path axpy inside [`sparse_echelon`]. The caller holds a single
+/// scratch `SparseRow` and `mem::swap`s it into / out of `rows[i]`.
+fn sparse_sub_scaled_consume_a(
+    a: SparseRow,
     b: &SparseRow,
     scale: &FieldElem,
     field: &PrimeField,
-) -> SparseRow {
-    let mut out: SparseRow = Vec::with_capacity(a.len() + b.len());
-    let (mut i, mut j) = (0usize, 0usize);
-    while i < a.len() && j < b.len() {
-        let (ca, va) = (a[i].0, &a[i].1);
-        let (cb, vb) = (b[j].0, &b[j].1);
+    out: &mut SparseRow,
+) {
+    out.clear();
+    out.reserve(a.len() + b.len());
+    let mut a_iter = a.into_iter();
+    let mut a_cur: Option<(usize, FieldElem)> = a_iter.next();
+    let mut j = 0usize;
+    while a_cur.is_some() && j < b.len() {
+        let ca = a_cur.as_ref().unwrap().0;
+        let cb = b[j].0;
         if ca < cb {
-            out.push((ca, va.clone()));
-            i += 1;
+            out.push(a_cur.take().unwrap());
+            a_cur = a_iter.next();
         } else if ca > cb {
-            // a missing this column; result has -scale * vb
-            let neg = field.neg(&field.mul(scale, vb));
+            let neg = field.neg(&field.mul(scale, &b[j].1));
             out.push((cb, neg));
             j += 1;
         } else {
-            // both have column ca; result = va - scale * vb
-            let prod = field.mul(scale, vb);
-            let diff = field.sub(va, &prod);
+            let (_, va) = a_cur.take().unwrap();
+            let prod = field.mul(scale, &b[j].1);
+            let diff = field.sub(&va, &prod);
             if !field.is_zero(&diff) {
                 out.push((ca, diff));
             }
-            i += 1;
             j += 1;
+            a_cur = a_iter.next();
         }
     }
-    while i < a.len() {
-        out.push((a[i].0, a[i].1.clone()));
-        i += 1;
+    if let Some(elem) = a_cur {
+        out.push(elem);
+    }
+    for elem in a_iter {
+        out.push(elem);
     }
     while j < b.len() {
         let neg = field.neg(&field.mul(scale, &b[j].1));
         out.push((b[j].0, neg));
         j += 1;
     }
+}
+
+/// Non-consuming variant retained for tests / external callers; it
+/// clones `a` into a temporary then delegates. Hot-path callers use
+/// [`sparse_sub_scaled_consume_a`] directly.
+#[cfg(test)]
+fn sparse_sub_scaled(
+    a: &SparseRow,
+    b: &SparseRow,
+    scale: &FieldElem,
+    field: &PrimeField,
+) -> SparseRow {
+    let mut out = SparseRow::new();
+    sparse_sub_scaled_consume_a(a.clone(), b, scale, field, &mut out);
     out
 }
 
@@ -1100,6 +1324,157 @@ mod tests {
         assert!(!igb.is_trivial(), "pop must clear trivial state set inside push");
     }
 
+    // ─── F4 cross-batch reducer cache ─────────────────────────────
+
+    /// `process_batch_with_workspace` reused across batches must
+    /// (a) populate the cache on the first batch and (b) take cache
+    /// hits on a second batch that revisits the same monomials. The
+    /// outputs must remain identical to a single-call `process_batch`
+    /// — the cache is a pure perf optimisation, not a state change.
+    #[test]
+    fn f4_workspace_idempotent_on_repeated_batch() {
+        // Use a 3-pair batch over the cyclic-style ideal so
+        // symbolic_preprocess actually has work to do (S-polys are
+        // non-zero and pull in reducer rows).
+        let ring = ring_mod7(3);
+        let x0 = x(0, &ring);
+        let x1 = x(1, &ring);
+        let x2 = x(2, &ring);
+        let f0 = x0.mul(&x0, &ring).sub(&x1, &ring);   // x^2 - y
+        let f1 = x0.mul(&x1, &ring).sub(&x2, &ring);   // x*y - z
+        let f2 = x1.mul(&x1, &ring).sub(&x0, &ring);   // y^2 - x
+        let basis_polys = vec![f0, f1, f2];
+        let basis_lts: Vec<Monomial> = basis_polys.iter().map(|p| lt(p, &ring)).collect();
+        let basis: Vec<F4BasisRef> = basis_polys
+            .iter()
+            .zip(basis_lts.iter())
+            .map(|(p, l)| F4BasisRef {
+                poly: p,
+                lt: l,
+                lt_divmask: ring.divmask.compute(l),
+                active: true,
+            })
+            .collect();
+        let mut pairs: Vec<SPair> = Vec::new();
+        for (i, j) in [(0usize, 1usize), (0, 2), (1, 2)] {
+            let lcm = basis_lts[i].lcm(&basis_lts[j]);
+            let lcm_dm = ring.divmask.compute(&lcm);
+            let lcm_deg = lcm.total_degree();
+            pairs.push(SPair {
+                i, j,
+                sugar: lcm_deg,
+                lcm,
+                lcm_divmask: lcm_dm,
+                lcm_deg,
+                age: 0,
+                generation: 0,
+                is_coprime: false,
+            });
+        }
+        let pair_refs: Vec<&SPair> = pairs.iter().collect();
+        let mut ws = F4Workspace::new();
+        let first = process_batch_with_workspace(&pair_refs, &basis, &ring, None, &mut ws);
+        assert!(
+            ws.stats.reducer_misses > 0,
+            "first batch must populate the cache; stats={:?}",
+            ws.stats
+        );
+        let misses_before = ws.stats.reducer_misses;
+        let hits_before = ws.stats.reducer_hits;
+        let second = process_batch_with_workspace(&pair_refs, &basis, &ring, None, &mut ws);
+        assert!(
+            ws.stats.reducer_hits > hits_before,
+            "second batch must take cache hits; stats={:?}",
+            ws.stats
+        );
+        assert_eq!(
+            ws.stats.reducer_misses, misses_before,
+            "no new misses on repeat (same monomials, same active basis)"
+        );
+        assert_eq!(first.len(), second.len(), "output count must match");
+        for (a, b) in first.iter().zip(second.iter()) {
+            assert_eq!(lt(&a.poly, &ring).exponents(), lt(&b.poly, &ring).exponents());
+            assert_eq!(a.from_pairs, b.from_pairs);
+            assert_eq!(a.from_reducers, b.from_reducers);
+        }
+    }
+
+    /// A cached reducer keyed on monomial `m` records `(basis_idx,
+    /// reducer_poly)`. Deactivating `basis[basis_idx]` between the
+    /// two batches must force a recomputation. After the second
+    /// call, [`F4WorkspaceStats::reducer_stale`] is incremented for
+    /// every monomial whose cached entry pointed at the
+    /// now-deactivated element. The outputs must remain a valid GB
+    /// extension — the wider `f4_vs_per_pair_random_cross_check`
+    /// fuzz catches any silent reuse of a stale row.
+    #[test]
+    fn f4_workspace_invalidates_on_basis_deactivation() {
+        let ring = ring_mod7(3);
+        let x0 = x(0, &ring);
+        let x1 = x(1, &ring);
+        let x2 = x(2, &ring);
+        // 3-pair batch that produces non-zero S-polys.
+        let f0 = x0.mul(&x0, &ring).sub(&x1, &ring);
+        let f1 = x0.mul(&x1, &ring).sub(&x2, &ring);
+        let f2 = x1.mul(&x1, &ring).sub(&x0, &ring);
+        let basis_polys = vec![f0, f1, f2];
+        let basis_lts: Vec<Monomial> = basis_polys.iter().map(|p| lt(p, &ring)).collect();
+        let mut pairs: Vec<SPair> = Vec::new();
+        for (i, j) in [(0usize, 1usize), (0, 2), (1, 2)] {
+            let lcm = basis_lts[i].lcm(&basis_lts[j]);
+            let lcm_dm = ring.divmask.compute(&lcm);
+            let lcm_deg = lcm.total_degree();
+            pairs.push(SPair {
+                i, j,
+                sugar: lcm_deg,
+                lcm,
+                lcm_divmask: lcm_dm,
+                lcm_deg,
+                age: 0,
+                generation: 0,
+                is_coprime: false,
+            });
+        }
+        let pair_refs: Vec<&SPair> = pairs.iter().collect();
+        let active_all: Vec<F4BasisRef> = basis_polys
+            .iter()
+            .zip(basis_lts.iter())
+            .map(|(p, l)| F4BasisRef {
+                poly: p,
+                lt: l,
+                lt_divmask: ring.divmask.compute(l),
+                active: true,
+            })
+            .collect();
+        let mut ws = F4Workspace::new();
+        let _ = process_batch_with_workspace(&pair_refs, &active_all, &ring, None, &mut ws);
+        let stale_before = ws.stats.reducer_stale;
+        let misses_before = ws.stats.reducer_misses;
+
+        // Deactivate basis[0]. Any cached entry that selected `basis_idx=0`
+        // as its reducer must register as stale and be recomputed.
+        let basis_no_b0: Vec<F4BasisRef> = basis_polys
+            .iter()
+            .zip(basis_lts.iter())
+            .enumerate()
+            .map(|(idx, (p, l))| F4BasisRef {
+                poly: p,
+                lt: l,
+                lt_divmask: ring.divmask.compute(l),
+                active: idx != 0,
+            })
+            .collect();
+        let _ = process_batch_with_workspace(&pair_refs, &basis_no_b0, &ring, None, &mut ws);
+        // At least one stale event or new miss must fire (some
+        // monomial that used basis[0] now needs a different reducer
+        // or becomes free).
+        assert!(
+            ws.stats.reducer_stale > stale_before || ws.stats.reducer_misses > misses_before,
+            "deactivating basis[0] must trigger cache invalidation; stats={:?}",
+            ws.stats
+        );
+    }
+
     // ─── F4 vs per-pair cross-validation fuzz ─────────────────────
 
     /// Randomized cross-check: for a handful of small ideals, the
@@ -1202,5 +1577,357 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ─── F4 batch-routing end-to-end ─────────────────────────────
+
+    /// Katsura-3 in 4 variables over F_7. Buchberger produces several
+    /// same-sugar batches below `F4_MIN_BATCH`, routing them through
+    /// the per-pair fallback. Asserts `f4_fallback_pairs > 0` and
+    /// F4 / per-pair leading-term-set agreement.
+    #[test]
+    fn f4_size_fallback_fires_on_small_batches() {
+        use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
+        use std::collections::HashSet;
+        let ring = ring_mod7(4);
+        let xs: Vec<Polynomial> = (0..4).map(|i| Polynomial::variable(i, &ring)).collect();
+        // Katsura-3: 4 polynomials in `u_0, u_1, u_2, u_3`.
+        // P_i = Σ_{j=-n..n} u_{|j|}·u_{|i-j|} - u_i  for 0 ≤ i ≤ 2,
+        // and P_3 = u_0 + 2·u_1 + 2·u_2 + 2·u_3 - 1.
+        let n = 3i32;
+        let mut polys: Vec<Polynomial> = Vec::new();
+        for i in 0..3usize {
+            let mut acc = Polynomial::zero();
+            for j in -n..=n {
+                let aj = (j.unsigned_abs()) as usize;
+                let ak = ((i as i32 - j).unsigned_abs()) as usize;
+                if aj > 3 || ak > 3 {
+                    continue;
+                }
+                let prod = xs[aj].mul(&xs[ak], &ring);
+                acc = acc.add(&prod, &ring);
+            }
+            acc = acc.sub(&xs[i], &ring);
+            polys.push(acc);
+        }
+        let two = ring.field.from_int(2);
+        let two_poly = Polynomial::constant(two, &ring);
+        let mut tail = xs[0].clone();
+        for k in 1..4 {
+            tail = tail.add(&xs[k].mul(&two_poly, &ring), &ring);
+        }
+        let one = ring.field.one();
+        tail = tail.sub(&Polynomial::constant(one, &ring), &ring);
+        polys.push(tail);
+
+        let cfg_f4 = BuchbergerConfig {
+            order: MonomialOrder::DegRevLex,
+            cancel_token: None,
+            abort_on_trivial: false,
+            use_f4: true,
+        };
+        let mut igb_f4 = IncrementalGB::new(Arc::clone(&ring), cfg_f4);
+        igb_f4
+            .add_generators(polys.clone())
+            .expect("F4 add_generators");
+
+        let f4_stats = igb_f4.engine_stats().clone();
+        assert!(
+            f4_stats.f4_fallback_pairs > 0,
+            "F4_MIN_BATCH size fallback must fire on cyclic-3; \
+             got f4_fallback_pairs=0, full stats={:?}",
+            f4_stats,
+        );
+
+        // Per-pair reference: compare LT sets to confirm the routing
+        // decision didn't break correctness.
+        let cfg_pp = BuchbergerConfig {
+            order: MonomialOrder::DegRevLex,
+            cancel_token: None,
+            abort_on_trivial: false,
+            use_f4: false,
+        };
+        let mut igb_pp = IncrementalGB::new(Arc::clone(&ring), cfg_pp);
+        igb_pp
+            .add_generators(polys)
+            .expect("per-pair add_generators");
+
+        let f4_lts: HashSet<Vec<u16>> = igb_f4
+            .basis()
+            .iter()
+            .map(|p| lt(p, &ring).exponents().to_vec())
+            .collect();
+        let pp_lts: HashSet<Vec<u16>> = igb_pp
+            .basis()
+            .iter()
+            .map(|p| lt(p, &ring).exponents().to_vec())
+            .collect();
+        assert_eq!(
+            f4_lts, pp_lts,
+            "F4 size fallback must preserve correctness; F4 LT set differs from per-pair"
+        );
+    }
+
+    /// Cyclic-5 in F_7 produces same-sugar batches ≥ `F4_MIN_BATCH`.
+    /// Asserts `engine_stats().f4_batches > 0` and `f4_pair_total > 0`.
+    #[test]
+    fn f4_matrix_path_fires_on_cyclic_5() {
+        use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
+        let ring = ring_mod7(5);
+        let xs: Vec<Polynomial> = (0..5).map(|i| Polynomial::variable(i, &ring)).collect();
+        let one = ring.field.one();
+        let neg_one = ring.field.neg(&one);
+        let mut polys: Vec<Polynomial> = Vec::new();
+        // f_d = Σ_{r=0..n} ∏_{k=0..d} x_{(r+k) mod n}  for d = 1..n.
+        for d in 1..5 {
+            let mut acc = Polynomial::zero();
+            for r in 0..5 {
+                let mut prod = xs[r % 5].clone();
+                for k in 1..d {
+                    prod = prod.mul(&xs[(r + k) % 5], &ring);
+                }
+                acc = acc.add(&prod, &ring);
+            }
+            polys.push(acc);
+        }
+        // f_n = x_0 · x_1 · … · x_{n-1} - 1.
+        let mut p = xs[0].clone();
+        for k in 1..5 {
+            p = p.mul(&xs[k], &ring);
+        }
+        p = p.add(&Polynomial::constant(neg_one, &ring), &ring);
+        polys.push(p);
+
+        let cfg = BuchbergerConfig {
+            order: MonomialOrder::DegRevLex,
+            cancel_token: None,
+            abort_on_trivial: false,
+            use_f4: true,
+        };
+        let mut igb = IncrementalGB::new(Arc::clone(&ring), cfg);
+        igb.add_generators(polys).expect("F4 add_generators");
+        let stats = igb.engine_stats().clone();
+        assert!(
+            stats.f4_batches > 0,
+            "F4 matrix path must fire on cyclic-5; stats={:?}",
+            stats,
+        );
+        assert!(
+            stats.f4_pair_total > 0,
+            "F4 pair total must be > 0 when f4_batches > 0; stats={:?}",
+            stats,
+        );
+    }
+
+    // ─── Large-batch F4 amortisation coverage ────────────────────
+
+    /// Cyclic-6 in F_7. Same-sugar batches average ≈ 35 pairs, well
+    /// above `F4_MIN_BATCH = 12`. Asserts:
+    ///   * `f4_batches > 0`,
+    ///   * average batch size ≥ 20,
+    ///   * F4 pair share ≥ 90% (small low-sugar batches still fall
+    ///     back),
+    ///   * F4 and per-pair leading-term sets match.
+    ///
+    /// `#[ignore]`d because cyclic-6 takes ~100 ms. Run with
+    /// `cargo test -p picus-solver --release -- --ignored f4_large_batch_cyclic_6`.
+    #[test]
+    #[ignore]
+    fn f4_large_batch_cyclic_6() {
+        use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
+        use std::collections::HashSet;
+        let n = 6usize;
+        let ring = ring_mod7(n);
+        let xs: Vec<Polynomial> = (0..n).map(|i| Polynomial::variable(i, &ring)).collect();
+        let one = ring.field.one();
+        let neg_one = ring.field.neg(&one);
+        let mut polys: Vec<Polynomial> = Vec::new();
+        // Cyclic-n: f_d = Σ_{r=0..n} ∏_{k=0..d} x_{(r+k) mod n}  for d = 1..n.
+        for d in 1..n {
+            let mut acc = Polynomial::zero();
+            for r in 0..n {
+                let mut prod = xs[r % n].clone();
+                for k in 1..d {
+                    prod = prod.mul(&xs[(r + k) % n], &ring);
+                }
+                acc = acc.add(&prod, &ring);
+            }
+            polys.push(acc);
+        }
+        // f_n = x_0 · x_1 · … · x_{n-1} - 1.
+        let mut p = xs[0].clone();
+        for k in 1..n {
+            p = p.mul(&xs[k], &ring);
+        }
+        p = p.add(&Polynomial::constant(neg_one, &ring), &ring);
+        polys.push(p);
+
+        let cfg_f4 = BuchbergerConfig {
+            order: MonomialOrder::DegRevLex,
+            cancel_token: None,
+            abort_on_trivial: false,
+            use_f4: true,
+        };
+        let mut igb_f4 = IncrementalGB::new(Arc::clone(&ring), cfg_f4);
+        igb_f4
+            .add_generators(polys.clone())
+            .expect("F4 add_generators (cyclic-6)");
+        let stats = igb_f4.engine_stats().clone();
+        assert!(
+            stats.f4_batches > 0,
+            "cyclic-6 must fire F4 matrix path; stats={:?}",
+            stats,
+        );
+        let avg = stats.f4_pair_total as f64 / stats.f4_batches as f64;
+        assert!(
+            avg >= 20.0,
+            "cyclic-6 must produce large F4 batches (avg ≥ 20 expected, got avg={}); stats={:?}",
+            avg,
+            stats,
+        );
+        // Most of cyclic-6's pairs route through F4 — at least 90%
+        // of the matrix path should be exercised. (A handful of
+        // small low-sugar batches do fall back; that's expected.)
+        let f4_share = stats.f4_pair_total as f64
+            / (stats.f4_pair_total + stats.f4_fallback_pairs) as f64;
+        assert!(
+            f4_share >= 0.9,
+            "cyclic-6 F4 share must be ≥ 0.9 (got {:.3}); stats={:?}",
+            f4_share,
+            stats,
+        );
+
+        // Per-pair reference.
+        let cfg_pp = BuchbergerConfig {
+            order: MonomialOrder::DegRevLex,
+            cancel_token: None,
+            abort_on_trivial: false,
+            use_f4: false,
+        };
+        let mut igb_pp = IncrementalGB::new(Arc::clone(&ring), cfg_pp);
+        igb_pp
+            .add_generators(polys)
+            .expect("per-pair add_generators (cyclic-6)");
+        let f4_lts: HashSet<Vec<u16>> = igb_f4
+            .basis()
+            .iter()
+            .map(|p| lt(p, &ring).exponents().to_vec())
+            .collect();
+        let pp_lts: HashSet<Vec<u16>> = igb_pp
+            .basis()
+            .iter()
+            .map(|p| lt(p, &ring).exponents().to_vec())
+            .collect();
+        assert_eq!(
+            f4_lts, pp_lts,
+            "F4 and per-pair must agree on cyclic-6 LT set; F4 stats={:?}",
+            stats,
+        );
+    }
+
+    /// Homogeneous random degree-2 ideal in 5 variables with 8
+    /// generators (deterministic LCG seed). No constant term keeps
+    /// the basis from collapsing to a unit; degree-3 same-sugar
+    /// batches produced are large enough for the F4 matrix path.
+    /// Asserts `f4_batches > 0`, `f4_pair_total >= F4_MIN_BATCH`,
+    /// and F4 / per-pair leading-term-set agreement.
+    #[test]
+    fn f4_large_batch_homog_5vars_deg2() {
+        use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
+        use std::collections::HashSet;
+        let ring = ring_mod7(5);
+        // Deterministic LCG so the test is reproducible.
+        let mut seed: u64 = 0xC0CCAB1234567ABC;
+        let mut next = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            seed
+        };
+        let xs: Vec<Polynomial> = (0..5).map(|i| Polynomial::variable(i, &ring)).collect();
+        let mut polys: Vec<Polynomial> = Vec::new();
+        for _ in 0..8 {
+            // Sum of 5 random degree-2 atoms `c · x_i · x_j` with
+            // distinct (i, j) pairs. No constant tail — keeps the
+            // poly homogeneous degree 2 and prevents the basis from
+            // collapsing to `1`.
+            let mut acc = Polynomial::zero();
+            let mut used: std::collections::HashSet<(usize, usize)> =
+                std::collections::HashSet::new();
+            let mut tries = 0;
+            while used.len() < 5 && tries < 50 {
+                tries += 1;
+                let c_raw = ((next() % 6) + 1) as i64;
+                let c = ring.field.from_int(c_raw);
+                let mut i = (next() as usize) % 5;
+                let mut j = (next() as usize) % 5;
+                if i > j {
+                    std::mem::swap(&mut i, &mut j);
+                }
+                if !used.insert((i, j)) {
+                    continue;
+                }
+                let term = xs[i].mul(&xs[j], &ring);
+                acc = acc.add(&term.mul(&Polynomial::constant(c, &ring), &ring), &ring);
+            }
+            if !acc.is_zero() {
+                polys.push(acc);
+            }
+        }
+        assert!(
+            polys.len() >= 6,
+            "deterministic seed must produce >= 6 polys, got {}",
+            polys.len(),
+        );
+
+        let cfg_f4 = BuchbergerConfig {
+            order: MonomialOrder::DegRevLex,
+            cancel_token: None,
+            abort_on_trivial: false,
+            use_f4: true,
+        };
+        let mut igb_f4 = IncrementalGB::new(Arc::clone(&ring), cfg_f4);
+        igb_f4
+            .add_generators(polys.clone())
+            .expect("F4 add_generators (homog 5vars)");
+        let stats = igb_f4.engine_stats().clone();
+        assert!(
+            stats.f4_batches > 0,
+            "homog-5vars-deg2 must fire F4 matrix path at least once; stats={:?}",
+            stats,
+        );
+        // At least one batch should hit `F4_MIN_BATCH`; check that
+        // `f4_pair_total >= F4_MIN_BATCH` (one such batch is enough).
+        assert!(
+            stats.f4_pair_total >= 12,
+            "F4 must process >= 12 pairs total (i.e. ≥ 1 above-threshold batch); stats={:?}",
+            stats,
+        );
+
+        let cfg_pp = BuchbergerConfig {
+            order: MonomialOrder::DegRevLex,
+            cancel_token: None,
+            abort_on_trivial: false,
+            use_f4: false,
+        };
+        let mut igb_pp = IncrementalGB::new(Arc::clone(&ring), cfg_pp);
+        igb_pp
+            .add_generators(polys)
+            .expect("per-pair add_generators (homog 5vars)");
+        let f4_lts: HashSet<Vec<u16>> = igb_f4
+            .basis()
+            .iter()
+            .map(|p| lt(p, &ring).exponents().to_vec())
+            .collect();
+        let pp_lts: HashSet<Vec<u16>> = igb_pp
+            .basis()
+            .iter()
+            .map(|p| lt(p, &ring).exponents().to_vec())
+            .collect();
+        assert_eq!(
+            f4_lts, pp_lts,
+            "F4 and per-pair LT sets must agree on homog-5vars; F4 stats={:?}",
+            stats,
+        );
     }
 }

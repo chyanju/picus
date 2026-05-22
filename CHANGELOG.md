@@ -4,6 +4,133 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.27] - 2026-05-22
+
+### Added
+
+- `picus-solver::ff::hilbert` module. Sparse `Z[t]` polynomial type
+  `HilbertNum` (saturating arithmetic on `i64` coefficients) and
+  `hilbert_numerator(&[Monomial]) -> HilbertNum` implementing the
+  Bigatti–Caboara–Robbiano recursion
+  `N(I) = N(I + (p)) + t^deg(p) · N(I : p)`. Pivot selected as the
+  most-occurring variable's smallest nonzero exponent. 16 unit tests
+  cover empty / unit / single / coprime / non-coprime / redundant-
+  generator cases plus textbook targets `(x^2, x*y) → 1 - 2t^2 + t^3`,
+  `m^2 → 1 - 3t^2 + 2t^3`, `(x*y, y*z) → 1 - 2t^2 + t^3`.
+- `picus-solver::ff::buchberger::GbEngineStats` fields `f4_batches`,
+  `f4_pair_total`, `f4_fallback_pairs`. Counters were previously
+  local to `BuchbergerState::run_f4` and only emitted via stderr
+  under `PICUS_GB_STATS=1`; moving them onto the struct lets unit
+  tests assert routing decisions directly.
+- `picus-solver::ff::buchberger::IncrementalGB::engine_stats() ->
+  &GbEngineStats` accessor.
+- Per-batch scratch buffers on `F4Workspace`: `handled_scratch`,
+  `worklist_scratch`, `reducer_lts_scratch`,
+  `reducer_basis_idx_scratch`, `all_monomials_scratch`,
+  `monomial_sorted_scratch`, `monomial_to_col_scratch`,
+  `col_to_monomial_scratch`, `reducer_cols_scratch`.
+  `symbolic_preprocess` and `process_batch_with_workspace` `mem::take`
+  each into a local at entry and assign it back at end-of-call;
+  allocator capacity persists across consecutive batches in the same
+  Buchberger run.
+- `picus-solver::ff::f4::sparse_sub_scaled_consume_a`. Consume-`a`
+  axpy that moves the row's `FieldElem` coefficients into the merge
+  instead of cloning them. `sparse_echelon` holds a single
+  `SparseRow` scratch buffer and `mem::swap`s it into / out of
+  `rows[i]` per axpy.
+- `picus-solver::ff::buchberger::F4_HILBERT_CHECK_MAX_BATCH = 16`
+  and `F4_REDUNDANCY_LIMIT = 4.0` constants (added then removed
+  same release — see "Removed").
+- Four new `ff::f4::tests` cases:
+  `f4_size_fallback_fires_on_small_batches` (Katsura-3 forces
+  `f4_fallback_pairs > 0`), `f4_matrix_path_fires_on_cyclic_5`
+  (asserts `f4_batches > 0`), `f4_large_batch_homog_5vars_deg2`
+  (8-generator degree-2 ideal, asserts `f4_pair_total >= 12`),
+  `f4_large_batch_cyclic_6` (`#[ignore]`, release-only, asserts
+  avg batch ≥ 20 and ≥ 90% pair share through the F4 path).
+- `tests/bench_perf.rs::bench_f4_non_cyclic_workloads`. Katsura-3,
+  Katsura-4, and a hand-crafted diffuse 4-variable ideal. Validates
+  the `F4_MIN_BATCH` threshold generalises beyond cyclic-N.
+- F4 unit tests `f4_workspace_idempotent_on_repeated_batch` and
+  `f4_workspace_invalidates_on_basis_deactivation` covering the
+  reducer cache lifecycle.
+
+### Changed
+
+- `picus-solver::ff::buchberger::F4_MIN_BATCH`: `4` → `12`. The
+  prior value targeted cyclic-N's small batches; on Katsura-4
+  (3 batches avg 8.3) and the diffuse-4vars ideal F4 ran 2.37× /
+  3.53× slower than per-pair because the matrix-build + reducer-row
+  construction overhead exceeded the amortisation gain on medium
+  batches. At `12` both cases recover to within 1.02× / 1.15× of
+  per-pair; cyclic-6 retreats from ~1.06× to ~1.13× (acceptable
+  trade).
+- `picus-solver::ff::f4::symbolic_preprocess` consumes its
+  `spolys: Vec<Polynomial>` argument (was `&[Polynomial]`); the
+  vector becomes the prefix of `all_polys` without a per-batch
+  clone.
+- `picus-solver::ff::f4::symbolic_preprocess` destructures
+  `&mut F4Workspace` so the reducer cache and the scratch buffers
+  hold independent `&mut` references concurrently.
+- `picus-solver::ff::buchberger::BuchbergerState::run_f4` writes F4
+  counters into `self.stats` and emits per-run deltas in
+  `[picus-gb-stats F4]` (was per-`run_f4` locals).
+- `picus-solver::ff::hilbert::HilbertNum::{add_assign, sub_assign,
+  mul}` saturate on overflow (`i64::saturating_*`) so adversarial
+  inputs that would otherwise wrap return a saturated coefficient.
+- Module doc on `picus-solver::ff::f4` updated to reflect the new
+  bench ratios and the reverted Hilbert gating.
+
+### Removed
+
+- `picus-solver::ff::hilbert::batch_density_score`. Added then
+  reverted in the same release: the Gebauer–Möller M-criterion
+  inside `gm_insert` collapses every same-LCM pair against an
+  existing one before it reaches the F4 batch, so the gating signal
+  (`sum |HN coefficients|` over the LCM ideal) is `Ω(batch.len())`
+  on every input that survives GM and never crosses the threshold.
+  Confirmed empirically with a 6-variable redundant-LCM ideal that
+  initially has 15 same-LCM pairs but only 11 survive GM-insert.
+  The `hilbert_numerator` module is retained as a reusable building
+  block; the `run_f4` integration and the `F4_HILBERT_CHECK_MAX_BATCH`
+  / `F4_REDUNDANCY_LIMIT` constants are gone.
+
+### Tests
+
+- 337 lib tests pass under both `PICUS_USE_F4=0` and
+  `PICUS_USE_F4=1`; 1 `#[ignore]` (`f4_large_batch_cyclic_6`,
+  release-only). 77 integration tests + 6 cdclt_regression tests
+  pass under F4=1. `f4_vs_per_pair_random_cross_check` (12
+  deterministic seeds) still fuzzes F4 against per-pair LT-set
+  agreement.
+
+### Performance
+
+- `bench_f4_vs_per_pair_large` and `bench_f4_non_cyclic_workloads`
+  F4 / per-pair ratios at `F4_MIN_BATCH = 12`:
+
+  | workload | ratio |
+  |---|---|
+  | cyclic-4 | 0.82–0.92× |
+  | cyclic-5 | 0.91–1.12× |
+  | cyclic-6 | 1.06–1.20× |
+  | dense-10/20/30 | 0.96–1.02× |
+  | katsura-3 | 0.77–0.88× |
+  | katsura-4 | 0.92–1.02× |
+  | diffuse-4vars | 0.92–1.15× |
+
+- End-to-end `picus check --solver native --theory ff` on the 68
+  circomlib-cff5ab6 circuits (PLDI 2023 corpus), 60s wall-clock cap
+  per circuit, 5000 ms per-query timeout: F4=0 total 579.25 s,
+  F4=1 total 579.29 s — 0.01% wall delta, 69/69 verdicts identical.
+  Per-circuit deltas above 15%: BinSub −53%, EscalarProduct −27%,
+  Bits2Num −25%, MiMC7 −25%, AliasCheck −16% (all F4=1 faster);
+  XOR +240% on an 8 µs baseline (noise). Total time is dominated
+  by 9 circuits hitting the 60s wall-clock cap in both modes
+  (~540 s of 579 s). On the cvc5_compare corpus picus is ~9.5×
+  faster than cvc5 1.3.1 (`--ff-solver split`) in geomean both
+  with and without F4 enabled.
+
 ## [1.7.26] - 2026-05-21
 
 ### Added

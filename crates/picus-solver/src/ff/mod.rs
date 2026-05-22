@@ -16,6 +16,7 @@ pub mod geobucket;
 pub mod spair;
 pub mod buchberger;
 pub mod f4;
+pub mod hilbert;
 pub mod univariate;
 
 pub use field::{PrimeField, FieldElem};

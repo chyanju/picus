@@ -289,6 +289,7 @@ fn bench_f4_vs_per_pair_large() {
     let primes_and_orders: Vec<(BigUint, usize)> = vec![
         (BigUint::from(7919u32), 4), // cyclic-4
         (BigUint::from(7919u32), 5), // cyclic-5 (heavier)
+        (BigUint::from(7919u32), 6), // cyclic-6 (more same-sugar batches)
     ];
 
     for (prime, n_vars) in &primes_and_orders {
@@ -399,6 +400,178 @@ fn bench_f4_vs_per_pair_large() {
                 ratio
             );
         }
+    }
+}
+
+/// F4-vs-per-pair bench on non-cyclic GB families: Katsura-3,
+/// Katsura-4, and a 4-variable ideal whose S-pair LCMs share
+/// substructure. Coverage for the medium-batch regime that the
+/// cyclic-N corpus does not exercise.
+///
+/// Run with `PICUS_GB_STATS=1` to print per-run F4 batch counters:
+///
+/// ```bash
+/// PICUS_USE_F4=1 PICUS_GB_STATS=1 cargo test -p picus-solver \
+///   --test bench_perf --release \
+///   bench_f4_non_cyclic_workloads -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore]
+fn bench_f4_non_cyclic_workloads() {
+    use picus_solver::ff::buchberger::{BuchbergerConfig, IncrementalGB};
+    use picus_solver::ff::monomial::MonomialOrder;
+    use picus_solver::ff::polynomial::{PolyRing, Polynomial};
+    use picus_solver::ff::field::PrimeField;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    /// Katsura(n) in `n+1` variables `u_0, …, u_n` (degrevlex):
+    /// ```text
+    ///   P_i = Σ_{j=-n..n} u_{|j|} · u_{|i-j|} - u_i   for 0 ≤ i ≤ n-1
+    ///   P_n = Σ_{j=-n..n} u_{|j|} - 1
+    /// ```
+    fn katsura_n(n: usize, ring: &Arc<PolyRing>) -> Vec<Polynomial> {
+        let xs: Vec<Polynomial> = (0..=n).map(|i| Polynomial::variable(i, ring)).collect();
+        let mut polys: Vec<Polynomial> = Vec::new();
+        let two = ring.field.from_int(2);
+        let two_poly = Polynomial::constant(two.clone(), ring);
+        for i in 0..n {
+            let mut acc = Polynomial::zero();
+            for j in -(n as i32)..=(n as i32) {
+                let aj = (j.unsigned_abs()) as usize;
+                let ak = ((i as i32 - j).unsigned_abs()) as usize;
+                if aj > n || ak > n {
+                    continue;
+                }
+                let prod = xs[aj].mul(&xs[ak], ring);
+                acc = acc.add(&prod, ring);
+            }
+            acc = acc.sub(&xs[i], ring);
+            polys.push(acc);
+        }
+        // P_n: u_0 + 2·u_1 + 2·u_2 + … + 2·u_n - 1
+        let mut tail = xs[0].clone();
+        for k in 1..=n {
+            let scaled = xs[k].mul(&two_poly, ring);
+            tail = tail.add(&scaled, ring);
+        }
+        let one = ring.field.one();
+        tail = tail.sub(&Polynomial::constant(one, ring), ring);
+        polys.push(tail);
+        polys
+    }
+
+    /// 4-variable degree-2/4 ideal whose S-pair LCMs cluster inside
+    /// a single sugar batch. LTs `(x·y, x·z, y·z, w·x, w·y, w·z,
+    /// w·x·y·z)` give `lcm(f_1, f_2) = lcm(f_1, f_3) = lcm(f_2, f_3)
+    /// = x·y·z` (three pairs sharing a degree-3 LCM) plus the
+    /// symmetric block on `(w, x, y, z)`.
+    fn diffuse_ideal(ring: &Arc<PolyRing>) -> Vec<Polynomial> {
+        let w = Polynomial::variable(0, ring);
+        let x = Polynomial::variable(1, ring);
+        let y = Polynomial::variable(2, ring);
+        let z = Polynomial::variable(3, ring);
+        let one = ring.field.one();
+        let const_one = Polynomial::constant(one.clone(), ring);
+        let f1 = x.mul(&y, ring).sub(&z, ring);
+        let f2 = x.mul(&z, ring).sub(&y, ring);
+        let f3 = y.mul(&z, ring).sub(&x, ring);
+        let f4 = w.mul(&x, ring).sub(&const_one, ring);
+        let f5 = w.mul(&y, ring).sub(&z, ring);
+        let f6 = w.mul(&z, ring).sub(&y, ring);
+        let f7 = w.mul(&x, ring).mul(&y, ring).mul(&z, ring).sub(&const_one, ring);
+        vec![f1, f2, f3, f4, f5, f6, f7]
+    }
+
+    fn run_one(
+        polys: &[Polynomial],
+        ring: &Arc<PolyRing>,
+        use_f4: bool,
+    ) -> u128 {
+        let cfg = BuchbergerConfig {
+            order: MonomialOrder::DegRevLex,
+            cancel_token: None,
+            abort_on_trivial: false,
+            use_f4,
+        };
+        let mut igb = IncrementalGB::new(Arc::clone(ring), cfg);
+        let t = Instant::now();
+        igb.add_generators(polys.to_vec()).expect("add_generators");
+        t.elapsed().as_micros()
+    }
+
+    fn median_times(polys: &[Polynomial], ring: &Arc<PolyRing>, use_f4: bool) -> u128 {
+        // Warm-up + 3 measured runs; report the median.
+        let _ = run_one(polys, ring, use_f4);
+        let mut ts = Vec::new();
+        for _ in 0..3 {
+            ts.push(run_one(polys, ring, use_f4));
+        }
+        ts.sort();
+        ts[1]
+    }
+
+    println!();
+    println!(
+        "{:<24} | {:>8} | {:>10} | {:>10} | {}",
+        "workload", "n_polys", "pp_us", "f4_us", "f4/pp"
+    );
+    println!("{}", "-".repeat(76));
+
+    let prime = BigUint::from(7919u32);
+
+    // Katsura-3, Katsura-4. Average batch sizes straddle
+    // `F4_MIN_BATCH = 12`.
+    for n in [3usize, 4] {
+        let names: Vec<String> = (0..=n).map(|i| format!("u{}", i)).collect();
+        let ring = PolyRing::new(
+            PrimeField::new(prime.clone()),
+            names,
+            MonomialOrder::DegRevLex,
+        );
+        let polys = katsura_n(n, &ring);
+        let pp = median_times(&polys, &ring, false);
+        let f4 = median_times(&polys, &ring, true);
+        let ratio = if pp == 0 {
+            "inf".to_string()
+        } else {
+            format!("{:.2}x", f4 as f64 / pp as f64)
+        };
+        println!(
+            "{:<24} | {:>8} | {:>10} | {:>10} | {}",
+            format!("katsura-{}", n),
+            polys.len(),
+            pp,
+            f4,
+            ratio,
+        );
+    }
+
+    // 4-variable ideal whose S-pair LCMs share substructure across
+    // pairs (subject to coprime / GM / B pruning).
+    {
+        let names: Vec<String> = ["w", "x", "y", "z"].iter().map(|s| s.to_string()).collect();
+        let ring = PolyRing::new(
+            PrimeField::new(prime.clone()),
+            names,
+            MonomialOrder::DegRevLex,
+        );
+        let polys = diffuse_ideal(&ring);
+        let pp = median_times(&polys, &ring, false);
+        let f4 = median_times(&polys, &ring, true);
+        let ratio = if pp == 0 {
+            "inf".to_string()
+        } else {
+            format!("{:.2}x", f4 as f64 / pp as f64)
+        };
+        println!(
+            "{:<24} | {:>8} | {:>10} | {:>10} | {}",
+            "diffuse-4vars",
+            polys.len(),
+            pp,
+            f4,
+            ratio,
+        );
     }
 }
 

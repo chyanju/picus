@@ -263,6 +263,10 @@ pub struct GbEngineStats {
     pub reductions_useful: u64,
     pub reductions_useless: u64,
     pub interreduces_run: u64,
+    // F4-path counters; written by `BuchbergerState::run_f4`.
+    pub f4_batches: u64,
+    pub f4_pair_total: u64,
+    pub f4_fallback_pairs: u64,
 }
 
 pub(super) struct BuchbergerState {
@@ -291,6 +295,22 @@ pub(super) struct BuchbergerState {
 /// kick in. Below this threshold the per-call O(N log N) sort outweighs
 /// the divisor-scan locality gain.
 const USE_COUNT_SORT_THRESHOLD: usize = 32;
+
+/// Minimum batch size that triggers the F4 matrix path inside
+/// [`BuchbergerState::run_f4`]. Smaller batches route to the
+/// per-pair geobucket path: the fixed per-batch matrix-construction
+/// cost (monomial collection, column index, sparse-row encoding,
+/// echelon, plus ~`basis/2` `mul_term` reducer-row constructions in
+/// symbolic preprocessing) exceeds the amortisation gain below
+/// this threshold.
+///
+/// Calibrated against `bench_f4_vs_per_pair_large` and
+/// `bench_f4_non_cyclic_workloads`. `12` keeps cyclic-6 (avg 35)
+/// and dense-N (10/20/30) on the F4 path, lets cyclic-5 (avg ~12)
+/// straddle, and routes Katsura-4 (avg 8.3) and the diffuse-4vars
+/// case to per-pair. Lower values regress Katsura-4 and diffuse-4
+/// 2–3×; higher values regress cyclic-5.
+const F4_MIN_BATCH: usize = 12;
 
 impl BuchbergerState {
     pub(super) fn new(ring: Arc<PolyRing>, cfg: BuchbergerConfig) -> Self {
@@ -953,6 +973,18 @@ impl BuchbergerState {
         let run_start = std::time::Instant::now();
         let initial_open_size = self.open.len();
 
+        // Per-run reducer cache: monomials whose reducer-row was
+        // computed in an earlier batch are reused when the cached
+        // basis element is still active. See [`super::f4::F4Workspace`].
+        let mut f4_workspace = super::f4::F4Workspace::new();
+        // F4 counters accumulate on `self.stats`; readable from
+        // tests via `IncrementalGB::engine_stats()`. Snapshot the
+        // entry values so the trailing `[picus-gb-stats F4]`
+        // `eprintln!` emits per-run deltas.
+        let f4_batches_entry = self.stats.f4_batches;
+        let f4_pair_total_entry = self.stats.f4_pair_total;
+        let f4_fallback_pairs_entry = self.stats.f4_fallback_pairs;
+
         loop {
             self.check_cancel()?;
             // self.open is sorted descending; pop returns smallest
@@ -977,15 +1009,25 @@ impl BuchbergerState {
             }
 
             // F4 amortises reducer construction across a sugar batch
-            // but pays the matrix-build overhead each time. For a
-            // single-pair batch the matrix is strictly more expensive
-            // than direct per-pair reduction, so fall back.
-            if batch.len() < 2 {
+            // but pays the matrix-build overhead each time. Below
+            // [`F4_MIN_BATCH`] pairs the fixed cost (build the
+            // column index, encode rows, run echelon) exceeds the
+            // gain over direct per-pair geobucket reduction, so fall
+            // back to the single-pair path. The threshold is
+            // calibrated against `bench_f4_vs_per_pair_large`:
+            // cyclic-4 produces 3 batches of size ≤ 3 with no cache
+            // reuse, so threshold = 4 leaves all of them on the
+            // per-pair path while keeping cyclic-5 / cyclic-6
+            // batches (avg 10–30 pairs) in the F4 path.
+            if batch.len() < F4_MIN_BATCH {
+                self.stats.f4_fallback_pairs += batch.len() as u64;
                 for pair in batch {
                     self.process_pair_geobucket(pair, observer)?;
                 }
                 continue;
             }
+            self.stats.f4_batches += 1;
+            self.stats.f4_pair_total += batch.len() as u64;
 
             // Build F4BasisRef array (same indexing as self.basis).
             // `lt_divmask` is the precomputed divisibility fingerprint
@@ -1003,11 +1045,12 @@ impl BuchbergerState {
                 .collect();
 
             let batch_refs: Vec<&SPair> = batch.iter().collect();
-            let new_polys = super::f4::process_batch(
+            let new_polys = super::f4::process_batch_with_workspace(
                 &batch_refs,
                 &basis_refs,
                 &self.ring,
                 self.cfg.cancel_token.as_ref(),
+                &mut f4_workspace,
             );
 
             self.check_cancel()?;
@@ -1108,8 +1151,19 @@ impl BuchbergerState {
             let s = &self.stats;
             let total_ns = run_start.elapsed().as_nanos() as u64;
             let active_count = self.basis.iter().filter(|e| e.active).count();
+            // Per-run deltas; the stats struct accumulates across all
+            // `run_f4` invocations on the same `BuchbergerState`.
+            let f4_batches_delta = self.stats.f4_batches - f4_batches_entry;
+            let f4_pair_total_delta = self.stats.f4_pair_total - f4_pair_total_entry;
+            let f4_fallback_delta = self.stats.f4_fallback_pairs - f4_fallback_pairs_entry;
+            let avg_batch = if f4_batches_delta > 0 {
+                f4_pair_total_delta as f64 / f4_batches_delta as f64
+            } else {
+                0.0
+            };
+            let ws = f4_workspace.stats;
             eprintln!(
-                "[picus-gb-stats F4] pairs={} cop={} gm={} b={} red={} useful={} useless={} initial_open={} basis_size={} active={} time_run_ms={:.2}",
+                "[picus-gb-stats F4] pairs={} cop={} gm={} b={} red={} useful={} useless={} initial_open={} basis_size={} active={} f4_batches={} f4_pair_total={} avg_batch={:.2} fallback_pairs={} cache_hits={} cache_misses={} cache_stale={} time_run_ms={:.2}",
                 s.pairs_generated,
                 s.pairs_killed_coprime,
                 s.pairs_killed_gm,
@@ -1120,6 +1174,13 @@ impl BuchbergerState {
                 initial_open_size,
                 self.basis.len(),
                 active_count,
+                f4_batches_delta,
+                f4_pair_total_delta,
+                avg_batch,
+                f4_fallback_delta,
+                ws.reducer_hits,
+                ws.reducer_misses,
+                ws.reducer_stale,
                 total_ns as f64 / 1e6,
             );
         }
