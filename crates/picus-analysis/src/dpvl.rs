@@ -1,17 +1,35 @@
 //! DPVL algorithm — Decide & Propagate Verification Loop.
+//!
+//! The driver runs in two interlocking layers:
+//!
+//! 1. **Propagation**: registered [`PropagationLemma`] plugins run to a
+//!    fixed point against a single [`PolyIR`], marking wires as known
+//!    in [`PropagationCtx`]. Constraints learned by lemmas are folded
+//!    into the IR at the end of each outer iteration so the next
+//!    iteration sees them.
+//! 2. **Solver dispatch**: when propagation no longer makes progress
+//!    and target signals remain unverified, the selector picks an
+//!    unknown wire and the configured backend tries to prove its
+//!    uniqueness (UNSAT ⇒ verified). A SAT result on a target signal
+//!    is reported back as a counter-example.
+//!
+//! Backends still consume the legacy [`UniquenessQuery`] in Phase 3a;
+//! the conversion of backends to PolyIR is deferred to Phase 3b.
 
 use num_bigint::BigUint;
 use picus_r1cs::grammar::*;
 use picus_smt::backends::{SolverBackend, SolverResult};
-use picus_smt::optimizer;
+use picus_smt::poly_ir::{r1cs_to_poly_ir, PolyIR};
 use picus_smt::query::{self};
-use picus_smt::r1cs_parser;
 use picus_smt::{SolverKind, Theory};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::propagation::binary01::RangeValue;
-use crate::propagation::{aboz, basis2, binary01, bim, linear};
+use crate::propagation::{
+    all_descriptors, all_names, binary01, wire_connectivity_score, PropagationCtx,
+    PropagationLemma,
+};
 use crate::selector::{SelectorKind, SelectorState, SolverFeedback};
 
 /// DPVL analysis result.
@@ -22,37 +40,42 @@ pub enum DpvlResult {
     Unknown,
 }
 
-/// Set of enabled propagation lemmas.
+/// Caller-facing selection of which propagation lemmas to run.
+///
+/// Names are resolved against the live `inventory` registry; an
+/// unknown name in `--lemmas` is an error. Default is "all enabled".
 #[derive(Debug, Clone)]
 pub struct LemmaSet {
-    pub linear: bool,
-    pub binary01: bool,
-    pub basis2: bool,
-    pub aboz: bool,
-    pub bim: bool,
+    enabled: HashSet<String>,
 }
 
 impl LemmaSet {
-    /// All lemmas enabled.
+    /// Every registered lemma enabled.
     pub fn all() -> Self {
-        Self { linear: true, binary01: true, basis2: true, aboz: true, bim: true }
+        Self {
+            enabled: all_names().iter().map(|s| s.to_string()).collect(),
+        }
     }
 
-    /// No lemmas enabled (solver-only mode, though this is unusual).
+    /// No lemmas enabled (solver-only mode).
     pub fn none() -> Self {
-        Self { linear: false, binary01: false, basis2: false, aboz: false, bim: false }
+        Self {
+            enabled: HashSet::new(),
+        }
     }
 
-    /// Parse lemma specification string.
+    /// Parse a `--lemmas` spec.
     ///
     /// Formats:
-    /// - `all` — enable all lemmas
-    /// - `none` — disable all lemmas
-    /// - `all-linear,bim` — all except linear and bim
-    /// - `none+linear,basis2` — none except linear and basis2
-    /// - `linear,binary01,basis2` — explicit list (legacy, same as `none+...`)
+    /// - `all` — enable every registered lemma
+    /// - `none` — disable every registered lemma
+    /// - `all-X,Y` — all except `X` and `Y`
+    /// - `none+X,Y` — none except `X` and `Y`
+    /// - `X,Y` — explicit list (same as `none+X,Y`)
     pub fn parse(s: &str) -> Result<Self, String> {
         let s = s.trim().to_lowercase();
+        let names: Vec<String> = all_names().iter().map(|s| s.to_string()).collect();
+        let names_set: HashSet<&str> = names.iter().map(|s| s.as_str()).collect();
 
         if s == "all" {
             return Ok(Self::all());
@@ -61,50 +84,52 @@ impl LemmaSet {
             return Ok(Self::none());
         }
 
-        // all-X,Y,Z — start from all, exclude listed
         if let Some(rest) = s.strip_prefix("all-") {
             let mut set = Self::all();
             for name in rest.split(',') {
-                Self::set_lemma(&mut set, name.trim(), false)?;
+                let name = name.trim();
+                Self::check_name(name, &names_set)?;
+                set.enabled.remove(name);
             }
             return Ok(set);
         }
 
-        // none+X,Y,Z — start from none, include listed
-        if let Some(rest) = s.strip_prefix("none+") {
-            let mut set = Self::none();
-            for name in rest.split(',') {
-                Self::set_lemma(&mut set, name.trim(), true)?;
-            }
-            return Ok(set);
-        }
-
-        // Bare comma-separated list — same as none+...
+        let bare = if let Some(rest) = s.strip_prefix("none+") {
+            rest
+        } else {
+            &s[..]
+        };
         let mut set = Self::none();
-        for name in s.split(',') {
-            Self::set_lemma(&mut set, name.trim(), true)?;
+        for name in bare.split(',') {
+            let name = name.trim();
+            Self::check_name(name, &names_set)?;
+            set.enabled.insert(name.to_string());
         }
         Ok(set)
     }
 
-    fn set_lemma(set: &mut Self, name: &str, value: bool) -> Result<(), String> {
-        match name {
-            "linear" => set.linear = value,
-            "binary01" => set.binary01 = value,
-            "basis2" => set.basis2 = value,
-            "aboz" => set.aboz = value,
-            "bim" => set.bim = value,
-            other => return Err(format!(
-                "unknown lemma: '{}'. Valid: linear, binary01, basis2, aboz, bim.",
-                other
-            )),
+    fn check_name(name: &str, valid: &HashSet<&str>) -> Result<(), String> {
+        if valid.contains(name) {
+            Ok(())
+        } else {
+            let mut sorted: Vec<&str> = valid.iter().copied().collect();
+            sorted.sort();
+            Err(format!(
+                "unknown lemma: '{}'. Valid: {}",
+                name,
+                sorted.join(", ")
+            ))
         }
-        Ok(())
     }
 
-    /// Check if any lemma is enabled.
+    /// Whether `name` is enabled in this set.
+    pub fn is_enabled(&self, name: &str) -> bool {
+        self.enabled.contains(name)
+    }
+
+    /// True iff at least one lemma is enabled.
     pub fn any_enabled(&self) -> bool {
-        self.linear || self.binary01 || self.basis2 || self.aboz || self.bim
+        !self.enabled.is_empty()
     }
 }
 
@@ -118,80 +143,65 @@ pub struct DpvlConfig {
     pub dump_smt: Option<PathBuf>,
 }
 
-/// Internal context holding all DPVL state.
-struct DpvlContext {
-    target_set: HashSet<usize>,
-    r1cs: picus_r1cs::grammar::R1csFile,
-    rcdmap: linear::RcdMap,
-    p1cnsts: RCmds,
-    range_vec: Vec<RangeValue>,
-    selector: SelectorState,
-    backend: Option<Box<dyn SolverBackend>>,
-    timeout_ms: u64,
-    dump_smt: Option<PathBuf>,
-    lemmas: LemmaSet,
-}
-
-/// Run the DPVL algorithm on an R1CS file.
-pub fn run_dpvl(
-    r1cs: &picus_r1cs::grammar::R1csFile,
-    config: &DpvlConfig,
-) -> Result<DpvlResult, String> {
+/// Run DPVL on a parsed R1CS file.
+pub fn run_dpvl(r1cs: &R1csFile, config: &DpvlConfig) -> Result<DpvlResult, String> {
     let nwires = r1cs.n_wires() as usize;
     let input_set: HashSet<usize> = r1cs.inputs.iter().copied().collect();
     let output_set: HashSet<usize> = r1cs.outputs.iter().copied().collect();
     let target_set = output_set;
 
-    // --- Propagation pipeline (uses RCmds AST) ---
-    // The propagation lemmas operate on AST patterns (Or, Mul, Add, etc.)
-    // produced by the parser/optimizer. This is independent of the actual
-    // solver backend — solving uses the IR path (UniquenessQuery), not the
-    // AST. AB0 rewriting produces the Or patterns that the binary01 lemma
-    // matches.
-    let parsed = r1cs_parser::parse_r1cs(r1cs, &[]);
-
-    let p0cnsts = optimizer::optimize_p0(&parsed.cnsts);
-    let expcnsts = r1cs_parser::expand_r1cs(&p0cnsts);
-    let nrmcnsts = optimizer::normalize(&expcnsts);
-    let (p1cnsts, _) = optimizer::optimize_p1(&nrmcnsts, &parsed.decls, true);
-
-    let sdm_exp = r1cs_parser::expand_r1cs(&parsed.cnsts);
-    let sdmcnsts = optimizer::normalize(&sdm_exp);
-
-    // Known/unknown sets
-    let mut ks: HashSet<usize> = input_set;
+    let mut ks: HashSet<usize> = input_set.clone();
     let mut us: HashSet<usize> = (0..nwires).filter(|i| !ks.contains(i)).collect();
+    let mut ranges: HashMap<usize, RangeValue> = binary01::initial_ranges();
 
-    // Initialize range vector
-    let mut range_vec: Vec<RangeValue> = (0..nwires).map(|_| RangeValue::Bottom).collect();
-    range_vec[0] = RangeValue::Values([BigUint::from(1u32)].into_iter().collect());
+    // Lower R1CS → PolyIR once per DPVL run. The target signal stored in
+    // the IR is a placeholder; propagation only consumes the constraint
+    // set and metadata, not `target_signal`.
+    let mut ir = r1cs_to_poly_ir(r1cs, &ks, 0);
 
-    let rcdmap = linear::compute_rcdmap(&sdmcnsts);
+    // Instantiate enabled lemma plugins.
+    let mut lemma_instances: Vec<Box<dyn PropagationLemma>> = all_descriptors()
+        .iter()
+        .filter(|d| config.lemmas.is_enabled(d.name))
+        .map(|d| (d.factory)())
+        .collect();
 
-    // Create solver backend
+    // Per-wire connectivity score for the counter selector.
+    let connectivity = wire_connectivity_score(&ir);
+
     let backend = picus_smt::create_backend(config.solver, config.theory)?;
-
     let mut ctx = DpvlContext {
         target_set,
         r1cs: r1cs.clone(),
-        rcdmap,
-        p1cnsts,
-        range_vec,
-        selector: SelectorState::new(config.selector),
+        selector: SelectorState::new(config.selector, connectivity),
         backend,
         timeout_ms: config.timeout_ms,
         dump_smt: config.dump_smt.clone(),
-        lemmas: config.lemmas.clone(),
     };
+    Ok(ctx.iterate(&mut ir, &mut lemma_instances, &mut ks, &mut us, &mut ranges))
+}
 
-    Ok(ctx.iterate(&mut ks, &mut us))
+struct DpvlContext {
+    target_set: HashSet<usize>,
+    r1cs: R1csFile,
+    selector: SelectorState,
+    backend: Option<Box<dyn SolverBackend>>,
+    timeout_ms: u64,
+    dump_smt: Option<PathBuf>,
 }
 
 impl DpvlContext {
-    fn iterate(&mut self, ks: &mut HashSet<usize>, us: &mut HashSet<usize>) -> DpvlResult {
+    fn iterate(
+        &mut self,
+        ir: &mut PolyIR,
+        lemmas: &mut [Box<dyn PropagationLemma>],
+        ks: &mut HashSet<usize>,
+        us: &mut HashSet<usize>,
+        ranges: &mut HashMap<usize, RangeValue>,
+    ) -> DpvlResult {
         loop {
-            if self.lemmas.any_enabled() {
-                self.propagate(ks, us);
+            if !lemmas.is_empty() {
+                self.propagate(ir, lemmas, ks, us, ranges);
             }
 
             if self.target_set.iter().all(|t| ks.contains(t)) {
@@ -210,14 +220,17 @@ impl DpvlContext {
                 if uspool.is_empty() {
                     break;
                 }
-
-                let sid = match self.selector.select(&uspool, &self.rcdmap) {
+                let sid = match self.selector.select(&uspool) {
                     Some(s) => s,
                     None => break,
                 };
                 uspool.remove(&sid);
 
-                log::debug!("Solving signal {} (target={})", sid, self.target_set.contains(&sid));
+                log::debug!(
+                    "Solving signal {} (target={})",
+                    sid,
+                    self.target_set.contains(&sid)
+                );
                 let result = self.solve(ks, sid);
 
                 match result {
@@ -253,27 +266,34 @@ impl DpvlContext {
         }
     }
 
-    fn propagate(&mut self, ks: &mut HashSet<usize>, us: &mut HashSet<usize>) {
+    /// Run every enabled lemma to a fixed point. Each outer iteration
+    /// invokes every lemma once with the current IR snapshot; the
+    /// learned-constraint buffer is then folded back into the IR so
+    /// the next iteration's lemmas see the new facts.
+    fn propagate(
+        &mut self,
+        ir: &mut PolyIR,
+        lemmas: &mut [Box<dyn PropagationLemma>],
+        ks: &mut HashSet<usize>,
+        us: &mut HashSet<usize>,
+        ranges: &mut HashMap<usize, RangeValue>,
+    ) {
         loop {
-            let ks_size = ks.len();
-
-            if self.lemmas.linear {
-                linear::apply_lemma(&self.rcdmap, ks, us);
+            let ks_before = ks.len();
+            let mut learned = Vec::new();
+            {
+                let mut ctx = PropagationCtx {
+                    known: ks,
+                    unknown: us,
+                    ranges,
+                    learned: &mut learned,
+                };
+                for lemma in lemmas.iter_mut() {
+                    lemma.run(ir, &mut ctx);
+                }
             }
-            if self.lemmas.binary01 {
-                binary01::apply_lemma(ks, us, &self.p1cnsts, &mut self.range_vec);
-            }
-            if self.lemmas.basis2 {
-                basis2::apply_lemma(ks, us, &self.p1cnsts, &self.range_vec);
-            }
-            if self.lemmas.aboz {
-                aboz::apply_lemma(ks, us, &self.p1cnsts);
-            }
-            if self.lemmas.bim {
-                bim::apply_lemma(ks, us, &self.p1cnsts);
-            }
-
-            if ks.len() == ks_size {
+            ir.equalities.extend(learned);
+            if ks.len() == ks_before {
                 break;
             }
             log::debug!("Propagation round: ks={}, us={}", ks.len(), us.len());
@@ -285,10 +305,8 @@ impl DpvlContext {
             Some(b) => b,
             None => return SolveResult::Skip,
         };
-
         let query_ir = query::build_query(&self.r1cs, ks, sid);
 
-        // Optionally dump SMT
         if let Some(ref dir) = self.dump_smt {
             let smt_str = backend.dump_smt(&query_ir);
             let ts = std::time::SystemTime::now()

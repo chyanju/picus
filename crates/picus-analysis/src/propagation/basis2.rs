@@ -1,144 +1,172 @@
-//! Basis2 propagation lemma — binary decomposition detection.
+//! Basis2 propagation lemma — binary decomposition pattern.
+//!
+//! Recognises polynomial equalities of the form
+//! `target + sum_i (-2^i) * bit_i = 0` (equivalently
+//! `target = sum_i 2^i * bit_i`), where every `bit_i` has already been
+//! pinned to `{0, 1}` by [`super::binary01::Binary01Lemma`]. When
+//! `target` is known the bits are recoverable bit-by-bit and so are
+//! also known.
+
+use std::collections::HashSet;
 
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
-use picus_r1cs::grammar::*;
-use picus_r1cs::{bn128_prime, parse_var_index};
-use std::collections::HashSet;
+use picus_r1cs::bn128_prime;
+use picus_smt::poly_ir::PolyIR;
 
-use super::binary01::RangeValue;
+use super::lemma::{LemmaDescriptor, PropagationCtx, PropagationLemma};
 
-/// Apply the basis2 lemma. Mutates `ks` and `us` in place.
-pub fn apply_lemma(
-    ks: &mut HashSet<usize>,
-    us: &mut HashSet<usize>,
-    cnsts: &RCmds,
-    range_vec: &[RangeValue],
-) {
-    let p = bn128_prime();
+#[derive(Default)]
+pub struct Basis2Lemma;
 
-    for cmd in &cnsts.commands {
-        if let RCmd::Assert(expr) = cmd
-            && let Some((target_sig, bit_sigs, _)) = match_basis2_pattern(expr, p) {
-                let all_binary = bit_sigs
+impl PropagationLemma for Basis2Lemma {
+    fn name(&self) -> &'static str {
+        "basis2"
+    }
+
+    fn run(&mut self, ir: &PolyIR, ctx: &mut PropagationCtx) -> bool {
+        let mut progress = false;
+        for poly in &ir.equalities {
+            if let Some((target_wire, bit_wires)) = match_basis2_pattern(ir, poly) {
+                let all_binary = bit_wires
                     .iter()
-                    .all(|&s| s < range_vec.len() && range_vec[s].is_binary());
-
+                    .all(|w| matches!(ctx.ranges.get(w), Some(r) if r.is_binary()));
                 if !all_binary {
                     continue;
                 }
-
-                if ks.contains(&target_sig) {
-                    for &s in &bit_sigs {
-                        if us.remove(&s) {
-                            ks.insert(s);
+                if ctx.known.contains(&target_wire) {
+                    for &bit in &bit_wires {
+                        if ctx.unknown.remove(&bit) {
+                            ctx.known.insert(bit);
+                            progress = true;
                         }
                     }
                 }
             }
-    }
-}
-
-fn match_basis2_pattern(
-    expr: &RExpr,
-    _p: &BigUint,
-) -> Option<(usize, Vec<usize>, Vec<BigUint>)> {
-    if let RExpr::Eq(lhs, rhs) = expr {
-        let (_, sum_side) = if lhs.is_zero() {
-            (lhs.as_ref(), rhs.as_ref())
-        } else if rhs.is_zero() {
-            (rhs.as_ref(), lhs.as_ref())
-        } else {
-            return None;
-        };
-
-        let inner = sum_side.strip_mod();
-
-        if let RExpr::Add(terms) = inner {
-            let mut target_sig = None;
-            let mut bit_sigs = Vec::new();
-            let mut coeffs = Vec::new();
-
-            for term in terms {
-                match term {
-                    RExpr::Var(name) => {
-                        if let Some(id) = parse_var_index(name) {
-                            target_sig = Some(id);
-                        }
-                    }
-                    RExpr::Mul(mul_args) => {
-                        if let Some((coeff, sig)) = extract_coeff_var(mul_args) {
-                            bit_sigs.push(sig);
-                            coeffs.push(coeff);
-                        } else {
-                            return None;
-                        }
-                    }
-                    RExpr::Int(v) if v.is_zero() => {}
-                    _ => return None,
-                }
-            }
-
-            if let Some(target) = target_sig
-                && !bit_sigs.is_empty() && is_power_of_2_sequence(&coeffs) {
-                    return Some((target, bit_sigs, coeffs));
-                }
         }
+        progress
     }
-    None
 }
 
-fn extract_coeff_var(args: &[RExpr]) -> Option<(BigUint, usize)> {
-    if args.len() != 2 {
+/// Match `c0 * target + sum_i c_i * bit_i = 0`, where `c0` is ±1 (mod
+/// p) and `{c_i / c0}` (after sign normalisation) form a power-of-2
+/// sequence. Returns `(target_wire, [bit_wires])`.
+fn match_basis2_pattern(
+    ir: &PolyIR,
+    poly: &picus_solver::poly::Poly,
+) -> Option<(usize, Vec<usize>)> {
+    let ring = &ir.ring.ring;
+    let n_vars = ring.n_vars();
+    let field = &ir.ring.field;
+    let p = bn128_prime();
+
+    // Collect linear-only terms (each containing exactly one variable
+    // at exponent 1).
+    let mut terms: Vec<(BigUint, usize)> = Vec::new();
+    for (c, m) in ring.terms(poly) {
+        let mut single_var = None;
+        let mut total_deg = 0usize;
+        for v in 0..n_vars {
+            let e = ring.exponent_at(&m, v);
+            total_deg += e;
+            if e > 0 {
+                if single_var.is_some() {
+                    return None; // Multiple vars in a term ⇒ not basis2 shape.
+                }
+                if e != 1 {
+                    return None;
+                }
+                single_var = Some(v);
+            }
+        }
+        if total_deg == 0 {
+            // Constant term: must be zero.
+            if !field.to_biguint(c).is_zero() {
+                return None;
+            }
+            continue;
+        }
+        let var = single_var?;
+        let coeff = field.to_biguint(c);
+        terms.push((coeff, var));
+    }
+    if terms.len() < 2 {
         return None;
     }
-    // Try (Int(coeff), Var(signal))
-    if let (RExpr::Int(coeff), RExpr::Var(name)) = (&args[0], &args[1])
-        && let Some(id) = parse_var_index(name) {
-            return Some((coeff.clone(), id));
+
+    // The target term has coefficient ±1; the rest have power-of-2-ish
+    // coefficients (possibly negated). Try every term as the candidate
+    // target and check the rest.
+    let one = BigUint::one();
+    let p_minus_1 = &(p - &one);
+    for cand in 0..terms.len() {
+        let (cand_coeff, cand_var) = &terms[cand];
+        let target_sign = if cand_coeff == &one {
+            Sign::Pos
+        } else if cand_coeff == p_minus_1 {
+            Sign::Neg
+        } else {
+            continue;
+        };
+        let mut bit_coeffs: Vec<BigUint> = Vec::with_capacity(terms.len() - 1);
+        let mut bit_vars: Vec<usize> = Vec::with_capacity(terms.len() - 1);
+        for (i, (c, v)) in terms.iter().enumerate() {
+            if i == cand {
+                continue;
+            }
+            // Bit's effective coefficient is `c / target_sign * (-1)`,
+            // since `target + sum c_i bit_i = 0 ⇒ target = -sum c_i bit_i`,
+            // and we want the bit weights as positive 2^k.
+            let bit_coeff = match target_sign {
+                Sign::Pos => p - c,
+                Sign::Neg => c.clone(),
+            } % p;
+            bit_coeffs.push(bit_coeff);
+            bit_vars.push(*v);
         }
-    // Try (Var(named_const), Var(signal)) — after subp optimization,
-    // numeric constants like p-1 become Var("ps1")
-    if let (RExpr::Var(const_name), RExpr::Var(sig_name)) = (&args[0], &args[1]) {
-        if let (Some(coeff), Some(id)) = (super::resolve_named_constant(const_name), parse_var_index(sig_name)) {
-            return Some((coeff, id));
-        }
-        // Try reverse: signal first, constant second
-        if let (Some(id), Some(coeff)) = (parse_var_index(const_name), super::resolve_named_constant(sig_name)) {
-            return Some((coeff, id));
+        if is_power_of_2_sequence(&bit_coeffs) {
+            let target_wire = var_to_wire(ir, *cand_var);
+            let mut wires: Vec<usize> = bit_vars.iter().map(|&v| var_to_wire(ir, v)).collect();
+            wires.sort();
+            wires.dedup();
+            return Some((target_wire, wires));
         }
     }
     None
 }
 
+enum Sign {
+    Pos,
+    Neg,
+}
 
 fn is_power_of_2_sequence(coeffs: &[BigUint]) -> bool {
-    // Check if the coefficient set equals {2^0, 2^1, ..., 2^(n-1)}
-    // after field normalization (each coeff or its negation is a power of 2).
-    use std::collections::HashSet;
-    let p = bn128_prime();
-    let expected: HashSet<BigUint> = (0..coeffs.len())
-        .map(|k| BigUint::from(1u32) << k)
-        .collect();
-
-    let actual: HashSet<BigUint> = coeffs
-        .iter()
-        .map(|c| {
-            let neg = p - c;
-            // Take whichever IS a power of 2
-            if is_power_of_2(c) {
-                c.clone()
-            } else if is_power_of_2(&neg) {
-                neg
-            } else {
-                c.clone() // neither — will fail the check
-            }
-        })
-        .collect();
-
-    actual == expected
+    let mut s: HashSet<BigUint> = HashSet::new();
+    for c in coeffs {
+        if !is_power_of_2(c) {
+            return false;
+        }
+        s.insert(c.clone());
+    }
+    let expected: HashSet<BigUint> = (0..coeffs.len()).map(|k| BigUint::from(1u32) << k).collect();
+    s == expected
 }
 
 fn is_power_of_2(n: &BigUint) -> bool {
     !n.is_zero() && (n & (n - BigUint::one())).is_zero()
+}
+
+fn var_to_wire(ir: &PolyIR, var: usize) -> usize {
+    if var < ir.n_wires {
+        var
+    } else {
+        var - ir.n_wires
+    }
+}
+
+inventory::submit! {
+    LemmaDescriptor {
+        name: "basis2",
+        factory: || Box::new(Basis2Lemma::default()),
+    }
 }

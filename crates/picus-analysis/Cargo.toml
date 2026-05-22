@@ -10,7 +10,9 @@ edition.workspace = true
 [dependencies]
 picus-r1cs = { path = "../picus-r1cs" }
 picus-smt = { path = "../picus-smt" }
+picus-solver = { path = "../picus-solver" }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
 num-integer = { workspace = true }
 log = { workspace = true }
+inventory = { workspace = true }
