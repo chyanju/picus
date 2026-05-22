@@ -1,0 +1,1137 @@
+use super::*;
+use crate::ff::field::PrimeField;
+use crate::ff::monomial::MonomialOrder;
+use crate::ff::polynomial::PolyRing;
+use num_bigint::BigUint;
+
+fn ring_mod7(n_vars: usize) -> Arc<PolyRing> {
+    let f = PrimeField::new(BigUint::from(7u32));
+    let names = (0..n_vars).map(|i| format!("x{}", i)).collect();
+    PolyRing::new(f, names, MonomialOrder::DegRevLex)
+}
+
+fn x(idx: usize, ring: &Arc<PolyRing>) -> Polynomial {
+    Polynomial::variable(idx, ring)
+}
+
+fn lt(p: &Polynomial, ring: &Arc<PolyRing>) -> Monomial {
+    p.leading_monomial(ring).unwrap()
+}
+
+#[test]
+fn f4_minimal_two_variables() {
+    // I = (x*y - 1, y^2 - x). The reduced GB in degrevlex is
+    // (x*y - 1, y^2 - x, x^2 - y).
+    let ring = ring_mod7(2);
+    let x0 = x(0, &ring);
+    let x1 = x(1, &ring);
+    // f1 = x*y - 1
+    let xy = x0.mul(&x1, &ring);
+    let f1 = xy.sub(&Polynomial::constant(ring.field.one(), &ring), &ring);
+    // f2 = y^2 - x
+    let y2 = x1.mul(&x1, &ring);
+    let f2 = y2.sub(&x0, &ring);
+    let basis_polys = vec![f1.clone(), f2.clone()];
+    let basis_lts: Vec<Monomial> = basis_polys.iter().map(|p| lt(p, &ring)).collect();
+    let basis: Vec<F4BasisRef> = basis_polys
+        .iter()
+        .zip(basis_lts.iter())
+        .map(|(p, l)| F4BasisRef { poly: p, lt: l, lt_divmask: ring.divmask.compute(l), active: true })
+        .collect();
+
+    // S(f1, f2): lcm(xy, y^2) = x*y^2.
+    let lcm = lt(&f1, &ring).lcm(&lt(&f2, &ring));
+    let lcm_dm = ring.divmask.compute(&lcm);
+    let lcm_deg = lcm.total_degree();
+    let pair = SPair {
+        i: 0,
+        j: 1,
+        sugar: lcm_deg,
+        lcm,
+        lcm_divmask: lcm_dm,
+        lcm_deg,
+        age: 0,
+        generation: 0,
+        is_coprime: false,
+    };
+
+    let new_polys = process_batch(&[&pair], &basis, &ring, None);
+    assert!(!new_polys.is_empty(), "F4 batch produced no new polys");
+    // The new poly's LT should be x^2 (the missing GB element).
+    let np = &new_polys[0].poly;
+    let np_lt = lt(np, &ring);
+    // x^2 monomial: exponents [2, 0]
+    assert_eq!(np_lt.exponents(), &[2, 0], "expected new LT x^2, got {:?}", np_lt.exponents());
+    // Provenance: from_pairs must include the single input pair (index 0).
+    assert_eq!(new_polys[0].from_pairs, vec![0]);
+}
+
+#[test]
+fn f4_matches_geobucket_on_random_pair_3vars() {
+    // Cross-check: for the same S-pair, F4's batch result should
+    // produce a polynomial whose normal-form-against-basis matches
+    // the per-pair geobucket reduction. We pick a degree-2 system
+    // in 3 vars and check both paths agree.
+    let ring = ring_mod7(3);
+    let x0 = x(0, &ring);
+    let x1 = x(1, &ring);
+    let x2 = x(2, &ring);
+    // f1 = x0*x1 - x2
+    let f1 = x0.mul(&x1, &ring).sub(&x2, &ring);
+    // f2 = x1*x2 - x0
+    let f2 = x1.mul(&x2, &ring).sub(&x0, &ring);
+    let basis_polys = vec![f1.clone(), f2.clone()];
+    let basis_lts: Vec<Monomial> = basis_polys.iter().map(|p| lt(p, &ring)).collect();
+    let basis: Vec<F4BasisRef> = basis_polys
+        .iter()
+        .zip(basis_lts.iter())
+        .map(|(p, l)| F4BasisRef { poly: p, lt: l, lt_divmask: ring.divmask.compute(l), active: true })
+        .collect();
+
+    // S(f1, f2): lcm(x0*x1, x1*x2) = x0*x1*x2.
+    let lcm = lt(&f1, &ring).lcm(&lt(&f2, &ring));
+    let lcm_dm = ring.divmask.compute(&lcm);
+    let lcm_deg = lcm.total_degree();
+    let pair = SPair {
+        i: 0,
+        j: 1,
+        sugar: lcm_deg,
+        lcm: lcm.clone(),
+        lcm_divmask: lcm_dm,
+        lcm_deg,
+        age: 0,
+        generation: 0,
+        is_coprime: false,
+    };
+
+    // F4 path
+    let new_polys = process_batch(&[&pair], &basis, &ring, None);
+
+    // Reference: build S-poly directly + reduce via reduce_by_refs.
+    let mul1 = lcm.div(&lt(&f1, &ring));
+    let mul2 = lcm.div(&lt(&f2, &ring));
+    let one = ring.field.one();
+    let part1 = f1.mul_term(mul1.exponents(), &one, &ring);
+    let neg_one = ring.field.neg(&one);
+    let part2 = f2.mul_term(mul2.exponents(), &neg_one, &ring);
+    let s_poly = part1.add(&part2, &ring);
+    let basis_refs: Vec<&Polynomial> = basis_polys.iter().collect();
+    let reduced = s_poly.reduce_by_refs(&basis_refs, &ring);
+
+    if reduced.is_zero() {
+        assert!(new_polys.is_empty(), "F4 produced new poly but reference reduced to zero");
+    } else {
+        assert_eq!(new_polys.len(), 1);
+        let f4_monic = &new_polys[0].poly;
+        let ref_monic = reduced.make_monic(&ring);
+        assert_eq!(
+            f4_monic.num_terms(),
+            ref_monic.num_terms(),
+            "F4 and ref differ in num_terms",
+        );
+        assert_eq!(
+            lt(f4_monic, &ring).exponents(),
+            lt(&ref_monic, &ring).exponents(),
+            "F4 and ref LT differ"
+        );
+    }
+}
+
+/// Build the ideal of all S-pairs on `basis_polys`, run BOTH F4 and
+/// per-pair `reduce_by_refs`, and check the two paths produce the
+/// SAME set of normal-form residues (modulo reordering, modulo
+/// trailing zeros).
+fn cross_check_all_pairs(basis_polys: Vec<Polynomial>, ring: &Arc<PolyRing>) {
+    let basis_lts: Vec<Monomial> = basis_polys
+        .iter()
+        .map(|p| lt(p, ring))
+        .collect();
+    let n = basis_polys.len();
+    let basis_refs: Vec<F4BasisRef> = basis_polys
+        .iter()
+        .zip(basis_lts.iter())
+        .map(|(p, l)| F4BasisRef { poly: p, lt: l, lt_divmask: ring.divmask.compute(l), active: true })
+        .collect();
+
+    // Build ALL pairs (i, j) with i < j.
+    let mut pairs: Vec<SPair> = Vec::new();
+    for i in 0..n {
+        for j in i + 1..n {
+            let lcm = basis_lts[i].lcm(&basis_lts[j]);
+            let lcm_dm = ring.divmask.compute(&lcm);
+            let lcm_deg = lcm.total_degree();
+            pairs.push(SPair {
+                i,
+                j,
+                sugar: lcm_deg,
+                lcm,
+                lcm_divmask: lcm_dm,
+                lcm_deg,
+                age: 0,
+                generation: 0,
+                is_coprime: false,
+            });
+        }
+    }
+    let pair_refs: Vec<&SPair> = pairs.iter().collect();
+
+    // F4 path
+    let f4_polys = process_batch(&pair_refs, &basis_refs, ring, None);
+
+    // Reference: per-pair S-poly + reduce_by_refs.
+    let basis_poly_refs: Vec<&Polynomial> = basis_polys.iter().collect();
+    let mut ref_polys: Vec<Polynomial> = Vec::new();
+    for pair in &pairs {
+        let bi = &basis_polys[pair.i];
+        let bj = &basis_polys[pair.j];
+        let mul_i = pair.lcm.div(&basis_lts[pair.i]);
+        let mul_j = pair.lcm.div(&basis_lts[pair.j]);
+        let lc_i = bi.leading_coefficient().unwrap();
+        let lc_j = bj.leading_coefficient().unwrap();
+        let scale_j = ring.field.div(lc_i, lc_j).unwrap();
+        let one = ring.field.one();
+        let part_i = bi.mul_term(mul_i.exponents(), &one, ring);
+        let part_j = bj.mul_term(mul_j.exponents(), &scale_j, ring);
+        let s_poly = part_i.sub(&part_j, ring);
+        let reduced = s_poly.reduce_by_refs(&basis_poly_refs, ring);
+        if !reduced.is_zero() {
+            ref_polys.push(reduced.make_monic(ring));
+        }
+    }
+
+    // F4 may produce ideal-equivalent but different representatives
+    // than the per-pair path. Compare leading-term sets after
+    // reducing each F4 output by the original basis: ideal-
+    // equivalent residues share a leading term, so the LT sets
+    // are equal iff both paths produced the same new generators
+    // up to basis-normalisation. LT-set equality is necessary
+    // but not sufficient for ideal equality; the cross-check
+    // catches LT-level divergence as a regression guard.
+    let f4_lts: std::collections::HashSet<Vec<u16>> = f4_polys
+        .iter()
+        .map(|o| {
+            let r = o.poly.reduce_by_refs(&basis_poly_refs, ring);
+            lt(&r, ring).exponents().to_vec()
+        })
+        .filter(|e| !e.is_empty() || true)
+        .collect();
+    let ref_lts: std::collections::HashSet<Vec<u16>> = ref_polys
+        .iter()
+        .map(|p| lt(p, ring).exponents().to_vec())
+        .collect();
+    assert_eq!(
+        f4_lts, ref_lts,
+        "F4 and reference disagree on new-generator leading terms.\nF4: {:?}\nref: {:?}",
+        f4_lts, ref_lts
+    );
+}
+
+#[test]
+fn f4_multipair_3vars_cyclic() {
+    // Cyclic-3-style ideal: classic test.
+    // f1 = x0 + x1 + x2
+    // f2 = x0*x1 + x1*x2 + x2*x0
+    // f3 = x0*x1*x2 - 1
+    let ring = ring_mod7(3);
+    let one = ring.field.one();
+    let neg_one = ring.field.neg(&one);
+    let x0 = x(0, &ring);
+    let x1 = x(1, &ring);
+    let x2 = x(2, &ring);
+    let f1 = x0.add(&x1.add(&x2, &ring), &ring);
+    let f2 = x0.mul(&x1, &ring)
+        .add(&x1.mul(&x2, &ring), &ring)
+        .add(&x2.mul(&x0, &ring), &ring);
+    let f3_part1 = x0.mul(&x1, &ring).mul(&x2, &ring);
+    let f3 = f3_part1.add(&Polynomial::constant(neg_one, &ring), &ring);
+    cross_check_all_pairs(vec![f1, f2, f3], &ring);
+}
+
+#[test]
+fn f4_multipair_3vars_overlapping_lts() {
+    // Three polys with overlapping LTs to exercise reducer-chain
+    // propagation in symbolic preprocessing.
+    // f1 = x0^2 - x1
+    // f2 = x0*x1 - x2
+    // f3 = x1^2 - x0  (LT(f3) = x1^2 may need reducer chain)
+    let ring = ring_mod7(3);
+    let x0 = x(0, &ring);
+    let x1 = x(1, &ring);
+    let x2 = x(2, &ring);
+    let f1 = x0.mul(&x0, &ring).sub(&x1, &ring);
+    let f2 = x0.mul(&x1, &ring).sub(&x2, &ring);
+    let f3 = x1.mul(&x1, &ring).sub(&x0, &ring);
+    cross_check_all_pairs(vec![f1, f2, f3], &ring);
+}
+
+#[test]
+fn f4_useless_reduction_yields_empty() {
+    // I = (x, y). S(x, y) = y*x - x*y = 0 → useless reduction.
+    let ring = ring_mod7(2);
+    let x0 = x(0, &ring);
+    let x1 = x(1, &ring);
+    let basis_polys = vec![x0.clone(), x1.clone()];
+    let basis_lts: Vec<Monomial> = basis_polys.iter().map(|p| lt(p, &ring)).collect();
+    let basis: Vec<F4BasisRef> = basis_polys
+        .iter()
+        .zip(basis_lts.iter())
+        .map(|(p, l)| F4BasisRef { poly: p, lt: l, lt_divmask: ring.divmask.compute(l), active: true })
+        .collect();
+
+    let lcm = lt(&x0, &ring).lcm(&lt(&x1, &ring));
+    let lcm_dm = ring.divmask.compute(&lcm);
+    let lcm_deg = lcm.total_degree();
+    let pair = SPair {
+        i: 0,
+        j: 1,
+        sugar: lcm_deg,
+        lcm,
+        lcm_divmask: lcm_dm,
+        lcm_deg,
+        age: 0,
+        generation: 0,
+        is_coprime: true,
+    };
+    let new_polys = process_batch(&[&pair], &basis, &ring, None);
+    assert!(new_polys.is_empty(), "expected useless reduction, got {:?}", new_polys);
+}
+
+// ─── Provenance tracking ──────────────────────────────────────
+
+#[test]
+fn f4_prov_single_pair_no_reducers() {
+    // S(x*y, x*z) over F_7: lcm = x*y*z; S-poly reduces against
+    // nothing further; the output's provenance is exactly the one
+    // input pair and no reducer.
+    let ring = ring_mod7(3);
+    let x0 = x(0, &ring);
+    let x1 = x(1, &ring);
+    let x2 = x(2, &ring);
+    let f1 = x0.mul(&x1, &ring); // x*y
+    let f2 = x0.mul(&x2, &ring); // x*z
+    let basis_polys = vec![f1.clone(), f2.clone()];
+    let basis_lts: Vec<Monomial> = basis_polys.iter().map(|p| lt(p, &ring)).collect();
+    let basis: Vec<F4BasisRef> = basis_polys
+        .iter()
+        .zip(basis_lts.iter())
+        .map(|(p, l)| F4BasisRef { poly: p, lt: l, lt_divmask: ring.divmask.compute(l), active: true })
+        .collect();
+    let lcm = basis_lts[0].lcm(&basis_lts[1]);
+    let lcm_dm = ring.divmask.compute(&lcm);
+    let lcm_deg = lcm.total_degree();
+    let pair = SPair {
+        i: 0,
+        j: 1,
+        sugar: lcm_deg,
+        lcm,
+        lcm_divmask: lcm_dm,
+        lcm_deg,
+        age: 0,
+        generation: 0,
+        is_coprime: false,
+    };
+    let new_polys = process_batch(&[&pair], &basis, &ring, None);
+    // S(x*y, x*z) = z*(x*y) - y*(x*z) = 0 — useless reduction.
+    // No outputs ⇒ no provenance to check, but the call must not
+    // panic and must produce an empty Vec.
+    assert!(new_polys.is_empty());
+}
+
+#[test]
+fn f4_prov_reducer_basis_index_recorded() {
+    // System where the S-poly's tail needs a third basis element
+    // as a reducer. After F4, the output's `from_reducers` must
+    // name that basis index.
+    //
+    // basis[0] = x^2 + y           (LT = x^2)
+    // basis[1] = x*y + z           (LT = x*y)
+    // basis[2] = y                 (LT = y)
+    //
+    // S(basis[0], basis[1]) has tail terms involving `y`, which
+    // basis[2] reduces. So the output's from_reducers must
+    // include basis index 2.
+    let ring = ring_mod7(3);
+    let x0 = x(0, &ring); // x
+    let x1 = x(1, &ring); // y
+    let x2 = x(2, &ring); // z
+    let f0 = x0.mul(&x0, &ring).add(&x1, &ring);   // x^2 + y
+    let f1 = x0.mul(&x1, &ring).add(&x2, &ring);   // x*y + z
+    let f2 = x1.clone();                            // y
+    let basis_polys = vec![f0.clone(), f1.clone(), f2.clone()];
+    let basis_lts: Vec<Monomial> = basis_polys.iter().map(|p| lt(p, &ring)).collect();
+    let basis: Vec<F4BasisRef> = basis_polys
+        .iter()
+        .zip(basis_lts.iter())
+        .map(|(p, l)| F4BasisRef { poly: p, lt: l, lt_divmask: ring.divmask.compute(l), active: true })
+        .collect();
+    let lcm = basis_lts[0].lcm(&basis_lts[1]);
+    let lcm_dm = ring.divmask.compute(&lcm);
+    let lcm_deg = lcm.total_degree();
+    let pair = SPair {
+        i: 0,
+        j: 1,
+        sugar: lcm_deg,
+        lcm,
+        lcm_divmask: lcm_dm,
+        lcm_deg,
+        age: 0,
+        generation: 0,
+        is_coprime: false,
+    };
+    let new_polys = process_batch(&[&pair], &basis, &ring, None);
+    if let Some(out) = new_polys.first() {
+        assert_eq!(out.from_pairs, vec![0],
+            "the single pair's index must be in from_pairs");
+        // basis[2] = y is the reducer pulled in during symbolic
+        // preprocessing; its index must appear.
+        assert!(out.from_reducers.contains(&2),
+            "expected basis index 2 in from_reducers; got {:?}",
+            out.from_reducers);
+    }
+}
+
+#[test]
+fn f4_prov_multibatch_unions_pair_indices() {
+    // Two pairs in one batch whose S-polys end up sharing
+    // pivot columns during echelon. After elimination, the
+    // surviving output rows must carry the union of contributing
+    // pair indices.
+    //
+    // basis[0] = x^2 - y
+    // basis[1] = x*y - 1
+    // basis[2] = y^2 - x
+    // pairs: (0,1), (0,2), (1,2).
+    let ring = ring_mod7(3);
+    let x0 = x(0, &ring);
+    let x1 = x(1, &ring);
+    let f0 = x0.mul(&x0, &ring).sub(&x1, &ring);
+    let f1 = x0.mul(&x1, &ring).sub(&Polynomial::constant(ring.field.one(), &ring), &ring);
+    let f2 = x1.mul(&x1, &ring).sub(&x0, &ring);
+    let basis_polys = vec![f0, f1, f2];
+    let basis_lts: Vec<Monomial> = basis_polys.iter().map(|p| lt(p, &ring)).collect();
+    let basis: Vec<F4BasisRef> = basis_polys
+        .iter()
+        .zip(basis_lts.iter())
+        .map(|(p, l)| F4BasisRef { poly: p, lt: l, lt_divmask: ring.divmask.compute(l), active: true })
+        .collect();
+    let mut pairs: Vec<SPair> = Vec::new();
+    for (i, j) in [(0usize, 1usize), (0, 2), (1, 2)] {
+        let lcm = basis_lts[i].lcm(&basis_lts[j]);
+        let lcm_dm = ring.divmask.compute(&lcm);
+        let lcm_deg = lcm.total_degree();
+        pairs.push(SPair {
+            i, j,
+            sugar: lcm_deg,
+            lcm,
+            lcm_divmask: lcm_dm,
+            lcm_deg,
+            age: 0,
+            generation: 0,
+            is_coprime: false,
+        });
+    }
+    let pair_refs: Vec<&SPair> = pairs.iter().collect();
+    let outs = process_batch(&pair_refs, &basis, &ring, None);
+    for out in &outs {
+        assert!(!out.from_pairs.is_empty(),
+            "every surviving output must name at least one input pair; got {:?}",
+            out);
+        for &pi in &out.from_pairs {
+            assert!(pi < pairs.len(), "pair index out of range: {}", pi);
+        }
+    }
+}
+
+// ─── F4 + IncrementalGB push/pop integration ──────────────────
+
+/// `IncrementalGB::push`/`pop` must work with the F4 main-loop
+/// path enabled. The basis at the post-`pop` level must match
+/// the basis observed right after the pre-`push` extension.
+#[test]
+fn f4_incremental_push_pop_roundtrip() {
+    use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
+    let ring = ring_mod7(3);
+    let x0 = x(0, &ring);
+    let x1 = x(1, &ring);
+    let x2 = x(2, &ring);
+
+    let cfg = BuchbergerConfig {
+        order: MonomialOrder::DegRevLex,
+        cancel_token: None,
+        abort_on_trivial: false,
+        use_f4: true,
+    };
+    let mut igb = IncrementalGB::new(Arc::clone(&ring), cfg);
+    // Base level: f1, f2.
+    let f1 = x0.mul(&x1, &ring).sub(&x2, &ring);
+    let f2 = x1.mul(&x2, &ring).sub(&x0, &ring);
+    igb.add_generators(vec![f1, f2]).expect("base add_generators");
+    let base = igb.basis();
+    assert!(!igb.is_trivial());
+
+    // Push a checkpoint, extend with a third generator, then pop.
+    igb.push();
+    let f3 = x0.mul(&x0, &ring).sub(&x1, &ring);
+    igb.add_generators(vec![f3]).expect("inner add_generators");
+    let _inner = igb.basis();
+    igb.pop();
+    let restored = igb.basis();
+
+    // The post-pop basis must match the pre-push basis.
+    assert_eq!(
+        restored.len(),
+        base.len(),
+        "F4 push/pop did not restore basis length"
+    );
+    for (a, b) in restored.iter().zip(base.iter()) {
+        assert_eq!(
+            lt(a, &ring).exponents(),
+            lt(b, &ring).exponents(),
+            "F4 push/pop basis LT mismatch"
+        );
+    }
+}
+
+/// F4 must not break when the trivial element is reached inside
+/// a `push`ed level. After `pop`, `is_trivial` must revert to
+/// the pre-push value.
+#[test]
+fn f4_incremental_pop_clears_trivial_state() {
+    use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
+    let ring = ring_mod7(2);
+    let x0 = x(0, &ring);
+    let x1 = x(1, &ring);
+
+    let cfg = BuchbergerConfig {
+        order: MonomialOrder::DegRevLex,
+        cancel_token: None,
+        abort_on_trivial: true,
+        use_f4: true,
+    };
+    let mut igb = IncrementalGB::new(Arc::clone(&ring), cfg);
+    igb.add_generators(vec![
+        x0.mul(&x1, &ring).sub(
+            &Polynomial::constant(ring.field.one(), &ring),
+            &ring,
+        ),
+    ])
+    .expect("base add");
+    assert!(!igb.is_trivial());
+
+    igb.push();
+    // Add `x0` then `x1`: combined they force x0*x1 = 0,
+    // contradicting x0*x1 = 1 ⇒ trivial.
+    igb.add_generators(vec![x0.clone(), x1.clone()])
+        .expect("inner add (trivial)");
+    assert!(igb.is_trivial(), "inner extension should be trivial");
+
+    igb.pop();
+    assert!(!igb.is_trivial(), "pop must clear trivial state set inside push");
+}
+
+// ─── F4 cross-batch reducer cache ─────────────────────────────
+
+/// `process_batch_with_workspace` reused across batches must
+/// (a) populate the cache on the first batch and (b) take cache
+/// hits on a second batch that revisits the same monomials. The
+/// outputs must remain identical to a single-call `process_batch`
+/// — the cache is a pure perf optimisation, not a state change.
+#[test]
+fn f4_workspace_idempotent_on_repeated_batch() {
+    // Use a 3-pair batch over the cyclic-style ideal so
+    // symbolic_preprocess actually has work to do (S-polys are
+    // non-zero and pull in reducer rows).
+    let ring = ring_mod7(3);
+    let x0 = x(0, &ring);
+    let x1 = x(1, &ring);
+    let x2 = x(2, &ring);
+    let f0 = x0.mul(&x0, &ring).sub(&x1, &ring);   // x^2 - y
+    let f1 = x0.mul(&x1, &ring).sub(&x2, &ring);   // x*y - z
+    let f2 = x1.mul(&x1, &ring).sub(&x0, &ring);   // y^2 - x
+    let basis_polys = vec![f0, f1, f2];
+    let basis_lts: Vec<Monomial> = basis_polys.iter().map(|p| lt(p, &ring)).collect();
+    let basis: Vec<F4BasisRef> = basis_polys
+        .iter()
+        .zip(basis_lts.iter())
+        .map(|(p, l)| F4BasisRef {
+            poly: p,
+            lt: l,
+            lt_divmask: ring.divmask.compute(l),
+            active: true,
+        })
+        .collect();
+    let mut pairs: Vec<SPair> = Vec::new();
+    for (i, j) in [(0usize, 1usize), (0, 2), (1, 2)] {
+        let lcm = basis_lts[i].lcm(&basis_lts[j]);
+        let lcm_dm = ring.divmask.compute(&lcm);
+        let lcm_deg = lcm.total_degree();
+        pairs.push(SPair {
+            i, j,
+            sugar: lcm_deg,
+            lcm,
+            lcm_divmask: lcm_dm,
+            lcm_deg,
+            age: 0,
+            generation: 0,
+            is_coprime: false,
+        });
+    }
+    let pair_refs: Vec<&SPair> = pairs.iter().collect();
+    let mut ws = F4Workspace::new();
+    let first = process_batch_with_workspace(&pair_refs, &basis, &ring, None, &mut ws);
+    assert!(
+        ws.stats.reducer_misses > 0,
+        "first batch must populate the cache; stats={:?}",
+        ws.stats
+    );
+    let misses_before = ws.stats.reducer_misses;
+    let hits_before = ws.stats.reducer_hits;
+    let second = process_batch_with_workspace(&pair_refs, &basis, &ring, None, &mut ws);
+    assert!(
+        ws.stats.reducer_hits > hits_before,
+        "second batch must take cache hits; stats={:?}",
+        ws.stats
+    );
+    assert_eq!(
+        ws.stats.reducer_misses, misses_before,
+        "no new misses on repeat (same monomials, same active basis)"
+    );
+    assert_eq!(first.len(), second.len(), "output count must match");
+    for (a, b) in first.iter().zip(second.iter()) {
+        assert_eq!(lt(&a.poly, &ring).exponents(), lt(&b.poly, &ring).exponents());
+        assert_eq!(a.from_pairs, b.from_pairs);
+        assert_eq!(a.from_reducers, b.from_reducers);
+    }
+}
+
+/// A cached reducer keyed on monomial `m` records `(basis_idx,
+/// reducer_poly)`. Deactivating `basis[basis_idx]` between the
+/// two batches must force a recomputation. After the second
+/// call, [`F4WorkspaceStats::reducer_stale`] is incremented for
+/// every monomial whose cached entry pointed at the
+/// now-deactivated element. The outputs must remain a valid GB
+/// extension — the wider `f4_vs_per_pair_random_cross_check`
+/// fuzz catches any silent reuse of a stale row.
+#[test]
+fn f4_workspace_invalidates_on_basis_deactivation() {
+    let ring = ring_mod7(3);
+    let x0 = x(0, &ring);
+    let x1 = x(1, &ring);
+    let x2 = x(2, &ring);
+    // 3-pair batch that produces non-zero S-polys.
+    let f0 = x0.mul(&x0, &ring).sub(&x1, &ring);
+    let f1 = x0.mul(&x1, &ring).sub(&x2, &ring);
+    let f2 = x1.mul(&x1, &ring).sub(&x0, &ring);
+    let basis_polys = vec![f0, f1, f2];
+    let basis_lts: Vec<Monomial> = basis_polys.iter().map(|p| lt(p, &ring)).collect();
+    let mut pairs: Vec<SPair> = Vec::new();
+    for (i, j) in [(0usize, 1usize), (0, 2), (1, 2)] {
+        let lcm = basis_lts[i].lcm(&basis_lts[j]);
+        let lcm_dm = ring.divmask.compute(&lcm);
+        let lcm_deg = lcm.total_degree();
+        pairs.push(SPair {
+            i, j,
+            sugar: lcm_deg,
+            lcm,
+            lcm_divmask: lcm_dm,
+            lcm_deg,
+            age: 0,
+            generation: 0,
+            is_coprime: false,
+        });
+    }
+    let pair_refs: Vec<&SPair> = pairs.iter().collect();
+    let active_all: Vec<F4BasisRef> = basis_polys
+        .iter()
+        .zip(basis_lts.iter())
+        .map(|(p, l)| F4BasisRef {
+            poly: p,
+            lt: l,
+            lt_divmask: ring.divmask.compute(l),
+            active: true,
+        })
+        .collect();
+    let mut ws = F4Workspace::new();
+    let _ = process_batch_with_workspace(&pair_refs, &active_all, &ring, None, &mut ws);
+    let stale_before = ws.stats.reducer_stale;
+    let misses_before = ws.stats.reducer_misses;
+
+    // Deactivate basis[0]. Any cached entry that selected `basis_idx=0`
+    // as its reducer must register as stale and be recomputed.
+    let basis_no_b0: Vec<F4BasisRef> = basis_polys
+        .iter()
+        .zip(basis_lts.iter())
+        .enumerate()
+        .map(|(idx, (p, l))| F4BasisRef {
+            poly: p,
+            lt: l,
+            lt_divmask: ring.divmask.compute(l),
+            active: idx != 0,
+        })
+        .collect();
+    let _ = process_batch_with_workspace(&pair_refs, &basis_no_b0, &ring, None, &mut ws);
+    // At least one stale event or new miss must fire (some
+    // monomial that used basis[0] now needs a different reducer
+    // or becomes free).
+    assert!(
+        ws.stats.reducer_stale > stale_before || ws.stats.reducer_misses > misses_before,
+        "deactivating basis[0] must trigger cache invalidation; stats={:?}",
+        ws.stats
+    );
+}
+
+// ─── F4 vs per-pair cross-validation fuzz ─────────────────────
+
+/// Randomized cross-check: for a handful of small ideals, the
+/// F4-driven and per-pair-geobucket-driven incremental GB must
+/// produce bases whose leading-term sets agree.
+#[test]
+fn f4_vs_per_pair_random_cross_check() {
+    use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
+    use std::collections::HashSet;
+
+    // Deterministic LCG for reproducibility; produces small
+    // bivariate polynomials over F_7.
+    fn lcg(seed: u64) -> impl FnMut() -> u64 {
+        let mut s = seed;
+        move || {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s
+        }
+    }
+
+    for seed in 1u64..=12 {
+        let ring = ring_mod7(2);
+        let mut rng = lcg(seed);
+        // Build 3 random bivariate polynomials, each of degree ≤ 2.
+        let mut polys: Vec<Polynomial> = Vec::new();
+        for _ in 0..3 {
+            let one = ring.field.one();
+            let x0 = x(0, &ring);
+            let x1 = x(1, &ring);
+            let xx = x0.mul(&x0, &ring);
+            let yy = x1.mul(&x1, &ring);
+            let xy = x0.mul(&x1, &ring);
+            let const_one = Polynomial::constant(one.clone(), &ring);
+            let mut acc = Polynomial::zero();
+            for atom in [&xx, &xy, &yy, &x0, &x1, &const_one] {
+                let coeff = (rng() % 7) as u32;
+                if coeff == 0 { continue; }
+                let c = ring.field.from_int(coeff as i64);
+                let scaled = atom.mul(&Polynomial::constant(c, &ring), &ring);
+                acc = acc.add(&scaled, &ring);
+            }
+            if !acc.is_zero() {
+                polys.push(acc);
+            }
+        }
+        if polys.len() < 2 {
+            continue;
+        }
+
+        // Per-pair path. `abort_on_trivial: false` runs the
+        // algorithm to quiescence even after a unit is found so
+        // the comparison is against a fully-reduced GB.
+        let cfg_pp = BuchbergerConfig {
+            order: MonomialOrder::DegRevLex,
+            cancel_token: None,
+            abort_on_trivial: false,
+            use_f4: false,
+        };
+        let mut igb_pp = IncrementalGB::new(Arc::clone(&ring), cfg_pp);
+        let pp_trivial = igb_pp.add_generators(polys.clone()).expect("pp add");
+
+        // F4 path.
+        let cfg_f4 = BuchbergerConfig {
+            order: MonomialOrder::DegRevLex,
+            cancel_token: None,
+            abort_on_trivial: false,
+            use_f4: true,
+        };
+        let mut igb_f4 = IncrementalGB::new(Arc::clone(&ring), cfg_f4);
+        let f4_trivial = igb_f4.add_generators(polys.clone()).expect("f4 add");
+
+        // Both engines must agree on whether the ideal is the
+        // whole ring (the only soundness-critical bit). If both
+        // report trivial, the basis content is irrelevant — both
+        // describe `R` regardless of which surviving polys
+        // remain. If both report non-trivial, the LT sets must
+        // match.
+        assert_eq!(
+            pp_trivial, f4_trivial,
+            "F4 and per-pair disagree on triviality for seed={}: \
+             pp_trivial={} f4_trivial={}",
+            seed, pp_trivial, f4_trivial
+        );
+        if !pp_trivial {
+            let pp_lts: HashSet<Vec<u16>> = igb_pp
+                .basis()
+                .iter()
+                .map(|p| lt(p, &ring).exponents().to_vec())
+                .collect();
+            let f4_lts: HashSet<Vec<u16>> = igb_f4
+                .basis()
+                .iter()
+                .map(|p| lt(p, &ring).exponents().to_vec())
+                .collect();
+            assert_eq!(
+                pp_lts, f4_lts,
+                "F4 and per-pair LT sets differ for seed={}: \
+                 pp={:?} f4={:?}",
+                seed, pp_lts, f4_lts
+            );
+        }
+    }
+}
+
+// ─── F4 batch-routing end-to-end ─────────────────────────────
+
+/// Katsura-3 in 4 variables over F_7. Buchberger produces several
+/// same-sugar batches below `F4_MIN_BATCH`, routing them through
+/// the per-pair fallback. Asserts `f4_fallback_pairs > 0` and
+/// F4 / per-pair leading-term-set agreement.
+#[test]
+fn f4_size_fallback_fires_on_small_batches() {
+    use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
+    use std::collections::HashSet;
+    let ring = ring_mod7(4);
+    let xs: Vec<Polynomial> = (0..4).map(|i| Polynomial::variable(i, &ring)).collect();
+    // Katsura-3: 4 polynomials in `u_0, u_1, u_2, u_3`.
+    // P_i = Σ_{j=-n..n} u_{|j|}·u_{|i-j|} - u_i  for 0 ≤ i ≤ 2,
+    // and P_3 = u_0 + 2·u_1 + 2·u_2 + 2·u_3 - 1.
+    let n = 3i32;
+    let mut polys: Vec<Polynomial> = Vec::new();
+    for i in 0..3usize {
+        let mut acc = Polynomial::zero();
+        for j in -n..=n {
+            let aj = (j.unsigned_abs()) as usize;
+            let ak = ((i as i32 - j).unsigned_abs()) as usize;
+            if aj > 3 || ak > 3 {
+                continue;
+            }
+            let prod = xs[aj].mul(&xs[ak], &ring);
+            acc = acc.add(&prod, &ring);
+        }
+        acc = acc.sub(&xs[i], &ring);
+        polys.push(acc);
+    }
+    let two = ring.field.from_int(2);
+    let two_poly = Polynomial::constant(two, &ring);
+    let mut tail = xs[0].clone();
+    for k in 1..4 {
+        tail = tail.add(&xs[k].mul(&two_poly, &ring), &ring);
+    }
+    let one = ring.field.one();
+    tail = tail.sub(&Polynomial::constant(one, &ring), &ring);
+    polys.push(tail);
+
+    let cfg_f4 = BuchbergerConfig {
+        order: MonomialOrder::DegRevLex,
+        cancel_token: None,
+        abort_on_trivial: false,
+        use_f4: true,
+    };
+    let mut igb_f4 = IncrementalGB::new(Arc::clone(&ring), cfg_f4);
+    igb_f4
+        .add_generators(polys.clone())
+        .expect("F4 add_generators");
+
+    let f4_stats = igb_f4.engine_stats().clone();
+    assert!(
+        f4_stats.f4_fallback_pairs > 0,
+        "F4_MIN_BATCH size fallback must fire on cyclic-3; \
+         got f4_fallback_pairs=0, full stats={:?}",
+        f4_stats,
+    );
+
+    // Per-pair reference: compare LT sets to confirm the routing
+    // decision didn't break correctness.
+    let cfg_pp = BuchbergerConfig {
+        order: MonomialOrder::DegRevLex,
+        cancel_token: None,
+        abort_on_trivial: false,
+        use_f4: false,
+    };
+    let mut igb_pp = IncrementalGB::new(Arc::clone(&ring), cfg_pp);
+    igb_pp
+        .add_generators(polys)
+        .expect("per-pair add_generators");
+
+    let f4_lts: HashSet<Vec<u16>> = igb_f4
+        .basis()
+        .iter()
+        .map(|p| lt(p, &ring).exponents().to_vec())
+        .collect();
+    let pp_lts: HashSet<Vec<u16>> = igb_pp
+        .basis()
+        .iter()
+        .map(|p| lt(p, &ring).exponents().to_vec())
+        .collect();
+    assert_eq!(
+        f4_lts, pp_lts,
+        "F4 size fallback must preserve correctness; F4 LT set differs from per-pair"
+    );
+}
+
+/// Cyclic-5 in F_7 produces same-sugar batches ≥ `F4_MIN_BATCH`.
+/// Asserts `engine_stats().f4_batches > 0` and `f4_pair_total > 0`.
+#[test]
+fn f4_matrix_path_fires_on_cyclic_5() {
+    use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
+    let ring = ring_mod7(5);
+    let xs: Vec<Polynomial> = (0..5).map(|i| Polynomial::variable(i, &ring)).collect();
+    let one = ring.field.one();
+    let neg_one = ring.field.neg(&one);
+    let mut polys: Vec<Polynomial> = Vec::new();
+    // f_d = Σ_{r=0..n} ∏_{k=0..d} x_{(r+k) mod n}  for d = 1..n.
+    for d in 1..5 {
+        let mut acc = Polynomial::zero();
+        for r in 0..5 {
+            let mut prod = xs[r % 5].clone();
+            for k in 1..d {
+                prod = prod.mul(&xs[(r + k) % 5], &ring);
+            }
+            acc = acc.add(&prod, &ring);
+        }
+        polys.push(acc);
+    }
+    // f_n = x_0 · x_1 · … · x_{n-1} - 1.
+    let mut p = xs[0].clone();
+    for k in 1..5 {
+        p = p.mul(&xs[k], &ring);
+    }
+    p = p.add(&Polynomial::constant(neg_one, &ring), &ring);
+    polys.push(p);
+
+    let cfg = BuchbergerConfig {
+        order: MonomialOrder::DegRevLex,
+        cancel_token: None,
+        abort_on_trivial: false,
+        use_f4: true,
+    };
+    let mut igb = IncrementalGB::new(Arc::clone(&ring), cfg);
+    igb.add_generators(polys).expect("F4 add_generators");
+    let stats = igb.engine_stats().clone();
+    assert!(
+        stats.f4_batches > 0,
+        "F4 matrix path must fire on cyclic-5; stats={:?}",
+        stats,
+    );
+    assert!(
+        stats.f4_pair_total > 0,
+        "F4 pair total must be > 0 when f4_batches > 0; stats={:?}",
+        stats,
+    );
+}
+
+// ─── Large-batch F4 amortisation coverage ────────────────────
+
+/// Cyclic-6 in F_7. Same-sugar batches average ≈ 35 pairs, well
+/// above `F4_MIN_BATCH = 12`. Asserts:
+///   * `f4_batches > 0`,
+///   * average batch size ≥ 20,
+///   * F4 pair share ≥ 90% (small low-sugar batches still fall
+///     back),
+///   * F4 and per-pair leading-term sets match.
+///
+/// `#[ignore]`d because cyclic-6 takes ~100 ms. Run with
+/// `cargo test -p picus-solver --release -- --ignored f4_large_batch_cyclic_6`.
+#[test]
+#[ignore]
+fn f4_large_batch_cyclic_6() {
+    use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
+    use std::collections::HashSet;
+    let n = 6usize;
+    let ring = ring_mod7(n);
+    let xs: Vec<Polynomial> = (0..n).map(|i| Polynomial::variable(i, &ring)).collect();
+    let one = ring.field.one();
+    let neg_one = ring.field.neg(&one);
+    let mut polys: Vec<Polynomial> = Vec::new();
+    // Cyclic-n: f_d = Σ_{r=0..n} ∏_{k=0..d} x_{(r+k) mod n}  for d = 1..n.
+    for d in 1..n {
+        let mut acc = Polynomial::zero();
+        for r in 0..n {
+            let mut prod = xs[r % n].clone();
+            for k in 1..d {
+                prod = prod.mul(&xs[(r + k) % n], &ring);
+            }
+            acc = acc.add(&prod, &ring);
+        }
+        polys.push(acc);
+    }
+    // f_n = x_0 · x_1 · … · x_{n-1} - 1.
+    let mut p = xs[0].clone();
+    for k in 1..n {
+        p = p.mul(&xs[k], &ring);
+    }
+    p = p.add(&Polynomial::constant(neg_one, &ring), &ring);
+    polys.push(p);
+
+    let cfg_f4 = BuchbergerConfig {
+        order: MonomialOrder::DegRevLex,
+        cancel_token: None,
+        abort_on_trivial: false,
+        use_f4: true,
+    };
+    let mut igb_f4 = IncrementalGB::new(Arc::clone(&ring), cfg_f4);
+    igb_f4
+        .add_generators(polys.clone())
+        .expect("F4 add_generators (cyclic-6)");
+    let stats = igb_f4.engine_stats().clone();
+    assert!(
+        stats.f4_batches > 0,
+        "cyclic-6 must fire F4 matrix path; stats={:?}",
+        stats,
+    );
+    let avg = stats.f4_pair_total as f64 / stats.f4_batches as f64;
+    assert!(
+        avg >= 20.0,
+        "cyclic-6 must produce large F4 batches (avg ≥ 20 expected, got avg={}); stats={:?}",
+        avg,
+        stats,
+    );
+    // Most of cyclic-6's pairs route through F4 — at least 90%
+    // of the matrix path should be exercised. (A handful of
+    // small low-sugar batches do fall back; that's expected.)
+    let f4_share = stats.f4_pair_total as f64
+        / (stats.f4_pair_total + stats.f4_fallback_pairs) as f64;
+    assert!(
+        f4_share >= 0.9,
+        "cyclic-6 F4 share must be ≥ 0.9 (got {:.3}); stats={:?}",
+        f4_share,
+        stats,
+    );
+
+    // Per-pair reference.
+    let cfg_pp = BuchbergerConfig {
+        order: MonomialOrder::DegRevLex,
+        cancel_token: None,
+        abort_on_trivial: false,
+        use_f4: false,
+    };
+    let mut igb_pp = IncrementalGB::new(Arc::clone(&ring), cfg_pp);
+    igb_pp
+        .add_generators(polys)
+        .expect("per-pair add_generators (cyclic-6)");
+    let f4_lts: HashSet<Vec<u16>> = igb_f4
+        .basis()
+        .iter()
+        .map(|p| lt(p, &ring).exponents().to_vec())
+        .collect();
+    let pp_lts: HashSet<Vec<u16>> = igb_pp
+        .basis()
+        .iter()
+        .map(|p| lt(p, &ring).exponents().to_vec())
+        .collect();
+    assert_eq!(
+        f4_lts, pp_lts,
+        "F4 and per-pair must agree on cyclic-6 LT set; F4 stats={:?}",
+        stats,
+    );
+}
+
+/// Homogeneous random degree-2 ideal in 5 variables with 8
+/// generators (deterministic LCG seed). No constant term keeps
+/// the basis from collapsing to a unit; degree-3 same-sugar
+/// batches produced are large enough for the F4 matrix path.
+/// Asserts `f4_batches > 0`, `f4_pair_total >= F4_MIN_BATCH`,
+/// and F4 / per-pair leading-term-set agreement.
+#[test]
+fn f4_large_batch_homog_5vars_deg2() {
+    use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
+    use std::collections::HashSet;
+    let ring = ring_mod7(5);
+    // Deterministic LCG so the test is reproducible.
+    let mut seed: u64 = 0xC0CCAB1234567ABC;
+    let mut next = || {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        seed
+    };
+    let xs: Vec<Polynomial> = (0..5).map(|i| Polynomial::variable(i, &ring)).collect();
+    let mut polys: Vec<Polynomial> = Vec::new();
+    for _ in 0..8 {
+        // Sum of 5 random degree-2 atoms `c · x_i · x_j` with
+        // distinct (i, j) pairs. No constant tail — keeps the
+        // poly homogeneous degree 2 and prevents the basis from
+        // collapsing to `1`.
+        let mut acc = Polynomial::zero();
+        let mut used: std::collections::HashSet<(usize, usize)> =
+            std::collections::HashSet::new();
+        let mut tries = 0;
+        while used.len() < 5 && tries < 50 {
+            tries += 1;
+            let c_raw = ((next() % 6) + 1) as i64;
+            let c = ring.field.from_int(c_raw);
+            let mut i = (next() as usize) % 5;
+            let mut j = (next() as usize) % 5;
+            if i > j {
+                std::mem::swap(&mut i, &mut j);
+            }
+            if !used.insert((i, j)) {
+                continue;
+            }
+            let term = xs[i].mul(&xs[j], &ring);
+            acc = acc.add(&term.mul(&Polynomial::constant(c, &ring), &ring), &ring);
+        }
+        if !acc.is_zero() {
+            polys.push(acc);
+        }
+    }
+    assert!(
+        polys.len() >= 6,
+        "deterministic seed must produce >= 6 polys, got {}",
+        polys.len(),
+    );
+
+    let cfg_f4 = BuchbergerConfig {
+        order: MonomialOrder::DegRevLex,
+        cancel_token: None,
+        abort_on_trivial: false,
+        use_f4: true,
+    };
+    let mut igb_f4 = IncrementalGB::new(Arc::clone(&ring), cfg_f4);
+    igb_f4
+        .add_generators(polys.clone())
+        .expect("F4 add_generators (homog 5vars)");
+    let stats = igb_f4.engine_stats().clone();
+    assert!(
+        stats.f4_batches > 0,
+        "homog-5vars-deg2 must fire F4 matrix path at least once; stats={:?}",
+        stats,
+    );
+    // At least one batch should hit `F4_MIN_BATCH`; check that
+    // `f4_pair_total >= F4_MIN_BATCH` (one such batch is enough).
+    assert!(
+        stats.f4_pair_total >= 12,
+        "F4 must process >= 12 pairs total (i.e. ≥ 1 above-threshold batch); stats={:?}",
+        stats,
+    );
+
+    let cfg_pp = BuchbergerConfig {
+        order: MonomialOrder::DegRevLex,
+        cancel_token: None,
+        abort_on_trivial: false,
+        use_f4: false,
+    };
+    let mut igb_pp = IncrementalGB::new(Arc::clone(&ring), cfg_pp);
+    igb_pp
+        .add_generators(polys)
+        .expect("per-pair add_generators (homog 5vars)");
+    let f4_lts: HashSet<Vec<u16>> = igb_f4
+        .basis()
+        .iter()
+        .map(|p| lt(p, &ring).exponents().to_vec())
+        .collect();
+    let pp_lts: HashSet<Vec<u16>> = igb_pp
+        .basis()
+        .iter()
+        .map(|p| lt(p, &ring).exponents().to_vec())
+        .collect();
+    assert_eq!(
+        f4_lts, pp_lts,
+        "F4 and per-pair LT sets must agree on homog-5vars; F4 stats={:?}",
+        stats,
+    );
+}

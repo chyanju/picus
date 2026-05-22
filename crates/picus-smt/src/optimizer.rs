@@ -1,66 +1,46 @@
-//! R1CS AST optimization passes.
+//! R1CS AST optimization passes (Z3 / QF_NIA shape).
 //!
-//! Three passes per solver backend:
+//! Three passes:
 //! - Phase 0 (ab0): A*B=0 → A=0 ∨ B=0
 //! - Normalize (simple): strip *1, +0, x0→1, etc.
-//! - Phase 1 (subp): substitute p-related constants
+//! - Phase 1 (subp): substitute p-related integer constants
 
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
 use picus_r1cs::bn128_prime;
 use picus_r1cs::grammar::*;
 
-use crate::SolverKind;
-
-/// Run the full optimization pipeline: p0 → expand → normalize → p1.
-/// Note: expand is done separately via r1cs_parser::expand_r1cs.
-pub fn optimize_p0(cnsts: &RCmds, solver: SolverKind) -> RCmds {
-    match solver {
-        SolverKind::Z3 => ab0_optimize_z3(cnsts),
-        // Skip AB0 for cvc5: cvc5 1.2.0–1.3.3 has a bug where `or` disjunctions in QF_FF
-        // can produce spurious SAT results with inconsistent models.
-        // The solver handles nonlinear A*B=0 constraints natively.
-        SolverKind::None => unreachable!(),
-        SolverKind::Native => unreachable!(),
-        SolverKind::Cvc5 => cnsts.clone(),
-    }
+/// AB0 rewrite: `(mul a b) = 0` → `a = 0 ∨ b = 0`.
+pub fn optimize_p0(cnsts: &RCmds) -> RCmds {
+    ab0_optimize(cnsts)
 }
 
-pub fn normalize(cnsts: &RCmds, solver: SolverKind) -> RCmds {
-    match solver {
-        SolverKind::Z3 => simple_optimize_z3(cnsts),
-        SolverKind::None => unreachable!(),
-        SolverKind::Native => unreachable!(),
-        SolverKind::Cvc5 => simple_optimize_cvc5(cnsts),
-    }
+/// Simple normalization: fold int literals, strip identities, `x0 → 1`.
+pub fn normalize(cnsts: &RCmds) -> RCmds {
+    simple_optimize(cnsts)
 }
 
 /// `include_p_defs`: if true, prepend p-related constant definitions.
 /// The original copy should use true; the alt copy should use false
 /// to avoid duplicate declarations.
-pub fn optimize_p1(cnsts: &RCmds, decls: &RCmds, solver: SolverKind, include_p_defs: bool) -> (RCmds, RCmds) {
-    match solver {
-        SolverKind::Z3 => subp_optimize_z3(cnsts, decls, include_p_defs),
-        SolverKind::None => unreachable!(),
-        SolverKind::Native => unreachable!(),
-        SolverKind::Cvc5 => subp_optimize_cvc5(cnsts, decls, include_p_defs),
-    }
+pub fn optimize_p1(cnsts: &RCmds, decls: &RCmds, include_p_defs: bool) -> (RCmds, RCmds) {
+    subp_optimize(cnsts, decls, include_p_defs)
 }
 
 // ========================= Simple optimizer (normalize) =========================
 
-fn simple_optimize_z3(cmds: &RCmds) -> RCmds {
-    RCmds::new(cmds.commands.iter().map(simple_opt_cmd_z3).collect())
+fn simple_optimize(cmds: &RCmds) -> RCmds {
+    RCmds::new(cmds.commands.iter().map(simple_opt_cmd).collect())
 }
 
-fn simple_opt_cmd_z3(cmd: &RCmd) -> RCmd {
+fn simple_opt_cmd(cmd: &RCmd) -> RCmd {
     match cmd {
-        RCmd::Assert(e) => RCmd::Assert(simple_opt_expr_z3(e)),
+        RCmd::Assert(e) => RCmd::Assert(simple_opt_expr(e)),
         _ => cmd.clone(),
     }
 }
 
-fn simple_opt_expr_z3(expr: &RExpr) -> RExpr {
+fn simple_opt_expr(expr: &RExpr) -> RExpr {
     match expr {
         // x0 → 1
         RExpr::Var(v) if v == "x0" => RExpr::Int(BigUint::one()),
@@ -71,10 +51,9 @@ fn simple_opt_expr_z3(expr: &RExpr) -> RExpr {
             // (constant last).
             let optimized: Vec<RExpr> = vs
                 .iter()
-                .map(simple_opt_expr_z3)
+                .map(simple_opt_expr)
                 .filter(|v| !is_zero_int(v))
                 .collect();
-            // Fold int literals.
             let mut int_sum: BigUint = BigUint::zero();
             let mut non_int: Vec<RExpr> = Vec::with_capacity(optimized.len());
             for e in optimized {
@@ -96,16 +75,11 @@ fn simple_opt_expr_z3(expr: &RExpr) -> RExpr {
         RExpr::Mul(vs) => {
             // Fold integer-literal factors into a single constant and
             // canonicalise position (constant first).
-            let optimized: Vec<RExpr> = vs.iter().map(simple_opt_expr_z3).collect();
-            // If any is zero, whole product is zero.
+            let optimized: Vec<RExpr> = vs.iter().map(simple_opt_expr).collect();
             if optimized.iter().any(is_zero_int) {
                 return RExpr::Int(BigUint::zero());
             }
-            let filtered: Vec<RExpr> = optimized
-                .into_iter()
-                .filter(|v| !is_one_int(v))
-                .collect();
-            // Fold int literals.
+            let filtered: Vec<RExpr> = optimized.into_iter().filter(|v| !is_one_int(v)).collect();
             let mut int_prod: BigUint = BigUint::one();
             let mut non_int: Vec<RExpr> = Vec::with_capacity(filtered.len());
             for e in filtered {
@@ -114,8 +88,6 @@ fn simple_opt_expr_z3(expr: &RExpr) -> RExpr {
                     _ => non_int.push(e),
                 }
             }
-            // Insert constant at FRONT (cvc5's canonical position for
-            // multiplication).
             if !int_prod.is_one() {
                 non_int.insert(0, RExpr::Int(int_prod));
             }
@@ -127,7 +99,7 @@ fn simple_opt_expr_z3(expr: &RExpr) -> RExpr {
         }
 
         RExpr::Sub(vs) => {
-            let optimized: Vec<RExpr> = vs.iter().map(simple_opt_expr_z3).collect();
+            let optimized: Vec<RExpr> = vs.iter().map(simple_opt_expr).collect();
             if optimized.len() == 1 {
                 optimized.into_iter().next().unwrap()
             } else {
@@ -136,7 +108,7 @@ fn simple_opt_expr_z3(expr: &RExpr) -> RExpr {
         }
 
         RExpr::And(vs) => {
-            let optimized: Vec<RExpr> = vs.iter().map(simple_opt_expr_z3).collect();
+            let optimized: Vec<RExpr> = vs.iter().map(simple_opt_expr).collect();
             if optimized.len() == 1 {
                 optimized.into_iter().next().unwrap()
             } else {
@@ -145,7 +117,7 @@ fn simple_opt_expr_z3(expr: &RExpr) -> RExpr {
         }
 
         RExpr::Or(vs) => {
-            let optimized: Vec<RExpr> = vs.iter().map(simple_opt_expr_z3).collect();
+            let optimized: Vec<RExpr> = vs.iter().map(simple_opt_expr).collect();
             if optimized.len() == 1 {
                 optimized.into_iter().next().unwrap()
             } else {
@@ -155,121 +127,42 @@ fn simple_opt_expr_z3(expr: &RExpr) -> RExpr {
 
         // Strip trivial mod on a bare variable or integer
         RExpr::Mod(v, _m) => {
-            let inner = simple_opt_expr_z3(v);
+            let inner = simple_opt_expr(v);
             match &inner {
                 RExpr::Var(_) | RExpr::Int(_) => inner,
-                _ => RExpr::Mod(Box::new(inner), Box::new(simple_opt_expr_z3(_m))),
+                _ => RExpr::Mod(Box::new(inner), Box::new(simple_opt_expr(_m))),
             }
         }
 
         RExpr::Eq(l, r) => RExpr::Eq(
-            Box::new(simple_opt_expr_z3(l)),
-            Box::new(simple_opt_expr_z3(r)),
+            Box::new(simple_opt_expr(l)),
+            Box::new(simple_opt_expr(r)),
         ),
         RExpr::Neq(l, r) => RExpr::Neq(
-            Box::new(simple_opt_expr_z3(l)),
-            Box::new(simple_opt_expr_z3(r)),
+            Box::new(simple_opt_expr(l)),
+            Box::new(simple_opt_expr(r)),
         ),
         RExpr::Leq(l, r) => RExpr::Leq(
-            Box::new(simple_opt_expr_z3(l)),
-            Box::new(simple_opt_expr_z3(r)),
+            Box::new(simple_opt_expr(l)),
+            Box::new(simple_opt_expr(r)),
         ),
         RExpr::Lt(l, r) => RExpr::Lt(
-            Box::new(simple_opt_expr_z3(l)),
-            Box::new(simple_opt_expr_z3(r)),
+            Box::new(simple_opt_expr(l)),
+            Box::new(simple_opt_expr(r)),
         ),
         RExpr::Geq(l, r) => RExpr::Geq(
-            Box::new(simple_opt_expr_z3(l)),
-            Box::new(simple_opt_expr_z3(r)),
+            Box::new(simple_opt_expr(l)),
+            Box::new(simple_opt_expr(r)),
         ),
         RExpr::Gt(l, r) => RExpr::Gt(
-            Box::new(simple_opt_expr_z3(l)),
-            Box::new(simple_opt_expr_z3(r)),
+            Box::new(simple_opt_expr(l)),
+            Box::new(simple_opt_expr(r)),
         ),
         RExpr::Imp(l, r) => RExpr::Imp(
-            Box::new(simple_opt_expr_z3(l)),
-            Box::new(simple_opt_expr_z3(r)),
+            Box::new(simple_opt_expr(l)),
+            Box::new(simple_opt_expr(r)),
         ),
-        RExpr::Neg(v) => RExpr::Neg(Box::new(simple_opt_expr_z3(v))),
-
-        _ => expr.clone(),
-    }
-}
-
-fn simple_optimize_cvc5(cmds: &RCmds) -> RCmds {
-    RCmds::new(cmds.commands.iter().map(simple_opt_cmd_cvc5).collect())
-}
-
-fn simple_opt_cmd_cvc5(cmd: &RCmd) -> RCmd {
-    match cmd {
-        RCmd::Assert(e) => RCmd::Assert(simple_opt_expr_cvc5(e)),
-        _ => cmd.clone(),
-    }
-}
-
-fn simple_opt_expr_cvc5(expr: &RExpr) -> RExpr {
-    match expr {
-        RExpr::Var(v) if v == "x0" => RExpr::Int(BigUint::one()),
-
-        RExpr::Add(vs) => {
-            let optimized: Vec<RExpr> = vs
-                .iter()
-                .map(simple_opt_expr_cvc5)
-                .filter(|v| !is_zero_int(v))
-                .collect();
-            match optimized.len() {
-                0 => RExpr::Int(BigUint::zero()),
-                1 => optimized.into_iter().next().unwrap(),
-                _ => RExpr::Add(optimized),
-            }
-        }
-
-        RExpr::Mul(vs) => {
-            let optimized: Vec<RExpr> = vs.iter().map(simple_opt_expr_cvc5).collect();
-            if optimized.iter().any(is_zero_int) {
-                return RExpr::Int(BigUint::zero());
-            }
-            let filtered: Vec<RExpr> = optimized
-                .into_iter()
-                .filter(|v| !is_one_int(v))
-                .collect();
-            match filtered.len() {
-                0 => RExpr::Int(BigUint::one()),
-                1 => filtered.into_iter().next().unwrap(),
-                _ => RExpr::Mul(filtered),
-            }
-        }
-
-        RExpr::And(vs) => {
-            let optimized: Vec<RExpr> = vs.iter().map(simple_opt_expr_cvc5).collect();
-            if optimized.len() == 1 {
-                optimized.into_iter().next().unwrap()
-            } else {
-                RExpr::And(optimized)
-            }
-        }
-
-        RExpr::Or(vs) => {
-            let optimized: Vec<RExpr> = vs.iter().map(simple_opt_expr_cvc5).collect();
-            if optimized.len() == 1 {
-                optimized.into_iter().next().unwrap()
-            } else {
-                RExpr::Or(optimized)
-            }
-        }
-
-        RExpr::Eq(l, r) => RExpr::Eq(
-            Box::new(simple_opt_expr_cvc5(l)),
-            Box::new(simple_opt_expr_cvc5(r)),
-        ),
-        RExpr::Neq(l, r) => RExpr::Neq(
-            Box::new(simple_opt_expr_cvc5(l)),
-            Box::new(simple_opt_expr_cvc5(r)),
-        ),
-        RExpr::Imp(l, r) => RExpr::Imp(
-            Box::new(simple_opt_expr_cvc5(l)),
-            Box::new(simple_opt_expr_cvc5(r)),
-        ),
+        RExpr::Neg(v) => RExpr::Neg(Box::new(simple_opt_expr(v))),
 
         _ => expr.clone(),
     }
@@ -277,17 +170,15 @@ fn simple_opt_expr_cvc5(expr: &RExpr) -> RExpr {
 
 // ============================ AB0 optimiser ===============================
 
-fn ab0_optimize_z3(cmds: &RCmds) -> RCmds {
+fn ab0_optimize(cmds: &RCmds) -> RCmds {
     let p = bn128_prime();
-    RCmds::new(cmds.commands.iter().map(|c| ab0_opt_cmd_z3(c, p)).collect())
+    RCmds::new(cmds.commands.iter().map(|c| ab0_opt_cmd(c, p)).collect())
 }
 
-fn ab0_opt_cmd_z3(cmd: &RCmd, p: &BigUint) -> RCmd {
+fn ab0_opt_cmd(cmd: &RCmd, p: &BigUint) -> RCmd {
     match cmd {
         RCmd::Assert(RExpr::Eq(lhs, rhs)) => {
-            // Check: (mod (mul [vs]) p) = (mod (add [0]) p) or vice versa
-            if let Some(mul_args) = match_ab0_z3(lhs, rhs) {
-                // Rewrite: or(v1=0, v2=0, ...)
+            if let Some(mul_args) = match_ab0(lhs, rhs) {
                 let disjuncts: Vec<RExpr> = mul_args
                     .iter()
                     .map(|v| {
@@ -301,7 +192,7 @@ fn ab0_opt_cmd_z3(cmd: &RCmd, p: &BigUint) -> RCmd {
                     })
                     .collect();
                 RCmd::Assert(RExpr::Or(disjuncts))
-            } else if let Some(mul_args) = match_ab0_z3(rhs, lhs) {
+            } else if let Some(mul_args) = match_ab0(rhs, lhs) {
                 let disjuncts: Vec<RExpr> = mul_args
                     .iter()
                     .map(|v| {
@@ -324,38 +215,39 @@ fn ab0_opt_cmd_z3(cmd: &RCmd, p: &BigUint) -> RCmd {
 }
 
 /// Match pattern: lhs = (mod (mul [vs]) p), rhs = (mod (add [0]) p)
-fn match_ab0_z3(lhs: &RExpr, rhs: &RExpr) -> Option<Vec<RExpr>> {
+fn match_ab0(lhs: &RExpr, rhs: &RExpr) -> Option<Vec<RExpr>> {
     if let RExpr::Mod(lhs_inner, _) = lhs
-        && let RExpr::Mul(vs) = lhs_inner.as_ref() {
-            // Check rhs is zero: (mod (add [0]) p)
-            if is_zero_rhs_z3(rhs) {
-                return Some(vs.clone());
-            }
+        && let RExpr::Mul(vs) = lhs_inner.as_ref()
+    {
+        if is_zero_rhs(rhs) {
+            return Some(vs.clone());
         }
+    }
     None
 }
 
-fn is_zero_rhs_z3(expr: &RExpr) -> bool {
+fn is_zero_rhs(expr: &RExpr) -> bool {
     if let RExpr::Mod(inner, _) = expr
-        && let RExpr::Add(vs) = inner.as_ref() {
-            return vs.len() == 1 && is_zero_int(&vs[0]);
-        }
+        && let RExpr::Add(vs) = inner.as_ref()
+    {
+        return vs.len() == 1 && is_zero_int(&vs[0]);
+    }
     false
 }
 
-// AB0 for cvc5 is disabled because cvc5 1.2.0–1.3.3 produces spurious
-// SAT results for `or` disjunctions in QF_FF (see docs/TODO.md). The
-// rewrite pattern itself is captured by `ab0_optimize_z3` above; if a
-// future cvc5 release fixes the bug, the cvc5 entry point can call
-// that pass directly (drop the `(mod _ p)` wrappers).
-
 // ============================ SubP optimiser ==============================
 
-fn subp_optimize_z3(cnsts: &RCmds, decls: &RCmds, include_p_defs: bool) -> (RCmds, RCmds) {
+/// Names introduced into the constraint system by the SubP optimiser.
+/// Downstream code (e.g. witness post-processing) uses this list to filter
+/// these names out, since they are not circuit signals.
+pub const SUBP_CONSTANT_NAMES: &[&str] =
+    &["p", "ps1", "ps2", "ps3", "ps4", "ps5", "zero", "one"];
+
+fn subp_optimize(cnsts: &RCmds, decls: &RCmds, include_p_defs: bool) -> (RCmds, RCmds) {
     let p = bn128_prime();
     // Z3 (QF_NIA) sees the field as integers, so `p` itself is a usable
     // named constant.
-    let constants = vec![
+    let constants: Vec<(&str, BigUint)> = vec![
         ("p", p.clone()),
         ("ps1", p - BigUint::from(1u32)),
         ("ps2", p - BigUint::from(2u32)),
@@ -365,63 +257,24 @@ fn subp_optimize_z3(cnsts: &RCmds, decls: &RCmds, include_p_defs: bool) -> (RCmd
         ("zero", BigUint::zero()),
         ("one", BigUint::one()),
     ];
-    let extra_subst: Vec<(BigUint, &str)> = Vec::new();
-    subp_optimize_impl(cnsts, decls, include_p_defs, "Int", &constants, &extra_subst)
-}
 
-fn subp_optimize_cvc5(cnsts: &RCmds, decls: &RCmds, include_p_defs: bool) -> (RCmds, RCmds) {
-    let p = bn128_prime();
-    // cvc5 (QF_FF) computes in the field, so `p` itself is not a named
-    // constant — but any literal equal to `p` reduces to `zero`.
-    let constants: Vec<(&str, BigUint)> = vec![
-        ("ps1", p - BigUint::from(1u32)),
-        ("ps2", p - BigUint::from(2u32)),
-        ("ps3", p - BigUint::from(3u32)),
-        ("ps4", p - BigUint::from(4u32)),
-        ("ps5", p - BigUint::from(5u32)),
-        ("zero", BigUint::zero()),
-        ("one", BigUint::one()),
-    ];
-    let extra_subst: Vec<(BigUint, &str)> = vec![(p.clone(), "zero")];
-    subp_optimize_impl(cnsts, decls, include_p_defs, "F", &constants, &extra_subst)
-}
-
-/// Shared body for [`subp_optimize_z3`] and [`subp_optimize_cvc5`].
-///
-/// * `var_type` — `"Int"` for Z3, `"F"` for cvc5.
-/// * `constants` — `(name, value)` pairs to introduce as named SMT
-///   constants and substitute everywhere they appear as integer
-///   literals.
-/// * `extra_subst` — additional `(literal, name)` substitution entries
-///   not paired with a declaration (e.g. cvc5 maps `p → zero` even
-///   though `p` is not declared).
-fn subp_optimize_impl(
-    cnsts: &RCmds,
-    decls: &RCmds,
-    include_p_defs: bool,
-    var_type: &str,
-    constants: &[(&str, BigUint)],
-    extra_subst: &[(BigUint, &str)],
-) -> (RCmds, RCmds) {
     let mut extra_decls = Vec::new();
     if include_p_defs {
         extra_decls.push(RCmd::Comment("======== p-related constants ========".into()));
-        for (name, val) in constants {
+        for (name, val) in &constants {
             extra_decls.push(RCmd::Def {
-                var: name.to_string(),
-                typ: var_type.to_string(),
+                var: (*name).to_string(),
+                typ: "Int".to_string(),
             });
             extra_decls.push(RCmd::Assert(RExpr::Eq(
-                Box::new(RExpr::Var(name.to_string())),
+                Box::new(RExpr::Var((*name).to_string())),
                 Box::new(RExpr::Int(val.clone())),
             )));
         }
     }
 
-    // Substitute literals → named constants in the constraints.
-    let mut subst_map: Vec<(BigUint, &str)> =
+    let subst_map: Vec<(BigUint, &str)> =
         constants.iter().map(|(n, v)| (v.clone(), *n)).collect();
-    subst_map.extend(extra_subst.iter().cloned());
 
     let new_cnsts = RCmds::new(
         cnsts

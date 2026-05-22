@@ -235,15 +235,12 @@ pub fn check_r1cs(
 // Internal helpers
 // ============================================================
 
-/// Named constants introduced by the SubP optimizer — not circuit signals.
-const INTERNAL_CONSTANTS: &[&str] = &["p", "ps1", "ps2", "ps3", "ps4", "ps5", "zero", "one"];
-
 /// Split a raw solver model into two clean witness maps,
 /// filtering out internal constants (ps1, zero, etc.).
 fn split_model(
     model: &HashMap<String, BigUint>,
 ) -> (HashMap<String, BigUint>, HashMap<String, BigUint>) {
-    let constants: HashSet<&str> = INTERNAL_CONSTANTS.iter().copied().collect();
+    let constants: HashSet<&str> = picus_smt::optimizer::SUBP_CONSTANT_NAMES.iter().copied().collect();
 
     let mut w1 = HashMap::new();
     let mut w2 = HashMap::new();

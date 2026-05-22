@@ -148,7 +148,8 @@ mod tests {
     use super::*;
     use crate::boolean::{Formula, Literal};
     use crate::encoder::PolyTerm;
-    use crate::sat::{LBool, SolveResult};
+    use crate::sat::solver::SolveResult;
+    use crate::sat::LBool;
     use num_bigint::BigUint;
 
     fn t(coeff: u64, vars: &[&str]) -> PolyTerm {

@@ -19,21 +19,14 @@ impl ClauseRef {
 pub struct Clause {
     pub lits: Vec<Lit>,
     /// `true` for learnt clauses (created by conflict analysis);
-    /// `false` for input clauses.
+    /// `false` for input clauses. Kept for future clause-deletion support.
+    #[allow(dead_code)]
     pub learnt: bool,
 }
 
 impl Clause {
     pub fn new(lits: Vec<Lit>, learnt: bool) -> Self {
         Clause { lits, learnt }
-    }
-
-    pub fn len(&self) -> usize {
-        self.lits.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.lits.is_empty()
     }
 }
 
@@ -62,15 +55,12 @@ impl ClauseArena {
         &mut self.clauses[cref.index()]
     }
 
+    /// Returns the number of clauses stored in the arena.
+    /// Used by SAT-layer test assertions; the production solver tracks
+    /// clause count via observer hooks rather than polling the arena.
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.clauses.len()
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (ClauseRef, &Clause)> {
-        self.clauses
-            .iter()
-            .enumerate()
-            .map(|(i, c)| (ClauseRef(i as u32), c))
     }
 }
 

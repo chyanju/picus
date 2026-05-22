@@ -9,6 +9,5 @@ pub mod clause;
 pub mod lit;
 pub mod solver;
 
-pub use clause::{Clause, ClauseArena, ClauseRef};
 pub use lit::{LBool, Lit, Var};
-pub use solver::{SolveResult, Solver};
+pub use solver::Solver;
