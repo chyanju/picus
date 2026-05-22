@@ -211,3 +211,315 @@ fn bench_bitdecomp_auto_extract_speedup() {
         );
     }
 }
+
+/// F4 vs per-pair on workloads sized to expose F4's amortisation
+/// benefit: larger ideals, more variables, and the cyclic-N family
+/// (a standard GB benchmark that produces many same-sugar S-pair
+/// batches).
+///
+/// Run manually:
+/// ```bash
+/// cargo test -p picus-solver --test bench_perf --release \
+///   bench_f4_vs_per_pair_large -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore]
+fn bench_f4_vs_per_pair_large() {
+    use picus_solver::ff::buchberger::{BuchbergerConfig, IncrementalGB};
+    use picus_solver::ff::monomial::MonomialOrder;
+    use picus_solver::ff::polynomial::PolyRing;
+    use picus_solver::ff::field::PrimeField;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    /// `cyclic-N`: the N-variable cyclic ideal. Classical GB benchmark
+    /// known to produce many same-sugar batches and a large basis.
+    fn cyclic_n(n: usize, ring: &Arc<PolyRing>) -> Vec<picus_solver::ff::polynomial::Polynomial> {
+        use picus_solver::ff::polynomial::Polynomial;
+        let xs: Vec<Polynomial> = (0..n).map(|i| Polynomial::variable(i, ring)).collect();
+        let mut polys: Vec<Polynomial> = Vec::new();
+        // f_d = sum over rotation r of (product x_{(r+0)..r+d})  for d = 1..n
+        for d in 1..n {
+            let mut acc = Polynomial::zero();
+            for r in 0..n {
+                let mut prod = xs[r % n].clone();
+                for k in 1..d {
+                    prod = prod.mul(&xs[(r + k) % n], ring);
+                }
+                acc = acc.add(&prod, ring);
+            }
+            polys.push(acc);
+        }
+        // f_n = x_0 * x_1 * ... * x_{n-1} - 1
+        let mut p = xs[0].clone();
+        for k in 1..n {
+            p = p.mul(&xs[k], ring);
+        }
+        let one = ring.field.one();
+        p = p.sub(&Polynomial::constant(one, ring), ring);
+        polys.push(p);
+        polys
+    }
+
+    fn run_one(
+        polys: &[picus_solver::ff::polynomial::Polynomial],
+        ring: &Arc<PolyRing>,
+        use_f4: bool,
+    ) -> u128 {
+        let cfg = BuchbergerConfig {
+            order: MonomialOrder::DegRevLex,
+            cancel_token: None,
+            abort_on_trivial: false,
+            use_f4,
+        };
+        let mut igb = IncrementalGB::new(Arc::clone(ring), cfg);
+        let t = Instant::now();
+        igb.add_generators(polys.to_vec())
+            .expect("add_generators");
+        t.elapsed().as_micros()
+    }
+
+    println!();
+    println!(
+        "{:<18} | {:>8} | {:>10} | {:>10} | {}",
+        "workload", "n_polys", "pp_us", "f4_us", "f4/pp"
+    );
+    println!("{}", "-".repeat(70));
+
+    let primes_and_orders: Vec<(BigUint, usize)> = vec![
+        (BigUint::from(7919u32), 4), // cyclic-4
+        (BigUint::from(7919u32), 5), // cyclic-5 (heavier)
+    ];
+
+    for (prime, n_vars) in &primes_and_orders {
+        let names: Vec<String> = (0..*n_vars).map(|i| format!("x{}", i)).collect();
+        let ring = PolyRing::new(
+            PrimeField::new(prime.clone()),
+            names,
+            MonomialOrder::DegRevLex,
+        );
+        let polys = cyclic_n(*n_vars, &ring);
+        // Warm-up + 3 iterations, take median.
+        let _ = run_one(&polys, &ring, false);
+        let mut pp_times = Vec::new();
+        for _ in 0..3 {
+            pp_times.push(run_one(&polys, &ring, false));
+        }
+        pp_times.sort();
+        let _ = run_one(&polys, &ring, true);
+        let mut f4_times = Vec::new();
+        for _ in 0..3 {
+            f4_times.push(run_one(&polys, &ring, true));
+        }
+        f4_times.sort();
+        let pp_med = pp_times[1];
+        let f4_med = f4_times[1];
+        let ratio = if pp_med == 0 {
+            "inf".to_string()
+        } else {
+            format!("{:.2}x", f4_med as f64 / pp_med as f64)
+        };
+        println!(
+            "{:<18} | {:>8} | {:>10} | {:>10} | {}",
+            format!("cyclic-{}", n_vars),
+            polys.len(),
+            pp_med,
+            f4_med,
+            ratio
+        );
+    }
+
+    // Dense random ideals: large basis, many overlapping monomials.
+    {
+        let prime = BigUint::from(7919u32);
+        let n_vars = 4usize;
+        let names: Vec<String> = (0..n_vars).map(|i| format!("x{}", i)).collect();
+        let ring = PolyRing::new(
+            PrimeField::new(prime),
+            names,
+            MonomialOrder::DegRevLex,
+        );
+        let mut seed = 42u64;
+        let mut rand = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            seed
+        };
+        for &n_polys in &[10usize, 20, 30] {
+            let mut polys = Vec::new();
+            for _ in 0..n_polys {
+                let mut acc = picus_solver::ff::polynomial::Polynomial::zero();
+                for _ in 0..6 {
+                    let coeff = ((rand() % 7000) + 1) as i64;
+                    let c = ring.field.from_int(coeff);
+                    let i = (rand() as usize) % n_vars;
+                    let j = (rand() as usize) % n_vars;
+                    let xi = picus_solver::ff::polynomial::Polynomial::variable(i, &ring);
+                    let xj = picus_solver::ff::polynomial::Polynomial::variable(j, &ring);
+                    let term = xi.mul(&xj, &ring);
+                    let scaled = term.mul(
+                        &picus_solver::ff::polynomial::Polynomial::constant(c, &ring),
+                        &ring,
+                    );
+                    acc = acc.add(&scaled, &ring);
+                }
+                let cc = ring.field.from_int(((rand() % 7) + 1) as i64);
+                let cp = picus_solver::ff::polynomial::Polynomial::constant(cc, &ring);
+                acc = acc.add(&cp, &ring);
+                if !acc.is_zero() {
+                    polys.push(acc);
+                }
+            }
+            let _ = run_one(&polys, &ring, false);
+            let mut pp_times = Vec::new();
+            for _ in 0..3 {
+                pp_times.push(run_one(&polys, &ring, false));
+            }
+            pp_times.sort();
+            let _ = run_one(&polys, &ring, true);
+            let mut f4_times = Vec::new();
+            for _ in 0..3 {
+                f4_times.push(run_one(&polys, &ring, true));
+            }
+            f4_times.sort();
+            let pp_med = pp_times[1];
+            let f4_med = f4_times[1];
+            let ratio = if pp_med == 0 {
+                "inf".to_string()
+            } else {
+                format!("{:.2}x", f4_med as f64 / pp_med as f64)
+            };
+            println!(
+                "{:<18} | {:>8} | {:>10} | {:>10} | {}",
+                format!("dense-{}-{}vars", n_polys, n_vars),
+                polys.len(),
+                pp_med,
+                f4_med,
+                ratio
+            );
+        }
+    }
+}
+
+/// F4 vs per-pair geobucket: run the same workloads on both engines
+/// in-process (via `IncrementalGB` with different `BuchbergerConfig`s)
+/// and report median timings. Reads the default from `PICUS_USE_F4`
+/// but overrides per-config; the env var is ignored here.
+///
+/// Run manually:
+/// ```bash
+/// cargo test -p picus-solver --test bench_perf --release \
+///   bench_f4_vs_per_pair -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore]
+fn bench_f4_vs_per_pair() {
+    use picus_solver::ff::buchberger::{BuchbergerConfig, IncrementalGB};
+    use picus_solver::ff::monomial::MonomialOrder;
+    use picus_solver::ff::polynomial::PolyRing;
+    use picus_solver::ff::field::PrimeField;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    /// Build a synthetic ideal of size `n_polys` over `n_vars`
+    /// variables in F_p, degree ≤ 2. Deterministic via `seed`.
+    fn build_system(
+        n_vars: usize,
+        n_polys: usize,
+        seed: u64,
+        ring: &Arc<PolyRing>,
+    ) -> Vec<picus_solver::ff::polynomial::Polynomial> {
+        let mut s = seed;
+        let mut rand = || {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s
+        };
+        let mut out = Vec::new();
+        for _ in 0..n_polys {
+            let mut acc = picus_solver::ff::polynomial::Polynomial::zero();
+            for _ in 0..6 {
+                let coeff = ((rand() % 7000) + 1) as i64;
+                let c = ring.field.from_int(coeff);
+                let i = (rand() as usize) % n_vars;
+                let j = (rand() as usize) % n_vars;
+                let xi = picus_solver::ff::polynomial::Polynomial::variable(i, ring);
+                let xj = picus_solver::ff::polynomial::Polynomial::variable(j, ring);
+                let term = xi.mul(&xj, ring);
+                let scaled = term.mul(
+                    &picus_solver::ff::polynomial::Polynomial::constant(c, ring),
+                    ring,
+                );
+                acc = acc.add(&scaled, ring);
+            }
+            let cc = ring.field.from_int(((rand() % 7) + 1) as i64);
+            let cp = picus_solver::ff::polynomial::Polynomial::constant(cc, ring);
+            acc = acc.add(&cp, ring);
+            if !acc.is_zero() {
+                out.push(acc);
+            }
+        }
+        out
+    }
+
+    fn time_one(
+        polys: &[picus_solver::ff::polynomial::Polynomial],
+        ring: &Arc<PolyRing>,
+        use_f4: bool,
+        iters: usize,
+    ) -> (u128, bool) {
+        let mut times = Vec::with_capacity(iters);
+        let mut trivial = false;
+        for _ in 0..iters {
+            let cfg = BuchbergerConfig {
+                order: MonomialOrder::DegRevLex,
+                cancel_token: None,
+                abort_on_trivial: false,
+                use_f4,
+            };
+            let mut igb = IncrementalGB::new(Arc::clone(ring), cfg);
+            let t = Instant::now();
+            trivial = igb
+                .add_generators(polys.to_vec())
+                .expect("add_generators");
+            times.push(t.elapsed().as_micros());
+        }
+        times.sort();
+        (times[iters / 2], trivial)
+    }
+
+    let prime = BigUint::from(7919u32); // first prime > 7000
+    let names = vec!["x".into(), "y".into(), "z".into(), "w".into()];
+    let ring = PolyRing::new(PrimeField::new(prime), names, MonomialOrder::DegRevLex);
+
+    println!();
+    println!(
+        "{:<10} | {:>6} | {:>10} | {:>10} | {:>10} | {}",
+        "n_polys", "seed", "pp_us", "f4_us", "f4/pp", "verdict"
+    );
+    println!("{}", "-".repeat(72));
+
+    for n_polys in &[3usize, 5, 8, 12] {
+        for seed in 1..=3u64 {
+            let polys = build_system(4, *n_polys, seed, &ring);
+            if polys.is_empty() {
+                continue;
+            }
+            let iters = 5;
+            let (pp_med, pp_trivial) = time_one(&polys, &ring, false, iters);
+            let (f4_med, f4_trivial) = time_one(&polys, &ring, true, iters);
+            assert_eq!(pp_trivial, f4_trivial,
+                "verdict disagreement n_polys={} seed={}", n_polys, seed);
+            let ratio = if pp_med == 0 {
+                "inf".to_string()
+            } else {
+                format!("{:.2}x", f4_med as f64 / pp_med as f64)
+            };
+            let verdict = if pp_trivial { "trivial" } else { "ok" };
+            println!(
+                "{:<10} | {:>6} | {:>10} | {:>10} | {:>10} | {}",
+                n_polys, seed, pp_med, f4_med, ratio, verdict
+            );
+        }
+    }
+}

@@ -4,6 +4,85 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.26] - 2026-05-21
+
+### Added
+
+- `picus-solver::ff::f4::F4Output { poly, from_pairs, from_reducers }`.
+  Replaces the prior `Vec<Polynomial>` return type of
+  `process_batch`. Each output carries the indices (into the
+  `batch[]` argument) of every S-pair whose row contributed during
+  matrix echelon, and the basis indices of every reducer row that
+  participated. `BuchbergerState::run_f4` threads these into the
+  observer protocol so the `GbTracer` UNSAT-core path stays sound
+  when F4 is enabled.
+- `picus-solver::ff::f4::RowProv` private type: per-row provenance
+  carried through `sparse_echelon`. Pair-parent and reducer-parent
+  contributions are unioned on each row-vs-pivot axpy, so a row's
+  final provenance is the complete set of contributing inputs.
+- `lt_divmask: DivMask` field on `F4BasisRef`. Symbolic
+  preprocessing applies the constant-time
+  `DivMask::divides_consistent_with` filter before the O(n_vars)
+  `Monomial::divides` check, eliminating the slow path on basis
+  elements that cannot possibly divide the query monomial.
+- `tests/bench_perf.rs::bench_f4_vs_per_pair_large`. Workload set
+  sized to expose F4's amortisation benefit: cyclic-N (N=4,5) plus
+  dense degree-2 ideals with 10/20/30 generators. Reports F4 vs
+  per-pair median timings.
+- Six new `ff::f4::tests` cases: `f4_prov_single_pair_no_reducers`,
+  `f4_prov_reducer_basis_index_recorded`,
+  `f4_prov_multibatch_unions_pair_indices`,
+  `f4_incremental_push_pop_roundtrip`,
+  `f4_incremental_pop_clears_trivial_state`,
+  `f4_vs_per_pair_random_cross_check` (12 deterministic seeds).
+
+### Changed
+
+- `picus-solver::ff::f4::process_batch` return type is now
+  `Vec<F4Output>` (was `Vec<Polynomial>`).
+  `picus-solver::ff::f4::symbolic_preprocess` return tuple gains a
+  fourth element listing the basis index each reducer row was built
+  from, parallel to the existing `reducer_lts` array.
+- `picus-solver::ff::f4::sparse_echelon` borrows pivot rows in
+  place via `split_at_mut(i)` rather than cloning them per axpy.
+  Provenance is unioned with the same in-place borrow, removing a
+  `BTreeSet::clone()` per pivot use.
+- `picus-solver::ff::f4::process_batch`'s monomial → column index
+  uses a `HashSet`-collect + `sort_unstable_by` + `HashMap` lookup
+  in place of the prior `BTreeMap` insertion + reverse iteration.
+- `picus-solver::ff::f4::poly_to_sparse_row` no longer performs a
+  trailing `sort_by_key`: terms are stored in monomial-DESC order
+  and column 0 is the largest monomial, so iterating terms in
+  source order already produces a column-ascending sparse row. A
+  debug-mode `debug_assert!` checks the invariant.
+- `picus-solver::ff::buchberger::run_f4` populates `lt_divmask` on
+  every `F4BasisRef` from the precomputed
+  `BasisElement::lt_divmask` and consumes each `F4Output`'s
+  provenance to drive `observer.on_pair_reducers` + `on_new_poly`
+  with the full dependency set.
+
+### Tests
+
+- 470 tests pass under both `PICUS_USE_F4=0` and `PICUS_USE_F4=1`
+  (was 467 at 1.7.25 — the 3 regression-guard tests
+  `cvc5_ff_is_zero_unsound_sat`,
+  `core::tests::ff_is_zero_unsound_full_unsat_core_is_sound`, and
+  `core::tests::bit_prop_derived_eq_unsat_core_is_sound` failed
+  under `PICUS_USE_F4=1` before this release).
+
+### Performance
+
+- `bench_f4_vs_per_pair_large` median ratios F4 / per-pair after
+  this release: cyclic-4 ≈ 1.10–1.17×, cyclic-5 ≈ 1.07–1.14×,
+  dense-10 ≈ 1.08–1.21×, dense-20 ≈ 1.04–1.09×, dense-30 ≈
+  1.01–1.04×. The `split_at_mut`-based pivot borrowing was the
+  largest single contributor (cyclic-5 dropped from ≈ 1.30× to
+  ≈ 1.10×).
+- Default GB engine remains the per-pair geobucket path
+  (`use_f4_default()` returns `true` iff `PICUS_USE_F4=1` is set in
+  the environment). F4-lite ties dense-30 but does not beat
+  per-pair outright on any tested workload.
+
 ## [1.7.25] - 2026-05-21
 
 ### Added
