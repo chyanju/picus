@@ -213,8 +213,7 @@ fn test_gb_empty() {
 //   * Every basis element is a member of the original ideal (modulo
 //     symmetry: `ideal.contains(g)` for all GB elements).
 //
-// We run 50 iterations rather than cvc5's 200 to keep the test fast, since
-// our Buchberger is in-process Rust rather than CoCoA's C++.
+// Iteration count is 50; cvc5's analogous test uses 200.
 #[test]
 fn test_gb_rand() {
     let n_iters = 50usize;

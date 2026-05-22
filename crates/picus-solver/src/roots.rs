@@ -1,13 +1,12 @@
 //! Univariate root finding over GF(p).
 //!
-//! Backed by the inlined `crate::ff::univariate` Cantor–Zassenhaus
-//! implementation. Mirrors cvc5's `uni_roots.cpp` semantics:
+//! Forwards to [`crate::ff::univariate::find_roots`], which runs:
 //!
 //! 1. Squarefree preprocessing via `gcd(f, x^q - x mod f)` to isolate
 //!    distinct linear factors.
-//! 2. Factoring of the squarefree part via Cantor–Zassenhaus.
+//! 2. Cantor–Zassenhaus factorisation of the squarefree part.
 //!
-//! Both steps are now handled inside `ff::univariate::find_roots`.
+//! Semantics match cvc5's `theory/ff/uni_roots.cpp`.
 
 use crate::ff::univariate::{self, UnivariatePoly};
 use crate::field::{FfEl, FfField};

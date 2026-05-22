@@ -217,8 +217,9 @@ impl AppearingVars {
     pub fn into_iter(self) -> impl Iterator<Item = usize> {
         self.vars.into_iter().map(|(v, _)| v)
     }
-    /// Access the underlying `(var_index, max_degree)` pair at position `i`.
-    /// Provided for legacy `appearing[0]` indexing.
+    /// Access the underlying `(var_index, max_degree)` pair at
+    /// position `i`. Used by callers that index `appearing[0]`
+    /// directly (e.g. univariate-detection paths).
     pub fn get(&self, i: usize) -> (usize, usize) {
         let (v, d) = self.vars[i];
         (v, d as usize)

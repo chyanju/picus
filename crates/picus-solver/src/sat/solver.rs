@@ -1,8 +1,14 @@
 //! CDCL solver core.
 //!
-//! Skeleton at this point: only declares the public types used by
-//! downstream modules. The actual CDCL loop (propagation / conflict
-//! analysis / decisions / restarts) is added in the next phase.
+//! [`Solver`] implements the full CDCL loop: BCP via watched literals
+//! ([`Solver::propagate`]), 1-UIP conflict analysis with VSIDS
+//! activity bumps ([`Solver::analyze`]), backjumping
+//! ([`Solver::backtrack_to`]), Luby-sequence restarts
+//! ([`Solver::should_restart`] + [`perform_restart`]), and a top-level
+//! [`Solver::solve`] driver. Theory clients call
+//! [`Solver::add_theory_lemma`] to inject conflict / propagation
+//! clauses and read assignments via [`Solver::value`] +
+//! [`Solver::trail`].
 
 use super::clause::{Clause, ClauseArena, ClauseRef};
 use super::lit::{LBool, Lit, Var};
@@ -1157,9 +1163,13 @@ mod tests {
 
     #[test]
     fn vsids_bumps_intermediate_resolved_variables() {
-        // Regression: under the old bump-on-survivors-only scheme, a
-        // length-1 learnt clause produced zero bumps. The 1-UIP and
-        // intermediate resolved vars must also be bumped.
+        // VSIDS must bump every variable that participates in the
+        // conflict-analysis resolution chain, including the 1-UIP
+        // and intermediate resolved variables — not just the
+        // literals that survive into the learnt clause. The chosen
+        // formula has a 1-UIP that collapses to a unit clause, so
+        // a survivors-only bump policy would leave all activities at
+        // zero.
         let mut s = Solver::new();
         let v = vars(&mut s, 3);
         assert!(s.add_clause(vec![Lit::pos(v[0]), Lit::pos(v[1])]));

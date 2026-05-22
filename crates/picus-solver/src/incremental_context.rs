@@ -62,10 +62,10 @@ struct PartialBuild {
 #[derive(Default)]
 pub struct IncrementalSolverContext {
     cached_base: Option<CachedBase>,
-    /// Lazy-build flag: the first call goes through the stateless path;
-    /// the cache is only built on a subsequent call whose digest matches
-    /// the previous call's. Avoids paying the cache-build cost on
-    /// circuits where every solve has a different constraint side.
+    /// Digest of the most recent `solve` call's constraint side.
+    /// The cache builds only when two consecutive calls share a
+    /// digest; circuits whose per-call constraint sides never repeat
+    /// skip the cache-build cost entirely.
     last_digest: Option<u64>,
     /// In-flight partial GB build saved from a cancelled call. Resumed
     /// on the next call with the same digest.

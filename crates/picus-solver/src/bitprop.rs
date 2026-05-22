@@ -291,9 +291,10 @@ mod tests {
         let x2 = pr.mul(pr.clone_poly(&x), pr.clone_poly(&x));
         let bit_poly = pr.sub(x2, x);
         let _ideal = Ideal::new(&pr, vec![p, bit_poly]);
-        // This is actually contradictory (5 != 0,1) so the ideal is the whole ring.
-        // But we want to test bitprop's own overflow detection too.  Let's construct
-        // a non-trivial example: the bitsum equals 5, but only 2 bits.  Use GF(17).
+        // The previous ideal collapses to the whole ring (`5 != 0,1`).
+        // Construct a non-trivial overflow example over GF(17): the
+        // bitsum equals 5 with only 2 bits, so the implied value
+        // (`b0 + 2·b1 ∈ {0,1,2,3}`) cannot match 5.
         let pr2 = FfPolyRing::new(ff(17), vec!["b0".into(), "b1".into()]);
         let two = pr2.field.from_int(2);
         let neg_five = pr2.field.from_int(-5);

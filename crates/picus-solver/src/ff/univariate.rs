@@ -311,7 +311,7 @@ fn split_linear_factors(
     let p = field.prime().clone();
     let two = BigUint::from(2u32);
     if p < two {
-        // Trivial fields; should never happen in practice.
+        // `p < 2` is not a field; `PrimeField::new` rejects this case.
         return vec![poly.clone()];
     }
     let exp = (&p - BigUint::one()) / &two;
@@ -325,8 +325,8 @@ fn split_linear_factors(
             out.push(g.make_monic(field));
             continue;
         }
-        // Special case: if p == 2 the standard splitting trick fails; fall back
-        // to brute-force root search (we don't expect p == 2 in practice).
+        // p == 2: the standard splitting `gcd(g, x^((p-1)/2) - 1)` is
+        // ill-defined. Enumerate `c ∈ {0, 1}` directly.
         if p == two {
             let mut found = Vec::new();
             for c in 0u64..2 {
@@ -365,8 +365,8 @@ fn split_linear_factors(
                 stack.push(b);
             }
             None => {
-                // Could not split after many attempts; return as-is. This
-                // should not occur in practice for reasonable primes.
+                // Distinct-degree split exhausted the retry budget;
+                // return the unsplit polynomial as a single factor.
                 out.push(g);
             }
         }

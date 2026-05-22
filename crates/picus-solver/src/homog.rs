@@ -36,14 +36,11 @@ impl<'r> HomogRing<'r> {
     /// The extra variable is named `__h` (chosen to avoid collisions with
     /// circuit signal names which never start with `__`).
     ///
-    /// `Ph` carries its own freshly-constructed `FfField` over the same
-    /// prime as `base.field` — this is fine because all coefficients flow
-    /// through the field's prime, not the `FfField` identity.  We only ever
-    /// move coefficients between `base.ring` and `ext.ring` via the
-    /// underlying `FfFieldType` (`field()`), and `clone_el` on a feanor
-    /// field element is independent of which `FfField` wrapper produced it
-    /// (both wrappers point at structurally-equal `Zn` rings over the same
-    /// modulus).
+    /// `Ph` constructs a fresh `FfField` over the same prime as
+    /// `base.field`. Coefficient moves between `base.ring` and
+    /// `ext.ring` are sound because `FieldElem` arithmetic dispatches
+    /// on the `PrimeField` passed to each op — the field identity
+    /// itself is irrelevant once the prime matches.
     pub fn new(base: &'r FfPolyRing) -> Self {
         let n = base.n_vars;
         let mut var_names = base.var_names.clone();
