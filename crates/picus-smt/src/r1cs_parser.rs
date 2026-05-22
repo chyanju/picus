@@ -344,8 +344,8 @@ fn block_to_terms(block: &ConstraintBlock, xlist: &[String]) -> Vec<RExpr> {
         .collect()
 }
 
-/// Wrap term list as `Add([Int(0), term1, term2, ...])`, matching the
-/// canonical shape produced by the Racket reference implementation.
+/// Wrap term list as `Add([Int(0), term1, term2, ...])`. The leading
+/// `Int(0)` is required by the canonical Picus AST shape.
 fn make_sum_with_zero(terms: Vec<RExpr>) -> RExpr {
     let mut all = vec![RExpr::Int(BigUint::zero())];
     all.extend(terms);
