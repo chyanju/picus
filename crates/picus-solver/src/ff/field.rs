@@ -1,13 +1,16 @@
-//! Prime field GF(p) backed by GMP via the `rug` crate.
+//! Prime field GF(p) with two backends.
 //!
-//! Field elements are stored in canonical (least non-negative) form in
-//! `[0, p)`. All arithmetic dispatches to GMP (`mpz_add`, `mpz_mul`,
-//! `mpz_mod`, `mpz_invert`, ...).
+//! [`PrimeField::new`] selects at construction time:
 //!
-//! The public API exchanges [`num_bigint::BigUint`] at the boundary
-//! (encoder input, model output) for compatibility with the rest of
-//! the picus workspace. Conversions go through byte order via
-//! `to_bytes_le` / `from_bytes_le`.
+//! * `bits(prime) <= 64`: u64 representative with u128 product buffer.
+//!   Modular arithmetic compiles to a handful of machine instructions
+//!   per op. No allocations.
+//! * Otherwise: `rug::Integer` (GMP). Thread-local pool recycles
+//!   `mpz_t` limb buffers across the geobucket cascade.
+//!
+//! Field elements are stored in canonical (least non-negative) form
+//! in `[0, p)`. Boundary I/O goes through [`num_bigint::BigUint`] via
+//! byte-order conversion.
 
 use num_bigint::BigUint;
 use rug::Integer;
@@ -15,126 +18,183 @@ use std::sync::Arc;
 
 // ─────────────────────────── BigUint ↔ Integer ───────────────────────────
 
-/// Convert a `BigUint` to a `rug::Integer`. Used at the picus-solver API
-/// boundary; not on the hot reduction path.
 #[inline]
 fn biguint_to_integer(b: &BigUint) -> Integer {
     let bytes = b.to_bytes_le();
     Integer::from_digits(&bytes, rug::integer::Order::Lsf)
 }
 
-/// Convert a `rug::Integer` (assumed non-negative) to a `BigUint`.
 #[inline]
 fn integer_to_biguint(i: &Integer) -> BigUint {
     let bytes: Vec<u8> = i.to_digits::<u8>(rug::integer::Order::Lsf);
     BigUint::from_bytes_le(&bytes)
 }
 
+#[inline]
+fn biguint_to_u64(b: &BigUint) -> Option<u64> {
+    let digits = b.to_u64_digits();
+    match digits.len() {
+        0 => Some(0),
+        1 => Some(digits[0]),
+        _ => None,
+    }
+}
+
 // ───────────────────────────── FieldElem ────────────────────────────────
 
 /// An element of GF(p). Always stored in canonical form `0 <= value < p`.
-#[derive(Clone, Debug)]
+///
+/// The backing representation is chosen by the field at construction:
+/// a `u64` for primes `<= 2^64`, otherwise a `rug::Integer`. Elements
+/// from different fields are not interchangeable; the corresponding
+/// `PrimeField` must be used for every operation.
+#[derive(Debug)]
 pub struct FieldElem {
-    pub(crate) value: Integer,
+    repr: ElemRepr,
+}
+
+#[derive(Debug)]
+enum ElemRepr {
+    Gmp(Integer),
+    Small(u64),
 }
 
 impl FieldElem {
-    /// Direct constructor; caller must ensure `0 <= value < p`.
     #[inline]
-    pub(crate) fn new_unchecked(value: Integer) -> Self {
-        FieldElem { value }
+    pub(crate) fn from_integer_unchecked(value: Integer) -> Self {
+        FieldElem { repr: ElemRepr::Gmp(value) }
     }
 
-    /// Borrow the underlying `rug::Integer`. Internal hot-path access.
     #[inline]
-    pub fn as_integer(&self) -> &Integer {
-        &self.value
+    pub(crate) fn from_u64_unchecked(value: u64) -> Self {
+        FieldElem { repr: ElemRepr::Small(value) }
     }
 
-    /// Boundary conversion: produce a `BigUint` copy of the value. Allocates;
-    /// keep off the hot path.
+    /// Convert to `BigUint`. Allocates.
     pub fn as_biguint(&self) -> BigUint {
-        integer_to_biguint(&self.value)
+        match &self.repr {
+            ElemRepr::Gmp(v) => integer_to_biguint(v),
+            ElemRepr::Small(v) => BigUint::from(*v),
+        }
     }
 
-    /// Take a recycled `FieldElem` (with its `mpz_t` limb buffer
-    /// already allocated) from the thread-local pool, or allocate fresh
-    /// if the pool is empty. The returned element's value is
-    /// indeterminate — the caller must initialise it (via `assign` or
-    /// an equivalent operation) before reading.
     #[inline]
-    pub(crate) fn pool_take_or_default(capacity_bits: u32) -> Self {
+    fn as_gmp(&self) -> &Integer {
+        match &self.repr {
+            ElemRepr::Gmp(v) => v,
+            ElemRepr::Small(_) => unreachable!("FieldElem variant mismatch: expected Gmp"),
+        }
+    }
+
+    #[inline]
+    fn as_gmp_mut(&mut self) -> &mut Integer {
+        match &mut self.repr {
+            ElemRepr::Gmp(v) => v,
+            ElemRepr::Small(_) => unreachable!("FieldElem variant mismatch: expected Gmp"),
+        }
+    }
+
+    #[inline]
+    fn as_small(&self) -> u64 {
+        match &self.repr {
+            ElemRepr::Small(v) => *v,
+            ElemRepr::Gmp(_) => unreachable!("FieldElem variant mismatch: expected Small"),
+        }
+    }
+
+    /// Take a recycled Gmp `FieldElem` from the thread-local pool;
+    /// allocates fresh on miss with `capacity_bits` reserved. The
+    /// returned element's value is uninitialised — caller must
+    /// `assign` before reading. Gmp backend only.
+    #[inline]
+    fn pool_take_or_default_gmp(capacity_bits: u32) -> Self {
         FIELDELEM_POOL.with(|pool| {
             if let Some(mut e) = pool.borrow_mut().pop() {
-                // Ensure capacity for the upcoming assign.
-                if (e.value.capacity() as u32) < capacity_bits {
-                    e.value.reserve(capacity_bits as usize);
+                if let ElemRepr::Gmp(ref mut v) = e.repr {
+                    if (v.capacity() as u32) < capacity_bits {
+                        v.reserve(capacity_bits as usize);
+                    }
                 }
                 e
             } else {
                 FieldElem {
-                    value: Integer::with_capacity(capacity_bits as usize),
+                    repr: ElemRepr::Gmp(Integer::with_capacity(capacity_bits as usize)),
                 }
             }
         })
     }
 
-    /// Return this `FieldElem` to the pool for later reuse. Drops if
-    /// pool is at capacity.
+    /// Return a Gmp-backed `FieldElem` to the pool. No-op for Small.
     #[inline]
-    pub(crate) fn pool_return(self) {
-        FIELDELEM_POOL.with(|pool| {
-            let mut p = pool.borrow_mut();
-            if p.len() < FIELDELEM_POOL_CAP {
-                p.push(self);
+    fn pool_return(self) {
+        match self.repr {
+            ElemRepr::Gmp(_) => {
+                FIELDELEM_POOL.with(|pool| {
+                    let mut p = pool.borrow_mut();
+                    if p.len() < FIELDELEM_POOL_CAP {
+                        p.push(self);
+                    }
+                });
             }
-            // else: drop normally, freeing mpz_t buffer.
-        });
+            ElemRepr::Small(_) => {
+                // u64 has no heap-backed resource to recycle.
+            }
+        }
     }
 }
 
 const FIELDELEM_POOL_CAP: usize = 4096;
 
 thread_local! {
-    /// Thread-local pool of recycled `FieldElem`s. Reduces GMP
-    /// `mpz_init` / `mpz_clear` traffic on the geobucket cascade hot
-    /// path.
+    /// Thread-local pool of recycled Gmp `FieldElem`s. Pool contents
+    /// are always `ElemRepr::Gmp(_)`; Small variants do not pool.
     static FIELDELEM_POOL: std::cell::RefCell<Vec<FieldElem>> =
         std::cell::RefCell::new(Vec::with_capacity(FIELDELEM_POOL_CAP / 4));
-    /// Re-entrancy guard: don't recurse into the pool from inside its
-    /// own Drop (e.g., FieldElem inside the pool itself being dropped
-    /// at thread exit).
+    /// Re-entrancy guard for `Drop` during thread-local destruction.
+    /// `Drop` reads this flag; when set, the impl returns early
+    /// without touching `FIELDELEM_POOL`.
     static IN_POOL_DROP: std::cell::Cell<bool> = std::cell::Cell::new(false);
 }
 
-/// Auto-recycle on drop. Catches `FieldElem`s dropped by ordinary
-/// scope exit; without this, only the explicit `pool_return` paths
-/// recycle.
 impl Drop for FieldElem {
     fn drop(&mut self) {
-        // Avoid re-entry: when the pool itself is dropping its
-        // contents (thread exit), don't push back to the pool.
         if IN_POOL_DROP.with(|c| c.get()) {
             return;
         }
-        // Only pool if size is bounded and the buffer is non-trivial.
-        let _ = FIELDELEM_POOL.try_with(|pool| {
-            if let Ok(mut p) = pool.try_borrow_mut() {
-                if p.len() < FIELDELEM_POOL_CAP {
-                    // Move out our value via std::mem::replace with a
-                    // zero Integer (which doesn't allocate beyond
-                    // mpz_t struct itself).
-                    let val = std::mem::replace(&mut self.value, rug::Integer::new());
-                    p.push(FieldElem { value: val });
+        if let ElemRepr::Gmp(ref mut v) = self.repr {
+            let _ = FIELDELEM_POOL.try_with(|pool| {
+                if let Ok(mut p) = pool.try_borrow_mut() {
+                    if p.len() < FIELDELEM_POOL_CAP {
+                        let val = std::mem::replace(v, Integer::new());
+                        p.push(FieldElem { repr: ElemRepr::Gmp(val) });
+                    }
                 }
-            }
-        });
+            });
+        }
+    }
+}
+
+impl Clone for FieldElem {
+    fn clone(&self) -> Self {
+        match &self.repr {
+            ElemRepr::Gmp(v) => FieldElem { repr: ElemRepr::Gmp(v.clone()) },
+            ElemRepr::Small(v) => FieldElem { repr: ElemRepr::Small(*v) },
+        }
     }
 }
 
 impl PartialEq for FieldElem {
     fn eq(&self, other: &Self) -> bool {
-        self.value == other.value
+        match (&self.repr, &other.repr) {
+            (ElemRepr::Gmp(a), ElemRepr::Gmp(b)) => a == b,
+            (ElemRepr::Small(a), ElemRepr::Small(b)) => a == b,
+            // Cross-variant inputs are unreachable from any
+            // `PrimeField` API path (each ring produces one variant).
+            // The byte-equality fallback keeps `eq` total without
+            // panicking.
+            (ElemRepr::Gmp(a), ElemRepr::Small(b)) => &integer_to_biguint(a) == &BigUint::from(*b),
+            (ElemRepr::Small(a), ElemRepr::Gmp(b)) => &BigUint::from(*a) == &integer_to_biguint(b),
+        }
     }
 }
 
@@ -142,126 +202,196 @@ impl Eq for FieldElem {}
 
 impl std::hash::Hash for FieldElem {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        // Hash via byte representation for stability across platforms.
-        let bytes: Vec<u8> = self.value.to_digits::<u8>(rug::integer::Order::Lsf);
-        bytes.hash(state)
+        match &self.repr {
+            ElemRepr::Gmp(v) => {
+                let bytes: Vec<u8> = v.to_digits::<u8>(rug::integer::Order::Lsf);
+                bytes.hash(state);
+            }
+            ElemRepr::Small(v) => {
+                // Hash the canonical LSB-first byte representation
+                // with trailing zero bytes stripped. Matches the GMP
+                // path's `to_digits::<u8>` output for equal numeric
+                // values, so `Hash` agrees with `PartialEq` across
+                // variants.
+                let bytes = v.to_le_bytes();
+                let mut trimmed: &[u8] = &bytes;
+                while trimmed.last() == Some(&0) && !trimmed.is_empty() {
+                    trimmed = &trimmed[..trimmed.len() - 1];
+                }
+                trimmed.hash(state);
+            }
+        }
     }
 }
 
 // ──────────────────────────── PrimeField ────────────────────────────────
 
 /// A prime field GF(p). Cheaply cloneable (shares the prime via `Arc`).
-///
-/// We carry both the `rug::Integer` form (for hot-path arithmetic) and
-/// the `BigUint` form (for the public boundary API `prime() -> &BigUint`).
-/// The prime is constructed once per solve so the duplication cost is
-/// negligible.
 #[derive(Clone, Debug)]
 pub struct PrimeField {
-    prime: Arc<Integer>,
     prime_bu: Arc<BigUint>,
-    /// Bit width of the prime, cached at construction. Used to size GMP
-    /// `Integer` allocations so arithmetic operations (`add`, `sub`,
-    /// `mul`, `neg`) produce results that fit without an `mpz_realloc`
-    /// — for BN128 (254 bits = 4 limbs) the default `mpz_init` capacity
-    /// is one limb and every fresh result paid a realloc.
-    result_bits: usize,
-    /// Bit width sufficient to hold a product of two prime-sized integers
-    /// (`2 * prime_bits + a small margin`). Used by `mul` before the
-    /// `% prime` reduction.
-    product_bits: usize,
+    kind: FieldKind,
 }
 
+#[derive(Clone, Debug)]
+enum FieldKind {
+    Gmp {
+        prime: Arc<Integer>,
+        /// Bit width sufficient for `add` / `sub` / `neg` results.
+        result_bits: usize,
+        /// Bit width sufficient for the unreduced product `a * b`.
+        product_bits: usize,
+    },
+    Small {
+        prime: u64,
+    },
+}
+
+/// Threshold for selecting the u64 backend. `bits <= 64` means the
+/// prime and every element fit in a u64; the product `a * b` then
+/// fits in a u128.
+const SMALL_PRIME_BITS: u64 = 64;
+
 impl PrimeField {
-    /// Construct a new prime field. Caller is responsible for ensuring
-    /// `prime` is actually prime — this constructor does not test
-    /// primality.
+    /// Construct a new prime field. Auto-selects the u64 backend
+    /// when `prime` fits in a u64; falls back to GMP otherwise.
+    /// Caller is responsible for ensuring `prime` is prime — this
+    /// constructor does not test primality.
     pub fn new(prime: BigUint) -> Self {
         assert!(prime > BigUint::from(1u32), "prime must be > 1");
+        if prime.bits() <= SMALL_PRIME_BITS {
+            if let Some(p) = biguint_to_u64(&prime) {
+                return PrimeField {
+                    prime_bu: Arc::new(prime),
+                    kind: FieldKind::Small { prime: p },
+                };
+            }
+        }
         let prime_int = biguint_to_integer(&prime);
         let result_bits = prime_int.significant_bits() as usize + 1;
         let product_bits = 2 * (prime_int.significant_bits() as usize) + 1;
         PrimeField {
-            prime: Arc::new(prime_int),
             prime_bu: Arc::new(prime),
-            result_bits,
-            product_bits,
+            kind: FieldKind::Gmp {
+                prime: Arc::new(prime_int),
+                result_bits,
+                product_bits,
+            },
         }
     }
 
-    /// The prime modulus (boundary view). Returns the cached `BigUint`
-    /// form — no allocation.
     #[inline]
     pub fn prime(&self) -> &BigUint {
         &self.prime_bu
     }
 
-    /// Same as `prime`; provided for API parity.
     #[inline]
     pub fn characteristic(&self) -> &BigUint {
         &self.prime_bu
     }
 
-    /// Internal hot-path access to the prime in `rug::Integer` form.
-    #[allow(dead_code)]
-    #[inline]
-    pub(crate) fn prime_integer(&self) -> &Integer {
-        &self.prime
-    }
-
     #[inline]
     pub fn zero(&self) -> FieldElem {
-        FieldElem::new_unchecked(Integer::new())
+        match &self.kind {
+            FieldKind::Gmp { .. } => FieldElem::from_integer_unchecked(Integer::new()),
+            FieldKind::Small { .. } => FieldElem::from_u64_unchecked(0),
+        }
     }
 
     #[inline]
     pub fn one(&self) -> FieldElem {
-        FieldElem::new_unchecked(Integer::from(1))
+        match &self.kind {
+            FieldKind::Gmp { .. } => FieldElem::from_integer_unchecked(Integer::from(1)),
+            FieldKind::Small { .. } => FieldElem::from_u64_unchecked(1),
+        }
     }
 
     pub fn from_u64(&self, v: u64) -> FieldElem {
-        let mut val = Integer::from(v);
-        val %= &*self.prime;
-        FieldElem::new_unchecked(val)
+        match &self.kind {
+            FieldKind::Gmp { prime, .. } => {
+                let mut val = Integer::from(v);
+                val %= &**prime;
+                FieldElem::from_integer_unchecked(val)
+            }
+            FieldKind::Small { prime } => FieldElem::from_u64_unchecked(v % prime),
+        }
     }
 
     /// Map a signed integer into the field (negatives become `p - |v|`).
     pub fn from_i64(&self, v: i64) -> FieldElem {
-        let mut val = Integer::from(v);
-        val %= &*self.prime;
-        if val.cmp0() == std::cmp::Ordering::Less {
-            val += &*self.prime;
+        match &self.kind {
+            FieldKind::Gmp { prime, .. } => {
+                let mut val = Integer::from(v);
+                val %= &**prime;
+                if val.cmp0() == std::cmp::Ordering::Less {
+                    val += &**prime;
+                }
+                FieldElem::from_integer_unchecked(val)
+            }
+            FieldKind::Small { prime } => {
+                let p = *prime;
+                let r = (v as i128).rem_euclid(p as i128) as u64;
+                FieldElem::from_u64_unchecked(r)
+            }
         }
-        FieldElem::new_unchecked(val)
     }
 
     pub fn from_biguint(&self, v: &BigUint) -> FieldElem {
-        let mut val = biguint_to_integer(v);
-        val %= &*self.prime;
-        FieldElem::new_unchecked(val)
+        match &self.kind {
+            FieldKind::Gmp { prime, .. } => {
+                let mut val = biguint_to_integer(v);
+                val %= &**prime;
+                FieldElem::from_integer_unchecked(val)
+            }
+            FieldKind::Small { prime } => {
+                let p_bu = BigUint::from(*prime);
+                let r = v % &p_bu;
+                FieldElem::from_u64_unchecked(biguint_to_u64(&r).unwrap_or(0))
+            }
+        }
     }
 
     #[inline]
     pub fn to_biguint(&self, e: &FieldElem) -> BigUint {
-        integer_to_biguint(&e.value)
+        e.as_biguint()
     }
 
     pub fn add(&self, a: &FieldElem, b: &FieldElem) -> FieldElem {
-        // Pull a recycled FieldElem (or fresh) from the pool; assign in
-        // place to avoid a fresh limb-buffer allocation per call.
-        let mut out = FieldElem::pool_take_or_default(self.result_bits as u32);
-        out.value.assign(&a.value + &b.value);
-        if out.value >= *self.prime {
-            out.value -= &*self.prime;
+        match &self.kind {
+            FieldKind::Gmp { prime, result_bits, .. } => {
+                let mut out = FieldElem::pool_take_or_default_gmp(*result_bits as u32);
+                {
+                    let out_v = out.as_gmp_mut();
+                    out_v.assign(a.as_gmp() + b.as_gmp());
+                    if *out_v >= **prime {
+                        *out_v -= &**prime;
+                    }
+                }
+                out
+            }
+            FieldKind::Small { prime } => {
+                FieldElem::from_u64_unchecked(small_add(a.as_small(), b.as_small(), *prime))
+            }
         }
-        out
     }
 
     pub fn add_assign<B: std::borrow::Borrow<FieldElem>>(&self, a: &mut FieldElem, b: B) {
-        let b = b.borrow();
-        a.value += &b.value;
-        if a.value >= *self.prime {
-            a.value -= &*self.prime;
+        let b_ref = b.borrow();
+        match &self.kind {
+            FieldKind::Gmp { prime, .. } => {
+                let av = a.as_gmp_mut();
+                *av += b_ref.as_gmp();
+                if *av >= **prime {
+                    *av -= &**prime;
+                }
+            }
+            FieldKind::Small { prime } => {
+                let av = match &mut a.repr {
+                    ElemRepr::Small(v) => v,
+                    _ => unreachable!(),
+                };
+                *av = small_add(*av, b_ref.as_small(), *prime);
+            }
         }
     }
 
@@ -271,101 +401,166 @@ impl PrimeField {
     }
 
     pub fn sub(&self, a: &FieldElem, b: &FieldElem) -> FieldElem {
-        let mut out = FieldElem::pool_take_or_default(self.result_bits as u32);
-        out.value.assign(&a.value - &b.value);
-        if out.value.cmp0() == std::cmp::Ordering::Less {
-            out.value += &*self.prime;
+        match &self.kind {
+            FieldKind::Gmp { prime, result_bits, .. } => {
+                let mut out = FieldElem::pool_take_or_default_gmp(*result_bits as u32);
+                {
+                    let out_v = out.as_gmp_mut();
+                    out_v.assign(a.as_gmp() - b.as_gmp());
+                    if out_v.cmp0() == std::cmp::Ordering::Less {
+                        *out_v += &**prime;
+                    }
+                }
+                out
+            }
+            FieldKind::Small { prime } => {
+                FieldElem::from_u64_unchecked(small_sub(a.as_small(), b.as_small(), *prime))
+            }
         }
-        out
     }
 
     pub fn sub_assign(&self, a: &mut FieldElem, b: &FieldElem) {
-        a.value -= &b.value;
-        if a.value.cmp0() == std::cmp::Ordering::Less {
-            a.value += &*self.prime;
+        match &self.kind {
+            FieldKind::Gmp { prime, .. } => {
+                let av = a.as_gmp_mut();
+                *av -= b.as_gmp();
+                if av.cmp0() == std::cmp::Ordering::Less {
+                    *av += &**prime;
+                }
+            }
+            FieldKind::Small { prime } => {
+                let av = match &mut a.repr {
+                    ElemRepr::Small(v) => v,
+                    _ => unreachable!(),
+                };
+                *av = small_sub(*av, b.as_small(), *prime);
+            }
         }
     }
 
     pub fn mul(&self, a: &FieldElem, b: &FieldElem) -> FieldElem {
-        let mut out = FieldElem::pool_take_or_default(self.product_bits as u32);
-        out.value.assign(&a.value * &b.value);
-        out.value %= &*self.prime;
-        out
+        match &self.kind {
+            FieldKind::Gmp { prime, product_bits, .. } => {
+                let mut out = FieldElem::pool_take_or_default_gmp(*product_bits as u32);
+                {
+                    let out_v = out.as_gmp_mut();
+                    out_v.assign(a.as_gmp() * b.as_gmp());
+                    *out_v %= &**prime;
+                }
+                out
+            }
+            FieldKind::Small { prime } => {
+                FieldElem::from_u64_unchecked(small_mul(a.as_small(), b.as_small(), *prime))
+            }
+        }
     }
 
     pub fn mul_assign(&self, a: &mut FieldElem, b: &FieldElem) {
-        a.value *= &b.value;
-        a.value %= &*self.prime;
+        match &self.kind {
+            FieldKind::Gmp { prime, .. } => {
+                let av = a.as_gmp_mut();
+                *av *= b.as_gmp();
+                *av %= &**prime;
+            }
+            FieldKind::Small { prime } => {
+                let av = match &mut a.repr {
+                    ElemRepr::Small(v) => v,
+                    _ => unreachable!(),
+                };
+                *av = small_mul(*av, b.as_small(), *prime);
+            }
+        }
     }
 
-    /// In-place add-and-consume that recycles `a`'s mpz buffer. Returns
-    /// `b` to the pool so its mpz_t buffer is available for future
-    /// `pool_take_or_default` calls.
+    /// In-place add-and-consume that recycles `a`'s buffer (GMP) or
+    /// performs a trivial assign (Small). Returns `b` to the pool.
     #[inline]
     pub fn add_owned(&self, mut a: FieldElem, b: FieldElem) -> FieldElem {
-        a.value += &b.value;
-        if a.value >= *self.prime {
-            a.value -= &*self.prime;
+        match &self.kind {
+            FieldKind::Gmp { prime, .. } => {
+                let av = a.as_gmp_mut();
+                *av += b.as_gmp();
+                if *av >= **prime {
+                    *av -= &**prime;
+                }
+                b.pool_return();
+                a
+            }
+            FieldKind::Small { prime } => {
+                FieldElem::from_u64_unchecked(small_add(a.as_small(), b.as_small(), *prime))
+            }
         }
-        b.pool_return();
-        a
     }
 
     #[inline]
     pub fn sub_owned(&self, mut a: FieldElem, b: FieldElem) -> FieldElem {
-        a.value -= &b.value;
-        if a.value.cmp0() == std::cmp::Ordering::Less {
-            a.value += &*self.prime;
+        match &self.kind {
+            FieldKind::Gmp { prime, .. } => {
+                let av = a.as_gmp_mut();
+                *av -= b.as_gmp();
+                if av.cmp0() == std::cmp::Ordering::Less {
+                    *av += &**prime;
+                }
+                b.pool_return();
+                a
+            }
+            FieldKind::Small { prime } => {
+                FieldElem::from_u64_unchecked(small_sub(a.as_small(), b.as_small(), *prime))
+            }
         }
-        b.pool_return();
-        a
     }
 
     /// Negate in place, reusing the buffer.
     #[inline]
     pub fn neg_owned(&self, mut a: FieldElem) -> FieldElem {
-        if a.value.cmp0() != std::cmp::Ordering::Equal {
-            // a = prime - a (in place). Since `FieldElem` implements
-            // `Drop`, we cannot move out of `a.value`; use
-            // `std::mem::replace` to extract the `Integer`, perform the
-            // arithmetic, then store back.
-            let old = std::mem::replace(&mut a.value, rug::Integer::new());
-            a.value = &*self.prime - old;
+        match &self.kind {
+            FieldKind::Gmp { prime, .. } => {
+                let av = a.as_gmp_mut();
+                if av.cmp0() != std::cmp::Ordering::Equal {
+                    let old = std::mem::replace(av, Integer::new());
+                    *av = &**prime - old;
+                }
+                a
+            }
+            FieldKind::Small { prime } => {
+                FieldElem::from_u64_unchecked(small_neg(a.as_small(), *prime))
+            }
         }
-        a
     }
 
     pub fn neg(&self, a: &FieldElem) -> FieldElem {
-        if a.value.cmp0() == std::cmp::Ordering::Equal {
-            self.zero()
-        } else {
-            let mut out = FieldElem::pool_take_or_default(self.result_bits as u32);
-            out.value.assign(&*self.prime - &a.value);
-            out
+        match &self.kind {
+            FieldKind::Gmp { prime, result_bits, .. } => {
+                if a.as_gmp().cmp0() == std::cmp::Ordering::Equal {
+                    self.zero()
+                } else {
+                    let mut out = FieldElem::pool_take_or_default_gmp(*result_bits as u32);
+                    out.as_gmp_mut().assign(&**prime - a.as_gmp());
+                    out
+                }
+            }
+            FieldKind::Small { prime } => {
+                FieldElem::from_u64_unchecked(small_neg(a.as_small(), *prime))
+            }
         }
     }
 
-    /// Allocating variant of [`Self::neg`]. Unused on the hot path;
-    /// retained as a pool-free fallback.
-    #[allow(dead_code)]
-    pub(crate) fn neg_alloc(&self, a: &FieldElem) -> FieldElem {
-        if a.value.cmp0() == std::cmp::Ordering::Equal {
-            self.zero()
-        } else {
-            FieldElem::new_unchecked(Integer::from(&*self.prime - &a.value))
-        }
-    }
-
-    /// Multiplicative inverse via GMP's `mpz_invert`. Returns `None` if
-    /// `a` is zero (or if for any reason gcd(a, p) ≠ 1, which should not
-    /// happen for a prime modulus and nonzero input).
+    /// Multiplicative inverse. Returns `None` if `a` is zero.
     pub fn inv(&self, a: &FieldElem) -> Option<FieldElem> {
-        if a.value.cmp0() == std::cmp::Ordering::Equal {
-            return None;
-        }
-        match a.value.clone().invert(&self.prime) {
-            Ok(v) => Some(FieldElem::new_unchecked(v)),
-            Err(_) => None,
+        match &self.kind {
+            FieldKind::Gmp { prime, .. } => {
+                let av = a.as_gmp();
+                if av.cmp0() == std::cmp::Ordering::Equal {
+                    return None;
+                }
+                match av.clone().invert(prime) {
+                    Ok(v) => Some(FieldElem::from_integer_unchecked(v)),
+                    Err(_) => None,
+                }
+            }
+            FieldKind::Small { prime } => {
+                small_inv(a.as_small(), *prime).map(FieldElem::from_u64_unchecked)
+            }
         }
     }
 
@@ -376,28 +571,62 @@ impl PrimeField {
 
     #[inline]
     pub fn is_zero(&self, a: &FieldElem) -> bool {
-        a.value.cmp0() == std::cmp::Ordering::Equal
+        match &a.repr {
+            ElemRepr::Gmp(v) => v.cmp0() == std::cmp::Ordering::Equal,
+            ElemRepr::Small(v) => *v == 0,
+        }
     }
 
     #[inline]
     pub fn is_one(&self, a: &FieldElem) -> bool {
-        a.value == 1
+        match &a.repr {
+            ElemRepr::Gmp(v) => *v == 1,
+            ElemRepr::Small(v) => *v == 1,
+        }
     }
 
     #[inline]
     pub fn eq(&self, a: &FieldElem, b: &FieldElem) -> bool {
-        a.value == b.value
+        a == b
     }
 
-    /// Modular exponentiation `a^exp mod p` via GMP's `mpz_powm`.
+    /// Modular exponentiation `a^exp mod p`.
     pub fn pow(&self, a: &FieldElem, exp: &BigUint) -> FieldElem {
         if exp == &BigUint::from(0u32) {
             return self.one();
         }
-        let exp_int = biguint_to_integer(exp);
-        let mut out = Integer::new();
-        out.assign(a.value.pow_mod_ref(&exp_int, &self.prime).unwrap());
-        FieldElem::new_unchecked(out)
+        match &self.kind {
+            FieldKind::Gmp { prime, .. } => {
+                let exp_int = biguint_to_integer(exp);
+                let mut out = Integer::new();
+                out.assign(a.as_gmp().pow_mod_ref(&exp_int, prime).unwrap());
+                FieldElem::from_integer_unchecked(out)
+            }
+            FieldKind::Small { prime } => {
+                // Repeated squaring scanning `exp`'s little-endian bit
+                // string. Base and result stay in u64; the per-step
+                // squaring uses `small_mul` (u128 intermediate). No
+                // GMP allocations.
+                let mut result: u64 = 1;
+                let mut base = a.as_small();
+                let p = *prime;
+                let bytes = exp.to_bytes_le();
+                let mut bit_in_byte = 0u8;
+                let mut byte_idx = 0usize;
+                while byte_idx < bytes.len() {
+                    if (bytes[byte_idx] >> bit_in_byte) & 1 == 1 {
+                        result = small_mul(result, base, p);
+                    }
+                    bit_in_byte += 1;
+                    if bit_in_byte == 8 {
+                        bit_in_byte = 0;
+                        byte_idx += 1;
+                    }
+                    base = small_mul(base, base, p);
+                }
+                FieldElem::from_u64_unchecked(result)
+            }
+        }
     }
 
     /// Modular exponentiation by a `u64` exponent.
@@ -405,23 +634,17 @@ impl PrimeField {
         if exp == 0 {
             return self.one();
         }
-        let exp_int = Integer::from(exp);
-        let mut out = Integer::new();
-        out.assign(a.value.pow_mod_ref(&exp_int, &self.prime).unwrap());
-        FieldElem::new_unchecked(out)
-    }
-
-    /// Modular exponentiation by a `rug::Integer` exponent — internal
-    /// hot path (avoids BigUint conversion when the caller already has
-    /// the exponent in `Integer` form).
-    #[allow(dead_code)]
-    pub(crate) fn pow_integer(&self, a: &FieldElem, exp: &Integer) -> FieldElem {
-        if exp.cmp0() == std::cmp::Ordering::Equal {
-            return self.one();
+        match &self.kind {
+            FieldKind::Gmp { prime, .. } => {
+                let exp_int = Integer::from(exp);
+                let mut out = Integer::new();
+                out.assign(a.as_gmp().pow_mod_ref(&exp_int, prime).unwrap());
+                FieldElem::from_integer_unchecked(out)
+            }
+            FieldKind::Small { prime } => {
+                FieldElem::from_u64_unchecked(small_pow(a.as_small(), exp, *prime))
+            }
         }
-        let mut out = Integer::new();
-        out.assign(a.value.pow_mod_ref(exp, &self.prime).unwrap());
-        FieldElem::new_unchecked(out)
     }
 
     /// Clone an element. Provided for API parity.
@@ -430,15 +653,14 @@ impl PrimeField {
         a.clone()
     }
 
-    // ---- Legacy aliases (feanor-math `RingBase`-style names) ----
-    // DEPRECATED: prefer the canonical methods (`eq`, `neg`, `mul`, `add`,
-    // `sub`, `from_i64`, `.clone()`). These wrappers exist only for
-    // migration convenience and will be removed in a future release.
+    // ---- feanor-math `RingBase`-style aliases ----
+    // Forward to the canonical methods (`eq`, `neg`, `mul`, `add`,
+    // `sub`, `from_i64`, `.clone()`). Retained for callers that
+    // expect the feanor naming.
 
-    /// Alias for `eq` (feanor-style name).
     #[inline]
     pub fn eq_el(&self, a: &FieldElem, b: &FieldElem) -> bool {
-        self.eq(a, b)
+        a == b
     }
 
     /// Negate by-value (feanor-style: consumes input). Equivalent to `neg(&a)`.
@@ -447,31 +669,26 @@ impl PrimeField {
         self.neg(&a)
     }
 
-    /// Multiply by reference, returning a new element.
     #[inline]
     pub fn mul_ref(&self, a: &FieldElem, b: &FieldElem) -> FieldElem {
         self.mul(a, b)
     }
 
-    /// Add by reference.
     #[inline]
     pub fn add_ref(&self, a: &FieldElem, b: &FieldElem) -> FieldElem {
         self.add(a, b)
     }
 
-    /// Subtract by reference.
     #[inline]
     pub fn sub_ref(&self, a: &FieldElem, b: &FieldElem) -> FieldElem {
         self.sub(a, b)
     }
 
-    /// `from_int(n)` analog for any integer type.
     #[inline]
     pub fn from_int(&self, n: i64) -> FieldElem {
         self.from_i64(n)
     }
 
-    /// Returns a homomorphism object whose `.map(n)` constructs `n` in the field.
     #[inline]
     pub fn int_hom(&self) -> IntHom<'_> {
         IntHom { field: self }
@@ -479,6 +696,79 @@ impl PrimeField {
 }
 
 use rug::Assign;
+
+// ──────────────────────────── Small-prime arithmetic ────────────────────
+
+#[inline(always)]
+fn small_add(a: u64, b: u64, p: u64) -> u64 {
+    // `a, b < p <= u64::MAX`. `a + b` may overflow u64 only when
+    // `p > u64::MAX / 2`. Use a 128-bit intermediate so the wraparound
+    // case is correct for the full u64 prime range.
+    let s = (a as u128) + (b as u128);
+    let p128 = p as u128;
+    if s >= p128 { (s - p128) as u64 } else { s as u64 }
+}
+
+#[inline(always)]
+fn small_sub(a: u64, b: u64, p: u64) -> u64 {
+    if a >= b { a - b } else { p - (b - a) }
+}
+
+#[inline(always)]
+fn small_mul(a: u64, b: u64, p: u64) -> u64 {
+    ((a as u128) * (b as u128) % (p as u128)) as u64
+}
+
+#[inline(always)]
+fn small_neg(a: u64, p: u64) -> u64 {
+    if a == 0 { 0 } else { p - a }
+}
+
+/// Multiplicative inverse via the extended Euclidean algorithm in
+/// signed 128-bit. Returns `None` when `a == 0`, or when
+/// `gcd(a, p) != 1` (cannot occur for a prime `p` and nonzero `a`;
+/// the check keeps the function total).
+fn small_inv(a: u64, p: u64) -> Option<u64> {
+    if a == 0 {
+        return None;
+    }
+    let p_i = p as i128;
+    let (mut r0, mut r1) = (p_i, a as i128);
+    let (mut s0, mut s1) = (0i128, 1i128);
+    while r1 != 0 {
+        let q = r0 / r1;
+        let new_r = r0 - q * r1;
+        r0 = r1;
+        r1 = new_r;
+        let new_s = s0 - q * s1;
+        s0 = s1;
+        s1 = new_s;
+    }
+    if r0 != 1 && r0 != -1 {
+        return None;
+    }
+    // s0 is the inverse (possibly negative or oversized); reduce mod p.
+    let inv = if r0 == -1 { (-s0).rem_euclid(p_i) } else { s0.rem_euclid(p_i) };
+    Some(inv as u64)
+}
+
+/// Modular exponentiation by repeated squaring.
+fn small_pow(mut base: u64, mut exp: u64, p: u64) -> u64 {
+    let mut result: u64 = 1;
+    base %= p;
+    while exp > 0 {
+        if exp & 1 == 1 {
+            result = small_mul(result, base, p);
+        }
+        exp >>= 1;
+        if exp > 0 {
+            base = small_mul(base, base, p);
+        }
+    }
+    result
+}
+
+// ──────────────────────────── Misc helpers ──────────────────────────────
 
 /// Helper for `field.int_hom().map(n)` ergonomics (mirrors feanor's `IntHom`).
 pub struct IntHom<'a> {
@@ -494,10 +784,12 @@ impl<'a> IntHom<'a> {
 
 impl PartialEq for PrimeField {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.prime, &other.prime) || *self.prime == *other.prime
+        Arc::ptr_eq(&self.prime_bu, &other.prime_bu) || *self.prime_bu == *other.prime_bu
     }
 }
 impl Eq for PrimeField {}
+
+// ─────────────────────────────── Tests ──────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -520,11 +812,8 @@ mod tests {
         let x = f.from_u64(3);
         let y = f.from_u64(6);
         assert_eq!(f.to_biguint(&f.mul(&x, &y)), BigUint::from(1u32));
-
-        // Inverse: 3 * 6 = 18 = 1 mod 17, so 3^-1 = 6.
         assert_eq!(f.inv(&x).unwrap(), y);
 
-        // Division.
         let d = f.div(&f.from_u64(1), &x).unwrap();
         assert_eq!(d, y);
     }
@@ -535,7 +824,6 @@ mod tests {
         let a = f.from_u64(2);
         let b = f.from_u64(5);
         let c = f.sub(&a, &b);
-        // 2 - 5 = -3 mod 7 = 4
         assert_eq!(f.to_biguint(&c), BigUint::from(4u32));
 
         let mut a2 = f.from_u64(2);
@@ -565,7 +853,6 @@ mod tests {
     fn fermat_pow_bn128() {
         let p = bn128();
         let f = PrimeField::new(p.clone());
-        // a^(p-1) = 1 for any a != 0
         let a = f.from_u64(2);
         let exp = &p - BigUint::from(1u32);
         let res = f.pow(&a, &exp);
@@ -583,18 +870,105 @@ mod tests {
 
     #[test]
     fn axioms_random() {
-        // Random axiom check at small modulus
         let f = PrimeField::new(BigUint::from(101u32));
         for x in 0u64..101 {
             for y in 0u64..101 {
                 let a = f.from_u64(x);
                 let b = f.from_u64(y);
-                // commutativity
                 assert_eq!(f.add(&a, &b), f.add(&b, &a));
                 assert_eq!(f.mul(&a, &b), f.mul(&b, &a));
-                // additive inverse
                 assert!(f.is_zero(&f.add(&a, &f.neg(&a))));
             }
         }
+    }
+
+    /// Cross-check the small-prime path against the GMP path on a
+    /// prime that fits both. Same operations must produce
+    /// `to_biguint`-equal outputs.
+    #[test]
+    fn small_matches_gmp_axioms() {
+        // Both fields are constructed from the same prime; `new`
+        // routes the first to Small (bits <= 64). To exercise the
+        // Gmp path on the same value, construct a Gmp-only field
+        // manually.
+        let p_bu = BigUint::from(7919u32);
+        let f_small = PrimeField::new(p_bu.clone());
+        let f_gmp = {
+            let prime_int = biguint_to_integer(&p_bu);
+            let result_bits = prime_int.significant_bits() as usize + 1;
+            let product_bits = 2 * (prime_int.significant_bits() as usize) + 1;
+            PrimeField {
+                prime_bu: Arc::new(p_bu.clone()),
+                kind: FieldKind::Gmp {
+                    prime: Arc::new(prime_int),
+                    result_bits,
+                    product_bits,
+                },
+            }
+        };
+        // Verify the dispatch picked the expected variants.
+        assert!(matches!(f_small.kind, FieldKind::Small { .. }));
+        assert!(matches!(f_gmp.kind, FieldKind::Gmp { .. }));
+
+        for x in [0u64, 1, 2, 3, 100, 7918, 7917, 4242] {
+            for y in [0u64, 1, 5, 99, 7918, 1234] {
+                let a_s = f_small.from_u64(x);
+                let b_s = f_small.from_u64(y);
+                let a_g = f_gmp.from_u64(x);
+                let b_g = f_gmp.from_u64(y);
+                assert_eq!(
+                    f_small.to_biguint(&f_small.add(&a_s, &b_s)),
+                    f_gmp.to_biguint(&f_gmp.add(&a_g, &b_g)),
+                    "add({}, {})",
+                    x,
+                    y
+                );
+                assert_eq!(
+                    f_small.to_biguint(&f_small.sub(&a_s, &b_s)),
+                    f_gmp.to_biguint(&f_gmp.sub(&a_g, &b_g)),
+                    "sub({}, {})",
+                    x,
+                    y
+                );
+                assert_eq!(
+                    f_small.to_biguint(&f_small.mul(&a_s, &b_s)),
+                    f_gmp.to_biguint(&f_gmp.mul(&a_g, &b_g)),
+                    "mul({}, {})",
+                    x,
+                    y
+                );
+                assert_eq!(
+                    f_small.to_biguint(&f_small.neg(&a_s)),
+                    f_gmp.to_biguint(&f_gmp.neg(&a_g)),
+                    "neg({})",
+                    x
+                );
+                if x != 0 {
+                    assert_eq!(
+                        f_small.to_biguint(&f_small.inv(&a_s).unwrap()),
+                        f_gmp.to_biguint(&f_gmp.inv(&a_g).unwrap()),
+                        "inv({})",
+                        x
+                    );
+                }
+                assert_eq!(
+                    f_small.to_biguint(&f_small.pow_u64(&a_s, 13)),
+                    f_gmp.to_biguint(&f_gmp.pow_u64(&a_g, 13)),
+                    "pow({}, 13)",
+                    x
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn small_prime_dispatch_is_picked() {
+        // Verify auto-selection: primes <= 64 bits route to Small.
+        let f_small = PrimeField::new(BigUint::from(7u32));
+        assert!(matches!(f_small.kind, FieldKind::Small { .. }));
+        let f_small_max = PrimeField::new(BigUint::from(u64::MAX - 58u64)); // largest 64-bit prime
+        assert!(matches!(f_small_max.kind, FieldKind::Small { .. }));
+        let f_gmp = PrimeField::new(bn128());
+        assert!(matches!(f_gmp.kind, FieldKind::Gmp { .. }));
     }
 }

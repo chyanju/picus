@@ -422,9 +422,8 @@ pub fn find_roots(poly: &UnivariatePoly, field: &PrimeField) -> Vec<FieldElem> {
             roots.push(r);
         }
     }
-    // Sort for determinism. Use the underlying rug::Integer comparison
-    // (no allocation) rather than going through BigUint.
-    roots.sort_by(|a, b| a.as_integer().cmp(b.as_integer()));
+    // Sort by canonical `BigUint` value for deterministic output.
+    roots.sort_by(|a, b| a.as_biguint().cmp(&b.as_biguint()));
     roots.dedup_by(|a, b| field.eq(a, b));
     roots
 }

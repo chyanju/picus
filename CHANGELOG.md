@@ -4,6 +4,79 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.28] - 2026-05-22
+
+### Added
+
+- `picus-solver::ff::field::PrimeField` and `FieldElem` gain an
+  internal `u64` + `u128` backend selected automatically by
+  [`PrimeField::new`] when `bits(prime) <= 64`. Primes larger than
+  64 bits (e.g. BN128 at 254 bits) continue through the existing
+  `rug::Integer` (GMP) backend; the dispatch is per-ring and
+  transparent to callers.
+- u64 backend arithmetic: `add` / `sub` / `mul` (via u128
+  intermediate) / `neg` / `inv` (extended-Euclidean in i128) /
+  `pow` (repeated squaring on u64). No heap allocations, no
+  thread-local pool traffic.
+- `ff::field::tests::small_matches_gmp_axioms`: per-prime cross-
+  check between the two backends on the same fixed prime. Verifies
+  every operation produces `to_biguint`-equal results.
+- `ff::field::tests::small_prime_dispatch_is_picked`: asserts the
+  constructor routes a 64-bit prime to the u64 backend and BN128 to
+  the GMP backend.
+
+### Changed
+
+- `picus-solver::ff::field::FieldElem` is now a struct wrapping a
+  private `ElemRepr` enum (`Gmp(rug::Integer)` / `Small(u64)`). All
+  existing methods on `PrimeField` dispatch through the enum.
+  Drop / Clone / Hash / PartialEq are variant-aware.
+- `picus-solver::ff::field::PrimeField` is now a struct wrapping a
+  private `FieldKind` enum (`Gmp { prime, result_bits, product_bits }`
+  / `Small { prime: u64 }`).
+- `picus-solver::ff::field::FieldElem::as_integer` (previously
+  `pub` returning `&rug::Integer`) removed; the only external
+  caller (`ff::univariate::find_roots`) now uses `as_biguint()` for
+  the root-set sort.
+- `picus-solver::ff::field::PrimeField::prime_integer` (previously
+  `pub(crate)` returning `&rug::Integer`) removed; no callers.
+
+### Tests
+
+- 339 lib tests pass under both `PICUS_USE_F4=0` and
+  `PICUS_USE_F4=1` (was 337; +2 for the new cross-check tests).
+  77 integration tests + 6 cdclt_regression tests pass under
+  `PICUS_USE_F4=1`.
+
+### Performance
+
+- Median absolute timings on the small-prime micro-benchmarks
+  (`bench_f4_vs_per_pair_large`, F_7919) before vs after this
+  release:
+
+  | workload | v1.7.27 pp_us | v1.7.28 pp_us | speedup |
+  |---|---|---|---|
+  | cyclic-4 | ~89–155 | 47–53 | ~2–3× |
+  | cyclic-5 | ~3789–4231 | 1893–2127 | ~2× |
+  | cyclic-6 | ~94595–103036 | 32625–34356 | ~3× |
+  | dense-10/20/30 | ~52–137 | 32–82 | ~1.5–1.6× |
+
+  Non-cyclic (`bench_f4_non_cyclic_workloads`):
+
+  | workload | v1.7.27 pp_us | v1.7.28 pp_us | speedup |
+  |---|---|---|---|
+  | katsura-3 | ~208 | 124 | ~1.7× |
+  | katsura-4 | ~1529 | 746 | ~2× |
+
+- `cvc5_compare` geomean (38-fixture corpus, 5 iters each, cvc5
+  1.3.1 `--ff-solver split`): cvc5/picus ratio improved from
+  9.50× / 9.68× (v1.7.27) to **12.03×**. `bit_sum_n=8_t=99_unsat`
+  (previously the only fixture where picus lost to cvc5): picus
+  77.3 ms → 36.4 ms; cvc5/picus 0.16× → 0.30×.
+- BN128 (`bench_is_zero_bn128`) total time 181 µs, unchanged
+  relative to v1.7.27. The 3 match arms per field op are absorbed
+  by GMP's per-op cost (~100–200 ns).
+
 ## [1.7.27] - 2026-05-22
 
 ### Added
