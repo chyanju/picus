@@ -167,4 +167,11 @@ impl IncrementalGB {
     pub fn decision_level(&self) -> usize {
         self.trail.len()
     }
+
+    /// Engine-level counters accumulated across every
+    /// `add_generators` / `run_only` call. Same data emitted on
+    /// stderr under `PICUS_GB_STATS=1`, exposed here for tests.
+    pub fn engine_stats(&self) -> &super::GbEngineStats {
+        &self.state.stats
+    }
 }
