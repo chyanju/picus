@@ -1,9 +1,9 @@
-//! FF term canonicalization on `PolyTerm` lists.
+//! FF term canonicalization on `LegacyPolyTerm` lists.
 //!
 //! Equivalent of cvc5's `theory_ff_rewriter` (`theory/ff/theory_ff_rewriter.cpp`)
 //! at the granularity picus-solver works with. cvc5 rewrites on its AST
 //! (`FINITE_FIELD_ADD`, `FINITE_FIELD_MULT`, `FINITE_FIELD_NEG`, `EQUAL`);
-//! picus-solver receives a flat `Vec<PolyTerm>` per equality, so the
+//! picus-solver receives a flat `Vec<LegacyPolyTerm>` per equality, so the
 //! corresponding rewrites are:
 //!
 //! * Sort variables inside each term (analog of cvc5's child-order
@@ -20,14 +20,14 @@
 use num_bigint::BigUint;
 use num_traits::Zero;
 
-use crate::encoder::{ConstraintSystem, IndexedConstraintSystem, IndexedTerm, PolyTerm};
+use crate::encoder::{LegacyConstraintSystem, ConstraintSystem, PolyTerm, LegacyPolyTerm};
 
-/// Normalize a `PolyTerm` list in place.
+/// Normalize a `LegacyPolyTerm` list in place.
 ///
 /// On return: each term's `vars` is sorted, terms are sorted by `vars`,
 /// like terms are merged with coefficients summed mod `prime`, and any
 /// term with a zero coefficient is dropped.
-pub fn normalize_term_list(terms: &mut Vec<PolyTerm>, prime: &BigUint) {
+pub fn normalize_term_list(terms: &mut Vec<LegacyPolyTerm>, prime: &BigUint) {
     for t in terms.iter_mut() {
         t.vars.sort();
         if !t.coeff.is_zero() && &t.coeff >= prime {
@@ -51,10 +51,10 @@ pub fn normalize_term_list(terms: &mut Vec<PolyTerm>, prime: &BigUint) {
     terms.retain(|t| !t.coeff.is_zero());
 }
 
-/// Normalize every equality in a `ConstraintSystem`. Equalities whose
+/// Normalize every equality in a `LegacyConstraintSystem`. Equalities whose
 /// term list is empty after normalization (i.e. `0 = 0` after constant
 /// folding and like-term cancellation) are dropped.
-pub fn rewrite_system(system: &mut ConstraintSystem) {
+pub fn rewrite_system(system: &mut LegacyConstraintSystem) {
     let prime = system.prime.clone();
     let mut new_equalities = Vec::with_capacity(system.equalities.len());
     for mut eq in std::mem::take(&mut system.equalities) {
@@ -71,12 +71,12 @@ pub fn rewrite_system(system: &mut ConstraintSystem) {
 //   Index-keyed counterparts (Phase 7A6)
 // ─────────────────────────────────────────────────────────────────────
 
-/// Normalize an `IndexedTerm` list in place. Each term's
+/// Normalize an `PolyTerm` list in place. Each term's
 /// `vars: Vec<(VarIdx, u16)>` is sorted by index and entries with the
 /// same index are merged by adding exponents; terms are sorted by
 /// their `vars` slice; like terms (same `vars`) merge coefficients
 /// modulo `prime`; terms with zero coefficient are dropped.
-pub fn normalize_indexed_term_list(terms: &mut Vec<IndexedTerm>, prime: &BigUint) {
+pub fn normalize_indexed_term_list(terms: &mut Vec<PolyTerm>, prime: &BigUint) {
     for t in terms.iter_mut() {
         // 1. Within-term: sort by var idx and merge same-idx entries
         //    by summing exponents (handles e.g. `x * x` ↔ `[(x, 2)]`
@@ -120,9 +120,9 @@ pub fn normalize_indexed_term_list(terms: &mut Vec<IndexedTerm>, prime: &BigUint
     terms.retain(|t| !t.coeff.is_zero());
 }
 
-/// Normalize every equality in an [`IndexedConstraintSystem`].
+/// Normalize every equality in an [`ConstraintSystem`].
 /// Equalities whose term list collapses to empty are dropped.
-pub fn rewrite_indexed_system(system: &mut IndexedConstraintSystem) {
+pub fn rewrite_indexed_system(system: &mut ConstraintSystem) {
     let prime = system.prime.clone();
     let mut new_equalities = Vec::with_capacity(system.equalities.len());
     for mut eq in std::mem::take(&mut system.equalities) {
@@ -140,8 +140,8 @@ mod tests {
     use super::*;
     use num_bigint::BigUint;
 
-    fn term(coeff: u64, vars: &[&str]) -> PolyTerm {
-        PolyTerm {
+    fn term(coeff: u64, vars: &[&str]) -> LegacyPolyTerm {
+        LegacyPolyTerm {
             coeff: BigUint::from(coeff),
             vars: vars.iter().map(|s| s.to_string()).collect(),
         }
@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn rewrite_system_drops_trivial_equalities() {
-        let mut sys = ConstraintSystem {
+        let mut sys = LegacyConstraintSystem {
             prime: BigUint::from(101u32),
             equalities: vec![
                 vec![term(1, &["x"]), term(100, &["x"])], // x + (p-1)x = 0  ⇒ true
@@ -230,15 +230,15 @@ mod tests {
     #[test]
     fn empty_input_stays_empty() {
         let p = BigUint::from(101u32);
-        let mut t: Vec<PolyTerm> = Vec::new();
+        let mut t: Vec<LegacyPolyTerm> = Vec::new();
         normalize_term_list(&mut t, &p);
         assert!(t.is_empty());
     }
 
     // ── Indexed-term normalize parity tests ──────────────────────
 
-    fn idx_term(coeff: u64, vars: &[(u32, u16)]) -> IndexedTerm {
-        IndexedTerm {
+    fn idx_term(coeff: u64, vars: &[(u32, u16)]) -> PolyTerm {
+        PolyTerm {
             coeff: BigUint::from(coeff),
             vars: vars.to_vec(),
         }

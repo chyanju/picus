@@ -8,7 +8,7 @@
 //! 3. Negation-normal form via [`Formula::nnf`].
 //! 4. Disjunctive normal form via [`Formula::to_dnf`] (worst case
 //!    exponential in the number of `or` nodes).
-//! 5. Dispatch each DNF disjunct as a conjunctive [`ConstraintSystem`]
+//! 5. Dispatch each DNF disjunct as a conjunctive [`LegacyConstraintSystem`]
 //!    to [`solve_encoded_with_cancel`]. The query is SAT iff some
 //!    disjunct is SAT; UNSAT iff every disjunct is UNSAT.
 //!
@@ -20,15 +20,15 @@ use num_traits::Zero;
 
 use crate::core::{solve_encoded_with_cancel, SolveOutcome};
 use crate::encoder::{
-    encode_indexed, ConstraintSystemBuilder, IndexedConstraintSystem, IndexedTerm, PolyTerm,
+    encode_indexed, ConstraintSystemBuilder, ConstraintSystem, PolyTerm, LegacyPolyTerm,
 };
 use crate::timeout::CancelToken;
 
 /// A literal over FF terms: an equality or a disequality.
 #[derive(Clone, Debug)]
 pub enum Literal {
-    Eq(Vec<PolyTerm>, Vec<PolyTerm>),
-    Neq(Vec<PolyTerm>, Vec<PolyTerm>),
+    Eq(Vec<LegacyPolyTerm>, Vec<LegacyPolyTerm>),
+    Neq(Vec<LegacyPolyTerm>, Vec<LegacyPolyTerm>),
 }
 
 /// A Boolean formula over FF literals.
@@ -192,11 +192,11 @@ impl BooleanQuery {
     }
 
     /// Translate each DNF disjunct (a conjunction of literals) into a
-    /// stand-alone [`IndexedConstraintSystem`] via the index-keyed
+    /// stand-alone [`ConstraintSystem`] via the index-keyed
     /// `ConstraintSystemBuilder`. `__zero` is interned (and pinned
     /// to the field's zero) the first time a disjunct introduces a
     /// disequality.
-    pub fn to_disjunct_systems(&self) -> Vec<IndexedConstraintSystem> {
+    pub fn to_disjunct_systems(&self) -> Vec<ConstraintSystem> {
         let mut diseq_seq: usize = 0;
         self.dnf()
             .iter()
@@ -207,14 +207,14 @@ impl BooleanQuery {
                     match lit {
                         Literal::Eq(a, b) => {
                             // Build (a - b) as a single equality.
-                            let mut combined: Vec<PolyTerm> = a.clone();
+                            let mut combined: Vec<LegacyPolyTerm> = a.clone();
                             for t in b {
                                 let neg_coeff = if t.coeff.is_zero() {
                                     BigUint::zero()
                                 } else {
                                     &self.prime - &t.coeff
                                 };
-                                combined.push(PolyTerm {
+                                combined.push(LegacyPolyTerm {
                                     coeff: neg_coeff,
                                     vars: t.vars.clone(),
                                 });
@@ -236,19 +236,19 @@ impl BooleanQuery {
                                 }
                             };
                             // def = d - (a - b) = d - a + b
-                            let mut neg_a: Vec<PolyTerm> = Vec::with_capacity(a.len());
+                            let mut neg_a: Vec<LegacyPolyTerm> = Vec::with_capacity(a.len());
                             for t in a {
                                 let neg_coeff = if t.coeff.is_zero() {
                                     BigUint::zero()
                                 } else {
                                     &self.prime - &t.coeff
                                 };
-                                neg_a.push(PolyTerm {
+                                neg_a.push(LegacyPolyTerm {
                                     coeff: neg_coeff,
                                     vars: t.vars.clone(),
                                 });
                             }
-                            let mut def: Vec<IndexedTerm> = vec![IndexedTerm {
+                            let mut def: Vec<PolyTerm> = vec![PolyTerm {
                                 coeff: BigUint::from(1u32),
                                 vars: vec![(d_idx, 1)],
                             }];
@@ -267,16 +267,16 @@ impl BooleanQuery {
 
 /// `Eq(a, b)` → normalized form of `a - b`. Returns `None` for
 /// disequalities.
-fn eq_normalized_poly(lit: &Literal, prime: &BigUint) -> Option<Vec<PolyTerm>> {
+fn eq_normalized_poly(lit: &Literal, prime: &BigUint) -> Option<Vec<LegacyPolyTerm>> {
     if let Literal::Eq(a, b) = lit {
-        let mut poly: Vec<PolyTerm> = a.clone();
+        let mut poly: Vec<LegacyPolyTerm> = a.clone();
         for t in b {
             let neg_coeff = if t.coeff.is_zero() {
                 BigUint::zero()
             } else {
                 prime - &t.coeff
             };
-            poly.push(PolyTerm {
+            poly.push(LegacyPolyTerm {
                 coeff: neg_coeff,
                 vars: t.vars.clone(),
             });
@@ -293,8 +293,8 @@ fn eq_normalized_poly(lit: &Literal, prime: &BigUint) -> Option<Vec<PolyTerm>> {
 /// representation). Returns `(var_name, const_value)` on match.
 fn parse_var_equals_const(lit: &Literal, prime: &BigUint) -> Option<(String, BigUint)> {
     let poly = eq_normalized_poly(lit, prime)?;
-    let mut var_term: Option<&PolyTerm> = None;
-    let mut const_term: Option<&PolyTerm> = None;
+    let mut var_term: Option<&LegacyPolyTerm> = None;
+    let mut const_term: Option<&LegacyPolyTerm> = None;
     for t in &poly {
         if t.vars.is_empty() {
             if const_term.is_some() {
@@ -361,11 +361,11 @@ pub fn rewrite_disjunctive_bit(f: Formula, prime: &BigUint) -> Formula {
         Formula::Or(children) => {
             if let Some(var) = try_disjunctive_bit(&children, prime) {
                 return Formula::Lit(Literal::Eq(
-                    vec![PolyTerm {
+                    vec![LegacyPolyTerm {
                         coeff: BigUint::from(1u32),
                         vars: vec![var.clone(), var.clone()],
                     }],
-                    vec![PolyTerm {
+                    vec![LegacyPolyTerm {
                         coeff: BigUint::from(1u32),
                         vars: vec![var],
                     }],
@@ -456,8 +456,8 @@ pub fn solve_boolean_query_dnf(query: &BooleanQuery, cancel: &CancelToken) -> So
 mod tests {
     use super::*;
 
-    fn t(coeff: u64, vars: &[&str]) -> PolyTerm {
-        PolyTerm {
+    fn t(coeff: u64, vars: &[&str]) -> LegacyPolyTerm {
+        LegacyPolyTerm {
             coeff: BigUint::from(coeff),
             vars: vars.iter().map(|s| s.to_string()).collect(),
         }

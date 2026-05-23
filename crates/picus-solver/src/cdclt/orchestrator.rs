@@ -253,11 +253,11 @@ fn sync_theory_after_backtrack(
 mod tests {
     use super::*;
     use crate::boolean::{Formula, Literal};
-    use crate::encoder::PolyTerm;
+    use crate::encoder::LegacyPolyTerm;
     use num_bigint::BigUint;
 
-    fn t(coeff: u64, vars: &[&str]) -> PolyTerm {
-        PolyTerm {
+    fn t(coeff: u64, vars: &[&str]) -> LegacyPolyTerm {
+        LegacyPolyTerm {
             coeff: BigUint::from(coeff),
             vars: vars.iter().map(|s| s.to_string()).collect(),
         }

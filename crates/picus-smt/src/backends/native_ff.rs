@@ -2,7 +2,7 @@
 //! for the cvc5 QF_FF theory solver.
 //!
 //! Consumes a [`PolyIR`] snapshot directly: each polynomial equality is
-//! translated into a `Vec<PolyTerm>` summed to zero, and the target
+//! translated into a `Vec<LegacyPolyTerm>` summed to zero, and the target
 //! disequality `x_target ≠ y_target` is handed to the GB solver via
 //! the Rabinowitsch trick wired into [`IncrementalSolverContext`].
 
@@ -11,7 +11,7 @@ use crate::poly_ir::PolyIR;
 use crate::Theory;
 
 use picus_solver::core::{solve_encoded_with_cancel, SolveOutcome};
-use picus_solver::encoder::IndexedConstraintSystem;
+use picus_solver::encoder::ConstraintSystem;
 use picus_solver::incremental_context::IncrementalSolverContext;
 use picus_solver::timeout::CancelToken;
 
@@ -46,7 +46,7 @@ impl NativeFfBackend {
 /// `digest_indexed_constraint_side`. Used for the stats path's
 /// `last_cs_digest` tracking; the cache itself still keys on the
 /// legacy String-keyed digest until A9 unifies the two paths.
-fn digest_native_constraint_side(ics: &IndexedConstraintSystem) -> u64 {
+fn digest_native_constraint_side(ics: &ConstraintSystem) -> u64 {
     picus_solver::incremental_context::digest_indexed_constraint_side(ics)
 }
 

@@ -1,7 +1,7 @@
 //! Solver-side state cache for amortising fixed work across multiple
 //! `solve` calls with the same constraint side.
 //!
-//! The constraint side of a [`ConstraintSystem`] is hashed; a matching
+//! The constraint side of a [`LegacyConstraintSystem`] is hashed; a matching
 //! cache reuses the prior split-GB and encodes only the per-query
 //! disequalities (Rabinowitsch polynomials). Sub-iter resumability:
 //! when a fresh cache build is cancelled mid-build, the per-partition
@@ -16,7 +16,7 @@ use num_bigint::BigUint;
 use crate::bitprop::{BitProp, BitPropState};
 use crate::core::{populate_bitprop, SolveOutcome};
 use crate::encoder::{
-    encode_indexed, encode_indexed_constraint_side, IndexedConstraintSystem,
+    encode_indexed, encode_indexed_constraint_side, ConstraintSystem,
 };
 use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
 use crate::ff::monomial::MonomialOrder;
@@ -29,7 +29,7 @@ use crate::split_gb::{
 use crate::timeout::CancelToken;
 
 /// Cached state computed from the constraint side of one
-/// `ConstraintSystem` (everything except `disequalities`).
+/// `LegacyConstraintSystem` (everything except `disequalities`).
 pub struct CachedBase {
     pub poly_ring: Arc<FfPolyRing>,
     pub var_map: HashMap<String, usize>,
@@ -88,7 +88,7 @@ impl IncrementalSolverContext {
         self.partial_build = None;
     }
 
-    pub fn solve(&mut self, cs: &IndexedConstraintSystem, cancel: &CancelToken) -> SolveOutcome {
+    pub fn solve(&mut self, cs: &ConstraintSystem, cancel: &CancelToken) -> SolveOutcome {
         let stats_on = crate::profile::gb_stats_enabled();
         let digest = digest_indexed_constraint_side(cs);
 
@@ -192,7 +192,7 @@ impl IncrementalSolverContext {
     /// matching digest can resume via [`continue_partial`].
     fn rebuild_base(
         &mut self,
-        cs: &IndexedConstraintSystem,
+        cs: &ConstraintSystem,
         digest: u64,
         cancel: &CancelToken,
     ) -> Result<(), ()> {
@@ -494,7 +494,7 @@ fn finalize_partial(partial: PartialBuild) -> Option<CachedBase> {
 }
 
 fn encode_query_disequalities(
-    cs: &IndexedConstraintSystem,
+    cs: &ConstraintSystem,
     poly_ring: &FfPolyRing,
     var_map: &HashMap<String, usize>,
 ) -> Result<Vec<Poly>, String> {
@@ -535,7 +535,7 @@ fn encode_query_disequalities(
 
 fn solve_with_cached(
     cached: &CachedBase,
-    cs: &IndexedConstraintSystem,
+    cs: &ConstraintSystem,
     cancel: &CancelToken,
 ) -> SolveOutcome {
     let poly_ring: &FfPolyRing = &cached.poly_ring;
@@ -626,18 +626,18 @@ fn solve_with_cached(
     outcome
 }
 
-fn stateless_solve(cs: &IndexedConstraintSystem, cancel: &CancelToken) -> SolveOutcome {
+fn stateless_solve(cs: &ConstraintSystem, cancel: &CancelToken) -> SolveOutcome {
     match encode_indexed(cs) {
         Ok(encoded) => crate::core::solve_encoded_with_cancel(&encoded, cancel),
         Err(_) => SolveOutcome::Unknown,
     }
 }
 
-/// Hash an [`IndexedConstraintSystem`]'s constraint side (everything
+/// Hash an [`ConstraintSystem`]'s constraint side (everything
 /// except `disequalities`) into a `u64` cache key. Self-consistent:
 /// two systems agreeing on `(prime, var_names, equalities,
 /// assignments, bitsums, add_field_polys)` produce the same digest.
-pub fn digest_indexed_constraint_side(cs: &crate::encoder::IndexedConstraintSystem) -> u64 {
+pub fn digest_indexed_constraint_side(cs: &crate::encoder::ConstraintSystem) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     cs.prime.hash(&mut h);

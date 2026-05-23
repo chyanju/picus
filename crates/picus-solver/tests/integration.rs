@@ -1,11 +1,11 @@
 //! Integration test: complete solve pipeline.
 
 use picus_solver::core::{solve_encoded, SolveOutcome};
-use picus_solver::encoder::{ConstraintSystem, PolyTerm, encode};
+use picus_solver::encoder::{LegacyConstraintSystem, LegacyPolyTerm, encode};
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
 
-fn solve(system: &ConstraintSystem) -> SolveOutcome {
+fn solve(system: &LegacyConstraintSystem) -> SolveOutcome {
     let encoded = encode(system).unwrap();
     solve_encoded(&encoded)
 }
@@ -13,21 +13,21 @@ fn solve(system: &ConstraintSystem) -> SolveOutcome {
 #[test]
 fn test_is_zero_sound() {
     let p = BigUint::from(17u32);
-    let system = ConstraintSystem {
+    let system = LegacyConstraintSystem {
         prime: p.clone(),
         equalities: vec![
             vec![
-                PolyTerm { coeff: BigUint::one(), vars: vec!["m".into(), "x".into()] },
-                PolyTerm { coeff: BigUint::one(), vars: vec!["iz".into()] },
-                PolyTerm { coeff: BigUint::from(16u32), vars: vec![] },
+                LegacyPolyTerm { coeff: BigUint::one(), vars: vec!["m".into(), "x".into()] },
+                LegacyPolyTerm { coeff: BigUint::one(), vars: vec!["iz".into()] },
+                LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec![] },
             ],
-            vec![PolyTerm { coeff: BigUint::one(), vars: vec!["iz".into(), "x".into()] }],
+            vec![LegacyPolyTerm { coeff: BigUint::one(), vars: vec!["iz".into(), "x".into()] }],
             vec![
-                PolyTerm { coeff: BigUint::one(), vars: vec!["mp".into(), "x".into()] },
-                PolyTerm { coeff: BigUint::one(), vars: vec!["izp".into()] },
-                PolyTerm { coeff: BigUint::from(16u32), vars: vec![] },
+                LegacyPolyTerm { coeff: BigUint::one(), vars: vec!["mp".into(), "x".into()] },
+                LegacyPolyTerm { coeff: BigUint::one(), vars: vec!["izp".into()] },
+                LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec![] },
             ],
-            vec![PolyTerm { coeff: BigUint::one(), vars: vec!["izp".into(), "x".into()] }],
+            vec![LegacyPolyTerm { coeff: BigUint::one(), vars: vec!["izp".into(), "x".into()] }],
         ],
         disequalities: vec![("iz".into(), "izp".into())],
         assignments: vec![("x".into(), BigUint::from(5u32))],
@@ -44,18 +44,18 @@ fn test_is_zero_sound() {
 #[test]
 fn test_is_zero_unsound() {
     let p = BigUint::from(17u32);
-    let system = ConstraintSystem {
+    let system = LegacyConstraintSystem {
         prime: p.clone(),
         equalities: vec![
             vec![
-                PolyTerm { coeff: BigUint::one(), vars: vec!["m".into(), "x".into()] },
-                PolyTerm { coeff: BigUint::one(), vars: vec!["iz".into()] },
-                PolyTerm { coeff: BigUint::from(16u32), vars: vec![] },
+                LegacyPolyTerm { coeff: BigUint::one(), vars: vec!["m".into(), "x".into()] },
+                LegacyPolyTerm { coeff: BigUint::one(), vars: vec!["iz".into()] },
+                LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec![] },
             ],
             vec![
-                PolyTerm { coeff: BigUint::one(), vars: vec!["mp".into(), "x".into()] },
-                PolyTerm { coeff: BigUint::one(), vars: vec!["izp".into()] },
-                PolyTerm { coeff: BigUint::from(16u32), vars: vec![] },
+                LegacyPolyTerm { coeff: BigUint::one(), vars: vec!["mp".into(), "x".into()] },
+                LegacyPolyTerm { coeff: BigUint::one(), vars: vec!["izp".into()] },
+                LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec![] },
             ],
         ],
         disequalities: vec![("iz".into(), "izp".into())],
@@ -75,12 +75,12 @@ fn test_is_zero_unsound() {
 #[test]
 fn test_contradiction_unsat() {
     let p = BigUint::from(17u32);
-    let system = ConstraintSystem {
+    let system = LegacyConstraintSystem {
         prime: p.clone(),
         equalities: vec![
             vec![
-                PolyTerm { coeff: BigUint::one(), vars: vec!["x".into()] },
-                PolyTerm { coeff: BigUint::from(12u32), vars: vec![] },
+                LegacyPolyTerm { coeff: BigUint::one(), vars: vec!["x".into()] },
+                LegacyPolyTerm { coeff: BigUint::from(12u32), vars: vec![] },
             ],
         ],
         disequalities: vec![],
@@ -98,16 +98,16 @@ fn test_contradiction_unsat() {
 #[test]
 fn test_inverse_unique() {
     let p = BigUint::from(17u32);
-    let system = ConstraintSystem {
+    let system = LegacyConstraintSystem {
         prime: p.clone(),
         equalities: vec![
             vec![
-                PolyTerm { coeff: BigUint::one(), vars: vec!["a".into(), "b".into()] },
-                PolyTerm { coeff: BigUint::from(16u32), vars: vec![] },
+                LegacyPolyTerm { coeff: BigUint::one(), vars: vec!["a".into(), "b".into()] },
+                LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec![] },
             ],
             vec![
-                PolyTerm { coeff: BigUint::one(), vars: vec!["ap".into(), "bp".into()] },
-                PolyTerm { coeff: BigUint::from(16u32), vars: vec![] },
+                LegacyPolyTerm { coeff: BigUint::one(), vars: vec!["ap".into(), "bp".into()] },
+                LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec![] },
             ],
         ],
         disequalities: vec![("b".into(), "bp".into())],
@@ -129,12 +129,12 @@ fn test_inverse_unique() {
 fn test_multiple_disequalities_sat() {
     // x*y = 1, x ≠ 0, y ≠ 0 over GF(7).  SAT (e.g., x=2, y=4).
     let p = BigUint::from(7u32);
-    let system = ConstraintSystem {
+    let system = LegacyConstraintSystem {
         prime: p,
         equalities: vec![
             vec![
-                PolyTerm { coeff: BigUint::one(), vars: vec!["x".into(), "y".into()] },
-                PolyTerm { coeff: BigUint::from(6u32), vars: vec![] }, // -1 mod 7
+                LegacyPolyTerm { coeff: BigUint::one(), vars: vec!["x".into(), "y".into()] },
+                LegacyPolyTerm { coeff: BigUint::from(6u32), vars: vec![] }, // -1 mod 7
             ],
         ],
         disequalities: vec![
@@ -166,7 +166,7 @@ fn test_multiple_disequalities_sat() {
 fn test_multiple_disequalities_unsat() {
     // x = 0, x ≠ 0 (twice).  UNSAT.
     let p = BigUint::from(7u32);
-    let system = ConstraintSystem {
+    let system = LegacyConstraintSystem {
         prime: p,
         equalities: vec![],
         disequalities: vec![

@@ -19,7 +19,7 @@ use super::{
     VarSort,
 };
 use crate::boolean::{Formula, Literal};
-use crate::encoder::PolyTerm;
+use crate::encoder::LegacyPolyTerm;
 
 /// Verdict returned by `(check-sat)`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -311,11 +311,11 @@ impl SmtSession {
         let one = BigUint::from(1u32);
         for name in &self.var_order {
             if matches!(self.vars.get(name), Some(VarSort::Bool)) {
-                let b_sq: Polynomial = vec![PolyTerm {
+                let b_sq: Polynomial = vec![LegacyPolyTerm {
                     coeff: one.clone(),
                     vars: vec![name.clone(), name.clone()],
                 }];
-                let b: Polynomial = vec![PolyTerm {
+                let b: Polynomial = vec![LegacyPolyTerm {
                     coeff: one.clone(),
                     vars: vec![name.clone()],
                 }];

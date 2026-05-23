@@ -8,14 +8,14 @@
 use num_bigint::BigUint;
 
 use crate::core::{solve_encoded_with_cancel, SolveOutcome};
-use crate::encoder::{encode, ConstraintSystem, PolyTerm};
+use crate::encoder::{encode, LegacyConstraintSystem, LegacyPolyTerm};
 use crate::timeout::CancelToken;
 
 /// A single constraint that can be asserted incrementally.
 #[derive(Clone, Debug)]
 pub enum Constraint {
     /// A polynomial equation: sum(terms) == 0.
-    Equality(Vec<PolyTerm>),
+    Equality(Vec<LegacyPolyTerm>),
     /// A disequality: var_a != var_b.
     Disequality(String, String),
     /// A direct variable assignment: var == value.
@@ -65,7 +65,7 @@ impl IncrementalSolver {
     pub fn num_facts(&self) -> usize { self.facts.len() }
 
     /// Assert a polynomial equation `sum(terms) == 0`.
-    pub fn assert_equality(&mut self, terms: Vec<PolyTerm>) {
+    pub fn assert_equality(&mut self, terms: Vec<LegacyPolyTerm>) {
         self.facts.push(Constraint::Equality(terms));
     }
 
@@ -88,7 +88,7 @@ impl IncrementalSolver {
     /// Solve the current fact set with cooperative cancellation.
     pub fn check_with_cancel(&self, cancel: &CancelToken) -> SolveOutcome {
         let (equalities, disequalities, assignments) = self.build_constraint_lists();
-        let cs = ConstraintSystem {
+        let cs = LegacyConstraintSystem {
             prime: self.prime.clone(),
             equalities,
             disequalities,
@@ -112,14 +112,14 @@ impl IncrementalSolver {
         self.check_with_cancel(&cancel)
     }
 
-    fn build_constraint_lists(&self) -> (Vec<Vec<PolyTerm>>, Vec<(String, String)>, Vec<(String, BigUint)>) {
+    fn build_constraint_lists(&self) -> (Vec<Vec<LegacyPolyTerm>>, Vec<(String, String)>, Vec<(String, BigUint)>) {
         let mut equalities = Vec::new();
         let mut disequalities = Vec::new();
         let mut assignments = Vec::new();
         for fact in &self.facts {
             match fact {
                 Constraint::Equality(terms) => {
-                    equalities.push(terms.iter().map(|t| PolyTerm {
+                    equalities.push(terms.iter().map(|t| LegacyPolyTerm {
                         coeff: t.coeff.clone(),
                         vars: t.vars.clone(),
                     }).collect());
@@ -140,8 +140,8 @@ impl IncrementalSolver {
 mod tests {
     use super::*;
 
-    fn term(coeff: u32, vars: &[&str]) -> PolyTerm {
-        PolyTerm { coeff: BigUint::from(coeff), vars: vars.iter().map(|s| s.to_string()).collect() }
+    fn term(coeff: u32, vars: &[&str]) -> LegacyPolyTerm {
+        LegacyPolyTerm { coeff: BigUint::from(coeff), vars: vars.iter().map(|s| s.to_string()).collect() }
     }
 
     #[test]
@@ -176,7 +176,7 @@ mod tests {
         solver.assert_equality(vec![
             term(1, &["x"]),
             term(1, &["y"]),
-            PolyTerm { coeff: BigUint::from(11u32 - 7), vars: vec![] },
+            LegacyPolyTerm { coeff: BigUint::from(11u32 - 7), vars: vec![] },
         ]);
         solver.push();
         solver.assert_assignment("x", BigUint::from(3u32));
