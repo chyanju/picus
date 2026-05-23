@@ -113,9 +113,10 @@ pub(super) fn sparse_echelon(
             return;
         }
         // Inner-loop cancel cadence: a wide row can chain dozens of
-        // pivot applications, each O(row length); without an inner
-        // check Ctrl-C would only get serviced at the next outer
-        // iteration. Pre-phase-5, this was a noticeable stall point.
+        // pivot applications, each O(row length). The cancel token
+        // is checked once per `CANCEL_PERIOD` pivots so a cancelled
+        // request returns within bounded extra work rather than
+        // waiting for the next outer iteration.
         const CANCEL_PERIOD: u32 = 16;
         let mut inner_steps: u32 = 0;
         loop {

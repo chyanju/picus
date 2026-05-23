@@ -4,6 +4,209 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.31] - 2026-05-22
+
+Second-round refactor and soundness pass on top of v1.7.30. Closes
+two soundness holes (one propagation lemma, one encoder rewrite),
+makes `gb_strategy` actually take effect on every public GB entry
+point, finishes the plugin model by extending it to SMT backends,
+exposes the rest of `RuntimeConfig` through `picus::Config` and the
+CLI, hardens the R1CS parser against malformed / adversarial input,
+adds Cargo features so the cvc5 and z3 build chains can be skipped
+entirely, and closes several cancellation gaps.
+
+The PLDI 17-fixture circomlib smoke and every workspace test suite
+pass under both the default feature configuration (`cvc5 + z3 +
+native`) and `--no-default-features --features native`.
+
+### Added
+
+- `CancelToken::either(a, b)` combines two cancellation sources
+  into a single token. A background watcher polls both flags with
+  exponential backoff and sets the combined flag on the first
+  observation; exits cleanly if both sources become unreachable.
+  The `native_ff` backend uses this to merge the caller's external
+  cancel with its internal `with_timeout` so mid-solve external
+  cancellation propagates within ≤ 1 ms.
+- `picus-smt::backends::SolverBackendDescriptor` + `inventory::collect!`
+  registry; `create_backend_by_name(name, theory)` resolves a backend
+  at dispatch time. Adding a new SMT backend (research solver,
+  in-house QF_FF, etc.) is a new `inventory::submit!` block in a new
+  file — no edits to enums, match tables, or CLI parsers.
+- `picus-smt::backends::SolverResult::Unknown(UnknownReason)` with
+  `Timeout` / `IncompleteTheory` / `BackendError(String)` variants.
+  Callers can now distinguish a budget exhaustion from a theory
+  incompleteness from an internal backend failure.
+- `picus-smt::backends::SolverBackend::solve` takes
+  `cancel: &CancelToken`. Honoured at entry by every backend
+  (returning `Unknown(Timeout)` on a pre-cancelled token). The
+  `native_ff` backend additionally honours external cancellation
+  mid-solve via `CancelToken::either`; cvc5 / z3 backends remain
+  entry-only because their underlying libraries do not expose
+  mid-call subprocess termination.
+- `picus-smt::poly_ir::PolyIR::var_to_wire(idx)` — maps a ring
+  variable index back to its underlying wire (both `x_i` and `y_i`
+  indices return wire `i`).
+- `picus-smt::poly_ir::PolyIR::poly_terms_idx(poly)` — sibling of
+  `poly_terms` yielding `(coeff, Vec<(var_idx, exp)>)`; lets future
+  backends skip the per-monomial String allocation.
+- `picus-smt::poly_ir::LowerError` — `r1cs_to_poly_ir` returns
+  `Result<PolyIR, LowerError>` rather than logging a warning and
+  silently skipping malformed constraint blocks.
+- `picus-solver::ideal::GbAlgorithm::supports_tracing()` and
+  `compute_traced()` — algorithms opt into UNSAT-core observation;
+  dispatch falls back to `BuchbergerDirect` when a traced request
+  lands on an algorithm without trace support.
+- `picus-solver::ideal::last_dispatched_algorithm()` — exposes the
+  most recent algorithm name selected by `compute_gb_dispatch` on
+  the current thread; used by tests to confirm strategy dispatch
+  is actually firing.
+- `picus-solver::ideal::compute_gb_buchberger(_traced)` — raw entry
+  points that bypass dispatch; algorithm implementations call them
+  directly to avoid recursive dispatch.
+- `picus-analysis::propagation::range` module owns `RangeValue` +
+  `initial_ranges()`. Adding a new range-aware lemma no longer
+  requires reaching into `binary01`.
+- `picus-analysis::propagation::lemma::PropagationCtx` gains
+  `learned_disjunctions: &mut Vec<Vec<Poly>>`; the DPVL driver
+  folds it into `ir.disjunctions` at iteration end.
+- `RangeValue::excludes_zero()` — used by the `aboz` soundness gate.
+- `picus-r1cs::parser::R1csParseError::Truncated` /
+  `HeaderImplausible` — explicit error variants for the out-of-bounds
+  / oversized-header cases that previously panicked or attempted
+  multi-GiB allocations.
+- `picus-solver::config::RuntimeConfig::cache_enabled` — controls
+  the `native_ff` `IncrementalSolverContext` cache. Seeded from
+  `PICUS_NO_INCREMENTAL_CACHE`; previously read directly by
+  `NativeFfBackend::new` outside the central config layer.
+- `picus::Config` gains `use_f4`, `dnf_enabled`, `dnf_cap`,
+  `cdclt_iter_cap`, `gb_trace`, `cache_enabled` — every
+  `RuntimeConfig` field is now reachable per-call from library
+  callers without setting process-global environment variables.
+- `picus-cli` flags `--use-f4`, `--dnf`, `--dnf-cap`,
+  `--cdclt-iter-cap`, `--gb-trace`, `--no-cache`.
+- Cargo features `cvc5`, `z3`, `native` on `picus-smt`, `picus`,
+  `picus-cli`. Default: `cvc5 + z3`; build with
+  `--no-default-features --features native` to skip both external
+  SMT build chains.
+- Regression suites:
+  - `crates/picus-analysis/tests/soundness.rs` — 5 tests covering
+    the aboz and basis2 soundness traps end-to-end (propagation
+    alone and through cvc5 / native FF backends).
+  - `crates/picus-solver/tests/strategy_dispatch.rs` — 6 tests
+    confirming `gb_strategy` fires on every public GB entry point,
+    including the traced-fallback path.
+  - `crates/picus-smt/tests/backend_plugin.rs` — 4 tests (6 under
+    `--no-default-features`) verifying every enabled backend
+    registers via inventory and dispatches by name.
+  - Parser regression cases in `crates/picus-r1cs/src/parser.rs`
+    covering truncated payloads, implausible field sizes, and
+    malformed `nnz` blocks.
+  - `crates/picus-solver/tests/timeout.rs` gains a mid-solve
+    external-cancel regression.
+
+### Changed
+
+- `picus-analysis::propagation::aboz::AbozLemma` gates on
+  `ctx.ranges[x].excludes_zero()`. The pre-fix lemma assumed
+  `x ≠ 0` implicitly, which made it unsound whenever `x`'s range
+  admitted zero (a witness with `x = 0` makes both bilinear
+  products vanish and the linear sum admits a one-parameter family
+  of solutions on `y_0` / `y_1`).
+- `picus-analysis::propagation::basis2::Basis2Lemma` gates on
+  `2^n ≤ p`, where `n` is the bit-decomposition chain length.
+  Pre-fix the lemma assumed unique bit decomposition unconditionally,
+  which is unsound when `2^n > p` (e.g. on GF(11) with 4 bits,
+  `(1,1,1,1)` and `(0,0,1,0)` both encode target `4 mod 11`).
+- `picus-solver::encoder::auto_extract_bitsums` applies the same
+  `2^n ≤ p` gate to its chain extender. Pre-fix the encoder rewrote
+  the chain as if `2^n ≤ p` held implicitly, causing the GB engine
+  to return spurious UNSAT on small-prime bit-decomposition
+  uniqueness queries (the test `basis2_native_ff_finds_counterexample`
+  captured this).
+- `picus-solver::ideal`: every public GB entry point
+  (`compute_gb_with_order`, `compute_gb_with_order_traced`, and
+  therefore `gb::compute_gb_with_timeout(_traced)` and the
+  `solve_encoded_with_cancel_traced` production path) routes through
+  `compute_gb_dispatch`. Pre-fix dispatch was reached only from
+  `Ideal::new_with_cancel`, so `--gb-by-homog on` had no effect on
+  the main solver pipeline.
+- `picus-solver::ideal::GbAlgorithm::compute` signature widens to
+  `(pr, gens, cancel, order) -> Result<Vec<Poly>, SolverError>`.
+- `picus-solver::ideal::BuchbergerByHomog::compute` accepts a
+  `MonomialOrder` and delegates to `BuchbergerDirect` for non-DegRevLex
+  orders (the homogenise → dehomogenise pipeline is only meaningful
+  for DegRevLex).
+- `picus-analysis::dpvl::propagate` fixed-point detector recognises
+  four kinds of progress: `ks` growth, lemma `run()` returning
+  `true`, a new learned equality, or a new learned disjunction.
+  Pre-fix only `ks` growth counted, so a lemma whose only output
+  was a tightened range or a learned constraint was silently
+  treated as zero progress. Per-lemma contribution counts are
+  emitted at `log::debug!` for ablation work.
+- `picus-analysis::propagation::linear::LinearLemma::cdmap` cache
+  invalidates when `ir.equalities.len()` grows. Pre-fix the cache
+  was built once and never rebuilt, so equalities folded in between
+  outer iterations were invisible to the lemma.
+- `picus-smt::backends::native_ff::NativeFfBackend` gates
+  `add_field_polys` on `prime ≤ 1000` (the encoder's own threshold)
+  rather than hard-coding `false`. Pre-fix small-prime queries
+  ran without the `x^p - x = 0` constraints needed for sound GB
+  reasoning over GF(p), returning spurious UNSAT.
+- `picus-r1cs::parser`:
+  - Every slice into header-controlled byte ranges goes through a
+    `slice(data, start, end, ctx)` helper that returns
+    `R1csParseError::Truncated` rather than panicking.
+  - Every `Vec::with_capacity` against a header-controlled count
+    passes through `capped_capacity`, which clamps at the
+    available data length and at `1 << 30` entries. A header
+    claiming `u32::MAX` constraints in a 12-byte file now
+    allocates `O(12)` rather than `O(u32::MAX × sizeof)`.
+  - `parse_header_section` rejects implausible `field_size` with
+    `HeaderImplausible` before allocating the prime buffer.
+- `picus-smt::poly_ir::r1cs_to_poly_ir` returns
+  `Result<PolyIR, LowerError>`; an out-of-bounds wire id in a
+  constraint block surfaces as
+  `LowerError::WireOutOfBounds` instead of a silent skip.
+- Four duplicate copies of `var_to_wire` (in `aboz`, `basis2`,
+  `binary01`, `linear`) and an inline copy in `bim` consolidate
+  into `PolyIR::var_to_wire`.
+- `picus-cli` `--solver` and `--theory` drop their hard-coded
+  `value_parser` lists; parsing falls back to
+  `SolverKind::from_str` / `Theory::from_str`. Unknown names
+  surface every backend the inventory registry knows about,
+  including any registered by downstream crates.
+- `picus-solver::ff::buchberger::Buchberger::tail_reduce_active`
+  honours the cancel token. Pre-fix this loop ignored cancellation
+  during dense reduction.
+- `picus-solver::ff::f4::matrix::sparse_echelon` checks the cancel
+  token every 16 pivot applications inside the inner loop.
+- `picus-analysis::propagation::mod::wire_connectivity_score`
+  iterates only the variables that actually appear in each
+  polynomial (`appearing_indeterminates`) instead of scanning all
+  `2 * n_wires` ring variables per monomial.
+
+### Removed
+
+- `picus-solver::poly::PolyRingFacade::total_degree`, `is_linear`,
+  `sole_variable`, `as_linear_univariate`, `leading_var` — added
+  in v1.7.30 as pattern-matching helpers for the propagation
+  layer but never used externally; the lemmas pattern-match
+  against `Polynomial`/`Monomial` directly.
+
+### Tests
+
+Every workspace test suite is green under both feature
+configurations. Highlights:
+
+- `picus-r1cs`: 4 (parser + new robustness regressions).
+- `picus-analysis`: soundness suite 5 / 5 (no ignored).
+- `picus-smt`: multi_prime GF(7) (2), backend_plugin
+  (4 default / 6 native-only).
+- `picus`: PLDI 17 / 17 circomlib smoke.
+- `picus-solver`: lib 342 + 12 integration suites including the
+  77-test CDCL(T) regression, strategy_dispatch (6), timeout (8).
+
 ## [1.7.30] - 2026-05-22
 
 Architectural refactor across four phases consolidated into a single

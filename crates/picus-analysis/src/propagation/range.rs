@@ -2,12 +2,14 @@
 //!
 //! Lemmas read and write `ctx.ranges` keyed by wire index. The DPVL
 //! driver seeds the map with [`initial_ranges`] before the first
-//! propagation pass; lemmas tighten entries as they fire (e.g. binary01
-//! pins a wire to `{0, 1}`, basis2 propagates known bits).
+//! propagation pass; lemmas tighten entries as they fire (e.g.
+//! `binary01` pins a wire to `{0, 1}`, `basis2` propagates known
+//! bits).
 //!
-//! Moved out of `binary01` in phase 3 so adding a new range-aware
-//! lemma in its own file does not require reaching into binary01 or
-//! flipping the layering inside out.
+//! `RangeValue` lives in this module rather than alongside any
+//! single lemma so adding a new range-aware lemma does not require
+//! reaching into another lemma's file or coupling consumers to a
+//! particular producer.
 
 use std::collections::{HashMap, HashSet};
 

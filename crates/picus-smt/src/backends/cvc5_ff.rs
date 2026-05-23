@@ -33,10 +33,11 @@ impl SolverBackend for Cvc5FfBackend {
         timeout_ms: u64,
         cancel: &CancelToken,
     ) -> Result<SolverResult, SolverError> {
-        // Mid-solve cancellation requires killing the cvc5 subprocess
-        // mid-call; the cvc5-ff bindings don't expose that today. Honour
-        // the token at entry only, so a pre-cancelled query returns
-        // immediately. cvc5's own `tlimit` covers the wall-clock budget.
+        // Mid-solve cancellation requires terminating the cvc5
+        // subprocess mid-call, which the `cvc5-ff` bindings do not
+        // expose. The token is honoured at entry only: a
+        // pre-cancelled query returns immediately, and cvc5's own
+        // `tlimit` covers the wall-clock budget.
         if cancel.is_cancelled() {
             return Ok(SolverResult::Unknown(UnknownReason::Timeout));
         }

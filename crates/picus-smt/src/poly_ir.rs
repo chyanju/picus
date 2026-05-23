@@ -31,11 +31,11 @@ use picus_solver::field::FfField;
 use picus_solver::poly::{FfPolyRing, Poly};
 use thiserror::Error;
 
-/// Reasons the R1CS-to-PolyIR lowering can fail. Lowering used to
-/// `log::warn!` + silently skip a malformed constraint block; the
-/// resulting `PolyIR` was missing equalities the caller had no way to
-/// detect, so any downstream verdict was untrustworthy. We now surface
-/// the failure explicitly.
+/// Reasons the R1CS-to-PolyIR lowering can fail. Surfacing these as
+/// errors (rather than logging a warning and silently skipping the
+/// offending constraint block) guarantees the caller sees a
+/// well-formed IR or a definite failure — never an under-constrained
+/// IR whose verdict would be untrustworthy.
 #[derive(Debug, Error)]
 pub enum LowerError {
     #[error("wire id {wire} out of bounds (n_wires = {n_wires}) in {ctx}")]

@@ -19,11 +19,11 @@ The techniques underlying Picus are described in the PLDI 2023 paper *"Automated
 
 ## Prerequisites
 
-Both z3 and cvc5 (with finite field support) are automatically compiled from source during `cargo build`. No manual solver installation is required.
+Both z3 and cvc5 (with finite field support) are automatically compiled from source during `cargo build` with the default features. No manual solver installation is required.
 
-**Build dependencies:** cmake, python3, python3-venv, C++ compiler (gcc or clang), make, bison, git, libclang-dev, pkg-config.
+**Build dependencies (default build):** cmake, python3, python3-venv, C++ compiler (gcc or clang), make, bison, git, libclang-dev, pkg-config.
 
-> First build takes ~15-20 minutes (z3 + cvc5 compilation). Subsequent builds are incremental.
+> First build with both external SMT backends takes ~15-20 minutes (z3 + cvc5 compilation). Subsequent builds are incremental.
 
 > **Faster builds with pre-installed solvers:** If you already have solver libraries installed, you can skip compilation:
 > ```bash
@@ -35,7 +35,17 @@ Both z3 and cvc5 (with finite field support) are automatically compiled from sou
 > ```
 > For `CVC5_LIB_DIR`, headers should be at `../include/` relative to the lib directory (or set `CVC5_INCLUDE_DIR` separately).
 
-> **Note on licensing:** cvc5 is compiled with CoCoA (GPLv3) for finite field support. Picus source code is MIT-licensed. The compiled binary is a combined work under GPLv3 when distributed. See cvc5's [COPYING](https://github.com/cvc5/cvc5/blob/main/COPYING) for details.
+### Build without cvc5 / z3 (native-only)
+
+The in-tree Rust solver (`--solver native --theory ff`) does not require either external SMT backend. To skip the cvc5 and z3 build chains entirely:
+
+```bash
+cargo build --release -p picus-cli --no-default-features --features native
+```
+
+The resulting binary supports `--solver native` and `--solver none`. Picking `--solver cvc5` or `--solver z3` returns an error because those backends were not compiled in. The Cargo features `cvc5` and `z3` are also available individually if only one of the two external backends is wanted.
+
+> **Note on licensing:** cvc5 is compiled with CoCoA (GPLv3) for finite field support. Picus source code is MIT-licensed. With the default build, the compiled binary is a combined work under GPLv3 when distributed. The `--no-default-features --features native` build does not link cvc5 and is MIT-only. See cvc5's [COPYING](https://github.com/cvc5/cvc5/blob/main/COPYING) for details.
 
 ## Installation
 
@@ -61,7 +71,10 @@ Picus can also be used as a library crate in other Rust projects:
 
 ```toml
 [dependencies]
-picus = { git = "https://github.com/chyanju/Picus", tag = "v1.7.30" }
+picus = { git = "https://github.com/chyanju/Picus", tag = "v1.7.31" }
+
+# Native-only (no cvc5 / z3 build chain):
+# picus = { git = "...", tag = "v1.7.31", default-features = false, features = ["native"] }
 ```
 
 ```rust
@@ -99,15 +112,28 @@ picus check --r1cs circuit.r1cs --dump-smt /tmp/smt/         # dump SMT queries
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--r1cs <path>` | *required* | R1CS binary file |
-| `--solver <cvc5\|z3\|native\|none>` | `cvc5` | Solver backend (`native` = pure Rust, `none` = propagation only) |
+| `--solver <name>` | `cvc5` | Solver backend name. Built-in: `cvc5`, `z3`, `native`, `none`. Names resolve against the inventory of registered backends |
 | `--theory <ff\|nia>` | `ff` | Theory: `ff` (finite field) or `nia` (integer mod) |
 | `--timeout <ms>` | `5000` | Per-query solver timeout |
 | `--selector <first\|counter>` | `counter` | Signal selection heuristic |
 | `--lemmas <spec>` | `all` | Lemmas: `all`, `none`, `all-X,Y` (exclude), `none+X,Y` (include). Names: `linear`, `binary01`, `basis2`, `aboz`, `bim` |
 | `--format <human\|json>` | `human` | Output format |
 | `--dump-smt <dir>` | — | Dump SMT-LIB queries to directory |
+| `--profile <none\|wall>` | `none` | Emit per-site wall-clock profile to stderr |
+| `--gb-by-homog <off\|on\|auto>` | `off` | GB algorithm: direct Buchberger / homogenisation pipeline / auto-pick by homogeneity test (`native` backend only) |
 
-> **Note**: `z3 + ff` is not supported (z3 has no finite field theory). Picus will reject this combination.
+#### Advanced / research flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--use-f4` | off | Use F4 matrix reduction for batched same-sugar S-pairs (`native` backend) |
+| `--dnf` | off | Pick DNF instead of CNF for the boolean layer (`native` backend) |
+| `--dnf-cap <N>` | `100000` | DNF expansion cap; returns `unknown` beyond this disjunct count |
+| `--cdclt-iter-cap <N>` | `1000000` | CDCL(T) outer-iteration cap |
+| `--gb-trace` | off | Emit GB trace events to stderr (`native` backend) |
+| `--no-cache` | off | Disable the native FF backend's incremental Buchberger cache between successive `solve()` calls |
+
+> **Note**: `z3 + ff` is not supported (z3 has no finite field theory). Picus will reject this combination. `native + nia` is also rejected — the native backend only implements QF_FF.
 
 ### `picus info` — inspect R1CS metadata
 

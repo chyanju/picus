@@ -165,8 +165,10 @@ fn test_incremental_check_pre_cancelled() {
 // =============================================================================
 
 /// `either(external, timeout)` lets a long-running solve be aborted
-/// by an external Ctrl-C-style trigger even when the per-call timeout
-/// is generous. Pre-fix this only honoured the timeout.
+/// by an external Ctrl-C-style trigger even when the per-call
+/// timeout is generous. The combined token observes the external
+/// cancellation within one polling cycle (≤ 1 ms initially,
+/// 50 ms after backoff).
 #[test]
 fn test_either_external_cancel_aborts_mid_solve() {
     // Same dense system used by `test_no_timeout_unsat` — needs work

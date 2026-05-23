@@ -450,13 +450,14 @@ fn find_bitsum_chain_in_terms(
 
     // Soundness gate: a bitsum chain of `n` bits uniquely decomposes
     // its target only when `2^n <= p`. Beyond that, two distinct bit
-    // patterns can wrap to the same value mod p (same trap the
-    // `basis2` lemma is gated against in phase 1). Cap chain length
-    // accordingly so the rewrite stays equivalence-preserving.
+    // patterns can wrap to the same value modulo `p` and the rewrite
+    // would over-constrain. Cap chain length accordingly so the
+    // rewrite stays equivalence-preserving. The same invariant gates
+    // the `basis2` propagation lemma in `picus-analysis`.
     //
-    // `max_chain_bits` = largest `n` with `2^n <= p`. For cryptographic
-    // primes this is ~254; for our small-prime regression cases
-    // (GF(7), GF(11), GF(13), ...) it's 2-3.
+    // `max_chain_bits` = largest `n` with `2^n <= p`. For
+    // cryptographic primes this is ~254; for small primes used in
+    // regression tests (GF(7), GF(11), GF(13), ...) it's 2-3.
     let max_chain_bits: usize = {
         let mut n = 0usize;
         let mut pow = BigUint::from(1u32);

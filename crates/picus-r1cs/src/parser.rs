@@ -336,10 +336,11 @@ mod tests {
 
     #[test]
     fn truncated_block_returns_error_not_panic() {
-        // valid magic + version + n_sections, then one section header
-        // claiming 100 bytes of content, but the file is empty after
-        // the header. The pre-Phase-4 parser panicked on
-        // `&data[pos..pos+4]` indexing.
+        // Valid magic + version + n_sections, then one section header
+        // claiming 100 bytes of content but the file ends right after
+        // the header. `parse_constraint_block` must return
+        // `R1csParseError::Truncated` rather than panic on
+        // out-of-bounds slice indexing.
         let mut data: Vec<u8> = b"r1cs".to_vec();
         data.extend_from_slice(&1u32.to_le_bytes()); // version
         data.extend_from_slice(&3u32.to_le_bytes()); // n_sections
@@ -357,9 +358,9 @@ mod tests {
     fn implausible_field_size_returns_error_not_oom() {
         // Three valid section headers (types 1 / 2 / 3 so the count
         // check passes), but the header section's payload claims
-        // `field_size = 1 << 30` (1 GiB). The pre-Phase-4 parser
-        // called `vec![0u8; 1<<30]` blindly; the fix rejects with
-        // `HeaderImplausible` before touching allocator.
+        // `field_size = 1 << 30` (1 GiB). The parser must reject
+        // with `HeaderImplausible` before allocating the prime
+        // buffer.
         let header_payload: Vec<u8> = (1u32 << 30).to_le_bytes().to_vec();
         let constraint_payload: Vec<u8> = Vec::new();
         let w2l_payload: Vec<u8> = Vec::new();
@@ -387,8 +388,8 @@ mod tests {
     #[test]
     fn malformed_nnz_returns_error_not_panic() {
         // Header is plausible but constraint block claims `nnz` larger
-        // than the block payload. Pre-Phase-4 panicked on
-        // `&data[pos..pos+4]` while reading wire_ids.
+        // than the block payload. The parser must return an error
+        // rather than panic on out-of-bounds slice indexing.
         let p_bytes: Vec<u8> = vec![7u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8]; // prime = 7
         let field_size: u32 = p_bytes.len() as u32; // 8 — multiple of 8 OK
 
