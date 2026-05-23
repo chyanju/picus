@@ -2,7 +2,7 @@
 //!
 //! Measures end-to-end and per-phase performance across representative workloads:
 //!
-//! 1. **encode** — `ConstraintSystem` → `EncodedSystem` (field/ring construction +
+//! 1. **encode** — `LegacyConstraintSystem` → `EncodedSystem` (field/ring construction +
 //!    polynomial building).
 //! 2. **split_gb** — Groebner basis computation on the encoded system.
 //! 3. **find_roots** — Univariate root finding via Cantor-Zassenhaus.
@@ -22,26 +22,26 @@ use num_bigint::BigUint;
 use num_traits::One;
 
 use picus_solver::core::{solve_encoded, SolveOutcome};
-use picus_solver::encoder::{ConstraintSystem, PolyTerm, encode};
+use picus_solver::encoder::{LegacyConstraintSystem, LegacyPolyTerm, encode};
 use picus_solver::field::FfField;
 use picus_solver::roots::find_roots;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-fn ct(c: u64) -> PolyTerm { PolyTerm { coeff: BigUint::from(c), vars: vec![] } }
-fn ctb(c: BigUint) -> PolyTerm { PolyTerm { coeff: c, vars: vec![] } }
-fn vt(v: &str) -> PolyTerm { PolyTerm { coeff: BigUint::one(), vars: vec![v.into()] } }
-fn svt(c: u64, v: &str) -> PolyTerm { PolyTerm { coeff: BigUint::from(c), vars: vec![v.into()] } }
-fn pt(c: u64, vars: &[&str]) -> PolyTerm {
-    PolyTerm { coeff: BigUint::from(c), vars: vars.iter().map(|s| s.to_string()).collect() }
+fn ct(c: u64) -> LegacyPolyTerm { LegacyPolyTerm { coeff: BigUint::from(c), vars: vec![] } }
+fn ctb(c: BigUint) -> LegacyPolyTerm { LegacyPolyTerm { coeff: c, vars: vec![] } }
+fn vt(v: &str) -> LegacyPolyTerm { LegacyPolyTerm { coeff: BigUint::one(), vars: vec![v.into()] } }
+fn svt(c: u64, v: &str) -> LegacyPolyTerm { LegacyPolyTerm { coeff: BigUint::from(c), vars: vec![v.into()] } }
+fn pt(c: u64, vars: &[&str]) -> LegacyPolyTerm {
+    LegacyPolyTerm { coeff: BigUint::from(c), vars: vars.iter().map(|s| s.to_string()).collect() }
 }
 
 // ── Workload builders ───────────────────────────────────────────────────────
 
-fn issue10937_system() -> ConstraintSystem {
+fn issue10937_system() -> LegacyConstraintSystem {
     let p = BigUint::from(7u32);
     let p_minus_1: BigUint = &p - BigUint::one();
-    let mut system = ConstraintSystem {
+    let mut system = LegacyConstraintSystem {
         prime: p.clone(),
         equalities: vec![
             vec![vt("mac1"), svt(6, "k1"), pt(6, &["d", "m1"])],
@@ -62,18 +62,18 @@ fn issue10937_system() -> ConstraintSystem {
     system
 }
 
-fn bigff_is_zero_system() -> ConstraintSystem {
+fn bigff_is_zero_system() -> LegacyConstraintSystem {
     let p: BigUint = "21888242871839275222246405745257275088548364400416034343698204186575808495617"
         .parse().unwrap();
     let p_minus_1 = &p - BigUint::one();
-    ConstraintSystem {
+    LegacyConstraintSystem {
         prime: p.clone(),
         equalities: vec![
             vec![pt(1, &["m", "x"]), vt("iz"), ctb(p_minus_1.clone())],
             vec![pt(1, &["iz", "x"])],
             vec![
                 pt(1, &["iz", "iz", "w"]),
-                PolyTerm { coeff: p_minus_1.clone(), vars: vec!["iz".into(), "w".into()] },
+                LegacyPolyTerm { coeff: p_minus_1.clone(), vars: vec!["iz".into(), "w".into()] },
                 ctb(p_minus_1.clone()),
             ],
         ],
@@ -84,8 +84,8 @@ fn bigff_is_zero_system() -> ConstraintSystem {
     }
 }
 
-fn field_poly_gf7_system() -> ConstraintSystem {
-    ConstraintSystem {
+fn field_poly_gf7_system() -> LegacyConstraintSystem {
+    LegacyConstraintSystem {
         prime: BigUint::from(7u32),
         equalities: vec![
             vec![vt("a2"), pt(6, &["a", "a"])],
@@ -100,7 +100,7 @@ fn field_poly_gf7_system() -> ConstraintSystem {
     }
 }
 
-fn random_6var_system() -> ConstraintSystem {
+fn random_6var_system() -> LegacyConstraintSystem {
     // 9 random linear constraints over GF(11) that are SAT (planted root: all zeros).
     // Each eq: c_0*x_0 + c_1*x_1 + ... + c_5*x_5 = 0 (trivially satisfied by the zero point).
     let coeffs: Vec<Vec<u64>> = vec![
@@ -115,13 +115,13 @@ fn random_6var_system() -> ConstraintSystem {
         vec![2, 0, 6, 0, 1, 0],
     ];
     let vars = ["x0", "x1", "x2", "x3", "x4", "x5"];
-    let equalities: Vec<Vec<PolyTerm>> = coeffs.iter().map(|row| {
+    let equalities: Vec<Vec<LegacyPolyTerm>> = coeffs.iter().map(|row| {
         row.iter().enumerate()
             .filter(|&(_, c)| *c != 0)
             .map(|(i, c)| svt(*c, vars[i]))
             .collect()
     }).collect();
-    ConstraintSystem {
+    LegacyConstraintSystem {
         prime: BigUint::from(11u32),
         equalities,
         disequalities: vec![],
@@ -136,7 +136,7 @@ fn random_6var_system() -> ConstraintSystem {
 fn bench_encode(c: &mut Criterion) {
     let mut group = c.benchmark_group("encode");
 
-    let systems: Vec<(&str, ConstraintSystem)> = vec![
+    let systems: Vec<(&str, LegacyConstraintSystem)> = vec![
         ("issue10937_gf7", issue10937_system()),
         ("bigff_is_zero_bn128", bigff_is_zero_system()),
         ("field_poly_gf7", field_poly_gf7_system()),
@@ -154,7 +154,7 @@ fn bench_encode(c: &mut Criterion) {
 fn bench_end_to_end(c: &mut Criterion) {
     let mut group = c.benchmark_group("end_to_end");
 
-    let systems: Vec<(&str, ConstraintSystem)> = vec![
+    let systems: Vec<(&str, LegacyConstraintSystem)> = vec![
         ("issue10937_gf7", issue10937_system()),
         ("bigff_is_zero_bn128", bigff_is_zero_system()),
         ("field_poly_gf7", field_poly_gf7_system()),

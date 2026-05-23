@@ -29,7 +29,7 @@ use num_traits::Zero;
 use picus_r1cs::field_reduce;
 use picus_r1cs::grammar::{ConstraintBlock, R1csFile};
 use picus_solver::encoder::{
-    encode_indexed, ConstraintSystemBuilder, EncodedSystem, IndexedConstraintSystem, IndexedTerm,
+    encode_indexed, ConstraintSystemBuilder, EncodedSystem, ConstraintSystem, PolyTerm,
 };
 use picus_solver::field::FfField;
 use picus_solver::poly::{FfPolyRing, Poly};
@@ -67,10 +67,10 @@ pub struct PolyIR {
     // ── General-purpose GB query fields (Phase 7B1) ─────────────────
     //
     // PolyIR is the unified GB query IR going forward; the fields
-    // below mirror what `IndexedConstraintSystem` carries, so each of
+    // below mirror what `ConstraintSystem` carries, so each of
     // the four producers (R1CS lowering, SMT2 parser, boolean DNF,
     // CDCL(T) ff_theory) can fully describe its query without an
-    // intermediate `ConstraintSystem`. The R1CS lowering populates
+    // intermediate `LegacyConstraintSystem`. The R1CS lowering populates
     // `disequalities` with a single entry derived from
     // `target_signal` (and rebuilds it on `set_target`); other
     // producers populate these freely.
@@ -194,24 +194,24 @@ impl PolyIR {
         })
     }
 
-    /// Lower this `PolyIR` to an [`IndexedConstraintSystem`] via the
+    /// Lower this `PolyIR` to an [`ConstraintSystem`] via the
     /// `ConstraintSystemBuilder`. Variable names are interned in
     /// `ring.var_names()` order so builder indices match ring
     /// indices; each `Poly` in `self.equalities` yields a
-    /// `Vec<IndexedTerm>` via [`Self::poly_terms_idx`];
+    /// `Vec<PolyTerm>` via [`Self::poly_terms_idx`];
     /// `disequalities`, `assignments`, `bitsums`, and
     /// `add_field_polys` propagate as-is.
-    pub fn to_indexed_constraint_system(&self) -> IndexedConstraintSystem {
+    pub fn to_indexed_constraint_system(&self) -> ConstraintSystem {
         let prime = self.ring.field.prime().clone();
         let mut builder = ConstraintSystemBuilder::new(prime);
         for name in self.ring.ring.var_names() {
             builder.var(name);
         }
         for poly in &self.equalities {
-            let terms: Vec<IndexedTerm> = self
+            let terms: Vec<PolyTerm> = self
                 .poly_terms_idx(poly)
                 .filter(|(coeff, _)| !coeff.is_zero())
-                .map(|(coeff, vars)| IndexedTerm {
+                .map(|(coeff, vars)| PolyTerm {
                     coeff,
                     vars: vars.into_iter().map(|(v, e)| (v as u32, e)).collect(),
                 })
@@ -235,7 +235,7 @@ impl PolyIR {
     }
 
     /// Encode this `PolyIR` into an [`EncodedSystem`] ready for the
-    /// GB engine. Internally builds an `IndexedConstraintSystem` via
+    /// GB engine. Internally builds an `ConstraintSystem` via
     /// [`Self::to_indexed_constraint_system`] and routes through
     /// [`picus_solver::encoder::encode_indexed`] (which runs
     /// `rewriter::rewrite_indexed_system` and

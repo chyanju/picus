@@ -60,8 +60,8 @@ fn transform(f: &Formula, atoms: &mut AtomTable, sat: &mut Solver) -> Node {
 }
 
 fn atom_to_node(
-    lhs: &[crate::encoder::PolyTerm],
-    rhs: &[crate::encoder::PolyTerm],
+    lhs: &[crate::encoder::LegacyPolyTerm],
+    rhs: &[crate::encoder::LegacyPolyTerm],
     positive: bool,
     atoms: &mut AtomTable,
     sat: &mut Solver,
@@ -147,13 +147,13 @@ fn transform_or(children: &[Formula], atoms: &mut AtomTable, sat: &mut Solver) -
 mod tests {
     use super::*;
     use crate::boolean::{Formula, Literal};
-    use crate::encoder::PolyTerm;
+    use crate::encoder::LegacyPolyTerm;
     use crate::sat::solver::SolveResult;
     use crate::sat::LBool;
     use num_bigint::BigUint;
 
-    fn t(coeff: u64, vars: &[&str]) -> PolyTerm {
-        PolyTerm {
+    fn t(coeff: u64, vars: &[&str]) -> LegacyPolyTerm {
+        LegacyPolyTerm {
             coeff: BigUint::from(coeff),
             vars: vars.iter().map(|s| s.to_string()).collect(),
         }

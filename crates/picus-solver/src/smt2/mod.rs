@@ -8,7 +8,7 @@
 //! `define-fun` macros.
 //!
 //! [`parse`] handles the conjunctive subset and returns a
-//! [`ConstraintSystem`]; Boolean connectives in `(assert ...)` are
+//! [`LegacyConstraintSystem`]; Boolean connectives in `(assert ...)` are
 //! rejected with [`ParseError::BooleanInAssert`].
 //!
 //! [`parse_boolean`] handles the full structure above and returns a
@@ -27,7 +27,7 @@ use std::fmt;
 use num_bigint::BigUint;
 use num_traits::Zero;
 
-use crate::encoder::{ConstraintSystemBuilder, IndexedConstraintSystem, PolyTerm};
+use crate::encoder::{ConstraintSystemBuilder, ConstraintSystem, LegacyPolyTerm};
 use tokenizer::{parse_sexprs, tokenize, Sexpr};
 
 // ─────────────────────── Errors ──────────────────────────────────────────
@@ -107,11 +107,11 @@ pub(in crate::smt2) fn classify_sort(s: Option<&Sexpr>) -> Option<VarSort> {
 
 // ─────────────────────── Polynomial-expression builder ───────────────────
 
-pub(in crate::smt2) type Polynomial = Vec<PolyTerm>;
+pub(in crate::smt2) type Polynomial = Vec<LegacyPolyTerm>;
 
 fn neg_poly(p: &Polynomial, prime: &BigUint) -> Polynomial {
     p.iter()
-        .map(|t| PolyTerm {
+        .map(|t| LegacyPolyTerm {
             coeff: if t.coeff.is_zero() {
                 BigUint::zero()
             } else {
@@ -138,7 +138,7 @@ fn mul_polys(a: &Polynomial, b: &Polynomial, prime: &BigUint) -> Polynomial {
             }
             let mut vars = ta.vars.clone();
             vars.extend(tb.vars.iter().cloned());
-            out.push(PolyTerm { coeff, vars });
+            out.push(LegacyPolyTerm { coeff, vars });
         }
     }
     out
@@ -182,10 +182,10 @@ fn build_poly(
     match s {
         Sexpr::Atom(a) => {
             if let Some(c) = parse_ff_const(a, prime) {
-                return Ok(vec![PolyTerm { coeff: c, vars: vec![] }]);
+                return Ok(vec![LegacyPolyTerm { coeff: c, vars: vec![] }]);
             }
             if let Ok(c) = a.parse::<BigUint>() {
-                return Ok(vec![PolyTerm { coeff: c % prime, vars: vec![] }]);
+                return Ok(vec![LegacyPolyTerm { coeff: c % prime, vars: vec![] }]);
             }
             match vars.get(a) {
                 None => Err(ParseError::UnknownSymbol(a.clone())),
@@ -193,7 +193,7 @@ fn build_poly(
                     "Bool variable '{}' used in FF term context",
                     a
                 ))),
-                Some(VarSort::Ff) => Ok(vec![PolyTerm {
+                Some(VarSort::Ff) => Ok(vec![LegacyPolyTerm {
                     coeff: BigUint::from(1u32),
                     vars: vec![a.clone()],
                 }]),
@@ -215,7 +215,7 @@ fn build_poly(
                     };
                     let c = parse_ff_const(sym, prime)
                         .ok_or_else(|| ParseError::Malformed(format!("bad 'as' constant: {}", sym)))?;
-                    Ok(vec![PolyTerm { coeff: c, vars: vec![] }])
+                    Ok(vec![LegacyPolyTerm { coeff: c, vars: vec![] }])
                 }
                 "ff.add" | "+" => {
                     let mut acc: Polynomial = Vec::new();
@@ -233,7 +233,7 @@ fn build_poly(
                         let p = build_poly(child, prime, vars)?;
                         let weighted: Polynomial = p
                             .into_iter()
-                            .map(|t| PolyTerm {
+                            .map(|t| LegacyPolyTerm {
                                 coeff: (&t.coeff * &weight) % prime,
                                 vars: t.vars,
                             })
@@ -244,7 +244,7 @@ fn build_poly(
                     Ok(acc)
                 }
                 "ff.mul" | "*" => {
-                    let mut acc: Polynomial = vec![PolyTerm {
+                    let mut acc: Polynomial = vec![LegacyPolyTerm {
                         coeff: BigUint::from(1u32),
                         vars: vec![],
                     }];
@@ -285,7 +285,7 @@ fn handle_assert(
     s: &Sexpr,
     prime: &BigUint,
     vars: &HashMap<String, VarSort>,
-    equalities: &mut Vec<Vec<PolyTerm>>,
+    equalities: &mut Vec<Vec<LegacyPolyTerm>>,
     diseqs: &mut Vec<(String, String)>,
     diseq_counter: &mut usize,
 ) -> Result<(), ParseError> {
@@ -336,7 +336,7 @@ fn handle_assert(
             let d_name = format!("__diseq_d_{}", diseq_counter);
             *diseq_counter += 1;
             let zero_name = "__zero".to_string();
-            let mut def: Vec<PolyTerm> = vec![PolyTerm {
+            let mut def: Vec<LegacyPolyTerm> = vec![LegacyPolyTerm {
                 coeff: BigUint::from(1u32),
                 vars: vec![d_name.clone()],
             }];
@@ -357,18 +357,18 @@ fn handle_assert(
 // ─────────────────────── Top-level loop ──────────────────────────────────
 
 /// Parse an SMT-LIB v2 QF_FF source and produce an
-/// [`IndexedConstraintSystem`]. The recursive `build_poly` helper
-/// still returns a String-keyed `Vec<PolyTerm>` while walking the
+/// [`ConstraintSystem`]. The recursive `build_poly` helper
+/// still returns a String-keyed `Vec<LegacyPolyTerm>` while walking the
 /// SMT-LIB AST (a natural shape for that recursion), but `parse`
 /// commits each equation to a `ConstraintSystemBuilder` at its
-/// boundary; no `ConstraintSystem` struct is constructed.
-pub fn parse(src: &str) -> Result<IndexedConstraintSystem, ParseError> {
+/// boundary; no `LegacyConstraintSystem` struct is constructed.
+pub fn parse(src: &str) -> Result<ConstraintSystem, ParseError> {
     let toks = tokenize(src);
     let sexprs = parse_sexprs(&toks)?;
 
     let mut prime: Option<BigUint> = None;
     let mut vars: HashMap<String, VarSort> = HashMap::new();
-    let mut equalities: Vec<Vec<PolyTerm>> = Vec::new();
+    let mut equalities: Vec<Vec<LegacyPolyTerm>> = Vec::new();
     let mut diseqs: Vec<(String, String)> = Vec::new();
     let mut diseq_counter = 0usize;
 
@@ -588,10 +588,10 @@ fn build_poly_with_ctx(s: &Sexpr, ctx: &mut ParseCtx) -> Result<Polynomial, Pars
     match s {
         Sexpr::Atom(a) => {
             if let Some(c) = parse_ff_const(a, &ctx.prime) {
-                return Ok(vec![PolyTerm { coeff: c, vars: vec![] }]);
+                return Ok(vec![LegacyPolyTerm { coeff: c, vars: vec![] }]);
             }
             if let Ok(c) = a.parse::<BigUint>() {
-                return Ok(vec![PolyTerm {
+                return Ok(vec![LegacyPolyTerm {
                     coeff: c % &ctx.prime,
                     vars: vec![],
                 }]);
@@ -602,7 +602,7 @@ fn build_poly_with_ctx(s: &Sexpr, ctx: &mut ParseCtx) -> Result<Polynomial, Pars
                     "Bool variable '{}' used in FF term context",
                     a
                 ))),
-                Some(VarSort::Ff) => Ok(vec![PolyTerm {
+                Some(VarSort::Ff) => Ok(vec![LegacyPolyTerm {
                     coeff: BigUint::from(1u32),
                     vars: vec![a.clone()],
                 }]),
@@ -619,7 +619,7 @@ fn build_poly_with_ctx(s: &Sexpr, ctx: &mut ParseCtx) -> Result<Polynomial, Pars
                     let then_poly = build_poly_with_ctx(&elts[2], ctx)?;
                     let else_poly = build_poly_with_ctx(&elts[3], ctx)?;
                     let r_name = ctx.fresh_ite_var();
-                    let r_poly: Polynomial = vec![PolyTerm {
+                    let r_poly: Polynomial = vec![LegacyPolyTerm {
                         coeff: BigUint::from(1u32),
                         vars: vec![r_name],
                     }];
@@ -644,7 +644,7 @@ fn build_poly_with_ctx(s: &Sexpr, ctx: &mut ParseCtx) -> Result<Polynomial, Pars
                     let c = parse_ff_const(sym, &ctx.prime).ok_or_else(|| {
                         ParseError::Malformed(format!("bad 'as' constant: {}", sym))
                     })?;
-                    Ok(vec![PolyTerm { coeff: c, vars: vec![] }])
+                    Ok(vec![LegacyPolyTerm { coeff: c, vars: vec![] }])
                 }
                 "ff.add" | "+" => {
                     let mut acc: Polynomial = Vec::new();
@@ -664,7 +664,7 @@ fn build_poly_with_ctx(s: &Sexpr, ctx: &mut ParseCtx) -> Result<Polynomial, Pars
                         let p = build_poly_with_ctx(child, ctx)?;
                         let weighted: Polynomial = p
                             .into_iter()
-                            .map(|t| PolyTerm {
+                            .map(|t| LegacyPolyTerm {
                                 coeff: (&t.coeff * &weight) % &prime,
                                 vars: t.vars,
                             })
@@ -675,7 +675,7 @@ fn build_poly_with_ctx(s: &Sexpr, ctx: &mut ParseCtx) -> Result<Polynomial, Pars
                     Ok(acc)
                 }
                 "ff.mul" | "*" => {
-                    let mut acc: Polynomial = vec![PolyTerm {
+                    let mut acc: Polynomial = vec![LegacyPolyTerm {
                         coeff: BigUint::from(1u32),
                         vars: vec![],
                     }];
@@ -787,11 +787,11 @@ pub(in crate::smt2) fn assert_to_formula(s: &Sexpr, ctx: &mut ParseCtx) -> Resul
                     // vars live in the polynomial namespace too — they
                     // are FF-typed at the encoder layer with the SAT
                     // engine enforcing 0/1 via mutex clauses elsewhere.
-                    let one: Polynomial = vec![PolyTerm {
+                    let one: Polynomial = vec![LegacyPolyTerm {
                         coeff: BigUint::from(1u32),
                         vars: vec![],
                     }];
-                    let b: Polynomial = vec![PolyTerm {
+                    let b: Polynomial = vec![LegacyPolyTerm {
                         coeff: BigUint::from(1u32),
                         vars: vec![name.to_string()],
                     }];
@@ -1108,11 +1108,11 @@ pub fn parse_boolean(src: &str) -> Result<BooleanQuery, ParseError> {
     // each (skolem ite vars are Ff and filtered out).
     for (name, sort) in &ctx.vars {
         if matches!(sort, VarSort::Bool) {
-            let b_sq: Polynomial = vec![PolyTerm {
+            let b_sq: Polynomial = vec![LegacyPolyTerm {
                 coeff: BigUint::from(1u32),
                 vars: vec![name.clone(), name.clone()],
             }];
-            let b: Polynomial = vec![PolyTerm {
+            let b: Polynomial = vec![LegacyPolyTerm {
                 coeff: BigUint::from(1u32),
                 vars: vec![name.clone()],
             }];

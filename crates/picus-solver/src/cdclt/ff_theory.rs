@@ -3,7 +3,7 @@
 //! Shape matches cvc5 `theory/ff/sub_theory.cpp`. Facts arrive via
 //! [`Theory::notify_fact`] onto a level-indexed trail. Each
 //! [`Theory::post_check`] at `Effort::Full` builds a
-//! [`ConstraintSystem`] from the current trail, runs the GB solver,
+//! [`LegacyConstraintSystem`] from the current trail, runs the GB solver,
 //! and maps any returned UNSAT core indices back to atom variables.
 
 use std::collections::HashMap;
@@ -13,7 +13,7 @@ use num_traits::Zero;
 
 use crate::core::{solve_encoded_with_cancel, SolveOutcome};
 use crate::encoder::{
-    encode_indexed, ConstraintSystemBuilder, IndexedTerm, PolyTerm,
+    encode_indexed, ConstraintSystemBuilder, PolyTerm, LegacyPolyTerm,
 };
 use crate::sat::Var;
 use crate::timeout::CancelToken;
@@ -51,7 +51,7 @@ impl<'a> FfTheory<'a> {
         }
     }
 
-    /// Build an `IndexedConstraintSystem` from the trail via
+    /// Build an `ConstraintSystem` from the trail via
     /// `ConstraintSystemBuilder`, encode, dispatch to the GB solver,
     /// and map any returned `original_polys` core indices back to
     /// atom variables. Encoded-input ordering is
@@ -95,19 +95,19 @@ impl<'a> FfTheory<'a> {
                 // Encode `(d - lhs) = 0`: starts with `+1 * d_var`
                 // then appends `-coeff · vars` for each term of the
                 // atom's polynomial.
-                let mut def: Vec<IndexedTerm> = Vec::with_capacity(key.terms.len() + 1);
-                def.push(IndexedTerm {
+                let mut def: Vec<PolyTerm> = Vec::with_capacity(key.terms.len() + 1);
+                def.push(PolyTerm {
                     coeff: BigUint::from(1u32),
                     vars: vec![(d_idx, 1)],
                 });
-                // Convert each atom term to IndexedTerm, then negate
+                // Convert each atom term to PolyTerm, then negate
                 // (i.e. replace coeff with `(p - coeff) mod p`).
-                let polyterms_legacy: Vec<PolyTerm> = key
+                let polyterms_legacy: Vec<LegacyPolyTerm> = key
                     .terms
                     .iter()
                     .map(|(c, vs)| {
                         let neg = if c.is_zero() { BigUint::zero() } else { &prime - c };
-                        PolyTerm {
+                        LegacyPolyTerm {
                             coeff: neg,
                             vars: vs.clone(),
                         }
@@ -445,12 +445,12 @@ impl<'a> Theory for FfTheory<'a> {
 mod tests {
     use super::*;
     use crate::cdclt::atoms::{AtomTable, InternResult};
-    use crate::encoder::PolyTerm;
+    use crate::encoder::LegacyPolyTerm;
     use crate::sat::Solver;
     use num_bigint::BigUint;
 
-    fn t(coeff: u64, vars: &[&str]) -> PolyTerm {
-        PolyTerm {
+    fn t(coeff: u64, vars: &[&str]) -> LegacyPolyTerm {
+        LegacyPolyTerm {
             coeff: BigUint::from(coeff),
             vars: vars.iter().map(|s| s.to_string()).collect(),
         }

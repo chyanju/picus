@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use num_bigint::BigUint;
 use num_traits::Zero;
 
-use crate::encoder::PolyTerm;
+use crate::encoder::LegacyPolyTerm;
 use crate::sat::{Lit, Solver, Var};
 
 /// Canonical form of an equality atom: the term list of `lhs - rhs`
@@ -27,8 +27,8 @@ impl AtomKey {
     /// Canonical key for `(lhs = rhs)` mod `prime`. Negates `rhs`,
     /// normalizes, then sign-canonicalizes so the leading coefficient
     /// is in `[1, p/2]` — making `(= a b)` and `(= b a)` agree.
-    pub fn from_eq(lhs: &[PolyTerm], rhs: &[PolyTerm], prime: &BigUint) -> Self {
-        let mut polys: Vec<PolyTerm> = lhs.to_vec();
+    pub fn from_eq(lhs: &[LegacyPolyTerm], rhs: &[LegacyPolyTerm], prime: &BigUint) -> Self {
+        let mut polys: Vec<LegacyPolyTerm> = lhs.to_vec();
         for t in rhs {
             // Reduce mod prime first so un-reduced inputs do not underflow.
             let reduced = &t.coeff % prime;
@@ -37,7 +37,7 @@ impl AtomKey {
             } else {
                 prime - &reduced
             };
-            polys.push(PolyTerm {
+            polys.push(LegacyPolyTerm {
                 coeff: neg_coeff,
                 vars: t.vars.clone(),
             });
@@ -124,12 +124,12 @@ impl AtomKey {
         Some((var_term.1[0].clone(), value))
     }
 
-    /// Re-export the canonical polynomial as a `Vec<PolyTerm>` so the
+    /// Re-export the canonical polynomial as a `Vec<LegacyPolyTerm>` so the
     /// FF theory can feed it to the encoder.
-    pub fn to_poly_terms(&self) -> Vec<PolyTerm> {
+    pub fn to_poly_terms(&self) -> Vec<LegacyPolyTerm> {
         self.terms
             .iter()
-            .map(|(c, vs)| PolyTerm {
+            .map(|(c, vs)| LegacyPolyTerm {
                 coeff: c.clone(),
                 vars: vs.clone(),
             })
@@ -181,8 +181,8 @@ impl AtomTable {
     /// handle constant simplification upstream).
     pub fn intern_eq(
         &mut self,
-        lhs: &[PolyTerm],
-        rhs: &[PolyTerm],
+        lhs: &[LegacyPolyTerm],
+        rhs: &[LegacyPolyTerm],
         sat: &mut Solver,
     ) -> InternResult {
         let key = AtomKey::from_eq(lhs, rhs, &self.prime);
@@ -292,8 +292,8 @@ pub enum InternLit {
 mod tests {
     use super::*;
 
-    fn t(coeff: u64, vars: &[&str]) -> PolyTerm {
-        PolyTerm {
+    fn t(coeff: u64, vars: &[&str]) -> LegacyPolyTerm {
+        LegacyPolyTerm {
             coeff: BigUint::from(coeff),
             vars: vars.iter().map(|s| s.to_string()).collect(),
         }
@@ -338,8 +338,8 @@ mod tests {
         // (= 0 0) → trivially true.
         let mut sat = Solver::new();
         let mut tbl = AtomTable::new(BigUint::from(101u32));
-        let lhs: Vec<PolyTerm> = vec![];
-        let rhs: Vec<PolyTerm> = vec![];
+        let lhs: Vec<LegacyPolyTerm> = vec![];
+        let rhs: Vec<LegacyPolyTerm> = vec![];
         let r = tbl.intern_eq(&lhs, &rhs, &mut sat);
         match r {
             InternResult::Trivial(b) => assert!(b),

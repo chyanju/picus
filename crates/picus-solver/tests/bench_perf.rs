@@ -2,14 +2,14 @@
 //! Run with: cargo test -p picus-solver --test bench_perf --release -- --ignored --nocapture
 
 use picus_solver::core::{solve_encoded, SolveOutcome};
-use picus_solver::encoder::{encode, encode_no_auto_bitsum, ConstraintSystem, PolyTerm};
+use picus_solver::encoder::{encode, encode_no_auto_bitsum, LegacyConstraintSystem, LegacyPolyTerm};
 use picus_solver::gb::{compute_gb, GbResult};
 use num_bigint::BigUint;
 use num_traits::One;
 use std::time::Instant;
 
-fn pterm(coeff: u64, vars: &[&str]) -> PolyTerm {
-    PolyTerm { coeff: BigUint::from(coeff), vars: vars.iter().map(|s| s.to_string()).collect() }
+fn pterm(coeff: u64, vars: &[&str]) -> LegacyPolyTerm {
+    LegacyPolyTerm { coeff: BigUint::from(coeff), vars: vars.iter().map(|s| s.to_string()).collect() }
 }
 
 fn bn128_prime() -> BigUint {
@@ -25,12 +25,12 @@ fn bench_is_zero_bn128() {
     let p: BigUint = "21888242871839275222246405745257275088548364400416034343698204186575808495617".parse().unwrap();
     let pm1 = &p - BigUint::one();
 
-    let system = ConstraintSystem {
+    let system = LegacyConstraintSystem {
         prime: p.clone(),
         equalities: vec![
-            vec![pterm(1, &["m", "x"]), pterm(1, &["iz"]), PolyTerm { coeff: pm1.clone(), vars: vec![] }],
+            vec![pterm(1, &["m", "x"]), pterm(1, &["iz"]), LegacyPolyTerm { coeff: pm1.clone(), vars: vec![] }],
             vec![pterm(1, &["iz", "x"])],
-            vec![pterm(1, &["mp", "x"]), pterm(1, &["izp"]), PolyTerm { coeff: pm1.clone(), vars: vec![] }],
+            vec![pterm(1, &["mp", "x"]), pterm(1, &["izp"]), LegacyPolyTerm { coeff: pm1.clone(), vars: vec![] }],
             vec![pterm(1, &["izp", "x"])],
         ],
         disequalities: vec![("iz".into(), "izp".into())],
@@ -65,32 +65,32 @@ fn bench_multi_constraint_gf17() {
     let p = BigUint::from(17u32);
 
     // 5 binary constraints + sum constraint
-    let system = ConstraintSystem {
+    let system = LegacyConstraintSystem {
         prime: p.clone(),
         equalities: vec![
-            vec![pterm(1, &["b0", "b0"]), PolyTerm { coeff: BigUint::from(16u32), vars: vec!["b0".into()] }],
-            vec![pterm(1, &["b1", "b1"]), PolyTerm { coeff: BigUint::from(16u32), vars: vec!["b1".into()] }],
-            vec![pterm(1, &["b2", "b2"]), PolyTerm { coeff: BigUint::from(16u32), vars: vec!["b2".into()] }],
-            vec![pterm(1, &["b3", "b3"]), PolyTerm { coeff: BigUint::from(16u32), vars: vec!["b3".into()] }],
+            vec![pterm(1, &["b0", "b0"]), LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec!["b0".into()] }],
+            vec![pterm(1, &["b1", "b1"]), LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec!["b1".into()] }],
+            vec![pterm(1, &["b2", "b2"]), LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec!["b2".into()] }],
+            vec![pterm(1, &["b3", "b3"]), LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec!["b3".into()] }],
             // s = b0 + 2*b1 + 4*b2 + 8*b3
             vec![
-                PolyTerm { coeff: BigUint::one(), vars: vec!["s".into()] },
-                PolyTerm { coeff: BigUint::from(16u32), vars: vec!["b0".into()] },
-                PolyTerm { coeff: BigUint::from(15u32), vars: vec!["b1".into()] },
-                PolyTerm { coeff: BigUint::from(13u32), vars: vec!["b2".into()] },
-                PolyTerm { coeff: BigUint::from(9u32), vars: vec!["b3".into()] },
+                LegacyPolyTerm { coeff: BigUint::one(), vars: vec!["s".into()] },
+                LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec!["b0".into()] },
+                LegacyPolyTerm { coeff: BigUint::from(15u32), vars: vec!["b1".into()] },
+                LegacyPolyTerm { coeff: BigUint::from(13u32), vars: vec!["b2".into()] },
+                LegacyPolyTerm { coeff: BigUint::from(9u32), vars: vec!["b3".into()] },
             ],
             // same for alt
-            vec![pterm(1, &["b0p", "b0p"]), PolyTerm { coeff: BigUint::from(16u32), vars: vec!["b0p".into()] }],
-            vec![pterm(1, &["b1p", "b1p"]), PolyTerm { coeff: BigUint::from(16u32), vars: vec!["b1p".into()] }],
-            vec![pterm(1, &["b2p", "b2p"]), PolyTerm { coeff: BigUint::from(16u32), vars: vec!["b2p".into()] }],
-            vec![pterm(1, &["b3p", "b3p"]), PolyTerm { coeff: BigUint::from(16u32), vars: vec!["b3p".into()] }],
+            vec![pterm(1, &["b0p", "b0p"]), LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec!["b0p".into()] }],
+            vec![pterm(1, &["b1p", "b1p"]), LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec!["b1p".into()] }],
+            vec![pterm(1, &["b2p", "b2p"]), LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec!["b2p".into()] }],
+            vec![pterm(1, &["b3p", "b3p"]), LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec!["b3p".into()] }],
             vec![
-                PolyTerm { coeff: BigUint::one(), vars: vec!["sp".into()] },
-                PolyTerm { coeff: BigUint::from(16u32), vars: vec!["b0p".into()] },
-                PolyTerm { coeff: BigUint::from(15u32), vars: vec!["b1p".into()] },
-                PolyTerm { coeff: BigUint::from(13u32), vars: vec!["b2p".into()] },
-                PolyTerm { coeff: BigUint::from(9u32), vars: vec!["b3p".into()] },
+                LegacyPolyTerm { coeff: BigUint::one(), vars: vec!["sp".into()] },
+                LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec!["b0p".into()] },
+                LegacyPolyTerm { coeff: BigUint::from(15u32), vars: vec!["b1p".into()] },
+                LegacyPolyTerm { coeff: BigUint::from(13u32), vars: vec!["b2p".into()] },
+                LegacyPolyTerm { coeff: BigUint::from(9u32), vars: vec!["b3p".into()] },
             ],
         ],
         disequalities: vec![("s".into(), "sp".into())],
@@ -125,27 +125,27 @@ fn bench_multi_constraint_gf17() {
 /// Build a k-bit decomposition system over BN128:
 ///   - K bit constraints `b_i*(b_i - 1) = 0`
 ///   - one bitsum equality `b_0 + 2*b_1 + ... + 2^{K-1}*b_{K-1} - target = 0`
-fn bitdecomp_bn128_system(k: usize, target: u64) -> ConstraintSystem {
+fn bitdecomp_bn128_system(k: usize, target: u64) -> LegacyConstraintSystem {
     let p = bn128_prime();
     let pm1 = &p - BigUint::one();
-    let mut equalities: Vec<Vec<PolyTerm>> = Vec::new();
+    let mut equalities: Vec<Vec<LegacyPolyTerm>> = Vec::new();
     for i in 0..k {
         let bi = format!("b{}", i);
         equalities.push(vec![
-            PolyTerm { coeff: BigUint::one(), vars: vec![bi.clone(), bi.clone()] },
-            PolyTerm { coeff: pm1.clone(), vars: vec![bi] },
+            LegacyPolyTerm { coeff: BigUint::one(), vars: vec![bi.clone(), bi.clone()] },
+            LegacyPolyTerm { coeff: pm1.clone(), vars: vec![bi] },
         ]);
     }
-    let mut sum: Vec<PolyTerm> = Vec::with_capacity(k + 1);
+    let mut sum: Vec<LegacyPolyTerm> = Vec::with_capacity(k + 1);
     let mut coeff = BigUint::one();
     let two = BigUint::from(2u32);
     for i in 0..k {
-        sum.push(PolyTerm { coeff: coeff.clone(), vars: vec![format!("b{}", i)] });
+        sum.push(LegacyPolyTerm { coeff: coeff.clone(), vars: vec![format!("b{}", i)] });
         coeff = (&coeff * &two) % &p;
     }
-    sum.push(PolyTerm { coeff: &p - BigUint::from(target), vars: vec![] });
+    sum.push(LegacyPolyTerm { coeff: &p - BigUint::from(target), vars: vec![] });
     equalities.push(sum);
-    ConstraintSystem {
+    LegacyConstraintSystem {
         prime: p,
         equalities,
         disequalities: vec![],
@@ -155,7 +155,7 @@ fn bitdecomp_bn128_system(k: usize, target: u64) -> ConstraintSystem {
     }
 }
 
-fn time_solve_median(cs: &ConstraintSystem, iters: usize, use_auto: bool) -> (u128, &'static str) {
+fn time_solve_median(cs: &LegacyConstraintSystem, iters: usize, use_auto: bool) -> (u128, &'static str) {
     let mut total_times: Vec<u128> = Vec::with_capacity(iters);
     let mut verdict = "unknown";
     for _ in 0..iters {

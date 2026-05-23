@@ -1,7 +1,7 @@
 //! Solver-side state cache for amortising fixed work across multiple
 //! `solve` calls with the same constraint side.
 //!
-//! The constraint side of a [`ConstraintSystem`] is hashed; a matching
+//! The constraint side of a [`LegacyConstraintSystem`] is hashed; a matching
 //! cache reuses the prior split-GB and encodes only the per-query
 //! disequalities (Rabinowitsch polynomials). Sub-iter resumability:
 //! when a fresh cache build is cancelled mid-build, the per-partition
@@ -15,7 +15,9 @@ use num_bigint::BigUint;
 
 use crate::bitprop::{BitProp, BitPropState};
 use crate::core::{populate_bitprop, SolveOutcome};
-use crate::encoder::{encode, encode_constraint_side, ConstraintSystem};
+use crate::encoder::{
+    encode_indexed, encode_indexed_constraint_side, ConstraintSystem,
+};
 use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
 use crate::ff::monomial::MonomialOrder;
 use crate::ideal::{interreduce_basis, ring_for_order, Ideal};
@@ -27,7 +29,7 @@ use crate::split_gb::{
 use crate::timeout::CancelToken;
 
 /// Cached state computed from the constraint side of one
-/// `ConstraintSystem` (everything except `disequalities`).
+/// `LegacyConstraintSystem` (everything except `disequalities`).
 pub struct CachedBase {
     pub poly_ring: Arc<FfPolyRing>,
     pub var_map: HashMap<String, usize>,
@@ -88,7 +90,7 @@ impl IncrementalSolverContext {
 
     pub fn solve(&mut self, cs: &ConstraintSystem, cancel: &CancelToken) -> SolveOutcome {
         let stats_on = crate::profile::gb_stats_enabled();
-        let digest = digest_constraint_side(cs);
+        let digest = digest_indexed_constraint_side(cs);
 
         let cache_matches = matches!(&self.cached_base, Some(c) if c.digest == digest);
         let partial_matches = matches!(&self.partial_build, Some(p) if p.digest == digest);
@@ -203,7 +205,7 @@ impl IncrementalSolverContext {
         // `encode_constraint_side` still reserves the `__w_diseq_i`
         // variable slots so [`encode_query_disequalities`] can build the
         // Rabinowitsch polynomial in this ring later.
-        let encoded = match encode_constraint_side(cs) {
+        let encoded = match encode_indexed_constraint_side(cs) {
             Ok(e) => e,
             Err(_) => return Err(()),
         };
@@ -497,13 +499,28 @@ fn encode_query_disequalities(
     var_map: &HashMap<String, usize>,
 ) -> Result<Vec<Poly>, String> {
     let mut out = Vec::with_capacity(cs.disequalities.len());
-    for (i, (a, b)) in cs.disequalities.iter().enumerate() {
+    for (i, &(a, b)) in cs.disequalities.iter().enumerate() {
+        // Translate the query's producer-frame VarIdx into the
+        // cached ring's frame via name lookup. The cached ring's
+        // variables are stored in alphabetically sorted order
+        // (see `encode_indexed_impl`), so the integer `a`/`b`
+        // from the input cannot be used directly as a ring slot
+        // index — they refer to positions in `cs.var_names`, not
+        // in the ring.
+        let a_name = cs
+            .var_names
+            .get(a as usize)
+            .ok_or_else(|| format!("disequality refs var_idx {} but cs.var_names has {} entries", a, cs.var_names.len()))?;
+        let b_name = cs
+            .var_names
+            .get(b as usize)
+            .ok_or_else(|| format!("disequality refs var_idx {} but cs.var_names has {} entries", b, cs.var_names.len()))?;
         let a_idx = *var_map
-            .get(a)
-            .ok_or_else(|| format!("cached var_map missing: {}", a))?;
+            .get(a_name)
+            .ok_or_else(|| format!("cached var_map missing: {}", a_name))?;
         let b_idx = *var_map
-            .get(b)
-            .ok_or_else(|| format!("cached var_map missing: {}", b))?;
+            .get(b_name)
+            .ok_or_else(|| format!("cached var_map missing: {}", b_name))?;
         let w_name = format!("__w_diseq_{}", i);
         let w_idx = *var_map
             .get(&w_name)
@@ -610,54 +627,17 @@ fn solve_with_cached(
 }
 
 fn stateless_solve(cs: &ConstraintSystem, cancel: &CancelToken) -> SolveOutcome {
-    match encode(cs) {
+    match encode_indexed(cs) {
         Ok(encoded) => crate::core::solve_encoded_with_cancel(&encoded, cancel),
         Err(_) => SolveOutcome::Unknown,
     }
 }
 
-pub fn digest_constraint_side(cs: &ConstraintSystem) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    cs.prime.hash(&mut h);
-    cs.add_field_polys.hash(&mut h);
-    cs.bitsums.len().hash(&mut h);
-    for bs in &cs.bitsums {
-        bs.len().hash(&mut h);
-        for v in bs {
-            v.hash(&mut h);
-        }
-    }
-    cs.assignments.len().hash(&mut h);
-    for (n, v) in &cs.assignments {
-        n.hash(&mut h);
-        v.hash(&mut h);
-    }
-    cs.equalities.len().hash(&mut h);
-    for eq in &cs.equalities {
-        eq.len().hash(&mut h);
-        for t in eq {
-            t.coeff.hash(&mut h);
-            t.vars.len().hash(&mut h);
-            for v in &t.vars {
-                v.hash(&mut h);
-            }
-        }
-    }
-    h.finish()
-}
-
-/// Index-keyed counterpart of [`digest_constraint_side`]. Hashes
-/// `u32` variable indices and `BigUint` coefficients directly,
-/// skipping the per-variable String hashing the legacy form
-/// performs.
-///
-/// The output value differs from `digest_constraint_side(&cs.to_legacy())`
-/// because the input shape differs (indices vs repeated names), but
-/// is self-consistent: two `IndexedConstraintSystem` values that
-/// agree on `(prime, var_names, equalities, disequalities,
+/// Hash an [`ConstraintSystem`]'s constraint side (everything
+/// except `disequalities`) into a `u64` cache key. Self-consistent:
+/// two systems agreeing on `(prime, var_names, equalities,
 /// assignments, bitsums, add_field_polys)` produce the same digest.
-pub fn digest_indexed_constraint_side(cs: &crate::encoder::IndexedConstraintSystem) -> u64 {
+pub fn digest_indexed_constraint_side(cs: &crate::encoder::ConstraintSystem) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     cs.prime.hash(&mut h);

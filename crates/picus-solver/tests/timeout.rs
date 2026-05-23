@@ -9,17 +9,17 @@
 use std::time::Duration;
 
 use picus_solver::core::{solve_encoded_with_cancel, SolveOutcome};
-use picus_solver::encoder::{ConstraintSystem, PolyTerm, encode};
+use picus_solver::encoder::{LegacyConstraintSystem, LegacyPolyTerm, encode};
 use picus_solver::incremental::IncrementalSolver;
 use picus_solver::timeout::CancelToken;
 use num_bigint::BigUint;
 use num_traits::One;
 
-fn ct(c: u64) -> PolyTerm { PolyTerm { coeff: BigUint::from(c), vars: vec![] } }
-fn vt(v: &str) -> PolyTerm { PolyTerm { coeff: BigUint::one(), vars: vec![v.into()] } }
-fn svt(c: u64, v: &str) -> PolyTerm { PolyTerm { coeff: BigUint::from(c), vars: vec![v.into()] } }
-fn pt(c: u64, vars: &[&str]) -> PolyTerm {
-    PolyTerm { coeff: BigUint::from(c), vars: vars.iter().map(|s| s.to_string()).collect() }
+fn ct(c: u64) -> LegacyPolyTerm { LegacyPolyTerm { coeff: BigUint::from(c), vars: vec![] } }
+fn vt(v: &str) -> LegacyPolyTerm { LegacyPolyTerm { coeff: BigUint::one(), vars: vec![v.into()] } }
+fn svt(c: u64, v: &str) -> LegacyPolyTerm { LegacyPolyTerm { coeff: BigUint::from(c), vars: vec![v.into()] } }
+fn pt(c: u64, vars: &[&str]) -> LegacyPolyTerm {
+    LegacyPolyTerm { coeff: BigUint::from(c), vars: vars.iter().map(|s| s.to_string()).collect() }
 }
 
 // =============================================================================
@@ -27,7 +27,7 @@ fn pt(c: u64, vars: &[&str]) -> PolyTerm {
 // =============================================================================
 #[test]
 fn test_pre_cancelled_returns_unknown() {
-    let system = ConstraintSystem {
+    let system = LegacyConstraintSystem {
         prime: BigUint::from(7u32),
         equalities: vec![vec![vt("x")]],
         disequalities: vec![],
@@ -48,7 +48,7 @@ fn test_pre_cancelled_returns_unknown() {
 // =============================================================================
 #[test]
 fn test_no_timeout_sat() {
-    let system = ConstraintSystem {
+    let system = LegacyConstraintSystem {
         prime: BigUint::from(7u32),
         equalities: vec![
             // x + y - 3 = 0
@@ -73,7 +73,7 @@ fn test_no_timeout_sat() {
 
 #[test]
 fn test_no_timeout_unsat() {
-    let system = ConstraintSystem {
+    let system = LegacyConstraintSystem {
         prime: BigUint::from(7u32),
         equalities: vec![
             vec![vt("x"), ct(5)],   // x = 2 (x + 5 = 0 mod 7)
@@ -98,7 +98,7 @@ fn test_no_timeout_unsat() {
 #[test]
 fn test_generous_timeout_completes() {
     let p = BigUint::from(7u32);
-    let system = ConstraintSystem {
+    let system = LegacyConstraintSystem {
         prime: p.clone(),
         equalities: vec![
             vec![vt("mac1"), svt(6, "k1"), pt(6, &["d", "m1"])],
@@ -174,7 +174,7 @@ fn test_either_external_cancel_aborts_mid_solve() {
     // Same dense system used by `test_no_timeout_unsat` — needs work
     // long enough that the cancellation can fire mid-solve.
     let p = BigUint::from(7u32);
-    let system = ConstraintSystem {
+    let system = LegacyConstraintSystem {
         prime: p.clone(),
         equalities: vec![
             // x^2 + y^2 = 1, x^3 + y^3 = 1 over GF(7) — small enough

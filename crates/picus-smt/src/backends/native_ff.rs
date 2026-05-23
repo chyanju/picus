@@ -2,7 +2,7 @@
 //! for the cvc5 QF_FF theory solver.
 //!
 //! Consumes a [`PolyIR`] snapshot directly: each polynomial equality is
-//! translated into a `Vec<PolyTerm>` summed to zero, and the target
+//! translated into a `Vec<LegacyPolyTerm>` summed to zero, and the target
 //! disequality `x_target ≠ y_target` is handed to the GB solver via
 //! the Rabinowitsch trick wired into [`IncrementalSolverContext`].
 
@@ -11,7 +11,7 @@ use crate::poly_ir::PolyIR;
 use crate::Theory;
 
 use picus_solver::core::{solve_encoded_with_cancel, SolveOutcome};
-use picus_solver::encoder::{ConstraintSystem, IndexedConstraintSystem};
+use picus_solver::encoder::ConstraintSystem;
 use picus_solver::incremental_context::IncrementalSolverContext;
 use picus_solver::timeout::CancelToken;
 
@@ -46,18 +46,8 @@ impl NativeFfBackend {
 /// `digest_indexed_constraint_side`. Used for the stats path's
 /// `last_cs_digest` tracking; the cache itself still keys on the
 /// legacy String-keyed digest until A9 unifies the two paths.
-fn digest_native_constraint_side(ics: &IndexedConstraintSystem) -> u64 {
+fn digest_native_constraint_side(ics: &ConstraintSystem) -> u64 {
     picus_solver::incremental_context::digest_indexed_constraint_side(ics)
-}
-
-/// Legacy bridge: lowers `PolyIR` to a String-keyed
-/// `ConstraintSystem` for the cache path (which still keys on the
-/// legacy digest) and for the `dump_smt` formatter. Routes through
-/// `PolyIR::to_indexed_constraint_system` so the lowering logic
-/// stays in one place. Removed in phase 7B7 when the cache and
-/// dump path consume the index-keyed form directly.
-fn ir_to_constraint_system(ir: &PolyIR) -> ConstraintSystem {
-    ir.to_indexed_constraint_system().to_legacy()
 }
 
 impl SolverBackend for NativeFfBackend {
@@ -71,7 +61,6 @@ impl SolverBackend for NativeFfBackend {
             return Ok(SolverResult::Unknown(UnknownReason::Timeout));
         }
         let indexed = ir.to_indexed_constraint_system();
-        let cs = indexed.to_legacy();
         let stats_on = picus_solver::profile::gb_stats_enabled();
         let cs_digest = if stats_on {
             Some(digest_native_constraint_side(&indexed))
@@ -114,7 +103,7 @@ impl SolverBackend for NativeFfBackend {
                 None
             };
             let outcome = if cache_enabled {
-                cache.solve(&cs, &cancel)
+                cache.solve(&indexed, &cancel)
             } else {
                 let enc_t0 = if stats_on {
                     Some(std::time::Instant::now())
@@ -172,27 +161,44 @@ impl SolverBackend for NativeFfBackend {
     }
 
     fn dump_smt(&self, ir: &PolyIR) -> String {
-        let cs = ir_to_constraint_system(ir);
+        let ics = ir.to_indexed_constraint_system();
+        let resolve = |idx: u32| ics.var_names[idx as usize].as_str();
         let mut out = String::new();
         out.push_str(&format!(
             "; Native FF solver (Groebner basis over GF({}))\n",
-            cs.prime
+            ics.prime
         ));
         out.push_str(&format!(
             "; {} equalities, {} assignments\n",
-            cs.equalities.len(),
-            cs.assignments.len()
+            ics.equalities.len(),
+            ics.assignments.len()
         ));
-        for (a, b) in &cs.disequalities {
-            out.push_str(&format!("; disequality: {} != {}\n", a, b));
+        for &(a, b) in &ics.disequalities {
+            out.push_str(&format!(
+                "; disequality: {} != {}\n",
+                resolve(a),
+                resolve(b)
+            ));
         }
-        for (i, eq) in cs.equalities.iter().enumerate() {
+        for (i, eq) in ics.equalities.iter().enumerate() {
             out.push_str(&format!("; eq[{}]: ", i));
             for (j, t) in eq.iter().enumerate() {
                 if j > 0 {
                     out.push_str(" + ");
                 }
-                out.push_str(&format!("{}*{}", t.coeff, t.vars.join("*")));
+                let vars_text: String = t
+                    .vars
+                    .iter()
+                    .map(|&(idx, exp)| {
+                        let name = resolve(idx);
+                        std::iter::repeat(name)
+                            .take(exp as usize)
+                            .collect::<Vec<_>>()
+                            .join("*")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("*");
+                out.push_str(&format!("{}*{}", t.coeff, vars_text));
             }
             out.push_str(" = 0\n");
         }
