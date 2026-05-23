@@ -9,17 +9,18 @@
 use std::time::Duration;
 
 use picus_solver::core::{solve_encoded_with_cancel, SolveOutcome};
-use picus_solver::encoder::{LegacyConstraintSystem, LegacyPolyTerm, encode};
+mod common;
+use common::{NamedSystem, NamedTerm};
 use picus_solver::incremental::IncrementalSolver;
 use picus_solver::timeout::CancelToken;
 use num_bigint::BigUint;
 use num_traits::One;
 
-fn ct(c: u64) -> LegacyPolyTerm { LegacyPolyTerm { coeff: BigUint::from(c), vars: vec![] } }
-fn vt(v: &str) -> LegacyPolyTerm { LegacyPolyTerm { coeff: BigUint::one(), vars: vec![v.into()] } }
-fn svt(c: u64, v: &str) -> LegacyPolyTerm { LegacyPolyTerm { coeff: BigUint::from(c), vars: vec![v.into()] } }
-fn pt(c: u64, vars: &[&str]) -> LegacyPolyTerm {
-    LegacyPolyTerm { coeff: BigUint::from(c), vars: vars.iter().map(|s| s.to_string()).collect() }
+fn ct(c: u64) -> NamedTerm { NamedTerm { coeff: BigUint::from(c), vars: vec![] } }
+fn vt(v: &str) -> NamedTerm { NamedTerm { coeff: BigUint::one(), vars: vec![v.into()] } }
+fn svt(c: u64, v: &str) -> NamedTerm { NamedTerm { coeff: BigUint::from(c), vars: vec![v.into()] } }
+fn pt(c: u64, vars: &[&str]) -> NamedTerm {
+    NamedTerm { coeff: BigUint::from(c), vars: vars.iter().map(|s| s.to_string()).collect() }
 }
 
 // =============================================================================
@@ -27,7 +28,7 @@ fn pt(c: u64, vars: &[&str]) -> LegacyPolyTerm {
 // =============================================================================
 #[test]
 fn test_pre_cancelled_returns_unknown() {
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(7u32),
         equalities: vec![vec![vt("x")]],
         disequalities: vec![],
@@ -35,7 +36,7 @@ fn test_pre_cancelled_returns_unknown() {
         add_field_polys: false,
         bitsums: vec![],
     };
-    let encoded = encode(&system).unwrap();
+    let encoded = system.encode().unwrap();
     let cancel = CancelToken::cancelled();
     match solve_encoded_with_cancel(&encoded, &cancel) {
         SolveOutcome::Unknown => {} // expected
@@ -48,7 +49,7 @@ fn test_pre_cancelled_returns_unknown() {
 // =============================================================================
 #[test]
 fn test_no_timeout_sat() {
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(7u32),
         equalities: vec![
             // x + y - 3 = 0
@@ -59,7 +60,7 @@ fn test_no_timeout_sat() {
         add_field_polys: false,
         bitsums: vec![],
     };
-    let encoded = encode(&system).unwrap();
+    let encoded = system.encode().unwrap();
     let cancel = CancelToken::none();
     match solve_encoded_with_cancel(&encoded, &cancel) {
         SolveOutcome::Sat(m) => {
@@ -73,7 +74,7 @@ fn test_no_timeout_sat() {
 
 #[test]
 fn test_no_timeout_unsat() {
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(7u32),
         equalities: vec![
             vec![vt("x"), ct(5)],   // x = 2 (x + 5 = 0 mod 7)
@@ -84,7 +85,7 @@ fn test_no_timeout_unsat() {
         add_field_polys: false,
         bitsums: vec![],
     };
-    let encoded = encode(&system).unwrap();
+    let encoded = system.encode().unwrap();
     let cancel = CancelToken::none();
     match solve_encoded_with_cancel(&encoded, &cancel) {
         SolveOutcome::Unsat(_) => {} // expected
@@ -98,7 +99,7 @@ fn test_no_timeout_unsat() {
 #[test]
 fn test_generous_timeout_completes() {
     let p = BigUint::from(7u32);
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: p.clone(),
         equalities: vec![
             vec![vt("mac1"), svt(6, "k1"), pt(6, &["d", "m1"])],
@@ -112,7 +113,7 @@ fn test_generous_timeout_completes() {
         add_field_polys: false,
         bitsums: vec![],
     };
-    let encoded = encode(&system).unwrap();
+    let encoded = system.encode().unwrap();
     // 10 seconds is way more than needed
     let cancel = CancelToken::with_timeout(Duration::from_secs(10));
     match solve_encoded_with_cancel(&encoded, &cancel) {
@@ -174,7 +175,7 @@ fn test_either_external_cancel_aborts_mid_solve() {
     // Same dense system used by `test_no_timeout_unsat` — needs work
     // long enough that the cancellation can fire mid-solve.
     let p = BigUint::from(7u32);
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: p.clone(),
         equalities: vec![
             // x^2 + y^2 = 1, x^3 + y^3 = 1 over GF(7) — small enough
@@ -187,7 +188,7 @@ fn test_either_external_cancel_aborts_mid_solve() {
         add_field_polys: true,
         bitsums: vec![],
     };
-    let encoded = encode(&system).unwrap();
+    let encoded = system.encode().unwrap();
     let external = CancelToken::new();
     let timeout = CancelToken::with_timeout(Duration::from_secs(60));
     let combined = CancelToken::either(&external, &timeout);

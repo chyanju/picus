@@ -45,9 +45,10 @@ fn bench_smt2(c: &mut Criterion) {
         let q = parse_boolean(src).expect("parse");
         let prime = q.prime.clone();
         let formula = q.formula.clone();
+        let var_names: Vec<String> = q.var_names().to_vec();
         group.bench_with_input(BenchmarkId::new("solve", name), &(), |b, _| {
             b.iter(|| {
-                let r = solve_formula(prime.clone(), black_box(&formula), &cancel);
+                let r = solve_formula(prime.clone(), &var_names, black_box(&formula), &cancel);
                 black_box(r);
             });
         });

@@ -35,7 +35,7 @@ fn verdict(o: &SolveOutcome) -> Verdict {
 /// the same verdict; panics with a diagnostic if they disagree.
 fn cross_validate(name: &str, src: &str, expected: Verdict) -> (Verdict, Verdict) {
     let q = parse_boolean(src).unwrap_or_else(|e| panic!("[{}] parse: {:?}", name, e));
-    let cdclt = solve_formula(q.prime.clone(), &q.formula, &CancelToken::none());
+    let cdclt = solve_formula(q.prime.clone(), q.var_names(), &q.formula, &CancelToken::none());
     let dnf = solve_boolean_query_dnf(&q, &CancelToken::none());
     let cv = verdict(&cdclt);
     let dv = verdict(&dnf);
@@ -947,6 +947,7 @@ fn cross_validate_agreement(name: &str, src: &str) {
         .unwrap_or_else(|e| panic!("[{}] parse: {:?}", name, e));
     let cdclt = picus_solver::cdclt::solve_formula(
         q.prime.clone(),
+        q.var_names(),
         &q.formula,
         &picus_solver::timeout::CancelToken::none(),
     );
@@ -1368,7 +1369,7 @@ fn cdclt_sat_model_includes_ff_var() {
 (assert (= x #f3m7))
 "#;
     let q = parse_boolean(src).expect("parse");
-    let r = solve_formula(q.prime.clone(), &q.formula, &CancelToken::none());
+    let r = solve_formula(q.prime.clone(), q.var_names(), &q.formula, &CancelToken::none());
     match r {
         SolveOutcome::Sat(m) => {
             assert_eq!(m.get("x"), Some(&BigUint::from(3u32)),
@@ -1389,7 +1390,7 @@ fn cdclt_sat_model_includes_bool_var_true() {
 (assert b)
 "#;
     let q = parse_boolean(src).expect("parse");
-    let r = solve_formula(q.prime.clone(), &q.formula, &CancelToken::none());
+    let r = solve_formula(q.prime.clone(), q.var_names(), &q.formula, &CancelToken::none());
     match r {
         SolveOutcome::Sat(m) => {
             assert_eq!(m.get("b"), Some(&BigUint::from(1u32)),
@@ -1407,7 +1408,7 @@ fn cdclt_sat_model_includes_bool_var_false() {
 (assert (not b))
 "#;
     let q = parse_boolean(src).expect("parse");
-    let r = solve_formula(q.prime.clone(), &q.formula, &CancelToken::none());
+    let r = solve_formula(q.prime.clone(), q.var_names(), &q.formula, &CancelToken::none());
     match r {
         SolveOutcome::Sat(m) => {
             assert_eq!(m.get("b"), Some(&BigUint::from(0u32)),
@@ -1428,7 +1429,7 @@ fn cdclt_sat_model_includes_free_bool_var() {
 (assert (or a b))
 "#;
     let q = parse_boolean(src).expect("parse");
-    let r = solve_formula(q.prime.clone(), &q.formula, &CancelToken::none());
+    let r = solve_formula(q.prime.clone(), q.var_names(), &q.formula, &CancelToken::none());
     match r {
         SolveOutcome::Sat(m) => {
             let a_val = m.get("a").expect("a in model").clone();
@@ -1455,7 +1456,7 @@ fn cdclt_sat_model_includes_mixed_bool_and_ff() {
 (assert (= x #f3m7))
 "#;
     let q = parse_boolean(src).expect("parse");
-    let r = solve_formula(q.prime.clone(), &q.formula, &CancelToken::none());
+    let r = solve_formula(q.prime.clone(), q.var_names(), &q.formula, &CancelToken::none());
     match r {
         SolveOutcome::Sat(m) => {
             assert_eq!(m.get("x"), Some(&BigUint::from(3u32)));
@@ -1477,7 +1478,7 @@ fn cdclt_sat_model_with_term_level_ite() {
 (assert (= (ite c x #f0m101) #f5m101))
 "#;
     let q = parse_boolean(src).expect("parse");
-    let r = solve_formula(q.prime.clone(), &q.formula, &CancelToken::none());
+    let r = solve_formula(q.prime.clone(), q.var_names(), &q.formula, &CancelToken::none());
     match r {
         SolveOutcome::Sat(m) => {
             let c_val = m.get("c").expect("c in model").clone();

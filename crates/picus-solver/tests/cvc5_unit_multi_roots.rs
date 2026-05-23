@@ -8,27 +8,28 @@
 //! polynomials when the test requires the resulting contradiction.
 
 use picus_solver::core::{solve_encoded, SolveOutcome};
-use picus_solver::encoder::{LegacyConstraintSystem, LegacyPolyTerm, encode};
+mod common;
+use common::{NamedSystem, NamedTerm};
 use num_bigint::BigUint;
 use num_traits::One;
 
-fn ct(c: u64) -> LegacyPolyTerm { LegacyPolyTerm { coeff: BigUint::from(c), vars: vec![] } }
-fn vt(v: &str) -> LegacyPolyTerm { LegacyPolyTerm { coeff: BigUint::one(), vars: vec![v.into()] } }
-fn svt(c: u64, v: &str) -> LegacyPolyTerm { LegacyPolyTerm { coeff: BigUint::from(c), vars: vec![v.into()] } }
-fn pt(c: u64, vars: &[&str]) -> LegacyPolyTerm {
-    LegacyPolyTerm { coeff: BigUint::from(c), vars: vars.iter().map(|s| s.to_string()).collect() }
+fn ct(c: u64) -> NamedTerm { NamedTerm { coeff: BigUint::from(c), vars: vec![] } }
+fn vt(v: &str) -> NamedTerm { NamedTerm { coeff: BigUint::one(), vars: vec![v.into()] } }
+fn svt(c: u64, v: &str) -> NamedTerm { NamedTerm { coeff: BigUint::from(c), vars: vec![v.into()] } }
+fn pt(c: u64, vars: &[&str]) -> NamedTerm {
+    NamedTerm { coeff: BigUint::from(c), vars: vars.iter().map(|s| s.to_string()).collect() }
 }
 
-fn solve(system: &LegacyConstraintSystem) -> SolveOutcome {
-    let encoded = encode(system).unwrap();
+fn solve(system: &NamedSystem) -> SolveOutcome {
+    let encoded = system.encode().unwrap();
     solve_encoded(&encoded)
 }
 
-fn is_sat(system: &LegacyConstraintSystem) -> bool {
+fn is_sat(system: &NamedSystem) -> bool {
     matches!(solve(system), SolveOutcome::Sat(_))
 }
 
-fn is_unsat(system: &LegacyConstraintSystem) -> bool {
+fn is_unsat(system: &NamedSystem) -> bool {
     matches!(solve(system), SolveOutcome::Unsat(_))
 }
 
@@ -48,7 +49,7 @@ fn is_unsat(system: &LegacyConstraintSystem) -> bool {
 #[test]
 fn test_is_unsat_a_factored() {
     // a*(a-1) = a^2 - a   →  SAT (a=0 or a=1)
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(3u32),
         equalities: vec![ vec![pt(1, &["a","a"]), svt(2, "a")] ],
         disequalities: vec![],
@@ -61,7 +62,7 @@ fn test_is_unsat_a_factored() {
 
 #[test]
 fn test_is_unsat_a_zero() {
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(3u32),
         equalities: vec![ vec![vt("a")] ],
         disequalities: vec![],
@@ -75,7 +76,7 @@ fn test_is_unsat_a_zero() {
 #[test]
 fn test_is_unsat_a_b_minus_1() {
     // a = 0, b = 1   →  SAT
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(3u32),
         equalities: vec![
             vec![vt("a")],
@@ -92,7 +93,7 @@ fn test_is_unsat_a_b_minus_1() {
 #[test]
 fn test_is_unsat_a_b_c() {
     // a = 0, b = 1, c = 0   →  SAT
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(3u32),
         equalities: vec![
             vec![vt("a")],
@@ -110,7 +111,7 @@ fn test_is_unsat_a_b_c() {
 #[test]
 fn test_is_unsat_a_and_a_minus_1() {
     // a = 0 ∧ a = 1   →  UNSAT
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(3u32),
         equalities: vec![
             vec![vt("a")],
@@ -140,7 +141,7 @@ fn test_is_unsat_a_no_field_poly() {
     // accept either outcome — the *cvc5* expectation is that without field
     // polys the answer reflects ring-theoretic SAT, not GF(3)-SAT.  We
     // tolerate either by checking `add_field_polys=true` flips the answer.
-    let mut system = LegacyConstraintSystem {
+    let mut system = NamedSystem {
         prime: BigUint::from(3u32),
         equalities: vec![
             // (a^2 - a) * a - 2*(a^2 - a) - 1 = 0
@@ -164,7 +165,7 @@ fn test_is_unsat_a_no_field_poly() {
 fn test_is_unsat_a_b_c_inverse() {
     // (a - b) * c = 1 ∧ a - b = 0   →   UNSAT
     // Equivalent to a*c - b*c = 1, a = b.  Substituting b=a: 0 = 1.
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(3u32),
         equalities: vec![
             // (a-b)*c - 1 = a*c - b*c - 1
@@ -192,7 +193,7 @@ fn test_is_unsat_a_b_c_inverse() {
 fn test_common_root_a_eq_b_eq_zero() {
     // a^2 - a = 0, b^2 - b = 0, a - b = 0, a = 0
     //   →  forced a = b = 0.   SAT.
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(3u32),
         equalities: vec![
             vec![pt(1, &["a","a"]), svt(2, "a")],   // a^2 - a
@@ -216,7 +217,7 @@ fn test_common_root_a_eq_b_eq_zero() {
 #[test]
 fn test_common_root_a_zero_b_one() {
     // a^2 - a, b^2 - b, a + b - 1, a   →  a=0, b=1
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(3u32),
         equalities: vec![
             vec![pt(1, &["a","a"]), svt(2, "a")],
@@ -240,7 +241,7 @@ fn test_common_root_a_zero_b_one() {
 #[test]
 fn test_common_root_unsat_a() {
     // a = 0 ∧ a = 1   →  UNSAT
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(3u32),
         equalities: vec![
             vec![vt("a")],
@@ -257,7 +258,7 @@ fn test_common_root_unsat_a() {
 #[test]
 fn test_common_root_a_b_inverse_pair() {
     // a*b = 1   →  SAT for any (a, a^{-1})
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(3u32),
         equalities: vec![
             vec![pt(1, &["a","b"]), ct(2)],   // a*b - 1 = a*b + 2 mod 3
@@ -280,7 +281,7 @@ fn test_common_root_a_b_inverse_pair() {
 #[test]
 fn test_common_root_a_b_inv_b_zero() {
     // a*b = 1 ∧ b = 0   →  UNSAT (0 has no inverse)
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(3u32),
         equalities: vec![
             vec![pt(1, &["a","b"]), ct(2)],
@@ -297,7 +298,7 @@ fn test_common_root_a_b_inv_b_zero() {
 #[test]
 fn test_common_root_a_b_inv_b_two() {
     // a*b = 1 ∧ b = 2   →  a = 2 (since 2*2 = 4 ≡ 1 mod 3)
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(3u32),
         equalities: vec![
             vec![pt(1, &["a","b"]), ct(2)],
@@ -323,7 +324,7 @@ fn test_common_root_a_b_inv_b_two() {
 // a^2 - a, b^2 - b, a - b, a, c*d - 1  →  a = b = 0, c*d = 1.
 #[test]
 fn test_common_root_big() {
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(17u32),
         equalities: vec![
             vec![pt(1, &["a","a"]), svt(16, "a")],
@@ -357,7 +358,7 @@ fn test_common_root_big() {
 // → b is a non-zero square (perfect square), c is its inverse.
 #[test]
 fn test_common_root_constraints() {
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(17u32),
         equalities: vec![
             // a^2 - b = 0

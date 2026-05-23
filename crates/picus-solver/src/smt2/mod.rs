@@ -8,26 +8,31 @@
 //! `define-fun` macros.
 //!
 //! [`parse`] handles the conjunctive subset and returns a
-//! [`LegacyConstraintSystem`]; Boolean connectives in `(assert ...)` are
+//! [`ConstraintSystem`]; Boolean connectives in `(assert ...)` are
 //! rejected with [`ParseError::BooleanInAssert`].
 //!
 //! [`parse_boolean`] handles the full structure above and returns a
 //! [`crate::boolean::BooleanQuery`]. Term-level `(ite c x y)` over FF
 //! terms is skolem-eliminated into a fresh FF variable plus two
 //! conditional equalities at the formula level.
+//!
+//! Both entry points thread a single `ConstraintSystemBuilder`
+//! through the AST recursion: every leaf-variable reference goes
+//! through `builder.var(name)` so the parser emits index-keyed
+//! `Vec<PolyTerm>` directly with no separate intern step.
 
 mod session;
 mod tokenizer;
 
 pub use session::{SessionOutput, SessionVerdict, SmtSession};
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
 use num_bigint::BigUint;
 use num_traits::Zero;
 
-use crate::encoder::{ConstraintSystemBuilder, ConstraintSystem, LegacyPolyTerm};
+use crate::encoder::{ConstraintSystemBuilder, ConstraintSystem, PolyTerm, VarIdx};
 use tokenizer::{parse_sexprs, tokenize, Sexpr};
 
 // ─────────────────────── Errors ──────────────────────────────────────────
@@ -107,11 +112,11 @@ pub(in crate::smt2) fn classify_sort(s: Option<&Sexpr>) -> Option<VarSort> {
 
 // ─────────────────────── Polynomial-expression builder ───────────────────
 
-pub(in crate::smt2) type Polynomial = Vec<LegacyPolyTerm>;
+pub(in crate::smt2) type Polynomial = Vec<PolyTerm>;
 
 fn neg_poly(p: &Polynomial, prime: &BigUint) -> Polynomial {
     p.iter()
-        .map(|t| LegacyPolyTerm {
+        .map(|t| PolyTerm {
             coeff: if t.coeff.is_zero() {
                 BigUint::zero()
             } else {
@@ -128,6 +133,9 @@ fn add_polys(a: Polynomial, b: Polynomial) -> Polynomial {
     out
 }
 
+/// Multiply two `Vec<PolyTerm>` lists. For each cross-product
+/// `t_a * t_b`, merge exponents per variable via `BTreeMap` (so
+/// `x*x` stays as `(x_idx, 2)` rather than two `(x_idx, 1)` entries).
 fn mul_polys(a: &Polynomial, b: &Polynomial, prime: &BigUint) -> Polynomial {
     let mut out = Vec::with_capacity(a.len() * b.len());
     for ta in a {
@@ -136,9 +144,17 @@ fn mul_polys(a: &Polynomial, b: &Polynomial, prime: &BigUint) -> Polynomial {
             if coeff.is_zero() {
                 continue;
             }
-            let mut vars = ta.vars.clone();
-            vars.extend(tb.vars.iter().cloned());
-            out.push(LegacyPolyTerm { coeff, vars });
+            let mut counts: BTreeMap<VarIdx, u16> = BTreeMap::new();
+            for &(idx, exp) in &ta.vars {
+                *counts.entry(idx).or_insert(0) += exp;
+            }
+            for &(idx, exp) in &tb.vars {
+                *counts.entry(idx).or_insert(0) += exp;
+            }
+            out.push(PolyTerm {
+                coeff,
+                vars: counts.into_iter().collect(),
+            });
         }
     }
     out
@@ -178,14 +194,15 @@ fn build_poly(
     s: &Sexpr,
     prime: &BigUint,
     vars: &HashMap<String, VarSort>,
+    builder: &mut ConstraintSystemBuilder,
 ) -> Result<Polynomial, ParseError> {
     match s {
         Sexpr::Atom(a) => {
             if let Some(c) = parse_ff_const(a, prime) {
-                return Ok(vec![LegacyPolyTerm { coeff: c, vars: vec![] }]);
+                return Ok(vec![PolyTerm { coeff: c, vars: vec![] }]);
             }
             if let Ok(c) = a.parse::<BigUint>() {
-                return Ok(vec![LegacyPolyTerm { coeff: c % prime, vars: vec![] }]);
+                return Ok(vec![PolyTerm { coeff: c % prime, vars: vec![] }]);
             }
             match vars.get(a) {
                 None => Err(ParseError::UnknownSymbol(a.clone())),
@@ -193,10 +210,13 @@ fn build_poly(
                     "Bool variable '{}' used in FF term context",
                     a
                 ))),
-                Some(VarSort::Ff) => Ok(vec![LegacyPolyTerm {
-                    coeff: BigUint::from(1u32),
-                    vars: vec![a.clone()],
-                }]),
+                Some(VarSort::Ff) => {
+                    let idx = builder.var(a);
+                    Ok(vec![PolyTerm {
+                        coeff: BigUint::from(1u32),
+                        vars: vec![(idx, 1)],
+                    }])
+                }
             }
         }
         Sexpr::List(elts) => {
@@ -215,12 +235,12 @@ fn build_poly(
                     };
                     let c = parse_ff_const(sym, prime)
                         .ok_or_else(|| ParseError::Malformed(format!("bad 'as' constant: {}", sym)))?;
-                    Ok(vec![LegacyPolyTerm { coeff: c, vars: vec![] }])
+                    Ok(vec![PolyTerm { coeff: c, vars: vec![] }])
                 }
                 "ff.add" | "+" => {
                     let mut acc: Polynomial = Vec::new();
                     for child in &elts[1..] {
-                        let p = build_poly(child, prime, vars)?;
+                        let p = build_poly(child, prime, vars, builder)?;
                         acc = add_polys(acc, p);
                     }
                     Ok(acc)
@@ -230,10 +250,10 @@ fn build_poly(
                     let mut weight = BigUint::from(1u32);
                     let two = BigUint::from(2u32);
                     for child in &elts[1..] {
-                        let p = build_poly(child, prime, vars)?;
+                        let p = build_poly(child, prime, vars, builder)?;
                         let weighted: Polynomial = p
                             .into_iter()
-                            .map(|t| LegacyPolyTerm {
+                            .map(|t| PolyTerm {
                                 coeff: (&t.coeff * &weight) % prime,
                                 vars: t.vars,
                             })
@@ -244,12 +264,12 @@ fn build_poly(
                     Ok(acc)
                 }
                 "ff.mul" | "*" => {
-                    let mut acc: Polynomial = vec![LegacyPolyTerm {
+                    let mut acc: Polynomial = vec![PolyTerm {
                         coeff: BigUint::from(1u32),
                         vars: vec![],
                     }];
                     for child in &elts[1..] {
-                        let p = build_poly(child, prime, vars)?;
+                        let p = build_poly(child, prime, vars, builder)?;
                         acc = mul_polys(&acc, &p, prime);
                     }
                     Ok(acc)
@@ -258,17 +278,17 @@ fn build_poly(
                     if elts.len() != 2 {
                         return Err(ParseError::Malformed("'ff.neg' arity".into()));
                     }
-                    let p = build_poly(&elts[1], prime, vars)?;
+                    let p = build_poly(&elts[1], prime, vars, builder)?;
                     Ok(neg_poly(&p, prime))
                 }
                 "-" if elts.len() == 2 => {
-                    let p = build_poly(&elts[1], prime, vars)?;
+                    let p = build_poly(&elts[1], prime, vars, builder)?;
                     Ok(neg_poly(&p, prime))
                 }
                 "-" => {
-                    let mut acc = build_poly(&elts[1], prime, vars)?;
+                    let mut acc = build_poly(&elts[1], prime, vars, builder)?;
                     for child in &elts[2..] {
-                        let p = build_poly(child, prime, vars)?;
+                        let p = build_poly(child, prime, vars, builder)?;
                         acc = add_polys(acc, neg_poly(&p, prime));
                     }
                     Ok(acc)
@@ -285,8 +305,8 @@ fn handle_assert(
     s: &Sexpr,
     prime: &BigUint,
     vars: &HashMap<String, VarSort>,
-    equalities: &mut Vec<Vec<LegacyPolyTerm>>,
-    diseqs: &mut Vec<(String, String)>,
+    builder: &mut ConstraintSystemBuilder,
+    diseq_zero_pinned: &mut bool,
     diseq_counter: &mut usize,
 ) -> Result<(), ParseError> {
     let list = match s {
@@ -302,10 +322,10 @@ fn handle_assert(
             if list.len() != 3 {
                 return Err(ParseError::Malformed("'=' arity".into()));
             }
-            let a = build_poly(&list[1], prime, vars)?;
-            let b = build_poly(&list[2], prime, vars)?;
+            let a = build_poly(&list[1], prime, vars, builder)?;
+            let b = build_poly(&list[2], prime, vars, builder)?;
             let poly = add_polys(a, neg_poly(&b, prime));
-            equalities.push(poly);
+            builder.add_equality(poly);
             Ok(())
         }
         "not" => {
@@ -329,21 +349,26 @@ fn handle_assert(
             if inner.len() != 3 {
                 return Err(ParseError::Malformed("inner '=' arity".into()));
             }
-            let a = build_poly(&inner[1], prime, vars)?;
-            let b = build_poly(&inner[2], prime, vars)?;
+            let a = build_poly(&inner[1], prime, vars, builder)?;
+            let b = build_poly(&inner[2], prime, vars, builder)?;
 
             // d = a - b; assert d != 0 via the disequality list.
             let d_name = format!("__diseq_d_{}", diseq_counter);
             *diseq_counter += 1;
-            let zero_name = "__zero".to_string();
-            let mut def: Vec<LegacyPolyTerm> = vec![LegacyPolyTerm {
+            let d_idx = builder.var(&d_name);
+            let zero_idx = builder.var("__zero");
+            if !*diseq_zero_pinned {
+                builder.add_assignment(zero_idx, BigUint::zero());
+                *diseq_zero_pinned = true;
+            }
+            let mut def: Vec<PolyTerm> = vec![PolyTerm {
                 coeff: BigUint::from(1u32),
-                vars: vec![d_name.clone()],
+                vars: vec![(d_idx, 1)],
             }];
             def.extend(neg_poly(&a, prime));
             def.extend(b);
-            equalities.push(def);
-            diseqs.push((d_name, zero_name));
+            builder.add_equality(def);
+            builder.add_disequality(d_idx, zero_idx);
             Ok(())
         }
         "and" | "or" | "=>" | "ite" => Err(ParseError::BooleanInAssert(head.into())),
@@ -356,21 +381,18 @@ fn handle_assert(
 
 // ─────────────────────── Top-level loop ──────────────────────────────────
 
-/// Parse an SMT-LIB v2 QF_FF source and produce an
-/// [`ConstraintSystem`]. The recursive `build_poly` helper
-/// still returns a String-keyed `Vec<LegacyPolyTerm>` while walking the
-/// SMT-LIB AST (a natural shape for that recursion), but `parse`
-/// commits each equation to a `ConstraintSystemBuilder` at its
-/// boundary; no `LegacyConstraintSystem` struct is constructed.
+/// Parse an SMT-LIB v2 QF_FF source and produce a
+/// [`ConstraintSystem`]. Threads a single `ConstraintSystemBuilder`
+/// through `build_poly` so each variable reference is interned in
+/// encounter order; the indexed rewriter canonicalises every
+/// equality at the end.
 pub fn parse(src: &str) -> Result<ConstraintSystem, ParseError> {
     let toks = tokenize(src);
     let sexprs = parse_sexprs(&toks)?;
 
+    // First pass: collect prime + declared variables.
     let mut prime: Option<BigUint> = None;
     let mut vars: HashMap<String, VarSort> = HashMap::new();
-    let mut equalities: Vec<Vec<LegacyPolyTerm>> = Vec::new();
-    let mut diseqs: Vec<(String, String)> = Vec::new();
-    let mut diseq_counter = 0usize;
 
     for s in &sexprs {
         let list = match s {
@@ -386,11 +408,8 @@ pub fn parse(src: &str) -> Result<ConstraintSystem, ParseError> {
         };
         match head {
             "set-logic" | "set-info" | "set-option" | "check-sat" | "exit" | "get-model"
-            | "push" | "pop" | "echo" => {
-                // ignored
-            }
+            | "push" | "pop" | "echo" | "assert" => {}
             "define-sort" => {
-                // (define-sort F () (_ FiniteField N))
                 if list.len() < 4 {
                     continue;
                 }
@@ -447,50 +466,42 @@ pub fn parse(src: &str) -> Result<ConstraintSystem, ParseError> {
                     }
                 }
             }
-            "assert" => {
-                if list.len() != 2 {
-                    return Err(ParseError::Malformed("'assert' arity".into()));
-                }
-                let p = prime.as_ref().ok_or(ParseError::MissingPrime)?;
-                handle_assert(
-                    &list[1],
-                    p,
-                    &vars,
-                    &mut equalities,
-                    &mut diseqs,
-                    &mut diseq_counter,
-                )?;
-            }
-            _ => {
-                // Unknown top-level form: ignore.
-            }
+            _ => {}
         }
     }
 
-    let prime = prime.ok_or(ParseError::MissingPrime)?;
+    let prime_val = prime.ok_or(ParseError::MissingPrime)?;
+    let mut builder = ConstraintSystemBuilder::new(prime_val.clone());
+    let mut diseq_counter = 0usize;
+    let mut diseq_zero_pinned = false;
 
-    // Commit accumulated equalities + diseqs to the index-keyed
-    // builder. Variable names appearing in the parser's term lists
-    // (`x0`, `__diseq_d_N`, `__zero`) are interned in encounter
-    // order; the indexed rewriter then canonicalises every
-    // equality.
-    let mut builder = ConstraintSystemBuilder::new(prime);
-    for eq in &equalities {
-        let terms = builder.intern_poly_terms(eq);
-        builder.add_equality(terms);
-    }
-    let mut zero_idx: Option<u32> = None;
-    for (a, b) in &diseqs {
-        let a_idx = builder.var(a);
-        let b_idx = builder.var(b);
-        builder.add_disequality(a_idx, b_idx);
-        if b == "__zero" && zero_idx.is_none() {
-            builder.add_assignment(b_idx, BigUint::zero());
-            zero_idx = Some(b_idx);
+    // Second pass: handle asserts now that the builder is ready.
+    for s in &sexprs {
+        let list = match s {
+            Sexpr::List(l) => l,
+            Sexpr::Atom(_) => continue,
+        };
+        let head = match list.first() {
+            Some(Sexpr::Atom(a)) => a.as_str(),
+            _ => continue,
+        };
+        if head == "assert" {
+            if list.len() != 2 {
+                return Err(ParseError::Malformed("'assert' arity".into()));
+            }
+            handle_assert(
+                &list[1],
+                &prime_val,
+                &vars,
+                &mut builder,
+                &mut diseq_zero_pinned,
+                &mut diseq_counter,
+            )?;
         }
     }
+
     let mut indexed = builder.build();
-    crate::rewriter::rewrite_indexed_system(&mut indexed);
+    crate::rewriter::rewrite_system(&mut indexed);
     Ok(indexed)
 }
 
@@ -498,9 +509,10 @@ pub fn parse(src: &str) -> Result<ConstraintSystem, ParseError> {
 
 use crate::boolean::{BooleanQuery, Formula, Literal};
 
-/// Parser state for `parse_boolean`. Threads through `assert_to_formula`
-/// and `build_poly_with_ctx` so they can introduce skolems and expand
-/// macros.
+/// Parser state for `parse_boolean`. Threads through
+/// `assert_to_formula` and `build_poly_with_ctx`, hosting the
+/// builder that owns the query's variable frame; every FF-typed
+/// leaf reference goes through `builder.var(name)`.
 pub(in crate::smt2) struct ParseCtx {
     prime: BigUint,
     vars: HashMap<String, VarSort>,
@@ -511,6 +523,9 @@ pub(in crate::smt2) struct ParseCtx {
     /// AND-conjoined into the final formula at the top of
     /// `parse_boolean`.
     side_constraints: Vec<Formula>,
+    /// Query-level builder; owned here, donated to `BooleanQuery`
+    /// at the end of `parse_boolean`.
+    builder: ConstraintSystemBuilder,
 }
 
 impl ParseCtx {
@@ -581,17 +596,17 @@ fn is_bool_expr(s: &Sexpr, ctx: &ParseCtx) -> bool {
     }
 }
 
-/// Build an FF polynomial recursively. Handles every FF operator
-/// directly (rather than delegating to `build_poly`) so term-level
-/// `ite` and macro applications are detected at every nesting depth.
+/// Build an FF polynomial recursively. Threads `ctx.builder` so
+/// every FF-typed leaf reference goes through `builder.var(name)`,
+/// producing index-keyed `Vec<PolyTerm>` directly.
 fn build_poly_with_ctx(s: &Sexpr, ctx: &mut ParseCtx) -> Result<Polynomial, ParseError> {
     match s {
         Sexpr::Atom(a) => {
             if let Some(c) = parse_ff_const(a, &ctx.prime) {
-                return Ok(vec![LegacyPolyTerm { coeff: c, vars: vec![] }]);
+                return Ok(vec![PolyTerm { coeff: c, vars: vec![] }]);
             }
             if let Ok(c) = a.parse::<BigUint>() {
-                return Ok(vec![LegacyPolyTerm {
+                return Ok(vec![PolyTerm {
                     coeff: c % &ctx.prime,
                     vars: vec![],
                 }]);
@@ -602,10 +617,13 @@ fn build_poly_with_ctx(s: &Sexpr, ctx: &mut ParseCtx) -> Result<Polynomial, Pars
                     "Bool variable '{}' used in FF term context",
                     a
                 ))),
-                Some(VarSort::Ff) => Ok(vec![LegacyPolyTerm {
-                    coeff: BigUint::from(1u32),
-                    vars: vec![a.clone()],
-                }]),
+                Some(VarSort::Ff) => {
+                    let idx = ctx.builder.var(a);
+                    Ok(vec![PolyTerm {
+                        coeff: BigUint::from(1u32),
+                        vars: vec![(idx, 1)],
+                    }])
+                }
             }
         }
         Sexpr::List(elts) => {
@@ -619,9 +637,10 @@ fn build_poly_with_ctx(s: &Sexpr, ctx: &mut ParseCtx) -> Result<Polynomial, Pars
                     let then_poly = build_poly_with_ctx(&elts[2], ctx)?;
                     let else_poly = build_poly_with_ctx(&elts[3], ctx)?;
                     let r_name = ctx.fresh_ite_var();
-                    let r_poly: Polynomial = vec![LegacyPolyTerm {
+                    let r_idx = ctx.builder.var(&r_name);
+                    let r_poly: Polynomial = vec![PolyTerm {
                         coeff: BigUint::from(1u32),
-                        vars: vec![r_name],
+                        vars: vec![(r_idx, 1)],
                     }];
                     ctx.side_constraints.push(Formula::Or(vec![
                         Formula::Not(Box::new(cond.clone())),
@@ -644,7 +663,7 @@ fn build_poly_with_ctx(s: &Sexpr, ctx: &mut ParseCtx) -> Result<Polynomial, Pars
                     let c = parse_ff_const(sym, &ctx.prime).ok_or_else(|| {
                         ParseError::Malformed(format!("bad 'as' constant: {}", sym))
                     })?;
-                    Ok(vec![LegacyPolyTerm { coeff: c, vars: vec![] }])
+                    Ok(vec![PolyTerm { coeff: c, vars: vec![] }])
                 }
                 "ff.add" | "+" => {
                     let mut acc: Polynomial = Vec::new();
@@ -655,7 +674,6 @@ fn build_poly_with_ctx(s: &Sexpr, ctx: &mut ParseCtx) -> Result<Polynomial, Pars
                     Ok(acc)
                 }
                 "ff.bitsum" => {
-                    // sum_i (2^i * a_i)  mod prime
                     let mut acc: Polynomial = Vec::new();
                     let mut weight = BigUint::from(1u32);
                     let two = BigUint::from(2u32);
@@ -664,7 +682,7 @@ fn build_poly_with_ctx(s: &Sexpr, ctx: &mut ParseCtx) -> Result<Polynomial, Pars
                         let p = build_poly_with_ctx(child, ctx)?;
                         let weighted: Polynomial = p
                             .into_iter()
-                            .map(|t| LegacyPolyTerm {
+                            .map(|t| PolyTerm {
                                 coeff: (&t.coeff * &weight) % &prime,
                                 vars: t.vars,
                             })
@@ -675,7 +693,7 @@ fn build_poly_with_ctx(s: &Sexpr, ctx: &mut ParseCtx) -> Result<Polynomial, Pars
                     Ok(acc)
                 }
                 "ff.mul" | "*" => {
-                    let mut acc: Polynomial = vec![LegacyPolyTerm {
+                    let mut acc: Polynomial = vec![PolyTerm {
                         coeff: BigUint::from(1u32),
                         vars: vec![],
                     }];
@@ -787,13 +805,14 @@ pub(in crate::smt2) fn assert_to_formula(s: &Sexpr, ctx: &mut ParseCtx) -> Resul
                     // vars live in the polynomial namespace too — they
                     // are FF-typed at the encoder layer with the SAT
                     // engine enforcing 0/1 via mutex clauses elsewhere.
-                    let one: Polynomial = vec![LegacyPolyTerm {
+                    let idx = ctx.builder.var(name);
+                    let one: Polynomial = vec![PolyTerm {
                         coeff: BigUint::from(1u32),
                         vars: vec![],
                     }];
-                    let b: Polynomial = vec![LegacyPolyTerm {
+                    let b: Polynomial = vec![PolyTerm {
                         coeff: BigUint::from(1u32),
-                        vars: vec![name.to_string()],
+                        vars: vec![(idx, 1)],
                     }];
                     return Ok(Formula::Lit(Literal::Eq(b, one)));
                 }
@@ -1075,11 +1094,12 @@ pub fn parse_boolean(src: &str) -> Result<BooleanQuery, ParseError> {
     let prime = prime.unwrap_or_else(|| BigUint::from(2u32));
 
     let mut ctx = ParseCtx {
-        prime,
+        prime: prime.clone(),
         vars,
         macros,
         next_ite_skolem: 0,
         side_constraints: Vec::new(),
+        builder: ConstraintSystemBuilder::new(prime),
     };
 
     // Second pass: handle asserts in order. Asserts come after macros and
@@ -1106,21 +1126,24 @@ pub fn parse_boolean(src: &str) -> Result<BooleanQuery, ParseError> {
     // Bool variables live in the polynomial namespace as FF elements
     // restricted to {0, 1}. Emit the bit-constraint `b * b = b` for
     // each (skolem ite vars are Ff and filtered out).
-    for (name, sort) in &ctx.vars {
-        if matches!(sort, VarSort::Bool) {
-            let b_sq: Polynomial = vec![LegacyPolyTerm {
-                coeff: BigUint::from(1u32),
-                vars: vec![name.clone(), name.clone()],
-            }];
-            let b: Polynomial = vec![LegacyPolyTerm {
-                coeff: BigUint::from(1u32),
-                vars: vec![name.clone()],
-            }];
-            formulas.push(Formula::Lit(Literal::Eq(b_sq, b)));
-        }
+    let bool_names: Vec<String> = ctx
+        .vars
+        .iter()
+        .filter_map(|(name, sort)| if matches!(sort, VarSort::Bool) { Some(name.clone()) } else { None })
+        .collect();
+    for name in &bool_names {
+        let idx = ctx.builder.var(name);
+        let b_sq: Polynomial = vec![PolyTerm {
+            coeff: BigUint::from(1u32),
+            vars: vec![(idx, 2)],
+        }];
+        let b: Polynomial = vec![PolyTerm {
+            coeff: BigUint::from(1u32),
+            vars: vec![(idx, 1)],
+        }];
+        formulas.push(Formula::Lit(Literal::Eq(b_sq, b)));
     }
 
-    let var_names: Vec<String> = ctx.vars.keys().cloned().collect();
     let combined = if formulas.is_empty() {
         Formula::True
     } else if formulas.len() == 1 {
@@ -1128,7 +1151,7 @@ pub fn parse_boolean(src: &str) -> Result<BooleanQuery, ParseError> {
     } else {
         Formula::And(formulas)
     };
-    Ok(BooleanQuery::from_formula(ctx.prime, var_names, combined))
+    Ok(BooleanQuery::from_builder_and_formula(ctx.builder, combined))
 }
 
 

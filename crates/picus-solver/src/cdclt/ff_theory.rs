@@ -2,9 +2,13 @@
 //!
 //! Shape matches cvc5 `theory/ff/sub_theory.cpp`. Facts arrive via
 //! [`Theory::notify_fact`] onto a level-indexed trail. Each
-//! [`Theory::post_check`] at `Effort::Full` builds a
-//! [`LegacyConstraintSystem`] from the current trail, runs the GB solver,
-//! and maps any returned UNSAT core indices back to atom variables.
+//! [`Theory::post_check`] at `Effort::Full` walks the trail
+//! through [`ConstraintSystemBuilder`] to build a canonical
+//! [`ConstraintSystem`], runs the GB solver via
+//! [`encode`], and maps any returned UNSAT core indices
+//! back to atom variables. `AtomKey::to_poly_terms` still produces
+//! transient `Vec<LegacyPolyTerm>` lists that are interned to
+//! `Vec<PolyTerm>` at the builder boundary via `intern_poly_terms`.
 
 use std::collections::HashMap;
 
@@ -12,9 +16,7 @@ use num_bigint::BigUint;
 use num_traits::Zero;
 
 use crate::core::{solve_encoded_with_cancel, SolveOutcome};
-use crate::encoder::{
-    encode_indexed, ConstraintSystemBuilder, PolyTerm, LegacyPolyTerm,
-};
+use crate::encoder::{encode, ConstraintSystemBuilder, PolyTerm};
 use crate::sat::Var;
 use crate::timeout::CancelToken;
 
@@ -56,7 +58,7 @@ impl<'a> FfTheory<'a> {
     /// and map any returned `original_polys` core indices back to
     /// atom variables. Encoded-input ordering is
     /// `equality_atoms ++ disequality_atoms` (see
-    /// `encoder::encode_indexed_impl`).
+    /// `encoder::encode_impl`).
     fn check_full_with_mapping(&mut self) -> CheckOutcome {
         let prime = self.atoms.prime().clone();
 
@@ -74,8 +76,7 @@ impl<'a> FfTheory<'a> {
             };
             had_any = true;
             if polarity {
-                let polyterms = key.to_poly_terms();
-                let terms = builder.intern_poly_terms(&polyterms);
+                let terms = key.intern_into(&mut builder);
                 builder.add_equality(terms);
                 equality_atoms.push(atom_var);
             } else {
@@ -93,28 +94,14 @@ impl<'a> FfTheory<'a> {
                 };
 
                 // Encode `(d - lhs) = 0`: starts with `+1 * d_var`
-                // then appends `-coeff · vars` for each term of the
-                // atom's polynomial.
+                // then appends the atom's polynomial with each coeff
+                // negated mod prime.
                 let mut def: Vec<PolyTerm> = Vec::with_capacity(key.terms.len() + 1);
                 def.push(PolyTerm {
                     coeff: BigUint::from(1u32),
                     vars: vec![(d_idx, 1)],
                 });
-                // Convert each atom term to PolyTerm, then negate
-                // (i.e. replace coeff with `(p - coeff) mod p`).
-                let polyterms_legacy: Vec<LegacyPolyTerm> = key
-                    .terms
-                    .iter()
-                    .map(|(c, vs)| {
-                        let neg = if c.is_zero() { BigUint::zero() } else { &prime - c };
-                        LegacyPolyTerm {
-                            coeff: neg,
-                            vars: vs.clone(),
-                        }
-                    })
-                    .collect();
-                let negated = builder.intern_poly_terms(&polyterms_legacy);
-                def.extend(negated);
+                def.extend(key.intern_negated_into(&mut builder, &prime));
                 builder.add_equality(def);
                 equality_atoms.push(atom_var);
                 builder.add_disequality(d_idx, zero);
@@ -129,7 +116,7 @@ impl<'a> FfTheory<'a> {
         }
 
         let indexed = builder.build();
-        let encoded = match encode_indexed(&indexed) {
+        let encoded = match encode(&indexed) {
             Ok(e) => e,
             Err(_) => return CheckOutcome::Unknown,
         };
@@ -444,15 +431,34 @@ impl<'a> Theory for FfTheory<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
     use crate::cdclt::atoms::{AtomTable, InternResult};
-    use crate::encoder::LegacyPolyTerm;
+    use crate::encoder::PolyTerm;
     use crate::sat::Solver;
     use num_bigint::BigUint;
 
-    fn t(coeff: u64, vars: &[&str]) -> LegacyPolyTerm {
-        LegacyPolyTerm {
+    /// Interns `name` into `vn` (returning a stable `u32` index) and
+    /// reuses the existing slot for repeat calls.
+    fn ensure_var(vn: &mut Vec<String>, name: &str) -> u32 {
+        if let Some(i) = vn.iter().position(|n| n == name) {
+            return i as u32;
+        }
+        vn.push(name.to_string());
+        (vn.len() - 1) as u32
+    }
+
+    /// `coeff * prod(vars)` as a `PolyTerm`, collapsing repeated name
+    /// occurrences into `(VarIdx, exp)` pairs.
+    fn t(vn: &mut Vec<String>, coeff: u64, vars: &[&str]) -> PolyTerm {
+        let mut counts: BTreeMap<u32, u16> = BTreeMap::new();
+        for n in vars {
+            let idx = ensure_var(vn, n);
+            *counts.entry(idx).or_insert(0) += 1;
+        }
+        PolyTerm {
             coeff: BigUint::from(coeff),
-            vars: vars.iter().map(|s| s.to_string()).collect(),
+            vars: counts.into_iter().collect(),
         }
     }
 
@@ -460,11 +466,31 @@ mod tests {
     fn intern_eq_var(
         tbl: &mut AtomTable,
         sat: &mut Solver,
+        vn: &mut Vec<String>,
         var: &str,
         c: u64,
     ) -> Var {
-        let r = tbl.intern_eq(&[t(1, &[var])], &[t(c, &[])], sat);
+        let lhs = vec![t(vn, 1, &[var])];
+        let rhs = vec![t(vn, c, &[])];
+        let r = tbl.intern_eq(&lhs, &rhs, vn, sat);
         match r {
+            InternResult::Var(v) => v,
+            _ => panic!("expected Var"),
+        }
+    }
+
+    /// Atom variable for arbitrary `(= sum_lhs sum_rhs)` from
+    /// `&[(coeff, &[var_names])]` term specs.
+    fn intern_eq_terms(
+        tbl: &mut AtomTable,
+        sat: &mut Solver,
+        vn: &mut Vec<String>,
+        lhs_spec: &[(u64, &[&str])],
+        rhs_spec: &[(u64, &[&str])],
+    ) -> Var {
+        let lhs: Vec<PolyTerm> = lhs_spec.iter().map(|(c, vs)| t(vn, *c, vs)).collect();
+        let rhs: Vec<PolyTerm> = rhs_spec.iter().map(|(c, vs)| t(vn, *c, vs)).collect();
+        match tbl.intern_eq(&lhs, &rhs, vn, sat) {
             InternResult::Var(v) => v,
             _ => panic!("expected Var"),
         }
@@ -488,7 +514,8 @@ mod tests {
         let prime = BigUint::from(101u32);
         let mut atoms = AtomTable::new(prime);
         let mut sat = Solver::new();
-        let av = intern_eq_var(&mut atoms, &mut sat, "x", 5);
+        let mut vn: Vec<String> = Vec::new();
+        let av = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 5);
         let cancel = CancelToken::none();
         let mut th = FfTheory::new(&atoms, &cancel);
         th.notify_fact(av, true);
@@ -506,8 +533,9 @@ mod tests {
         let prime = BigUint::from(101u32);
         let mut atoms = AtomTable::new(prime);
         let mut sat = Solver::new();
-        let a1 = intern_eq_var(&mut atoms, &mut sat, "x", 5);
-        let a2 = intern_eq_var(&mut atoms, &mut sat, "x", 6);
+        let mut vn: Vec<String> = Vec::new();
+        let a1 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 5);
+        let a2 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 6);
         let cancel = CancelToken::none();
         let mut th = FfTheory::new(&atoms, &cancel);
         th.notify_fact(a1, true);
@@ -529,7 +557,8 @@ mod tests {
         let prime = BigUint::from(101u32);
         let mut atoms = AtomTable::new(prime);
         let mut sat = Solver::new();
-        let av = intern_eq_var(&mut atoms, &mut sat, "x", 5);
+        let mut vn: Vec<String> = Vec::new();
+        let av = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 5);
         let cancel = CancelToken::none();
         let mut th = FfTheory::new(&atoms, &cancel);
         th.notify_fact(av, true);
@@ -547,7 +576,8 @@ mod tests {
         let prime = BigUint::from(101u32);
         let mut atoms = AtomTable::new(prime);
         let mut sat = Solver::new();
-        let av = intern_eq_var(&mut atoms, &mut sat, "x", 5);
+        let mut vn: Vec<String> = Vec::new();
+        let av = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 5);
         let cancel = CancelToken::none();
         let mut th = FfTheory::new(&atoms, &cancel);
         th.push();
@@ -562,7 +592,8 @@ mod tests {
         let prime = BigUint::from(101u32);
         let mut atoms = AtomTable::new(prime);
         let mut sat = Solver::new();
-        let _ = intern_eq_var(&mut atoms, &mut sat, "x", 5);
+        let mut vn: Vec<String> = Vec::new();
+        let _ = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 5);
         let cancel = CancelToken::none();
         let mut th = FfTheory::new(&atoms, &cancel);
         // Without any True fact, no var is pinned ⇒ no propagation.
@@ -577,8 +608,9 @@ mod tests {
         let prime = BigUint::from(101u32);
         let mut atoms = AtomTable::new(prime);
         let mut sat = Solver::new();
-        let a5 = intern_eq_var(&mut atoms, &mut sat, "x", 5);
-        let a6 = intern_eq_var(&mut atoms, &mut sat, "x", 6);
+        let mut vn: Vec<String> = Vec::new();
+        let a5 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 5);
+        let a6 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 6);
         let cancel = CancelToken::none();
         let mut th = FfTheory::new(&atoms, &cancel);
         th.notify_fact(a5, true);
@@ -596,16 +628,16 @@ mod tests {
         let prime = BigUint::from(101u32);
         let mut atoms = AtomTable::new(prime);
         let mut sat = Solver::new();
-        let ax = intern_eq_var(&mut atoms, &mut sat, "x", 3);
-        let ay = intern_eq_var(&mut atoms, &mut sat, "y", 4);
-        let asum = match atoms.intern_eq(
-            &[t(1, &["x"]), t(1, &["y"])],
-            &[t(7, &[])],
+        let mut vn: Vec<String> = Vec::new();
+        let ax = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 3);
+        let ay = intern_eq_var(&mut atoms, &mut sat, &mut vn, "y", 4);
+        let asum = intern_eq_terms(
+            &mut atoms,
             &mut sat,
-        ) {
-            InternResult::Var(v) => v,
-            _ => panic!(),
-        };
+            &mut vn,
+            &[(1, &["x"]), (1, &["y"])],
+            &[(7, &[])],
+        );
         let cancel = CancelToken::none();
         let mut th = FfTheory::new(&atoms, &cancel);
         th.notify_fact(ax, true);
@@ -626,17 +658,17 @@ mod tests {
         let prime = BigUint::from(101u32);
         let mut atoms = AtomTable::new(prime);
         let mut sat = Solver::new();
-        let ax = intern_eq_var(&mut atoms, &mut sat, "x", 3);
-        let ay = intern_eq_var(&mut atoms, &mut sat, "y", 4);
-        let az = intern_eq_var(&mut atoms, &mut sat, "z", 9);
-        let asum = match atoms.intern_eq(
-            &[t(1, &["x"]), t(1, &["y"])],
-            &[t(7, &[])],
+        let mut vn: Vec<String> = Vec::new();
+        let ax = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 3);
+        let ay = intern_eq_var(&mut atoms, &mut sat, &mut vn, "y", 4);
+        let az = intern_eq_var(&mut atoms, &mut sat, &mut vn, "z", 9);
+        let asum = intern_eq_terms(
+            &mut atoms,
             &mut sat,
-        ) {
-            InternResult::Var(v) => v,
-            _ => panic!(),
-        };
+            &mut vn,
+            &[(1, &["x"]), (1, &["y"])],
+            &[(7, &[])],
+        );
         let cancel = CancelToken::none();
         let mut th = FfTheory::new(&atoms, &cancel);
         th.notify_fact(ax, true);
@@ -657,8 +689,9 @@ mod tests {
         let prime = BigUint::from(101u32);
         let mut atoms = AtomTable::new(prime);
         let mut sat = Solver::new();
-        let a5 = intern_eq_var(&mut atoms, &mut sat, "x", 5);
-        let _a6 = intern_eq_var(&mut atoms, &mut sat, "x", 6);
+        let mut vn: Vec<String> = Vec::new();
+        let a5 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 5);
+        let _a6 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 6);
         let cancel = CancelToken::none();
         let mut th = FfTheory::new(&atoms, &cancel);
         th.notify_fact(a5, false);
@@ -673,7 +706,8 @@ mod tests {
         let prime = BigUint::from(101u32);
         let mut atoms = AtomTable::new(prime);
         let mut sat = Solver::new();
-        let _a5 = intern_eq_var(&mut atoms, &mut sat, "x", 5);
+        let mut vn: Vec<String> = Vec::new();
+        let _a5 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 5);
         let aux = atoms.new_aux(&mut sat);
         let cancel = CancelToken::none();
         let mut th = FfTheory::new(&atoms, &cancel);
@@ -688,11 +722,15 @@ mod tests {
         let prime = BigUint::from(101u32);
         let mut atoms = AtomTable::new(prime);
         let mut sat = Solver::new();
-        let ax2 = intern_eq_var(&mut atoms, &mut sat, "x", 2);
-        let asq = match atoms.intern_eq(&[t(1, &["x", "x"])], &[t(4, &[])], &mut sat) {
-            InternResult::Var(v) => v,
-            _ => panic!(),
-        };
+        let mut vn: Vec<String> = Vec::new();
+        let ax2 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 2);
+        let asq = intern_eq_terms(
+            &mut atoms,
+            &mut sat,
+            &mut vn,
+            &[(1, &["x", "x"])],
+            &[(4, &[])],
+        );
         let cancel = CancelToken::none();
         let mut th = FfTheory::new(&atoms, &cancel);
         th.notify_fact(ax2, true);
@@ -710,15 +748,15 @@ mod tests {
         let prime = BigUint::from(101u32);
         let mut atoms = AtomTable::new(prime);
         let mut sat = Solver::new();
-        let ax3 = intern_eq_var(&mut atoms, &mut sat, "x", 3);
-        let asum = match atoms.intern_eq(
-            &[t(1, &["x"]), t(1, &["y"])],
-            &[t(7, &[])],
+        let mut vn: Vec<String> = Vec::new();
+        let ax3 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 3);
+        let asum = intern_eq_terms(
+            &mut atoms,
             &mut sat,
-        ) {
-            InternResult::Var(v) => v,
-            _ => panic!(),
-        };
+            &mut vn,
+            &[(1, &["x"]), (1, &["y"])],
+            &[(7, &[])],
+        );
         let cancel = CancelToken::none();
         let mut th = FfTheory::new(&atoms, &cancel);
         th.notify_fact(ax3, true);
@@ -736,12 +774,16 @@ mod tests {
         let prime = BigUint::from(101u32);
         let mut atoms = AtomTable::new(prime);
         let mut sat = Solver::new();
-        let a_x5 = intern_eq_var(&mut atoms, &mut sat, "x", 5);
-        let a_2x10 = match atoms.intern_eq(&[t(2, &["x"])], &[t(10, &[])], &mut sat) {
-            InternResult::Var(v) => v,
-            _ => panic!(),
-        };
-        let a_x6 = intern_eq_var(&mut atoms, &mut sat, "x", 6);
+        let mut vn: Vec<String> = Vec::new();
+        let a_x5 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 5);
+        let a_2x10 = intern_eq_terms(
+            &mut atoms,
+            &mut sat,
+            &mut vn,
+            &[(2, &["x"])],
+            &[(10, &[])],
+        );
+        let a_x6 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 6);
         let cancel = CancelToken::none();
         let mut th = FfTheory::new(&atoms, &cancel);
         th.notify_fact(a_x5, true);
@@ -763,10 +805,14 @@ mod tests {
         let prime = BigUint::from(7u32);
         let mut atoms = AtomTable::new(prime);
         let mut sat = Solver::new();
-        let av = match atoms.intern_eq(&[t(0, &[])], &[t(1, &[])], &mut sat) {
-            InternResult::Var(v) => v,
-            _ => panic!("(= 0 1) interns to a real atom on GF(7)"),
-        };
+        let mut vn: Vec<String> = Vec::new();
+        let av = intern_eq_terms(
+            &mut atoms,
+            &mut sat,
+            &mut vn,
+            &[(0, &[])],
+            &[(1, &[])],
+        );
         let cancel = CancelToken::none();
         let mut th = FfTheory::new(&atoms, &cancel);
         th.notify_fact(av, true);
@@ -779,16 +825,16 @@ mod tests {
         let prime = BigUint::from(101u32);
         let mut atoms = AtomTable::new(prime);
         let mut sat = Solver::new();
-        let ax3 = intern_eq_var(&mut atoms, &mut sat, "x", 3);
-        let ay4 = intern_eq_var(&mut atoms, &mut sat, "y", 4);
-        let asum = match atoms.intern_eq(
-            &[t(1, &["x"]), t(1, &["y"])],
-            &[t(7, &[])],
+        let mut vn: Vec<String> = Vec::new();
+        let ax3 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 3);
+        let ay4 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "y", 4);
+        let asum = intern_eq_terms(
+            &mut atoms,
             &mut sat,
-        ) {
-            InternResult::Var(v) => v,
-            _ => panic!(),
-        };
+            &mut vn,
+            &[(1, &["x"]), (1, &["y"])],
+            &[(7, &[])],
+        );
         let cancel = CancelToken::none();
         let mut th = FfTheory::new(&atoms, &cancel);
         th.notify_fact(ax3, true);
@@ -807,17 +853,17 @@ mod tests {
         let prime = BigUint::from(101u32);
         let mut atoms = AtomTable::new(prime);
         let mut sat = Solver::new();
-        let ax3 = intern_eq_var(&mut atoms, &mut sat, "x", 3);
-        let _ay4 = intern_eq_var(&mut atoms, &mut sat, "y", 4);
-        let ay5 = intern_eq_var(&mut atoms, &mut sat, "y", 5);
-        let asum = match atoms.intern_eq(
-            &[t(1, &["x"]), t(1, &["y"])],
-            &[t(7, &[])],
+        let mut vn: Vec<String> = Vec::new();
+        let ax3 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 3);
+        let _ay4 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "y", 4);
+        let ay5 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "y", 5);
+        let asum = intern_eq_terms(
+            &mut atoms,
             &mut sat,
-        ) {
-            InternResult::Var(v) => v,
-            _ => panic!(),
-        };
+            &mut vn,
+            &[(1, &["x"]), (1, &["y"])],
+            &[(7, &[])],
+        );
         let cancel = CancelToken::none();
         let mut th = FfTheory::new(&atoms, &cancel);
         th.notify_fact(ax3, true);
@@ -836,17 +882,17 @@ mod tests {
         let prime = BigUint::from(101u32);
         let mut atoms = AtomTable::new(prime);
         let mut sat = Solver::new();
-        let ax3 = intern_eq_var(&mut atoms, &mut sat, "x", 3);
-        let _ay7 = intern_eq_var(&mut atoms, &mut sat, "y", 7);
-        let _az0 = intern_eq_var(&mut atoms, &mut sat, "z", 0);
-        let asum = match atoms.intern_eq(
-            &[t(1, &["x"]), t(1, &["y"]), t(1, &["z"])],
-            &[t(10, &[])],
+        let mut vn: Vec<String> = Vec::new();
+        let ax3 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 3);
+        let _ay7 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "y", 7);
+        let _az0 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "z", 0);
+        let asum = intern_eq_terms(
+            &mut atoms,
             &mut sat,
-        ) {
-            InternResult::Var(v) => v,
-            _ => panic!(),
-        };
+            &mut vn,
+            &[(1, &["x"]), (1, &["y"]), (1, &["z"])],
+            &[(10, &[])],
+        );
         let cancel = CancelToken::none();
         let mut th = FfTheory::new(&atoms, &cancel);
         th.notify_fact(ax3, true);
@@ -864,12 +910,16 @@ mod tests {
         let prime = BigUint::from(101u32);
         let mut atoms = AtomTable::new(prime);
         let mut sat = Solver::new();
-        let ax3 = intern_eq_var(&mut atoms, &mut sat, "x", 3);
-        let _ay3 = intern_eq_var(&mut atoms, &mut sat, "y", 3);
-        let aprod = match atoms.intern_eq(&[t(1, &["y", "z"])], &[t(12, &[])], &mut sat) {
-            InternResult::Var(v) => v,
-            _ => panic!(),
-        };
+        let mut vn: Vec<String> = Vec::new();
+        let ax3 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 3);
+        let _ay3 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "y", 3);
+        let aprod = intern_eq_terms(
+            &mut atoms,
+            &mut sat,
+            &mut vn,
+            &[(1, &["y", "z"])],
+            &[(12, &[])],
+        );
         let cancel = CancelToken::none();
         let mut th = FfTheory::new(&atoms, &cancel);
         th.notify_fact(ax3, true);
@@ -884,16 +934,16 @@ mod tests {
         let prime = BigUint::from(101u32);
         let mut atoms = AtomTable::new(prime);
         let mut sat = Solver::new();
-        let ax3 = intern_eq_var(&mut atoms, &mut sat, "x", 3);
-        let ay4 = intern_eq_var(&mut atoms, &mut sat, "y", 4);
-        let asum = match atoms.intern_eq(
-            &[t(1, &["x"]), t(1, &["y"])],
-            &[t(7, &[])],
+        let mut vn: Vec<String> = Vec::new();
+        let ax3 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 3);
+        let ay4 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "y", 4);
+        let asum = intern_eq_terms(
+            &mut atoms,
             &mut sat,
-        ) {
-            InternResult::Var(v) => v,
-            _ => panic!(),
-        };
+            &mut vn,
+            &[(1, &["x"]), (1, &["y"])],
+            &[(7, &[])],
+        );
         let cancel = CancelToken::none();
         let mut th = FfTheory::new(&atoms, &cancel);
         th.notify_fact(ax3, true);
@@ -920,16 +970,16 @@ mod tests {
         let prime = BigUint::from(101u32);
         let mut atoms = AtomTable::new(prime);
         let mut sat = Solver::new();
-        let ax4 = intern_eq_var(&mut atoms, &mut sat, "x", 4);
-        let ay3 = intern_eq_var(&mut atoms, &mut sat, "y", 3);
-        let aprod = match atoms.intern_eq(
-            &[t(1, &["x", "y"])],
-            &[t(12, &[])],
+        let mut vn: Vec<String> = Vec::new();
+        let ax4 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 4);
+        let ay3 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "y", 3);
+        let aprod = intern_eq_terms(
+            &mut atoms,
             &mut sat,
-        ) {
-            InternResult::Var(v) => v,
-            _ => panic!(),
-        };
+            &mut vn,
+            &[(1, &["x", "y"])],
+            &[(12, &[])],
+        );
         let cancel = CancelToken::none();
         let mut th = FfTheory::new(&atoms, &cancel);
         th.notify_fact(ax4, true);
@@ -948,8 +998,9 @@ mod tests {
         let prime = BigUint::from(101u32);
         let mut atoms = AtomTable::new(prime);
         let mut sat = Solver::new();
-        let a3 = intern_eq_var(&mut atoms, &mut sat, "x", 3);
-        let _a6 = intern_eq_var(&mut atoms, &mut sat, "x", 6);
+        let mut vn: Vec<String> = Vec::new();
+        let a3 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 3);
+        let _a6 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 6);
         let cancel = CancelToken::none();
         let mut th = FfTheory::new(&atoms, &cancel);
         th.push();

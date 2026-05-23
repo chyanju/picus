@@ -85,7 +85,7 @@ fn parse_boolean_accepts_bool_decl() {
         (check-sat)
     "#;
     let q = parse_boolean(src).expect("parse");
-    assert!(q.var_names.iter().any(|n| n == "b"));
+    assert!(q.var_names().iter().any(|n| n == "b"));
 }
 
 #[test]
@@ -131,7 +131,7 @@ fn parse_boolean_term_level_ite() {
         (check-sat)
     "#;
     let q = parse_boolean(src).expect("parse");
-    assert!(q.var_names.iter().any(|n| n.starts_with("__ite_")));
+    assert!(q.var_names().iter().any(|n| n.starts_with("__ite_")));
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn parse_boolean_term_level_ite_nested() {
     "#;
     let q = parse_boolean(src).expect("parse");
     let skolems = q
-        .var_names
+        .var_names()
         .iter()
         .filter(|n| n.starts_with("__ite_"))
         .count();

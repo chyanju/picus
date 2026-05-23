@@ -2,14 +2,15 @@
 //! Run with: cargo test -p picus-solver --test bench_perf --release -- --ignored --nocapture
 
 use picus_solver::core::{solve_encoded, SolveOutcome};
-use picus_solver::encoder::{encode, encode_no_auto_bitsum, LegacyConstraintSystem, LegacyPolyTerm};
+mod common;
+use common::{NamedSystem, NamedTerm};
 use picus_solver::gb::{compute_gb, GbResult};
 use num_bigint::BigUint;
 use num_traits::One;
 use std::time::Instant;
 
-fn pterm(coeff: u64, vars: &[&str]) -> LegacyPolyTerm {
-    LegacyPolyTerm { coeff: BigUint::from(coeff), vars: vars.iter().map(|s| s.to_string()).collect() }
+fn pterm(coeff: u64, vars: &[&str]) -> NamedTerm {
+    NamedTerm { coeff: BigUint::from(coeff), vars: vars.iter().map(|s| s.to_string()).collect() }
 }
 
 fn bn128_prime() -> BigUint {
@@ -25,12 +26,12 @@ fn bench_is_zero_bn128() {
     let p: BigUint = "21888242871839275222246405745257275088548364400416034343698204186575808495617".parse().unwrap();
     let pm1 = &p - BigUint::one();
 
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: p.clone(),
         equalities: vec![
-            vec![pterm(1, &["m", "x"]), pterm(1, &["iz"]), LegacyPolyTerm { coeff: pm1.clone(), vars: vec![] }],
+            vec![pterm(1, &["m", "x"]), pterm(1, &["iz"]), NamedTerm { coeff: pm1.clone(), vars: vec![] }],
             vec![pterm(1, &["iz", "x"])],
-            vec![pterm(1, &["mp", "x"]), pterm(1, &["izp"]), LegacyPolyTerm { coeff: pm1.clone(), vars: vec![] }],
+            vec![pterm(1, &["mp", "x"]), pterm(1, &["izp"]), NamedTerm { coeff: pm1.clone(), vars: vec![] }],
             vec![pterm(1, &["izp", "x"])],
         ],
         disequalities: vec![("iz".into(), "izp".into())],
@@ -40,7 +41,7 @@ fn bench_is_zero_bn128() {
     };
 
     let start = Instant::now();
-    let encoded = encode(&system).unwrap();
+    let encoded = system.encode().unwrap();
     let encode_time = start.elapsed();
 
     let start = Instant::now();
@@ -65,32 +66,32 @@ fn bench_multi_constraint_gf17() {
     let p = BigUint::from(17u32);
 
     // 5 binary constraints + sum constraint
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: p.clone(),
         equalities: vec![
-            vec![pterm(1, &["b0", "b0"]), LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec!["b0".into()] }],
-            vec![pterm(1, &["b1", "b1"]), LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec!["b1".into()] }],
-            vec![pterm(1, &["b2", "b2"]), LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec!["b2".into()] }],
-            vec![pterm(1, &["b3", "b3"]), LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec!["b3".into()] }],
+            vec![pterm(1, &["b0", "b0"]), NamedTerm { coeff: BigUint::from(16u32), vars: vec!["b0".into()] }],
+            vec![pterm(1, &["b1", "b1"]), NamedTerm { coeff: BigUint::from(16u32), vars: vec!["b1".into()] }],
+            vec![pterm(1, &["b2", "b2"]), NamedTerm { coeff: BigUint::from(16u32), vars: vec!["b2".into()] }],
+            vec![pterm(1, &["b3", "b3"]), NamedTerm { coeff: BigUint::from(16u32), vars: vec!["b3".into()] }],
             // s = b0 + 2*b1 + 4*b2 + 8*b3
             vec![
-                LegacyPolyTerm { coeff: BigUint::one(), vars: vec!["s".into()] },
-                LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec!["b0".into()] },
-                LegacyPolyTerm { coeff: BigUint::from(15u32), vars: vec!["b1".into()] },
-                LegacyPolyTerm { coeff: BigUint::from(13u32), vars: vec!["b2".into()] },
-                LegacyPolyTerm { coeff: BigUint::from(9u32), vars: vec!["b3".into()] },
+                NamedTerm { coeff: BigUint::one(), vars: vec!["s".into()] },
+                NamedTerm { coeff: BigUint::from(16u32), vars: vec!["b0".into()] },
+                NamedTerm { coeff: BigUint::from(15u32), vars: vec!["b1".into()] },
+                NamedTerm { coeff: BigUint::from(13u32), vars: vec!["b2".into()] },
+                NamedTerm { coeff: BigUint::from(9u32), vars: vec!["b3".into()] },
             ],
             // same for alt
-            vec![pterm(1, &["b0p", "b0p"]), LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec!["b0p".into()] }],
-            vec![pterm(1, &["b1p", "b1p"]), LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec!["b1p".into()] }],
-            vec![pterm(1, &["b2p", "b2p"]), LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec!["b2p".into()] }],
-            vec![pterm(1, &["b3p", "b3p"]), LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec!["b3p".into()] }],
+            vec![pterm(1, &["b0p", "b0p"]), NamedTerm { coeff: BigUint::from(16u32), vars: vec!["b0p".into()] }],
+            vec![pterm(1, &["b1p", "b1p"]), NamedTerm { coeff: BigUint::from(16u32), vars: vec!["b1p".into()] }],
+            vec![pterm(1, &["b2p", "b2p"]), NamedTerm { coeff: BigUint::from(16u32), vars: vec!["b2p".into()] }],
+            vec![pterm(1, &["b3p", "b3p"]), NamedTerm { coeff: BigUint::from(16u32), vars: vec!["b3p".into()] }],
             vec![
-                LegacyPolyTerm { coeff: BigUint::one(), vars: vec!["sp".into()] },
-                LegacyPolyTerm { coeff: BigUint::from(16u32), vars: vec!["b0p".into()] },
-                LegacyPolyTerm { coeff: BigUint::from(15u32), vars: vec!["b1p".into()] },
-                LegacyPolyTerm { coeff: BigUint::from(13u32), vars: vec!["b2p".into()] },
-                LegacyPolyTerm { coeff: BigUint::from(9u32), vars: vec!["b3p".into()] },
+                NamedTerm { coeff: BigUint::one(), vars: vec!["sp".into()] },
+                NamedTerm { coeff: BigUint::from(16u32), vars: vec!["b0p".into()] },
+                NamedTerm { coeff: BigUint::from(15u32), vars: vec!["b1p".into()] },
+                NamedTerm { coeff: BigUint::from(13u32), vars: vec!["b2p".into()] },
+                NamedTerm { coeff: BigUint::from(9u32), vars: vec!["b3p".into()] },
             ],
         ],
         disequalities: vec![("s".into(), "sp".into())],
@@ -109,7 +110,7 @@ fn bench_multi_constraint_gf17() {
     };
 
     let start = Instant::now();
-    let encoded = encode(&system).unwrap();
+    let encoded = system.encode().unwrap();
     let result = compute_gb(&encoded.poly_ring, encoded.polynomials);
     let total = start.elapsed();
 
@@ -125,27 +126,27 @@ fn bench_multi_constraint_gf17() {
 /// Build a k-bit decomposition system over BN128:
 ///   - K bit constraints `b_i*(b_i - 1) = 0`
 ///   - one bitsum equality `b_0 + 2*b_1 + ... + 2^{K-1}*b_{K-1} - target = 0`
-fn bitdecomp_bn128_system(k: usize, target: u64) -> LegacyConstraintSystem {
+fn bitdecomp_bn128_system(k: usize, target: u64) -> NamedSystem {
     let p = bn128_prime();
     let pm1 = &p - BigUint::one();
-    let mut equalities: Vec<Vec<LegacyPolyTerm>> = Vec::new();
+    let mut equalities: Vec<Vec<NamedTerm>> = Vec::new();
     for i in 0..k {
         let bi = format!("b{}", i);
         equalities.push(vec![
-            LegacyPolyTerm { coeff: BigUint::one(), vars: vec![bi.clone(), bi.clone()] },
-            LegacyPolyTerm { coeff: pm1.clone(), vars: vec![bi] },
+            NamedTerm { coeff: BigUint::one(), vars: vec![bi.clone(), bi.clone()] },
+            NamedTerm { coeff: pm1.clone(), vars: vec![bi] },
         ]);
     }
-    let mut sum: Vec<LegacyPolyTerm> = Vec::with_capacity(k + 1);
+    let mut sum: Vec<NamedTerm> = Vec::with_capacity(k + 1);
     let mut coeff = BigUint::one();
     let two = BigUint::from(2u32);
     for i in 0..k {
-        sum.push(LegacyPolyTerm { coeff: coeff.clone(), vars: vec![format!("b{}", i)] });
+        sum.push(NamedTerm { coeff: coeff.clone(), vars: vec![format!("b{}", i)] });
         coeff = (&coeff * &two) % &p;
     }
-    sum.push(LegacyPolyTerm { coeff: &p - BigUint::from(target), vars: vec![] });
+    sum.push(NamedTerm { coeff: &p - BigUint::from(target), vars: vec![] });
     equalities.push(sum);
-    LegacyConstraintSystem {
+    NamedSystem {
         prime: p,
         equalities,
         disequalities: vec![],
@@ -155,16 +156,12 @@ fn bitdecomp_bn128_system(k: usize, target: u64) -> LegacyConstraintSystem {
     }
 }
 
-fn time_solve_median(cs: &LegacyConstraintSystem, iters: usize, use_auto: bool) -> (u128, &'static str) {
+fn time_solve_median(cs: &NamedSystem, iters: usize) -> (u128, &'static str) {
     let mut total_times: Vec<u128> = Vec::with_capacity(iters);
     let mut verdict = "unknown";
     for _ in 0..iters {
         let t = Instant::now();
-        let enc = if use_auto {
-            encode(cs).unwrap()
-        } else {
-            encode_no_auto_bitsum(cs).unwrap()
-        };
+        let enc = cs.encode().unwrap();
         let out = solve_encoded(&enc);
         total_times.push(t.elapsed().as_micros());
         verdict = match out {
@@ -177,38 +174,20 @@ fn time_solve_median(cs: &LegacyConstraintSystem, iters: usize, use_auto: bool) 
     (total_times[iters / 2], verdict)
 }
 
-/// Bitdecomp speedup from `auto_extract_bitsums`: compare `encode`
-/// (auto-extract on) against `encode_no_auto_bitsum` across K∈{6,8,10,12}.
-/// Verdicts must agree; only timing differs.
+/// Bitdecomp solve timing across K ∈ {6, 8, 10, 12}. `encode`
+/// always runs `auto_extract_bitsums`, so the prior
+/// auto-on-vs-off comparison no longer applies.
 #[test]
 #[ignore]
-fn bench_bitdecomp_auto_extract_speedup() {
+fn bench_bitdecomp_auto_extract() {
     let iters = 3;
-    println!(
-        "{:>3} | {:>12} | {:<7} | {:>14} | {:>14} | speedup",
-        "K", "target", "verdict", "no_auto_us", "auto_us"
-    );
-    println!("{}", "-".repeat(78));
+    println!("{:>3} | {:>12} | {:<7} | {:>14}", "K", "target", "verdict", "us");
+    println!("{}", "-".repeat(46));
     for &k in &[6usize, 8, 10, 12] {
         let target = if k < 64 { (1u64 << k) - 3 } else { (1u64 << 32) - 3 };
         let cs = bitdecomp_bn128_system(k, target);
-
-        // For K >= 10 the no-auto path can blow up; cap to 1 iter.
-        let no_auto_iters = if k >= 10 { 1 } else { iters };
-        let (t_no_auto, v_no_auto) = time_solve_median(&cs, no_auto_iters, false);
-        let (t_auto, v_auto) = time_solve_median(&cs, iters, true);
-
-        assert_eq!(v_no_auto, v_auto, "verdict disagreement at K={}", k);
-
-        let speedup = if t_auto == 0 {
-            "inf".to_string()
-        } else {
-            format!("{:.1}x", t_no_auto as f64 / t_auto as f64)
-        };
-        println!(
-            "{:>3} | {:>12} | {:<7} | {:>14} | {:>14} | {}",
-            k, target, v_auto, t_no_auto, t_auto, speedup
-        );
+        let (t, v) = time_solve_median(&cs, iters);
+        println!("{:>3} | {:>12} | {:<7} | {:>14}", k, target, v, t);
     }
 }
 

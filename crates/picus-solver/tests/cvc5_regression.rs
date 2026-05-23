@@ -5,12 +5,13 @@
 //! [`picus_solver::core::solve_encoded`].
 
 use picus_solver::core::{solve_encoded, SolveOutcome};
-use picus_solver::encoder::{LegacyConstraintSystem, LegacyPolyTerm, encode};
+mod common;
+use common::{NamedSystem, NamedTerm};
 use num_bigint::BigUint;
 use num_traits::One;
 
-fn solve_system(system: &LegacyConstraintSystem) -> &'static str {
-    let encoded = encode(system).unwrap();
+fn solve_system(system: &NamedSystem) -> &'static str {
+    let encoded = system.encode().unwrap();
     match solve_encoded(&encoded) {
         SolveOutcome::Sat(_) => "sat",
         SolveOutcome::Unsat(_) => "unsat",
@@ -19,23 +20,23 @@ fn solve_system(system: &LegacyConstraintSystem) -> &'static str {
 }
 
 /// Helper: create a constant term.
-fn cterm(coeff: u64) -> LegacyPolyTerm {
-    LegacyPolyTerm { coeff: BigUint::from(coeff), vars: vec![] }
+fn cterm(coeff: u64) -> NamedTerm {
+    NamedTerm { coeff: BigUint::from(coeff), vars: vec![] }
 }
 
 /// Helper: single variable term.
-fn vterm(var: &str) -> LegacyPolyTerm {
-    LegacyPolyTerm { coeff: BigUint::one(), vars: vec![var.into()] }
+fn vterm(var: &str) -> NamedTerm {
+    NamedTerm { coeff: BigUint::one(), vars: vec![var.into()] }
 }
 
 /// Helper: scaled variable term.
-fn svterm(coeff: u64, var: &str) -> LegacyPolyTerm {
-    LegacyPolyTerm { coeff: BigUint::from(coeff), vars: vec![var.into()] }
+fn svterm(coeff: u64, var: &str) -> NamedTerm {
+    NamedTerm { coeff: BigUint::from(coeff), vars: vec![var.into()] }
 }
 
 /// Helper: product term.
-fn pterm(coeff: u64, vars: &[&str]) -> LegacyPolyTerm {
-    LegacyPolyTerm {
+fn pterm(coeff: u64, vars: &[&str]) -> NamedTerm {
+    NamedTerm {
         coeff: BigUint::from(coeff),
         vars: vars.iter().map(|s| s.to_string()).collect(),
     }
@@ -50,7 +51,7 @@ fn pterm(coeff: u64, vars: &[&str]) -> LegacyPolyTerm {
 #[test]
 fn test_negneg_field_identity() {
     // Over GF(17): x exists s.t. x ≠ 0 → sat
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(17u32),
         equalities: vec![],
         disequalities: vec![("x".into(), "zero".into())],
@@ -65,7 +66,7 @@ fn test_negneg_field_identity() {
 #[test]
 fn test_univar_conjunction_sat() {
     let p = BigUint::from(17u32);
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: p.clone(),
         equalities: vec![
             // x^2 - x = 0
@@ -87,7 +88,7 @@ fn test_univar_conjunction_sat() {
 #[test]
 fn test_univar_conjunction_unsat() {
     let p = BigUint::from(17u32);
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: p.clone(),
         equalities: vec![
             // x^2 - x = 0 → x ∈ {0, 1}
@@ -122,7 +123,7 @@ fn test_is_zero_sound_bit_constraint() {
     //
     // For our test: check that iz^2 - iz = 0 is implied.
     // Encode: constraints + iz^2 - iz ≠ 0 → UNSAT
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: p.clone(),
         equalities: vec![
             // m*x + iz + 16 = 0  (i.e., m*x + iz - 1 = 0)
@@ -151,7 +152,7 @@ fn test_field_poly_gf3() {
     let p = BigUint::from(3u32);
     // Introduce aa = a*a, then aaa = aa*a = a^3
     // Constraints: aa - a*a = 0, aaa - aa*a = 0, (aaa - a)*w - 1 = 0
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: p.clone(),
         equalities: vec![
             // aa = a*a
@@ -171,7 +172,7 @@ fn test_field_poly_gf3() {
 /// simple.smt2 equivalent: a*b = 1, a = 2 over GF(5) → sat (b = 3 since 2*3=6=1)
 #[test]
 fn test_simple_sat_gf5() {
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(5u32),
         equalities: vec![
             // a*b - 1 = 0
@@ -182,7 +183,7 @@ fn test_simple_sat_gf5() {
         add_field_polys: false,
         bitsums: vec![],
     };
-    let encoded = encode(&system).unwrap();
+    let encoded = system.encode().unwrap();
     match solve_encoded(&encoded) {
         SolveOutcome::Sat(model) => {
             assert_eq!(model["b"], BigUint::from(3u32));
@@ -195,7 +196,7 @@ fn test_simple_sat_gf5() {
 /// a*b = 1, a = 2, b = 2 over GF(5) → unsat (2*2=4≠1)
 #[test]
 fn test_simple_unsat_gf5() {
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(5u32),
         equalities: vec![
             vec![pterm(1, &["a", "b"]), cterm(4)],
@@ -217,7 +218,7 @@ fn test_simple_unsat_gf5() {
 #[test]
 fn test_xor_sum_is_binary() {
     let p = BigUint::from(11u32);
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: p.clone(),
         equalities: vec![
             // f0^2 - f0 = 0
@@ -243,17 +244,17 @@ fn test_xor_sum_is_binary() {
 #[test]
 fn test_bn128_simple() {
     let p: BigUint = "21888242871839275222246405745257275088548364400416034343698204186575808495617".parse().unwrap();
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: p.clone(),
         equalities: vec![
-            vec![pterm(1, &["a", "b"]), LegacyPolyTerm { coeff: &p - BigUint::one(), vars: vec![] }],
+            vec![pterm(1, &["a", "b"]), NamedTerm { coeff: &p - BigUint::one(), vars: vec![] }],
         ],
         disequalities: vec![],
         assignments: vec![("a".into(), BigUint::from(2u32))],
         add_field_polys: false,
         bitsums: vec![],
     };
-    let encoded = encode(&system).unwrap();
+    let encoded = system.encode().unwrap();
     match solve_encoded(&encoded) {
         SolveOutcome::Sat(model) => {
             // b should be (p+1)/2 since 2 * (p+1)/2 = p+1 = 1 mod p

@@ -51,7 +51,7 @@ fn picus_solve(src: &str, timeout_ms: u64) -> (Verdict, Duration) {
         Err(_) => return (Verdict::Error, t0.elapsed()),
     };
     let cancel = CancelToken::with_timeout(Duration::from_millis(timeout_ms));
-    let v = match solve_formula(q.prime.clone(), &q.formula, &cancel) {
+    let v = match solve_formula(q.prime.clone(), q.var_names(), &q.formula, &cancel) {
         SolveOutcome::Sat(_) => Verdict::Sat,
         SolveOutcome::Unsat(_) => Verdict::Unsat,
         SolveOutcome::Unknown => Verdict::Unknown,

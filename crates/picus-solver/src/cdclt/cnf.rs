@@ -12,15 +12,19 @@ use crate::sat::{Lit, Solver};
 use super::atoms::{AtomTable, InternLit};
 
 /// Apply Tseitin to `formula`, registering atoms in `atoms` and
-/// emitting clauses into `sat`. Returns `TseitinResult` describing
-/// the formula's top-level value: a SAT literal (assert as a unit
-/// clause to require the formula true), or a constant.
+/// emitting clauses into `sat`. `var_names` is the producing
+/// builder's variable frame, used by [`AtomTable::intern_eq`] to
+/// reverse-resolve `PolyTerm` indices to names for the canonical
+/// `AtomKey`. Returns `TseitinResult` describing the formula's
+/// top-level value: a SAT literal (assert as a unit clause to
+/// require the formula true), or a constant.
 pub fn tseitin(
     formula: &Formula,
+    var_names: &[String],
     atoms: &mut AtomTable,
     sat: &mut Solver,
 ) -> TseitinResult {
-    match transform(formula, atoms, sat) {
+    match transform(formula, var_names, atoms, sat) {
         Node::Lit(l) => TseitinResult::Lit(l),
         Node::Constant(b) => TseitinResult::Constant(b),
     }
@@ -44,29 +48,35 @@ enum Node {
     Constant(bool),
 }
 
-fn transform(f: &Formula, atoms: &mut AtomTable, sat: &mut Solver) -> Node {
+fn transform(
+    f: &Formula,
+    var_names: &[String],
+    atoms: &mut AtomTable,
+    sat: &mut Solver,
+) -> Node {
     match f {
         Formula::True => Node::Constant(true),
         Formula::False => Node::Constant(false),
-        Formula::Lit(Literal::Eq(a, b)) => atom_to_node(a, b, true, atoms, sat),
-        Formula::Lit(Literal::Neq(a, b)) => atom_to_node(a, b, false, atoms, sat),
-        Formula::Not(inner) => match transform(inner, atoms, sat) {
+        Formula::Lit(Literal::Eq(a, b)) => atom_to_node(a, b, var_names, true, atoms, sat),
+        Formula::Lit(Literal::Neq(a, b)) => atom_to_node(a, b, var_names, false, atoms, sat),
+        Formula::Not(inner) => match transform(inner, var_names, atoms, sat) {
             Node::Lit(l) => Node::Lit(-l),
             Node::Constant(b) => Node::Constant(!b),
         },
-        Formula::And(children) => transform_and(children, atoms, sat),
-        Formula::Or(children) => transform_or(children, atoms, sat),
+        Formula::And(children) => transform_and(children, var_names, atoms, sat),
+        Formula::Or(children) => transform_or(children, var_names, atoms, sat),
     }
 }
 
 fn atom_to_node(
-    lhs: &[crate::encoder::LegacyPolyTerm],
-    rhs: &[crate::encoder::LegacyPolyTerm],
+    lhs: &[crate::encoder::PolyTerm],
+    rhs: &[crate::encoder::PolyTerm],
+    var_names: &[String],
     positive: bool,
     atoms: &mut AtomTable,
     sat: &mut Solver,
 ) -> Node {
-    let result = atoms.intern_eq(lhs, rhs, sat);
+    let result = atoms.intern_eq(lhs, rhs, var_names, sat);
     let il = if positive {
         result.into_lit_pos()
     } else {
@@ -78,13 +88,18 @@ fn atom_to_node(
     }
 }
 
-fn transform_and(children: &[Formula], atoms: &mut AtomTable, sat: &mut Solver) -> Node {
+fn transform_and(
+    children: &[Formula],
+    var_names: &[String],
+    atoms: &mut AtomTable,
+    sat: &mut Solver,
+) -> Node {
     // Constant-fold: any False child ⇒ whole conjunction is False.
     // Drop True children; on remaining literals build a Tseitin
     // equivalence `t ↔ (l1 ∧ ... ∧ lk)`.
     let mut lits: Vec<Lit> = Vec::with_capacity(children.len());
     for c in children {
-        match transform(c, atoms, sat) {
+        match transform(c, var_names, atoms, sat) {
             Node::Constant(true) => {}
             Node::Constant(false) => return Node::Constant(false),
             Node::Lit(l) => lits.push(l),
@@ -111,12 +126,17 @@ fn transform_and(children: &[Formula], atoms: &mut AtomTable, sat: &mut Solver) 
     Node::Lit(t_lit)
 }
 
-fn transform_or(children: &[Formula], atoms: &mut AtomTable, sat: &mut Solver) -> Node {
+fn transform_or(
+    children: &[Formula],
+    var_names: &[String],
+    atoms: &mut AtomTable,
+    sat: &mut Solver,
+) -> Node {
     // Constant-fold: any True child ⇒ whole disjunction is True.
     // Drop False children; on remaining literals build `t ↔ (l1 ∨ ... ∨ lk)`.
     let mut lits: Vec<Lit> = Vec::with_capacity(children.len());
     for c in children {
-        match transform(c, atoms, sat) {
+        match transform(c, var_names, atoms, sat) {
             Node::Constant(true) => return Node::Constant(true),
             Node::Constant(false) => {}
             Node::Lit(l) => lits.push(l),
@@ -147,30 +167,38 @@ fn transform_or(children: &[Formula], atoms: &mut AtomTable, sat: &mut Solver) -
 mod tests {
     use super::*;
     use crate::boolean::{Formula, Literal};
-    use crate::encoder::LegacyPolyTerm;
+    use crate::encoder::PolyTerm;
     use crate::sat::solver::SolveResult;
     use crate::sat::LBool;
     use num_bigint::BigUint;
 
-    fn t(coeff: u64, vars: &[&str]) -> LegacyPolyTerm {
-        LegacyPolyTerm {
-            coeff: BigUint::from(coeff),
-            vars: vars.iter().map(|s| s.to_string()).collect(),
-        }
+    /// Construct a literal `coeff * var_name == rhs_const` where
+    /// `var_name`'s VarIdx is `var_idx`. `var_names` is the fixture
+    /// frame; the caller pre-allocates `var_names = ["x", "y", "z"]`
+    /// and uses indices 0/1/2.
+    fn lit_eq(coeff_lhs: u64, var_idx: u32, rhs_const: u64) -> Formula {
+        Formula::Lit(Literal::Eq(
+            vec![PolyTerm {
+                coeff: BigUint::from(coeff_lhs),
+                vars: vec![(var_idx, 1)],
+            }],
+            vec![PolyTerm {
+                coeff: BigUint::from(rhs_const),
+                vars: vec![],
+            }],
+        ))
     }
 
-    fn lit_eq(coeff_lhs: u64, var: &str, rhs_const: u64) -> Formula {
-        Formula::Lit(Literal::Eq(
-            vec![t(coeff_lhs, &[var])],
-            vec![t(rhs_const, &[])],
-        ))
+    fn names(ns: &[&str]) -> Vec<String> {
+        ns.iter().map(|s| s.to_string()).collect()
     }
 
     #[test]
     fn true_folds() {
         let mut atoms = AtomTable::new(BigUint::from(101u32));
         let mut sat = Solver::new();
-        let r = tseitin(&Formula::True, &mut atoms, &mut sat);
+        let vn: Vec<String> = vec![];
+        let r = tseitin(&Formula::True, &vn, &mut atoms, &mut sat);
         match r {
             TseitinResult::Constant(true) => {}
             _ => panic!("expected Constant(true)"),
@@ -183,8 +211,9 @@ mod tests {
     fn single_eq_atom() {
         let mut atoms = AtomTable::new(BigUint::from(101u32));
         let mut sat = Solver::new();
-        let f = lit_eq(1, "x", 0);
-        let r = tseitin(&f, &mut atoms, &mut sat);
+        let vn = names(&["x"]);
+        let f = lit_eq(1, 0, 0);
+        let r = tseitin(&f, &vn, &mut atoms, &mut sat);
         match r {
             TseitinResult::Lit(l) => {
                 assert!(l.is_positive());
@@ -196,12 +225,11 @@ mod tests {
 
     #[test]
     fn and_of_two_atoms_sat() {
-        // (and (= x 0) (= y 0)): with the unit assertion that the
-        // top-level lit is true, SAT must find values for both atoms.
         let mut atoms = AtomTable::new(BigUint::from(101u32));
         let mut sat = Solver::new();
-        let f = Formula::And(vec![lit_eq(1, "x", 0), lit_eq(1, "y", 0)]);
-        let r = tseitin(&f, &mut atoms, &mut sat);
+        let vn = names(&["x", "y"]);
+        let f = Formula::And(vec![lit_eq(1, 0, 0), lit_eq(1, 1, 0)]);
+        let r = tseitin(&f, &vn, &mut atoms, &mut sat);
         if let TseitinResult::Lit(top) = r {
             assert!(sat.add_clause(vec![top]));
             assert_eq!(sat.solve(), SolveResult::Sat);
@@ -212,14 +240,14 @@ mod tests {
 
     #[test]
     fn or_of_eq_neq_same_atom_is_true() {
-        // (or (= x 0) (not (= x 0))): tautology — should fold or SAT trivially.
         let mut atoms = AtomTable::new(BigUint::from(101u32));
         let mut sat = Solver::new();
+        let vn = names(&["x"]);
         let f = Formula::Or(vec![
-            lit_eq(1, "x", 0),
-            Formula::Not(Box::new(lit_eq(1, "x", 0))),
+            lit_eq(1, 0, 0),
+            Formula::Not(Box::new(lit_eq(1, 0, 0))),
         ]);
-        let r = tseitin(&f, &mut atoms, &mut sat);
+        let r = tseitin(&f, &vn, &mut atoms, &mut sat);
         match r {
             TseitinResult::Constant(true) => {}
             TseitinResult::Lit(top) => {
@@ -232,21 +260,16 @@ mod tests {
 
     #[test]
     fn unsat_top_constant_false() {
-        // (and (= x 0) (not (= x 0))): contradiction. The canonical
-        // atom interns to one SAT var; the two child literals are
-        // SAT-level complements, so the SAT layer detects UNSAT.
         let mut atoms = AtomTable::new(BigUint::from(101u32));
         let mut sat = Solver::new();
+        let vn = names(&["x"]);
         let f = Formula::And(vec![
-            lit_eq(1, "x", 0),
-            Formula::Not(Box::new(lit_eq(1, "x", 0))),
+            lit_eq(1, 0, 0),
+            Formula::Not(Box::new(lit_eq(1, 0, 0))),
         ]);
-        let r = tseitin(&f, &mut atoms, &mut sat);
+        let r = tseitin(&f, &vn, &mut atoms, &mut sat);
         match r {
             TseitinResult::Lit(top) => {
-                // `add_clause` may return false (root-level conflict
-                // detected immediately) or true (solve must run).
-                // Either way the formula is UNSAT.
                 let added = sat.add_clause(vec![top]);
                 if added {
                     assert_eq!(sat.solve(), SolveResult::Unsat);
@@ -261,14 +284,13 @@ mod tests {
 
     #[test]
     fn double_negation_flat() {
-        // ¬(¬(= x 0))  ≡  (= x 0)
         let mut atoms = AtomTable::new(BigUint::from(101u32));
         let mut sat = Solver::new();
-        let f = Formula::Not(Box::new(Formula::Not(Box::new(lit_eq(1, "x", 0)))));
-        let r = tseitin(&f, &mut atoms, &mut sat);
+        let vn = names(&["x"]);
+        let f = Formula::Not(Box::new(Formula::Not(Box::new(lit_eq(1, 0, 0)))));
+        let r = tseitin(&f, &vn, &mut atoms, &mut sat);
         if let TseitinResult::Lit(l) = r {
             assert!(l.is_positive());
-            // Only one var: no auxiliaries needed.
             assert_eq!(sat.n_vars(), 1);
         } else {
             panic!("expected Lit");
@@ -277,20 +299,14 @@ mod tests {
 
     #[test]
     fn lit_value_consistency_after_solve() {
-        // 3-atom disjunction: at least one must be true at the SAT level.
         let mut atoms = AtomTable::new(BigUint::from(101u32));
         let mut sat = Solver::new();
-        let f = Formula::Or(vec![
-            lit_eq(1, "x", 0),
-            lit_eq(1, "y", 0),
-            lit_eq(1, "z", 0),
-        ]);
-        let r = tseitin(&f, &mut atoms, &mut sat);
+        let vn = names(&["x", "y", "z"]);
+        let f = Formula::Or(vec![lit_eq(1, 0, 0), lit_eq(1, 1, 0), lit_eq(1, 2, 0)]);
+        let r = tseitin(&f, &vn, &mut atoms, &mut sat);
         if let TseitinResult::Lit(top) = r {
             assert!(sat.add_clause(vec![top]));
             assert_eq!(sat.solve(), SolveResult::Sat);
-            // At least one of the three atom vars must be assigned True.
-            // (The auxiliary top var is also True by construction.)
             let mut any_true = false;
             for v_idx in 0..sat.n_vars() {
                 let v = crate::sat::Var(v_idx as u32);
@@ -298,7 +314,7 @@ mod tests {
                     any_true = true;
                 }
             }
-            assert!(any_true, "no atom literal True after solve");
+            assert!(any_true);
         } else {
             panic!("expected Lit");
         }

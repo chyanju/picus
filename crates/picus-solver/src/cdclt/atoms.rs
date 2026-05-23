@@ -2,17 +2,52 @@
 //! `p = 0` over the prime field; equivalent equalities (e.g. `(= a b)`
 //! and `(= b a)`) share one SAT variable. Disequalities reuse the
 //! equality's variable via negative polarity.
+//!
+//! `AtomKey` is the long-lived cache key used by the SAT layer to
+//! dedup semantically equivalent equalities across `ff_theory`
+//! `post_check` calls. Because each `post_check` rebuilds a fresh
+//! `ConstraintSystemBuilder` from the trail, polynomial-ring variable
+//! indices are not stable across calls — so the cache key here is
+//! kept in name-keyed form (`Vec<(BigUint, Vec<String>)>`) rather
+//! than the index-keyed `PolyTerm`. Callers feeding equalities into
+//! the atom table pass `Vec<PolyTerm>` plus the producing builder's
+//! `var_names` slice; [`AtomKey::from_indexed_eq`] reverse-resolves
+//! the names internally.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use num_bigint::BigUint;
 use num_traits::Zero;
 
-use crate::encoder::LegacyPolyTerm;
+use crate::encoder::{ConstraintSystemBuilder, PolyTerm, VarIdx};
 use crate::sat::{Lit, Solver, Var};
 
+/// Normalize a name-keyed term list in place. Within-term `vars`
+/// sort, like-term coefficient sum mod `prime`, drop of zero-coeff
+/// terms. Mirrors [`crate::rewriter::normalize_term_list`]
+/// for the AST-scratch form `AtomKey` uses internally.
+fn normalize_named_terms(terms: &mut Vec<(BigUint, Vec<String>)>, prime: &BigUint) {
+    for (coeff, vars) in terms.iter_mut() {
+        vars.sort();
+        *coeff = &*coeff % prime;
+    }
+    terms.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+    let mut out: Vec<(BigUint, Vec<String>)> = Vec::with_capacity(terms.len());
+    for (coeff, vars) in terms.drain(..) {
+        if let Some(last) = out.last_mut() {
+            if last.1 == vars {
+                last.0 = (&last.0 + &coeff) % prime;
+                continue;
+            }
+        }
+        out.push((coeff, vars));
+    }
+    out.retain(|(c, _)| !c.is_zero());
+    *terms = out;
+}
+
 /// Canonical form of an equality atom: the term list of `lhs - rhs`
-/// after `rewriter::normalize_term_list`. Two equalities are the
+/// after [`normalize_named_terms`]. Two equalities are the
 /// same atom iff their canonical keys are equal.
 #[derive(Eq, PartialEq, Hash, Clone, Debug)]
 pub struct AtomKey {
@@ -24,38 +59,53 @@ pub struct AtomKey {
 }
 
 impl AtomKey {
-    /// Canonical key for `(lhs = rhs)` mod `prime`. Negates `rhs`,
-    /// normalizes, then sign-canonicalizes so the leading coefficient
-    /// is in `[1, p/2]` — making `(= a b)` and `(= b a)` agree.
-    pub fn from_eq(lhs: &[LegacyPolyTerm], rhs: &[LegacyPolyTerm], prime: &BigUint) -> Self {
-        let mut polys: Vec<LegacyPolyTerm> = lhs.to_vec();
+    /// Canonical key for `(lhs = rhs)` mod `prime`, where `lhs` and
+    /// `rhs` are index-keyed `Vec<PolyTerm>` and `var_names` is the
+    /// producing builder's frame. Reverse-resolves indices to names,
+    /// negates `rhs`, normalizes, then sign-canonicalizes so the
+    /// leading coefficient is in `[1, p/2]` — making `(= a b)` and
+    /// `(= b a)` agree across producers.
+    pub fn from_indexed_eq(
+        lhs: &[PolyTerm],
+        rhs: &[PolyTerm],
+        var_names: &[String],
+        prime: &BigUint,
+    ) -> Self {
+        let resolve = |t: &PolyTerm| -> (BigUint, Vec<String>) {
+            let mut names: Vec<String> = Vec::with_capacity(
+                t.vars.iter().map(|&(_, exp)| exp as usize).sum(),
+            );
+            for &(idx, exp) in &t.vars {
+                let name = &var_names[idx as usize];
+                for _ in 0..exp {
+                    names.push(name.clone());
+                }
+            }
+            (&t.coeff % prime, names)
+        };
+        let mut polys: Vec<(BigUint, Vec<String>)> =
+            lhs.iter().map(&resolve).collect();
         for t in rhs {
-            // Reduce mod prime first so un-reduced inputs do not underflow.
-            let reduced = &t.coeff % prime;
-            let neg_coeff = if reduced.is_zero() {
+            let (coeff, vars) = resolve(t);
+            let neg_coeff = if coeff.is_zero() {
                 BigUint::zero()
             } else {
-                prime - &reduced
+                prime - coeff
             };
-            polys.push(LegacyPolyTerm {
-                coeff: neg_coeff,
-                vars: t.vars.clone(),
-            });
+            polys.push((neg_coeff, vars));
         }
-        crate::rewriter::normalize_term_list(&mut polys, prime);
-        if let Some(leading) = polys.first() {
+        normalize_named_terms(&mut polys, prime);
+        if let Some((leading, _)) = polys.first() {
             let half = prime / 2u32;
-            if leading.coeff > half {
-                for t in polys.iter_mut() {
-                    if !t.coeff.is_zero() {
-                        t.coeff = prime - &t.coeff;
+            if leading > &half {
+                for (c, _) in polys.iter_mut() {
+                    if !c.is_zero() {
+                        *c = prime - &*c;
                     }
                 }
             }
         }
-        AtomKey {
-            terms: polys.into_iter().map(|t| (t.coeff, t.vars)).collect(),
-        }
+        AtomKey { terms: polys }
     }
 
     /// `true` when the canonical polynomial is the zero polynomial,
@@ -124,14 +174,53 @@ impl AtomKey {
         Some((var_term.1[0].clone(), value))
     }
 
-    /// Re-export the canonical polynomial as a `Vec<LegacyPolyTerm>` so the
-    /// FF theory can feed it to the encoder.
-    pub fn to_poly_terms(&self) -> Vec<LegacyPolyTerm> {
+    /// Intern this atom's canonical polynomial into `builder`,
+    /// returning the index-keyed `Vec<PolyTerm>` ready to feed to
+    /// `builder.add_equality`. Within-term repeated names
+    /// (`x * x` as `vars = ["x", "x"]`) collapse to a sparse
+    /// `(VarIdx, 2)` exponent pair.
+    pub fn intern_into(&self, builder: &mut ConstraintSystemBuilder) -> Vec<PolyTerm> {
         self.terms
             .iter()
-            .map(|(c, vs)| LegacyPolyTerm {
-                coeff: c.clone(),
-                vars: vs.clone(),
+            .map(|(coeff, names)| {
+                let mut counts: BTreeMap<VarIdx, u16> = BTreeMap::new();
+                for v in names {
+                    let idx = builder.var(v);
+                    *counts.entry(idx).or_insert(0) += 1;
+                }
+                PolyTerm {
+                    coeff: coeff.clone(),
+                    vars: counts.into_iter().collect(),
+                }
+            })
+            .collect()
+    }
+
+    /// Intern the negation of this atom's polynomial into `builder`.
+    /// Used by `ff_theory` to assemble the Rabinowitsch trick body
+    /// `d - lhs = 0`, where `-lhs` is the negated atom polynomial.
+    pub fn intern_negated_into(
+        &self,
+        builder: &mut ConstraintSystemBuilder,
+        prime: &BigUint,
+    ) -> Vec<PolyTerm> {
+        self.terms
+            .iter()
+            .map(|(coeff, names)| {
+                let mut counts: BTreeMap<VarIdx, u16> = BTreeMap::new();
+                for v in names {
+                    let idx = builder.var(v);
+                    *counts.entry(idx).or_insert(0) += 1;
+                }
+                let neg = if coeff.is_zero() {
+                    BigUint::zero()
+                } else {
+                    prime - coeff
+                };
+                PolyTerm {
+                    coeff: neg,
+                    vars: counts.into_iter().collect(),
+                }
             })
             .collect()
     }
@@ -177,15 +266,18 @@ impl AtomTable {
     /// represents it. Repeated calls with equivalent canonical
     /// polynomials return the same variable.
     ///
-    /// Returns `None` for the trivial `0 = 0` case (caller must
-    /// handle constant simplification upstream).
+    /// Inputs are index-keyed `&[PolyTerm]` over the builder's
+    /// `var_names` frame; the atom table reverse-resolves names
+    /// internally to build the name-keyed cache key. Returns
+    /// `Trivial(true)` for the constant `0 = 0` case.
     pub fn intern_eq(
         &mut self,
-        lhs: &[LegacyPolyTerm],
-        rhs: &[LegacyPolyTerm],
+        lhs: &[PolyTerm],
+        rhs: &[PolyTerm],
+        var_names: &[String],
         sat: &mut Solver,
     ) -> InternResult {
-        let key = AtomKey::from_eq(lhs, rhs, &self.prime);
+        let key = AtomKey::from_indexed_eq(lhs, rhs, var_names, &self.prime);
         if key.is_trivially_true() {
             return InternResult::Trivial(true);
         }
@@ -291,22 +383,41 @@ pub enum InternLit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoder::VarIdx;
 
-    fn t(coeff: u64, vars: &[&str]) -> LegacyPolyTerm {
-        LegacyPolyTerm {
+    /// Index-keyed term constructor for tests. `idx_vars` is a list
+    /// of `(VarIdx, exp)` pairs.
+    fn pt(coeff: u64, idx_vars: &[(VarIdx, u16)]) -> PolyTerm {
+        PolyTerm {
             coeff: BigUint::from(coeff),
-            vars: vars.iter().map(|s| s.to_string()).collect(),
+            vars: idx_vars.to_vec(),
         }
+    }
+
+    /// Construct a single-name-keyed term list `coeff * x` for var
+    /// index 0 (the test's only variable). `vars = &[]` yields a
+    /// constant term.
+    fn t(coeff: u64, exp: u16) -> PolyTerm {
+        if exp == 0 {
+            pt(coeff, &[])
+        } else {
+            pt(coeff, &[(0, exp)])
+        }
+    }
+
+    fn names(ns: &[&str]) -> Vec<String> {
+        ns.iter().map(|s| s.to_string()).collect()
     }
 
     #[test]
     fn intern_same_eq_returns_same_var() {
         let mut sat = Solver::new();
         let mut tbl = AtomTable::new(BigUint::from(101u32));
-        let lhs = vec![t(1, &["x"])];
-        let rhs = vec![t(0, &[])];
-        let r1 = tbl.intern_eq(&lhs, &rhs, &mut sat);
-        let r2 = tbl.intern_eq(&lhs, &rhs, &mut sat);
+        let vn = names(&["x"]);
+        let lhs = vec![t(1, 1)];
+        let rhs = vec![t(0, 0)];
+        let r1 = tbl.intern_eq(&lhs, &rhs, &vn, &mut sat);
+        let r2 = tbl.intern_eq(&lhs, &rhs, &vn, &mut sat);
         match (r1, r2) {
             (InternResult::Var(v1), InternResult::Var(v2)) => assert_eq!(v1, v2),
             _ => panic!("expected two Var results"),
@@ -317,16 +428,16 @@ mod tests {
     #[test]
     fn intern_symmetric_eq_dedups() {
         // (= x y) and (= y x) must share one var.
+        // var index 0 = x, index 1 = y.
         let mut sat = Solver::new();
         let mut tbl = AtomTable::new(BigUint::from(101u32));
-        let lhs_a = vec![t(1, &["x"])];
-        let rhs_a = vec![t(1, &["y"])];
-        let lhs_b = vec![t(1, &["y"])];
-        let rhs_b = vec![t(1, &["x"])];
-        let r1 = tbl.intern_eq(&lhs_a, &rhs_a, &mut sat);
-        let r2 = tbl.intern_eq(&lhs_b, &rhs_b, &mut sat);
-        // After normalization both keys reduce to ±(x - y); the rewriter
-        // canonicalizes one of these orderings.
+        let vn = names(&["x", "y"]);
+        let lhs_a = vec![pt(1, &[(0, 1)])]; // x
+        let rhs_a = vec![pt(1, &[(1, 1)])]; // y
+        let lhs_b = vec![pt(1, &[(1, 1)])]; // y
+        let rhs_b = vec![pt(1, &[(0, 1)])]; // x
+        let r1 = tbl.intern_eq(&lhs_a, &rhs_a, &vn, &mut sat);
+        let r2 = tbl.intern_eq(&lhs_b, &rhs_b, &vn, &mut sat);
         match (r1, r2) {
             (InternResult::Var(v1), InternResult::Var(v2)) => assert_eq!(v1, v2),
             _ => panic!("expected two Var results"),
@@ -338,14 +449,14 @@ mod tests {
         // (= 0 0) → trivially true.
         let mut sat = Solver::new();
         let mut tbl = AtomTable::new(BigUint::from(101u32));
-        let lhs: Vec<LegacyPolyTerm> = vec![];
-        let rhs: Vec<LegacyPolyTerm> = vec![];
-        let r = tbl.intern_eq(&lhs, &rhs, &mut sat);
+        let vn: Vec<String> = vec![];
+        let lhs: Vec<PolyTerm> = vec![];
+        let rhs: Vec<PolyTerm> = vec![];
+        let r = tbl.intern_eq(&lhs, &rhs, &vn, &mut sat);
         match r {
             InternResult::Trivial(b) => assert!(b),
             _ => panic!("expected Trivial(true)"),
         }
-        // No SAT var was allocated.
         assert_eq!(sat.n_vars(), 0);
     }
 
@@ -353,9 +464,8 @@ mod tests {
     fn aux_var_distinct_from_atom_var() {
         let mut sat = Solver::new();
         let mut tbl = AtomTable::new(BigUint::from(101u32));
-        let lhs = vec![t(1, &["x"])];
-        let rhs = vec![t(0, &[])];
-        let r1 = tbl.intern_eq(&lhs, &rhs, &mut sat);
+        let vn = names(&["x"]);
+        let r1 = tbl.intern_eq(&[t(1, 1)], &[t(0, 0)], &vn, &mut sat);
         let aux = tbl.new_aux(&mut sat);
         match r1 {
             InternResult::Var(v) => assert_ne!(v, aux),
@@ -367,48 +477,50 @@ mod tests {
     #[test]
     fn single_var_eq_detected() {
         let prime = BigUint::from(101u32);
+        let vn = names(&["x"]);
         // `(= x 0)` → canonical key for `x = 0`.
-        let k0 = AtomKey::from_eq(&[t(1, &["x"])], &[t(0, &[])], &prime);
+        let k0 = AtomKey::from_indexed_eq(&[t(1, 1)], &[t(0, 0)], &vn, &prime);
         let (var, val) = k0.as_single_var_eq(&prime).expect("single-var-eq");
         assert_eq!(var, "x");
         assert_eq!(val, BigUint::zero());
 
         // `(= x 5)` → x = 5.
-        let k5 = AtomKey::from_eq(&[t(1, &["x"])], &[t(5, &[])], &prime);
+        let k5 = AtomKey::from_indexed_eq(&[t(1, 1)], &[t(5, 0)], &vn, &prime);
         let (var, val) = k5.as_single_var_eq(&prime).expect("single-var-eq");
         assert_eq!(var, "x");
         assert_eq!(val, BigUint::from(5u32));
 
         // `(= x y)` (two variables) → None.
-        let kxy = AtomKey::from_eq(&[t(1, &["x"])], &[t(1, &["y"])], &prime);
+        let vn_xy = names(&["x", "y"]);
+        let kxy = AtomKey::from_indexed_eq(
+            &[pt(1, &[(0, 1)])],
+            &[pt(1, &[(1, 1)])],
+            &vn_xy,
+            &prime,
+        );
         assert!(kxy.as_single_var_eq(&prime).is_none());
 
         // `(= (* x x) 0)` (degree 2) → None.
-        let kxx = AtomKey::from_eq(&[t(1, &["x", "x"])], &[t(0, &[])], &prime);
+        let kxx = AtomKey::from_indexed_eq(&[t(1, 2)], &[t(0, 0)], &vn, &prime);
         assert!(kxx.as_single_var_eq(&prime).is_none());
     }
 
     #[test]
     fn intern_eq_emits_mutex_clause_between_same_var_constants() {
-        // Interning `(= x 0)` then `(= x 1)` should add a mutex clause
-        // `(¬a0 ∨ ¬a1)` so SAT cannot assign both atoms True.
         let mut sat = Solver::new();
         let mut tbl = AtomTable::new(BigUint::from(101u32));
-        let a0 = match tbl.intern_eq(&[t(1, &["x"])], &[t(0, &[])], &mut sat) {
+        let vn = names(&["x"]);
+        let a0 = match tbl.intern_eq(&[t(1, 1)], &[t(0, 0)], &vn, &mut sat) {
             InternResult::Var(v) => v,
             _ => panic!(),
         };
         let n_clauses_before = sat.n_clauses();
-        let a1 = match tbl.intern_eq(&[t(1, &["x"])], &[t(1, &[])], &mut sat) {
+        let a1 = match tbl.intern_eq(&[t(1, 1)], &[t(1, 0)], &vn, &mut sat) {
             InternResult::Var(v) => v,
             _ => panic!(),
         };
         assert_ne!(a0, a1);
-        assert!(
-            sat.n_clauses() > n_clauses_before,
-            "interning (= x 1) after (= x 0) must emit at least one mutex clause"
-        );
-        // Assert both true at root → SAT becomes Unsat via the mutex.
+        assert!(sat.n_clauses() > n_clauses_before);
         assert!(sat.add_clause(vec![Lit::pos(a0)]));
         let added_second = sat.add_clause(vec![Lit::pos(a1)]);
         assert!(!added_second);
@@ -417,27 +529,35 @@ mod tests {
 
     #[test]
     fn intern_eq_no_mutex_between_same_constant_repeats() {
-        // Re-interning `(= x 0)` returns the same atom var; no extra
-        // clause is added.
         let mut sat = Solver::new();
         let mut tbl = AtomTable::new(BigUint::from(101u32));
-        tbl.intern_eq(&[t(1, &["x"])], &[t(0, &[])], &mut sat);
+        let vn = names(&["x"]);
+        tbl.intern_eq(&[t(1, 1)], &[t(0, 0)], &vn, &mut sat);
         let n_clauses_before = sat.n_clauses();
-        tbl.intern_eq(&[t(1, &["x"])], &[t(0, &[])], &mut sat);
+        tbl.intern_eq(&[t(1, 1)], &[t(0, 0)], &vn, &mut sat);
         assert_eq!(sat.n_clauses(), n_clauses_before);
     }
 
     #[test]
     fn intern_eq_no_mutex_across_different_variables() {
-        // `(= x 0)` and `(= y 0)` share no mutex; both atoms can be
-        // True together.
         let mut sat = Solver::new();
         let mut tbl = AtomTable::new(BigUint::from(101u32));
-        let ax = match tbl.intern_eq(&[t(1, &["x"])], &[t(0, &[])], &mut sat) {
+        let vn = names(&["x", "y"]);
+        let ax = match tbl.intern_eq(
+            &[pt(1, &[(0, 1)])],
+            &[pt(0, &[])],
+            &vn,
+            &mut sat,
+        ) {
             InternResult::Var(v) => v,
             _ => panic!(),
         };
-        let ay = match tbl.intern_eq(&[t(1, &["y"])], &[t(0, &[])], &mut sat) {
+        let ay = match tbl.intern_eq(
+            &[pt(1, &[(1, 1)])],
+            &[pt(0, &[])],
+            &vn,
+            &mut sat,
+        ) {
             InternResult::Var(v) => v,
             _ => panic!(),
         };
@@ -448,48 +568,45 @@ mod tests {
 
     #[test]
     fn intern_eq_emits_three_pairwise_mutexes_for_three_constants() {
-        // Three atoms `(= x 0)`, `(= x 1)`, `(= x 2)` should produce
-        // three pairwise mutex clauses (one per unordered pair).
         let mut sat = Solver::new();
         let mut tbl = AtomTable::new(BigUint::from(101u32));
+        let vn = names(&["x"]);
         let n0 = sat.n_clauses();
-        tbl.intern_eq(&[t(1, &["x"])], &[t(0, &[])], &mut sat);
+        tbl.intern_eq(&[t(1, 1)], &[t(0, 0)], &vn, &mut sat);
         let n1 = sat.n_clauses();
-        tbl.intern_eq(&[t(1, &["x"])], &[t(1, &[])], &mut sat);
+        tbl.intern_eq(&[t(1, 1)], &[t(1, 0)], &vn, &mut sat);
         let n2 = sat.n_clauses();
-        tbl.intern_eq(&[t(1, &["x"])], &[t(2, &[])], &mut sat);
+        tbl.intern_eq(&[t(1, 1)], &[t(2, 0)], &vn, &mut sat);
         let n3 = sat.n_clauses();
-        assert_eq!(n1 - n0, 0, "first atom has nothing to mutex against");
-        assert_eq!(n2 - n1, 1, "second atom mutexes with the first");
-        assert_eq!(n3 - n2, 2, "third atom mutexes with both predecessors");
+        assert_eq!(n1 - n0, 0);
+        assert_eq!(n2 - n1, 1);
+        assert_eq!(n3 - n2, 2);
     }
 
     #[test]
     fn mutex_invariant_under_lhs_rhs_swap() {
-        // `(= x 5)` and `(= 5 x)` canonicalize to the same atom, so
-        // interning both should yield the same var and emit zero
-        // additional clauses.
         let mut sat = Solver::new();
         let mut tbl = AtomTable::new(BigUint::from(101u32));
-        let r1 = tbl.intern_eq(&[t(1, &["x"])], &[t(5, &[])], &mut sat);
+        let vn = names(&["x"]);
+        let r1 = tbl.intern_eq(&[t(1, 1)], &[t(5, 0)], &vn, &mut sat);
         let n_after_first = sat.n_clauses();
-        let r2 = tbl.intern_eq(&[t(5, &[])], &[t(1, &["x"])], &mut sat);
+        let r2 = tbl.intern_eq(&[t(5, 0)], &[t(1, 1)], &vn, &mut sat);
         match (r1, r2) {
             (InternResult::Var(a), InternResult::Var(b)) => assert_eq!(a, b),
             _ => panic!("expected Var both times"),
         }
-        assert_eq!(sat.n_clauses(), n_after_first, "no extra clause for canonical-duplicate");
+        assert_eq!(sat.n_clauses(), n_after_first);
     }
 
     #[test]
     fn single_var_eq_detects_nonunit_coefficient_via_fermat() {
-        // Over GF(7): both `(= x 5)` and `(2x = 3)` solve to x = 5.
         let prime = BigUint::from(7u32);
-        let k_direct = AtomKey::from_eq(&[t(1, &["x"])], &[t(5, &[])], &prime);
+        let vn = names(&["x"]);
+        let k_direct = AtomKey::from_indexed_eq(&[t(1, 1)], &[t(5, 0)], &vn, &prime);
         let (var_d, val_d) = k_direct.as_single_var_eq(&prime).expect("direct");
         assert_eq!(var_d, "x");
         assert_eq!(val_d, BigUint::from(5u32));
-        let k_scaled = AtomKey::from_eq(&[t(2, &["x"])], &[t(3, &[])], &prime);
+        let k_scaled = AtomKey::from_indexed_eq(&[t(2, 1)], &[t(3, 0)], &vn, &prime);
         let (var_s, val_s) = k_scaled.as_single_var_eq(&prime).expect("scaled");
         assert_eq!(var_s, "x");
         assert_eq!(val_s, BigUint::from(5u32));
@@ -497,32 +614,31 @@ mod tests {
 
     #[test]
     fn intern_eq_emits_mutex_across_semantically_distinct_scaled_atoms() {
-        // Over GF(7): (= x 5) and (2x = 10) both pin x=5 but have
-        // different canonical keys; no mutex between them. (= x 6) pins
-        // x=6 and must mutex against both.
         let mut sat = Solver::new();
         let mut tbl = AtomTable::new(BigUint::from(7u32));
+        let vn = names(&["x"]);
         let n0 = sat.n_clauses();
-        tbl.intern_eq(&[t(1, &["x"])], &[t(5, &[])], &mut sat);
+        tbl.intern_eq(&[t(1, 1)], &[t(5, 0)], &vn, &mut sat);
         let n1 = sat.n_clauses();
         assert_eq!(n1 - n0, 0);
-        tbl.intern_eq(&[t(2, &["x"])], &[t(10, &[])], &mut sat);
+        tbl.intern_eq(&[t(2, 1)], &[t(10, 0)], &vn, &mut sat);
         let n2 = sat.n_clauses();
-        assert_eq!(n2 - n1, 0, "x=5 again must not emit a mutex");
-        tbl.intern_eq(&[t(1, &["x"])], &[t(6, &[])], &mut sat);
+        assert_eq!(n2 - n1, 0);
+        tbl.intern_eq(&[t(1, 1)], &[t(6, 0)], &vn, &mut sat);
         let n3 = sat.n_clauses();
-        assert_eq!(n3 - n2, 2, "x=6 mutexes against both x=5 atoms");
+        assert_eq!(n3 - n2, 2);
     }
 
     #[test]
     fn mutex_does_not_fire_for_equivalent_value_via_canonicalization() {
         let mut sat = Solver::new();
         let mut tbl = AtomTable::new(BigUint::from(7u32));
-        tbl.intern_eq(&[t(1, &["x"])], &[t(5, &[])], &mut sat);
+        let vn = names(&["x"]);
+        tbl.intern_eq(&[t(1, 1)], &[t(5, 0)], &vn, &mut sat);
         let n_after = sat.n_clauses();
-        tbl.intern_eq(&[t(1, &["x"])], &[t(5, &[])], &mut sat);
-        assert_eq!(sat.n_clauses(), n_after, "re-intern same atom: no clause");
-        tbl.intern_eq(&[t(1, &["x"])], &[t(6, &[])], &mut sat);
-        assert_eq!(sat.n_clauses(), n_after + 1, "x=6 mutexes with x=5");
+        tbl.intern_eq(&[t(1, 1)], &[t(5, 0)], &vn, &mut sat);
+        assert_eq!(sat.n_clauses(), n_after);
+        tbl.intern_eq(&[t(1, 1)], &[t(6, 0)], &vn, &mut sat);
+        assert_eq!(sat.n_clauses(), n_after + 1);
     }
 }

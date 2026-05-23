@@ -6,25 +6,26 @@
 //! scope for the polynomial solver and are not covered here.
 
 use picus_solver::core::{solve_encoded, SolveOutcome};
-use picus_solver::encoder::{LegacyConstraintSystem, LegacyPolyTerm, encode};
+mod common;
+use common::{NamedSystem, NamedTerm};
 use num_bigint::BigUint;
 use num_traits::One;
 
 /// Constant term `c`.
-fn ct(c: u64) -> LegacyPolyTerm { LegacyPolyTerm { coeff: BigUint::from(c), vars: vec![] } }
+fn ct(c: u64) -> NamedTerm { NamedTerm { coeff: BigUint::from(c), vars: vec![] } }
 /// Constant term from BigUint.
-fn ctb(c: BigUint) -> LegacyPolyTerm { LegacyPolyTerm { coeff: c, vars: vec![] } }
+fn ctb(c: BigUint) -> NamedTerm { NamedTerm { coeff: c, vars: vec![] } }
 /// `1 * v` (single var).
-fn vt(v: &str) -> LegacyPolyTerm { LegacyPolyTerm { coeff: BigUint::one(), vars: vec![v.into()] } }
+fn vt(v: &str) -> NamedTerm { NamedTerm { coeff: BigUint::one(), vars: vec![v.into()] } }
 /// `c * v` (scaled var).
-fn svt(c: u64, v: &str) -> LegacyPolyTerm { LegacyPolyTerm { coeff: BigUint::from(c), vars: vec![v.into()] } }
+fn svt(c: u64, v: &str) -> NamedTerm { NamedTerm { coeff: BigUint::from(c), vars: vec![v.into()] } }
 /// `c * prod(vars)` (product term).
-fn pt(c: u64, vars: &[&str]) -> LegacyPolyTerm {
-    LegacyPolyTerm { coeff: BigUint::from(c), vars: vars.iter().map(|s| s.to_string()).collect() }
+fn pt(c: u64, vars: &[&str]) -> NamedTerm {
+    NamedTerm { coeff: BigUint::from(c), vars: vars.iter().map(|s| s.to_string()).collect() }
 }
 
-fn solve(system: &LegacyConstraintSystem) -> &'static str {
-    let encoded = encode(system).unwrap();
+fn solve(system: &NamedSystem) -> &'static str {
+    let encoded = system.encode().unwrap();
     match solve_encoded(&encoded) {
         SolveOutcome::Sat(_) => "sat",
         SolveOutcome::Unsat(_) => "unsat",
@@ -48,7 +49,7 @@ fn test_bigff_is_zero_sound() {
     // does not affect the algebraic content for the soundness direction).
     let p: BigUint = "21888242871839275222246405745257275088548364400416034343698204186575808495617"
         .parse().unwrap();
-    let _system = LegacyConstraintSystem {
+    let _system = NamedSystem {
         prime: p.clone(),
         equalities: vec![
             // m*x + iz - 1 = 0
@@ -65,7 +66,7 @@ fn test_bigff_is_zero_sound() {
     };
     // The placeholder above is messy; rebuild equalities cleanly.
     let p_minus_1 = &p - BigUint::one();
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: p.clone(),
         equalities: vec![
             // m*x + iz + (p-1) = 0   (= m*x + iz - 1)
@@ -75,7 +76,7 @@ fn test_bigff_is_zero_sound() {
             // iz^2 * w + (p-1)*iz*w + (p-1) = 0   (= (iz^2 - iz)*w - 1)
             vec![
                 pt(1, &["iz", "iz", "w"]),
-                LegacyPolyTerm { coeff: p_minus_1.clone(), vars: vec!["iz".into(), "w".into()] },
+                NamedTerm { coeff: p_minus_1.clone(), vars: vec!["iz".into(), "w".into()] },
                 ctb(p_minus_1.clone()),
             ],
         ],
@@ -100,7 +101,7 @@ fn test_bigff_is_zero_unsound() {
     let p: BigUint = "21888242871839275222246405745257275088548364400416034343698204186575808495617"
         .parse().unwrap();
     let p_minus_1 = &p - BigUint::one();
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: p.clone(),
         equalities: vec![
             // m*x + iz - 1 = 0
@@ -187,12 +188,12 @@ fn test_bitsum_overflow() {
         .parse().unwrap();
     let p_minus_1: BigUint = &p - BigUint::one();
     let p_minus_2: BigUint = &p - BigUint::from(2u32);
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: p.clone(),
         equalities: vec![
             vec![
-                LegacyPolyTerm { coeff: p_minus_2, vars: vec!["x0".into()] },
-                LegacyPolyTerm { coeff: p_minus_1, vars: vec!["x1".into()] },
+                NamedTerm { coeff: p_minus_2, vars: vec!["x0".into()] },
+                NamedTerm { coeff: p_minus_1, vars: vec!["x1".into()] },
                 ct(4),
             ],
         ],
@@ -218,7 +219,7 @@ fn test_issue11932() {
     // We just check that an empty constraint system over GF(2) is SAT.
     // (The constraint reduces to 0=0, which we encode as no equalities.)
     // feanor-math requires >=1 variable, so add a trivially-assigned dummy.
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(2u32),
         equalities: vec![],
         disequalities: vec![],
@@ -236,7 +237,7 @@ fn test_issue11932() {
 fn test_field_poly_gf7() {
     // (a^7 - a) ≠ 0  →  UNSAT by Fermat.  We chain a^2 → a^4 → a^7 = a^4*a^2*a.
     let p = BigUint::from(7u32);
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: p.clone(),
         equalities: vec![
             // a2 = a*a
@@ -265,7 +266,7 @@ fn test_negneg_bn128() {
     let p: BigUint = "21888242871839275222246405745257275088548364400416034343698204186575808495617"
         .parse().unwrap();
     let p_minus_1: BigUint = &p - BigUint::one();
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: p.clone(),
         equalities: vec![
             // x + (-x) = 0   (encoded as 1*x + (p-1)*x = 0, trivially)
@@ -274,7 +275,7 @@ fn test_negneg_bn128() {
             // We model neg via auxiliary y = -x, z = -y, then z - x = 0.
             vec![vt("y"), vt("x")],                    // y + x = 0  → y = -x
             vec![vt("z"), vt("y")],                    // z + y = 0  → z = -y = x
-            vec![vt("z"), LegacyPolyTerm { coeff: p_minus_1.clone(), vars: vec!["x".into()] }], // z - x = 0
+            vec![vt("z"), NamedTerm { coeff: p_minus_1.clone(), vars: vec!["x".into()] }], // z - x = 0
         ],
         disequalities: vec![],
         assignments: vec![],
@@ -297,7 +298,7 @@ fn test_negneg_bn128() {
 fn test_issue10937_mac_linearity() {
     let p = BigUint::from(7u32);
     let p_minus_1: BigUint = &p - BigUint::one();
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: p.clone(),
         equalities: vec![
             // mac1 - k1 - d*m1 = 0
@@ -337,7 +338,7 @@ fn test_issue10937_mac_linearity() {
 fn test_issue11969() {
     let p = BigUint::from(3u32);
     // v = v^2 - 2  →  v^2 - v - 2 = 0  →  v^2 + 2*v + 1 = 0 mod 3
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: p.clone(),
         equalities: vec![
             // v^2 + 2v + 1 = 0
@@ -359,7 +360,7 @@ fn test_issue11969() {
 // Trivially SAT (constant identity).  No variables.
 #[test]
 fn test_as() {
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(17u32),
         equalities: vec![],   // 0 = 0 reduces to trivial; no constraint to add.
         disequalities: vec![],
@@ -380,7 +381,7 @@ fn test_as() {
 // All hold by arithmetic; no variables.
 #[test]
 fn test_bitsum_eval() {
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(3u32),
         equalities: vec![],   // each assertion is a constant identity → 0=0
         disequalities: vec![],
@@ -398,7 +399,7 @@ fn test_bitsum_eval() {
 // Just declares `x` over GF(13); no assertions.  Trivially SAT.
 #[test]
 fn test_proj_issue704() {
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(13u32),
         equalities: vec![],
         disequalities: vec![],
@@ -418,7 +419,7 @@ fn test_proj_issue704() {
 // Both true → SAT.
 #[test]
 fn test_issue11107_redundant_eqs() {
-    let system = LegacyConstraintSystem {
+    let system = NamedSystem {
         prime: BigUint::from(7u32),
         equalities: vec![
             // c - a - 1 = 0

@@ -1,12 +1,14 @@
 //! Solver-side state cache for amortising fixed work across multiple
 //! `solve` calls with the same constraint side.
 //!
-//! The constraint side of a [`LegacyConstraintSystem`] is hashed; a matching
-//! cache reuses the prior split-GB and encodes only the per-query
-//! disequalities (Rabinowitsch polynomials). Sub-iter resumability:
-//! when a fresh cache build is cancelled mid-build, the per-partition
-//! [`IncrementalGB`] in-flight state is preserved as a `PartialBuild`
-//! and resumed on the next solve call with the matching digest.
+//! The constraint side of a [`ConstraintSystem`] is hashed via
+//! [`digest_constraint_side`]; a matching cache reuses the
+//! prior split-GB and encodes only the per-query disequalities
+//! (Rabinowitsch polynomials). Sub-iter resumability: when a fresh
+//! cache build is cancelled mid-build, the per-partition
+//! [`IncrementalGB`] in-flight state is preserved as a
+//! `PartialBuild` and resumed on the next solve call with the
+//! matching digest.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,7 +18,7 @@ use num_bigint::BigUint;
 use crate::bitprop::{BitProp, BitPropState};
 use crate::core::{populate_bitprop, SolveOutcome};
 use crate::encoder::{
-    encode_indexed, encode_indexed_constraint_side, ConstraintSystem,
+    encode, encode_constraint_side, ConstraintSystem,
 };
 use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
 use crate::ff::monomial::MonomialOrder;
@@ -29,7 +31,7 @@ use crate::split_gb::{
 use crate::timeout::CancelToken;
 
 /// Cached state computed from the constraint side of one
-/// `LegacyConstraintSystem` (everything except `disequalities`).
+/// [`ConstraintSystem`] (everything except `disequalities`).
 pub struct CachedBase {
     pub poly_ring: Arc<FfPolyRing>,
     pub var_map: HashMap<String, usize>,
@@ -90,7 +92,7 @@ impl IncrementalSolverContext {
 
     pub fn solve(&mut self, cs: &ConstraintSystem, cancel: &CancelToken) -> SolveOutcome {
         let stats_on = crate::profile::gb_stats_enabled();
-        let digest = digest_indexed_constraint_side(cs);
+        let digest = digest_constraint_side(cs);
 
         let cache_matches = matches!(&self.cached_base, Some(c) if c.digest == digest);
         let partial_matches = matches!(&self.partial_build, Some(p) if p.digest == digest);
@@ -205,7 +207,7 @@ impl IncrementalSolverContext {
         // `encode_constraint_side` still reserves the `__w_diseq_i`
         // variable slots so [`encode_query_disequalities`] can build the
         // Rabinowitsch polynomial in this ring later.
-        let encoded = match encode_indexed_constraint_side(cs) {
+        let encoded = match encode_constraint_side(cs) {
             Ok(e) => e,
             Err(_) => return Err(()),
         };
@@ -503,7 +505,7 @@ fn encode_query_disequalities(
         // Translate the query's producer-frame VarIdx into the
         // cached ring's frame via name lookup. The cached ring's
         // variables are stored in alphabetically sorted order
-        // (see `encode_indexed_impl`), so the integer `a`/`b`
+        // (see `encode_impl`), so the integer `a`/`b`
         // from the input cannot be used directly as a ring slot
         // index — they refer to positions in `cs.var_names`, not
         // in the ring.
@@ -627,7 +629,7 @@ fn solve_with_cached(
 }
 
 fn stateless_solve(cs: &ConstraintSystem, cancel: &CancelToken) -> SolveOutcome {
-    match encode_indexed(cs) {
+    match encode(cs) {
         Ok(encoded) => crate::core::solve_encoded_with_cancel(&encoded, cancel),
         Err(_) => SolveOutcome::Unknown,
     }
@@ -637,7 +639,7 @@ fn stateless_solve(cs: &ConstraintSystem, cancel: &CancelToken) -> SolveOutcome 
 /// except `disequalities`) into a `u64` cache key. Self-consistent:
 /// two systems agreeing on `(prime, var_names, equalities,
 /// assignments, bitsums, add_field_polys)` produce the same digest.
-pub fn digest_indexed_constraint_side(cs: &crate::encoder::ConstraintSystem) -> u64 {
+pub fn digest_constraint_side(cs: &crate::encoder::ConstraintSystem) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     cs.prime.hash(&mut h);

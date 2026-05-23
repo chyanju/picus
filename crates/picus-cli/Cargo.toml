@@ -12,10 +12,9 @@ name = "picus"
 path = "src/main.rs"
 
 [features]
-# Forward picus's backend features. `default` mirrors picus
-# (cvc5 + z3 on). Pass `--no-default-features` to build a native-only
-# CLI that skips the cvc5 / z3 build chains.
-default = ["cvc5", "z3"]
+# Default = `native` only. cvc5 and z3 are opt-in: enable with
+# `cargo build --features cvc5` / `--features z3` (combine as needed).
+default = ["native"]
 native = ["picus/native"]
 cvc5 = ["picus/cvc5"]
 z3 = ["picus/z3"]
