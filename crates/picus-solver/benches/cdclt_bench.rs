@@ -15,9 +15,10 @@ fn bench_paths(c: &mut Criterion, family: &str, label: String, q: BooleanQuery) 
     let cancel = CancelToken::none();
     let prime = q.prime.clone();
     let formula = q.formula.clone();
+    let var_names: Vec<String> = q.var_names().to_vec();
     group.bench_with_input(BenchmarkId::new("cdclt", &label), &(), |b, _| {
         b.iter(|| {
-            let r = solve_formula(prime.clone(), black_box(&formula), &cancel);
+            let r = solve_formula(prime.clone(), &var_names, black_box(&formula), &cancel);
             black_box(r);
         });
     });

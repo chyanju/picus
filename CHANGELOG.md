@@ -6,180 +6,188 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
-Phase 7 — index-keyed encoder hot path and PolyIR-direct encoding.
+Phase 7 — single index-keyed encoder, PolyIR-direct encoding,
+and removal of the legacy String-keyed type family.
 
-The encoder gains a fully index-keyed parallel pipeline; every
-producer publishes the index-keyed form at its public boundary AND
-builds it internally via `ConstraintSystemBuilder` (no transient
-legacy `ConstraintSystem` struct). The `native_ff` backend's
-stateless solve path lowers `PolyIR` to `EncodedSystem` in a
-single `ir.encode()` call without materialising a `String`-keyed
-`ConstraintSystem`.
+The pre-Phase-7 String-keyed types (`LegacyConstraintSystem`,
+`LegacyPolyTerm`, `encode` / `encode_constraint_side` /
+`encode_no_auto_bitsum`, `auto_extract_bitsums`,
+`rewriter::rewrite_system` / `normalize_term_list`,
+`digest_constraint_side`, the `to_legacy` / `from_legacy`
+bridges, and `ConstraintSystem::collect_vars`) are gone. The
+encoder, rewriter, cache, dump-text formatter, and every AST
+producer (`smt2::parse` / `parse_boolean`,
+`boolean::Literal::Eq`/`Neq`, `cdclt::AtomKey` /
+`AtomTable::intern_eq`, `cdclt::ff_theory::check_full_with_mapping`,
+`NativeFfBackend::solve`) operate exclusively on the canonical
+`ConstraintSystem` / `PolyTerm` types. Variable names are
+interned in the producer's `ConstraintSystemBuilder` at
+construction time; the SAT-side `AtomTable` reverse-resolves
+indices to names for its long-lived `AtomKey` cache.
 
-The legacy String-keyed type family persists for ONE remaining
-consumer: the `native_ff` `IncrementalSolverContext` cache (which
-still keys on `digest_constraint_side`) and `dump_smt` formatter.
-A cache migration was attempted in Phase 7 but reverted: the
-GB engine's monomial ordering is sensitive to the polynomial
-ring's variable layout in ways the straightforward port broke
-on the PLDI smoke suite. The deletion of legacy
-`ConstraintSystem` / `PolyTerm` / legacy `encode` / `rewriter` /
-`digest` variants is deferred to Phase 8 along with the cache +
-dump_smt migration.
+After deletion, the surviving public surface was renamed back
+to its canonical names — `encode_indexed` → `encode`,
+`encode_indexed_constraint_side` → `encode_constraint_side`,
+`auto_extract_bitsums_indexed` → `auto_extract_bitsums`,
+`rewriter::rewrite_indexed_system` → `rewrite_system`,
+`normalize_indexed_term_list` → `normalize_term_list`,
+`incremental_context::digest_indexed_constraint_side` →
+`digest_constraint_side`,
+`PolyIR::to_indexed_constraint_system` →
+`to_constraint_system`.
 
 ### Added
 
-- `picus-solver::encoder::IndexedConstraintSystem` —
-  index-keyed counterpart of `ConstraintSystem`. `var_names: Vec<String>`
-  is authoritative for index ↔ name resolution; equalities carry
-  sparse `Vec<IndexedTerm>` (`(VarIdx, u16)` exponent pairs)
-  instead of repeated-name `Vec<String>`. The same fields as the
-  legacy form carry over (`prime`, `disequalities`, `assignments`,
-  `bitsums`, `add_field_polys`).
-- `picus-solver::encoder::IndexedTerm` — sparse-monomial term
-  type, `coeff: BigUint` + `vars: Vec<(VarIdx, u16)>`.
+- `picus-solver::encoder::ConstraintSystem` — canonical
+  index-keyed constraint system. `var_names: Vec<String>` is
+  authoritative for index↔name resolution; equalities carry
+  sparse `Vec<PolyTerm>` (`(VarIdx, u16)` exponent pairs).
+  Fields: `prime`, `var_names`, `equalities`, `disequalities`,
+  `assignments`, `bitsums`, `add_field_polys`.
+- `picus-solver::encoder::PolyTerm` — canonical sparse-monomial
+  term: `coeff: BigUint` + `vars: Vec<(VarIdx, u16)>`.
 - `picus-solver::encoder::ConstraintSystemBuilder` — producer-
   side intern API. `var(name)` deduplicates against the running
   variable list; `add_equality` / `add_disequality` /
   `add_assignment` / `add_bitsum` / `set_add_field_polys` mirror
-  the legacy fields. Used by every migrated producer.
-- `picus-solver::encoder::encode_indexed` /
-  `encode_indexed_constraint_side` — index-keyed counterparts of
-  `encode` / `encode_constraint_side`. Run
-  `rewriter::rewrite_indexed_system` and
-  `auto_extract_bitsums_indexed` before lowering.
-- `picus-solver::encoder::auto_extract_bitsums_indexed` plus the
-  associated `detect_bit_constraint_indexed` and
-  `find_bitsum_chain_indexed` helpers. The same `2^n ≤ p`
-  soundness gate as the legacy implementation.
-- `picus-solver::rewriter::rewrite_indexed_system` and
-  `normalize_indexed_term_list` — index-keyed counterparts of
-  `rewrite_system` and `normalize_term_list`. Within-term
-  exponent merging (`[(x, 1), (x, 1)]` → `[(x, 2)]`),
-  inter-term sort and like-term coefficient sum, drop of
-  zero-coefficient terms.
-- `picus-solver::incremental_context::digest_indexed_constraint_side`
-  — hashes `u32` variable indices and `BigUint` coefficients
-  directly. Used by `NativeFfBackend`'s stats path.
-- `IndexedConstraintSystem::to_legacy` /
-  `IndexedConstraintSystem::from_legacy` — bridges between the
-  two type families used by producers during the migration.
+  the constraint-system fields. `prime()` / `var_names()` /
+  `set_prime()` expose the running state for callers that need
+  to share or repurpose a builder (`SmtSession` uses these).
+  `ConstraintSystemBuilder: Clone` so `BooleanQuery::to_disjunct_systems`
+  can fan out per-disjunct builders from the query-level
+  scaffold.
+- `picus-solver::encoder::compact_used_vars` — pre-encode pass
+  that drops variables that no equality, disequality,
+  assignment, or bitsum chain references and rewrites every
+  `VarIdx` to the compacted layout. Matches the pre-Phase-7
+  `collect_vars` behaviour, which is critical for the GB
+  engine's DegRevLex polynomial ring shape: a discrepancy here
+  (n_vars=9 vs 6 on `AND@gates.r1cs`) was the root cause of the
+  PLDI hang seen mid-phase. Called from `encode_impl` and from
+  `incremental_context::stateless_solve` / `solve_with_cached`
+  before any GB work.
+- `picus-solver::cdclt::atoms::AtomKey::from_indexed_eq` and
+  `intern_into` / `intern_negated_into` — `AtomKey`
+  internalises its name-keyed term storage (long-lived SAT
+  cache key) and exposes `&[PolyTerm] + &[String]` for input
+  and `Vec<PolyTerm>` for output. `AtomTable::intern_eq` takes
+  the producing builder's `var_names` slice for reverse
+  resolution.
+- `picus-solver::cdclt::cnf::tseitin` and
+  `cdclt::orchestrator::solve_formula` now take a
+  `var_names: &[String]` parameter (the formula's
+  `PolyTerm` frame); `Boolean::Literal::Eq`/`Neq` carry
+  `Vec<PolyTerm>` directly.
+- `picus-solver::boolean::BooleanQuery` owns a query-level
+  `ConstraintSystemBuilder`; every `PolyTerm` in `formula`'s
+  literals references that frame. `BooleanQuery::var_names()`
+  exposes it. `from_builder_and_formula` is the new
+  constructor; `from_formula` (which took a separate
+  `var_names: Vec<String>`) is gone.
+- `picus-solver::smt2::parse_boolean` threads a single
+  `ConstraintSystemBuilder` through `assert_to_formula` and
+  `build_poly_with_ctx`; the returned `BooleanQuery` owns that
+  builder. `SmtSession` maintains a persistent builder across
+  `assert` / `push` / `pop` / `check-sat` commands via a
+  `mem::replace` borrow/reinstall pattern.
+- `picus-solver::incremental::NamedTerm` — name-keyed AST
+  scratch term for the `IncrementalSolver` public API
+  (`Constraint::Equality(Vec<NamedTerm>)`). Required because
+  the push/pop fact stack must store names; each `check()`
+  rebuilds a fresh builder and interns at solve time.
 - `picus-smt::poly_ir::PolyIR` gains general-purpose GB-query
   fields: `disequalities: Vec<(usize, usize)>`,
   `assignments: Vec<(usize, BigUint)>`, `bitsums: Vec<Vec<usize>>`,
   `add_field_polys: bool`. `r1cs_to_poly_ir` populates them
   from the R1CS uniqueness query shape; `set_target` rebuilds
   `disequalities` on retarget.
-- `picus-smt::poly_ir::PolyIR::to_indexed_constraint_system` —
-  one-call lowering from `PolyIR` to `IndexedConstraintSystem`,
-  emitting `IndexedTerm` lists via `poly_terms_idx` (no String
-  allocation) and propagating the new general-purpose fields.
-- `picus-smt::poly_ir::PolyIR::encode` — one-call lowering from
-  `PolyIR` to `EncodedSystem`. Internally:
-  `to_indexed_constraint_system` then `encode_indexed`.
-- Tests added: 4 `encoder::tests::encode_indexed_*` cases
-  covering builder dedup, basic equality count parity with legacy
-  `encode`, disequality witness reservation, bitsum routing;
-  2 `encoder::tests::auto_extract_indexed_*` parity cases
-  (sound chain at `p=13`, soundness-gate skip at `p=11`); 7
-  `rewriter::tests::indexed_*` cases mirroring the legacy
-  normalize suite.
+- `picus-smt::poly_ir::PolyIR::to_constraint_system` —
+  one-call lowering from `PolyIR` to the canonical
+  `ConstraintSystem`, propagating the new general-purpose
+  fields. `PolyIR::encode` is the one-call lowering to
+  `EncodedSystem`.
 
 ### Changed
 
-- Every public GB-query producer now publishes
-  `IndexedConstraintSystem` AND builds it internally via the
-  index-keyed `ConstraintSystemBuilder`:
-  * `smt2::parse` returns `Result<IndexedConstraintSystem,
-    ParseError>`. The recursive `build_poly` still returns
-    `Vec<PolyTerm>` (a natural fit for SMT-LIB AST recursion);
-    `parse()` interns those term lists through the builder at
-    its boundary via `intern_poly_terms`.
-  * `BooleanQuery::to_disjunct_systems` returns
-    `Vec<IndexedConstraintSystem>`, built per disjunct through a
-    fresh `ConstraintSystemBuilder`.
-  * `cdclt::ff_theory::check_full_with_mapping` walks the SAT
-    trail through `ConstraintSystemBuilder`. The
-    `__diseq_d_N` / `__zero` synthetic vars are interned through
-    the builder; the legacy `ConstraintSystem` round-trip that
-    landed in phase 7A5 is removed.
-  * `NativeFfBackend::solve` lowers `PolyIR` through
-    `to_indexed_constraint_system`, uses `digest_indexed_constraint_side`
-    for the stats path, and the stateless branch
-    (`cache_enabled = false`) calls `ir.encode()` directly.
-    The cache branch still converts to legacy `ConstraintSystem`
-    via `to_legacy` because the cache itself has not yet
-    migrated.
-- `picus-solver::encoder::encode_indexed` /
-  `encode_indexed_constraint_side` route through
-  `rewrite_indexed_system` and `auto_extract_bitsums_indexed`
-  before `encode_indexed_impl` — the same staging as the legacy
-  `encode` family.
-- `NativeFfBackend::solve` stateless path
-  (`cache_enabled = false`) calls `ir.encode()` directly; no
-  intermediate `ConstraintSystem` is materialised on this
-  branch.
-- `NativeFfBackend::solve` stats path uses
-  `digest_indexed_constraint_side` for `last_cs_digest`
-  tracking; the cache's internal digest keeps the legacy
-  String-keyed form until Phase 8.
-- `encoder.rs` module-level documentation now distinguishes the
-  legacy and index-keyed type families by their role in the
-  pipeline (hot path vs producer-internal scratch) and points to
-  Phase 8 for the final unification.
+- Every public GB-query producer publishes the canonical
+  `ConstraintSystem` AND builds it internally via
+  `ConstraintSystemBuilder`. No `LegacyConstraintSystem` /
+  `LegacyPolyTerm` type ever crosses a public boundary or
+  appears on the hot path.
+- `picus-solver::incremental_context::IncrementalSolverContext`
+  consumes the canonical `ConstraintSystem`. `solve`,
+  `stateless_solve`, `solve_with_cached`, and
+  `encode_query_disequalities` all take `&ConstraintSystem`.
+  `encode_query_disequalities` remaps input `VarIdx` values
+  (in the producer's frame) to ring slot indices (in the
+  compacted, sorted frame produced by `compact_used_vars`) by
+  name lookup through `cs.var_names[idx]` → `var_map[name]`.
+- `picus-smt::backends::native_ff::NativeFfBackend::dump_smt`
+  emits its SMT-LIB-comment text directly from the canonical
+  `ConstraintSystem` returned by `ir.to_constraint_system()`.
+- `picus-solver::incremental::IncrementalSolver` now stores
+  facts as name-keyed `NamedTerm` and rebuilds a fresh
+  `ConstraintSystemBuilder` on every `check()`.
 
-### Added
+### Removed
 
-- `ConstraintSystemBuilder::intern_poly_terms(&[PolyTerm])` —
-  helper that takes a transient `Vec<PolyTerm>` (e.g. the
-  `Vec<PolyTerm>` produced by `cdclt::AtomKey::to_poly_terms`,
-  by `smt2::build_poly`, or attached to a boolean `Literal::Eq` /
-  `Neq`) and emits the equivalent `Vec<IndexedTerm>`, collapsing
-  within-term repeated names (`vars = ["x", "x"]`) into a sparse
-  `(VarIdx, 2)` exponent pair. Used by `smt2::parse`,
-  `BooleanQuery::to_disjunct_systems`, and
-  `cdclt::ff_theory::check_full_with_mapping` to commit their
-  internal term lists to the index-keyed form at the encoder
-  boundary.
+- `picus-solver::encoder::LegacyConstraintSystem`,
+  `LegacyPolyTerm`, `encode`, `encode_constraint_side`,
+  `encode_no_auto_bitsum`, `auto_extract_bitsums` (legacy
+  variant), `detect_bit_constraint_in_terms`,
+  `find_bitsum_chain_in_terms`, `ConstraintSystem::to_legacy`,
+  `ConstraintSystem::from_legacy`,
+  `ConstraintSystemBuilder::intern_poly_terms` (no remaining
+  callers).
+- `picus-solver::rewriter::rewrite_system` (legacy variant)
+  and `normalize_term_list` (legacy variant). Sole survivor of
+  the rewriter module is the (now-canonically-named)
+  index-keyed pair.
+- `picus-solver::incremental_context::digest_constraint_side`
+  (the original String-keyed digest; only the index-keyed
+  digest now exists, renamed to occupy this name).
+- `picus-smt::backends::native_ff::ir_to_constraint_system` —
+  the PolyIR→String-keyed bridge from Phase 6. Superseded by
+  `PolyIR::to_constraint_system`.
 
-### Deferred to Phase 8
+### Renamed (post-deletion)
 
-- Migrating the `NativeFfBackend` cache (`IncrementalSolverContext`)
-  and `dump_smt` text formatter to the index-keyed form.
-  Phase 7 attempted this; the migration is signature-mechanical
-  but the GB engine's DegRevLex monomial ordering is sensitive
-  to the polynomial ring's variable layout in ways the
-  straightforward port broke on the PLDI 17-fixture smoke. The
-  in-progress encoder sort fix preserved the legacy
-  alphabetical-user-var layout but still produced timeouts; the
-  attempt was reverted and needs a closer look at the cache's
-  split-GB seed path (notably how `solve_with_cached` matches
-  query disequalities against cached variable indices) before a
-  second try.
-- Deleting the legacy `ConstraintSystem`, `PolyTerm`, `encode`,
-  `encode_constraint_side`, `encode_no_auto_bitsum`,
-  `rewriter::rewrite_system`, `normalize_term_list`,
-  `digest_constraint_side`, and the `to_legacy` / `from_legacy`
-  bridges. Blocked on the cache migration above.
-- Renaming `IndexedConstraintSystem` → `ConstraintSystem`,
-  `IndexedTerm` → `PolyTerm`, `encode_indexed` → `encode`, etc.
-  Best done atomically with the legacy deletion.
+The `_indexed` suffix that marked the migration-period variants
+is gone now that there's only one type family:
+
+- `encode_indexed` → `encode`
+- `encode_indexed_constraint_side` → `encode_constraint_side`
+- `encode_indexed_impl` → `encode_impl`
+- `auto_extract_bitsums_indexed` → `auto_extract_bitsums`
+- `detect_bit_constraint_indexed` → `detect_bit_constraint`
+- `find_bitsum_chain_indexed` → `find_bitsum_chain`
+- `rewriter::rewrite_indexed_system` → `rewrite_system`
+- `rewriter::normalize_indexed_term_list` → `normalize_term_list`
+- `incremental_context::digest_indexed_constraint_side` →
+  `digest_constraint_side`
+- `PolyIR::to_indexed_constraint_system` → `to_constraint_system`
 
 ### Tests
 
-End-of-Phase-7 regression (all under
-`cargo test -p <crate> -j 2`):
+Phase 7 introduces a `crates/picus-solver/tests/common/mod.rs`
+fixture builder (`NamedSystem` + helpers `ct` / `vt` / `svt` /
+`pt`) that the legacy-shaped integration tests use to construct
+systems in name-keyed form and lower to the canonical
+`ConstraintSystem` via the builder.
+
+End-of-Phase-7 regression (all under `cargo test -p <crate> -j 2`):
 
 * picus-r1cs lib: 4 / 4 (parser robustness).
-* picus-analysis soundness: 5 / 5 (no ignored; covers aboz +
-  basis2 traps end-to-end through both `native_ff` and `cvc5`).
+* picus-analysis soundness: 5 / 5 (covers aboz + basis2 traps
+  end-to-end through both `native_ff` and `cvc5`).
 * picus-smt multi_prime GF(7): 2 / 2.
-* picus-smt backend_plugin: 4 / 4.
+* picus-smt backend_plugin: 4 / 4 (default) / 6 / 6 (native-only).
 * picus PLDI 17 / 17 circomlib smoke.
-* picus-solver strategy_dispatch: 6 / 6.
+* picus-solver lib: 346 / 0 (1 ignored).
 * picus-solver cdclt_regression: 77 / 77 (the ff_theory canary).
-* picus-solver encoder + rewriter unit tests: 22 / 22 (15
-  encoder + 7 rewriter indexed-form tests).
+* picus-solver integration / cvc5_* / timeout / strategy_dispatch /
+  run_smt2_smoke / cvc5_unit_*: 161 / 0 across 11 integration
+  test files (bench_perf benches are `#[ignore]`d).
 
 ## [1.7.31] - 2026-05-22
 

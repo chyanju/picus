@@ -8,12 +8,12 @@ repository.workspace = true
 edition.workspace = true
 
 [features]
-# Both external SMT backends are on by default; disable with
-# `--no-default-features` to drop the cvc5 / z3 build chains and rely
-# entirely on the in-tree native FF backend (no external SMT, no
-# cvc5 build (~15-20 min), no z3 vendored build). `--features native`
-# is the name picus exposes for "I only want the native FF solver".
-default = ["cvc5", "z3"]
+# Default is `native` only — pure-Rust in-tree FF solver, no
+# external build chains. The cvc5 (~15-20 min vendored build) and z3
+# (vendored build) backends are opt-in via `--features cvc5` /
+# `--features z3` (combine as needed). Top-level crates (picus,
+# picus-cli) forward these feature names verbatim.
+default = ["native"]
 native = []
 cvc5 = ["dep:cvc5-ff"]
 z3 = ["dep:z3"]

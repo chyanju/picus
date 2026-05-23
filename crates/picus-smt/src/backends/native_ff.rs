@@ -1,10 +1,12 @@
 //! Native Rust finite-field solver backend — a pure-Rust replacement
 //! for the cvc5 QF_FF theory solver.
 //!
-//! Consumes a [`PolyIR`] snapshot directly: each polynomial equality is
-//! translated into a `Vec<LegacyPolyTerm>` summed to zero, and the target
-//! disequality `x_target ≠ y_target` is handed to the GB solver via
-//! the Rabinowitsch trick wired into [`IncrementalSolverContext`].
+//! Consumes a [`PolyIR`] snapshot directly: `PolyIR::to_constraint_system`
+//! lowers it to the canonical index-keyed
+//! `picus_solver::encoder::ConstraintSystem` (each equality a
+//! `Vec<PolyTerm>` summed to zero), and the target disequality
+//! `x_target ≠ y_target` is handed to the GB solver via the
+//! Rabinowitsch trick wired into [`IncrementalSolverContext`].
 
 use crate::backends::{SolverBackend, SolverBackendDescriptor, SolverError, SolverResult, UnknownReason};
 use crate::poly_ir::PolyIR;
@@ -43,11 +45,11 @@ impl NativeFfBackend {
 }
 
 /// Thin wrapper around the cache module's
-/// `digest_indexed_constraint_side`. Used for the stats path's
+/// `digest_constraint_side`. Used for the stats path's
 /// `last_cs_digest` tracking; the cache itself still keys on the
 /// legacy String-keyed digest until A9 unifies the two paths.
 fn digest_native_constraint_side(ics: &ConstraintSystem) -> u64 {
-    picus_solver::incremental_context::digest_indexed_constraint_side(ics)
+    picus_solver::incremental_context::digest_constraint_side(ics)
 }
 
 impl SolverBackend for NativeFfBackend {
@@ -60,7 +62,7 @@ impl SolverBackend for NativeFfBackend {
         if cancel.is_cancelled() {
             return Ok(SolverResult::Unknown(UnknownReason::Timeout));
         }
-        let indexed = ir.to_indexed_constraint_system();
+        let indexed = ir.to_constraint_system();
         let stats_on = picus_solver::profile::gb_stats_enabled();
         let cs_digest = if stats_on {
             Some(digest_native_constraint_side(&indexed))
@@ -110,7 +112,7 @@ impl SolverBackend for NativeFfBackend {
                 } else {
                     None
                 };
-                // Stateless path: use the index-keyed encode_indexed
+                // Stateless path: use the index-keyed encode
                 // directly via `PolyIR::encode`. No `to_legacy`
                 // round-trip; the cache path still uses `cs` above.
                 let encoded = ir.encode().map_err(|e| SolverError::Internal(e))?;
@@ -161,7 +163,7 @@ impl SolverBackend for NativeFfBackend {
     }
 
     fn dump_smt(&self, ir: &PolyIR) -> String {
-        let ics = ir.to_indexed_constraint_system();
+        let ics = ir.to_constraint_system();
         let resolve = |idx: u32| ics.var_names[idx as usize].as_str();
         let mut out = String::new();
         out.push_str(&format!(

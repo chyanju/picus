@@ -20,16 +20,20 @@ use super::ff_theory::FfTheory;
 use super::theory::{CheckOutcome, Effort, Theory};
 
 /// Solve a `Formula` over GF(`prime`) via CDCL(T) with the FF theory.
-/// `Sat(model)` carries the FF variable assignments; `Unknown` is
-/// returned on cancellation, theory `Unknown`, or iteration cap.
+/// `var_names` is the producing builder's variable frame (used by
+/// the SAT-side atom table to reverse-resolve `PolyTerm` indices to
+/// names for `AtomKey` canonicalisation). `Sat(model)` carries the
+/// FF variable assignments; `Unknown` is returned on cancellation,
+/// theory `Unknown`, or iteration cap.
 pub fn solve_formula(
     prime: BigUint,
+    var_names: &[String],
     formula: &Formula,
     cancel: &CancelToken,
 ) -> SolveOutcome {
     let mut sat = Solver::new();
     let mut atoms = AtomTable::new(prime);
-    let top = match tseitin(formula, &mut atoms, &mut sat) {
+    let top = match tseitin(formula, var_names, &mut atoms, &mut sat) {
         TseitinResult::Constant(true) => return SolveOutcome::Sat(HashMap::new()),
         TseitinResult::Constant(false) => return SolveOutcome::Unsat(Vec::new()),
         TseitinResult::Lit(l) => l,
@@ -253,28 +257,32 @@ fn sync_theory_after_backtrack(
 mod tests {
     use super::*;
     use crate::boolean::{Formula, Literal};
-    use crate::encoder::LegacyPolyTerm;
+    use crate::encoder::PolyTerm;
     use num_bigint::BigUint;
 
-    fn t(coeff: u64, vars: &[&str]) -> LegacyPolyTerm {
-        LegacyPolyTerm {
-            coeff: BigUint::from(coeff),
-            vars: vars.iter().map(|s| s.to_string()).collect(),
-        }
+    /// `coeff * <var idx> = rhs_const`.
+    fn eq(coeff_lhs: u64, var_idx: u32, rhs_const: u64) -> Formula {
+        Formula::Lit(Literal::Eq(
+            vec![PolyTerm {
+                coeff: BigUint::from(coeff_lhs),
+                vars: vec![(var_idx, 1)],
+            }],
+            vec![PolyTerm {
+                coeff: BigUint::from(rhs_const),
+                vars: vec![],
+            }],
+        ))
     }
 
-    fn eq(coeff_lhs: u64, var: &str, rhs_const: u64) -> Formula {
-        Formula::Lit(Literal::Eq(
-            vec![t(coeff_lhs, &[var])],
-            vec![t(rhs_const, &[])],
-        ))
+    fn names(ns: &[&str]) -> Vec<String> {
+        ns.iter().map(|s| s.to_string()).collect()
     }
 
     #[test]
     fn solve_trivial_eq() {
-        // (= x 5): SAT.
-        let f = eq(1, "x", 5);
-        let r = solve_formula(BigUint::from(101u32), &f, &CancelToken::none());
+        let vn = names(&["x"]);
+        let f = eq(1, 0, 5);
+        let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
         match r {
             SolveOutcome::Sat(m) => {
                 assert_eq!(m.get("x"), Some(&BigUint::from(5u32)));
@@ -285,17 +293,17 @@ mod tests {
 
     #[test]
     fn solve_contradictory_eqs() {
-        // (and (= x 5) (= x 6)): UNSAT.
-        let f = Formula::And(vec![eq(1, "x", 5), eq(1, "x", 6)]);
-        let r = solve_formula(BigUint::from(101u32), &f, &CancelToken::none());
+        let vn = names(&["x"]);
+        let f = Formula::And(vec![eq(1, 0, 5), eq(1, 0, 6)]);
+        let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
         assert!(matches!(r, SolveOutcome::Unsat(_)));
     }
 
     #[test]
     fn solve_or_picks_satisfiable_branch() {
-        // (or (= x 5) (= x 6)): both branches independently SAT.
-        let f = Formula::Or(vec![eq(1, "x", 5), eq(1, "x", 6)]);
-        let r = solve_formula(BigUint::from(101u32), &f, &CancelToken::none());
+        let vn = names(&["x"]);
+        let f = Formula::Or(vec![eq(1, 0, 5), eq(1, 0, 6)]);
+        let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
         match r {
             SolveOutcome::Sat(m) => {
                 let v = m.get("x").expect("x assigned").clone();
@@ -307,51 +315,41 @@ mod tests {
 
     #[test]
     fn solve_disjunctive_bit_via_cdclt() {
-        // (or (= x 0) (= x 1)) ∧ (= x 7): UNSAT (x can't be 7 and 0/1).
+        let vn = names(&["x"]);
         let f = Formula::And(vec![
-            Formula::Or(vec![eq(1, "x", 0), eq(1, "x", 1)]),
-            eq(1, "x", 7),
+            Formula::Or(vec![eq(1, 0, 0), eq(1, 0, 1)]),
+            eq(1, 0, 7),
         ]);
-        let r = solve_formula(BigUint::from(101u32), &f, &CancelToken::none());
+        let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
         assert!(matches!(r, SolveOutcome::Unsat(_)));
     }
 
     #[test]
     fn solve_eq_and_neq() {
-        // (and (= x 5) (not (= x 5))): UNSAT.
-        let f = Formula::And(vec![
-            eq(1, "x", 5),
-            Formula::Not(Box::new(eq(1, "x", 5))),
-        ]);
-        let r = solve_formula(BigUint::from(101u32), &f, &CancelToken::none());
+        let vn = names(&["x"]);
+        let f = Formula::And(vec![eq(1, 0, 5), Formula::Not(Box::new(eq(1, 0, 5)))]);
+        let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
         assert!(matches!(r, SolveOutcome::Unsat(_)));
     }
 
     #[test]
     fn solve_implies_chain() {
-        // (and (= x 0) (=> (= x 0) (= y 0)) (not (= y 0))): UNSAT.
+        let vn = names(&["x", "y"]);
         let f = Formula::And(vec![
-            eq(1, "x", 0),
-            // (=> (= x 0) (= y 0)) ≡ (or (not (= x 0)) (= y 0))
-            Formula::Or(vec![
-                Formula::Not(Box::new(eq(1, "x", 0))),
-                eq(1, "y", 0),
-            ]),
-            Formula::Not(Box::new(eq(1, "y", 0))),
+            eq(1, 0, 0),
+            Formula::Or(vec![Formula::Not(Box::new(eq(1, 0, 0))), eq(1, 1, 0)]),
+            Formula::Not(Box::new(eq(1, 1, 0))),
         ]);
-        let r = solve_formula(BigUint::from(101u32), &f, &CancelToken::none());
+        let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
         assert!(matches!(r, SolveOutcome::Unsat(_)));
     }
 
     #[test]
     fn iter_cap_returns_unknown_on_pathological_input() {
-        // Cap = 0 forces an immediate Unknown bail-out. ConfigGuard
-        // restores the previous cap on drop, so this test is
-        // thread-local and doesn't need to serialize against other
-        // config-sensitive tests.
         let _g = crate::config::ConfigGuard::with_override(|c| c.cdclt_iter_cap = 0);
-        let f = Formula::Or(vec![eq(1, "x", 5), eq(1, "x", 6)]);
-        let r = solve_formula(BigUint::from(101u32), &f, &CancelToken::none());
+        let vn = names(&["x"]);
+        let f = Formula::Or(vec![eq(1, 0, 5), eq(1, 0, 6)]);
+        let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
         assert!(matches!(r, SolveOutcome::Unknown));
     }
 }

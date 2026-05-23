@@ -2,7 +2,7 @@
 //!
 //! Measures end-to-end and per-phase performance across representative workloads:
 //!
-//! 1. **encode** — `LegacyConstraintSystem` → `EncodedSystem` (field/ring construction +
+//! 1. **encode** — `NamedSystem` → `EncodedSystem` (field/ring construction +
 //!    polynomial building).
 //! 2. **split_gb** — Groebner basis computation on the encoded system.
 //! 3. **find_roots** — Univariate root finding via Cantor-Zassenhaus.
@@ -17,31 +17,87 @@
 //!   - `find_roots_gf7`    : Univariate root finding over GF(7).
 //!   - `find_roots_big`    : Univariate root finding over 2^255-19.
 
+use std::collections::BTreeMap;
+
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
 use num_bigint::BigUint;
 use num_traits::One;
 
 use picus_solver::core::{solve_encoded, SolveOutcome};
-use picus_solver::encoder::{LegacyConstraintSystem, LegacyPolyTerm, encode};
+use picus_solver::encoder::{
+    encode, ConstraintSystem, ConstraintSystemBuilder, EncodedSystem, PolyTerm, VarIdx,
+};
 use picus_solver::field::FfField;
+use picus_solver::incremental::NamedTerm;
 use picus_solver::roots::find_roots;
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Bench-local helpers ─────────────────────────────────────────────────────
 
-fn ct(c: u64) -> LegacyPolyTerm { LegacyPolyTerm { coeff: BigUint::from(c), vars: vec![] } }
-fn ctb(c: BigUint) -> LegacyPolyTerm { LegacyPolyTerm { coeff: c, vars: vec![] } }
-fn vt(v: &str) -> LegacyPolyTerm { LegacyPolyTerm { coeff: BigUint::one(), vars: vec![v.into()] } }
-fn svt(c: u64, v: &str) -> LegacyPolyTerm { LegacyPolyTerm { coeff: BigUint::from(c), vars: vec![v.into()] } }
-fn pt(c: u64, vars: &[&str]) -> LegacyPolyTerm {
-    LegacyPolyTerm { coeff: BigUint::from(c), vars: vars.iter().map(|s| s.to_string()).collect() }
+/// Same shape as `LegacyConstraintSystem` for ergonomic bench
+/// fixture writing; lowered to a real `ConstraintSystem` via
+/// [`Self::build`] before encoding.
+struct NamedSystem {
+    prime: BigUint,
+    equalities: Vec<Vec<NamedTerm>>,
+    disequalities: Vec<(String, String)>,
+    assignments: Vec<(String, BigUint)>,
+    add_field_polys: bool,
+    bitsums: Vec<Vec<String>>,
+}
+
+fn intern_named(t: &NamedTerm, b: &mut ConstraintSystemBuilder) -> PolyTerm {
+    let mut counts: BTreeMap<VarIdx, u16> = BTreeMap::new();
+    for v in &t.vars {
+        let idx = b.var(v);
+        *counts.entry(idx).or_insert(0) += 1;
+    }
+    PolyTerm {
+        coeff: t.coeff.clone(),
+        vars: counts.into_iter().collect(),
+    }
+}
+
+fn build_system(s: &NamedSystem) -> ConstraintSystem {
+    let mut b = ConstraintSystemBuilder::new(s.prime.clone());
+    b.set_add_field_polys(s.add_field_polys);
+    for eq in &s.equalities {
+        let terms: Vec<PolyTerm> = eq.iter().map(|t| intern_named(t, &mut b)).collect();
+        b.add_equality(terms);
+    }
+    for (a, val) in &s.assignments {
+        let idx = b.var(a);
+        b.add_assignment(idx, val.clone());
+    }
+    for (a, c) in &s.disequalities {
+        let ai = b.var(a);
+        let bi = b.var(c);
+        b.add_disequality(ai, bi);
+    }
+    for bs in &s.bitsums {
+        let idxs: Vec<VarIdx> = bs.iter().map(|n| b.var(n)).collect();
+        b.add_bitsum(idxs);
+    }
+    b.build()
+}
+
+fn encode_named(s: &NamedSystem) -> EncodedSystem {
+    encode(&build_system(s)).unwrap()
+}
+
+fn ct(c: u64) -> NamedTerm { NamedTerm { coeff: BigUint::from(c), vars: vec![] } }
+fn ctb(c: BigUint) -> NamedTerm { NamedTerm { coeff: c, vars: vec![] } }
+fn vt(v: &str) -> NamedTerm { NamedTerm { coeff: BigUint::one(), vars: vec![v.into()] } }
+fn svt(c: u64, v: &str) -> NamedTerm { NamedTerm { coeff: BigUint::from(c), vars: vec![v.into()] } }
+fn pt(c: u64, vars: &[&str]) -> NamedTerm {
+    NamedTerm { coeff: BigUint::from(c), vars: vars.iter().map(|s| s.to_string()).collect() }
 }
 
 // ── Workload builders ───────────────────────────────────────────────────────
 
-fn issue10937_system() -> LegacyConstraintSystem {
+fn issue10937_system() -> NamedSystem {
     let p = BigUint::from(7u32);
     let p_minus_1: BigUint = &p - BigUint::one();
-    let mut system = LegacyConstraintSystem {
+    let mut system = NamedSystem {
         prime: p.clone(),
         equalities: vec![
             vec![vt("mac1"), svt(6, "k1"), pt(6, &["d", "m1"])],
@@ -62,18 +118,18 @@ fn issue10937_system() -> LegacyConstraintSystem {
     system
 }
 
-fn bigff_is_zero_system() -> LegacyConstraintSystem {
+fn bigff_is_zero_system() -> NamedSystem {
     let p: BigUint = "21888242871839275222246405745257275088548364400416034343698204186575808495617"
         .parse().unwrap();
     let p_minus_1 = &p - BigUint::one();
-    LegacyConstraintSystem {
+    NamedSystem {
         prime: p.clone(),
         equalities: vec![
             vec![pt(1, &["m", "x"]), vt("iz"), ctb(p_minus_1.clone())],
             vec![pt(1, &["iz", "x"])],
             vec![
                 pt(1, &["iz", "iz", "w"]),
-                LegacyPolyTerm { coeff: p_minus_1.clone(), vars: vec!["iz".into(), "w".into()] },
+                NamedTerm { coeff: p_minus_1.clone(), vars: vec!["iz".into(), "w".into()] },
                 ctb(p_minus_1.clone()),
             ],
         ],
@@ -84,8 +140,8 @@ fn bigff_is_zero_system() -> LegacyConstraintSystem {
     }
 }
 
-fn field_poly_gf7_system() -> LegacyConstraintSystem {
-    LegacyConstraintSystem {
+fn field_poly_gf7_system() -> NamedSystem {
+    NamedSystem {
         prime: BigUint::from(7u32),
         equalities: vec![
             vec![vt("a2"), pt(6, &["a", "a"])],
@@ -100,7 +156,7 @@ fn field_poly_gf7_system() -> LegacyConstraintSystem {
     }
 }
 
-fn random_6var_system() -> LegacyConstraintSystem {
+fn random_6var_system() -> NamedSystem {
     // 9 random linear constraints over GF(11) that are SAT (planted root: all zeros).
     // Each eq: c_0*x_0 + c_1*x_1 + ... + c_5*x_5 = 0 (trivially satisfied by the zero point).
     let coeffs: Vec<Vec<u64>> = vec![
@@ -115,13 +171,13 @@ fn random_6var_system() -> LegacyConstraintSystem {
         vec![2, 0, 6, 0, 1, 0],
     ];
     let vars = ["x0", "x1", "x2", "x3", "x4", "x5"];
-    let equalities: Vec<Vec<LegacyPolyTerm>> = coeffs.iter().map(|row| {
+    let equalities: Vec<Vec<NamedTerm>> = coeffs.iter().map(|row| {
         row.iter().enumerate()
             .filter(|&(_, c)| *c != 0)
             .map(|(i, c)| svt(*c, vars[i]))
             .collect()
     }).collect();
-    LegacyConstraintSystem {
+    NamedSystem {
         prime: BigUint::from(11u32),
         equalities,
         disequalities: vec![],
@@ -136,7 +192,7 @@ fn random_6var_system() -> LegacyConstraintSystem {
 fn bench_encode(c: &mut Criterion) {
     let mut group = c.benchmark_group("encode");
 
-    let systems: Vec<(&str, LegacyConstraintSystem)> = vec![
+    let systems: Vec<(&str, NamedSystem)> = vec![
         ("issue10937_gf7", issue10937_system()),
         ("bigff_is_zero_bn128", bigff_is_zero_system()),
         ("field_poly_gf7", field_poly_gf7_system()),
@@ -145,7 +201,7 @@ fn bench_encode(c: &mut Criterion) {
 
     for (name, sys) in &systems {
         group.bench_with_input(BenchmarkId::new("encode", name), sys, |b, sys| {
-            b.iter(|| encode(black_box(sys)).unwrap());
+            b.iter(|| encode_named(black_box(sys)));
         });
     }
     group.finish();
@@ -154,7 +210,7 @@ fn bench_encode(c: &mut Criterion) {
 fn bench_end_to_end(c: &mut Criterion) {
     let mut group = c.benchmark_group("end_to_end");
 
-    let systems: Vec<(&str, LegacyConstraintSystem)> = vec![
+    let systems: Vec<(&str, NamedSystem)> = vec![
         ("issue10937_gf7", issue10937_system()),
         ("bigff_is_zero_bn128", bigff_is_zero_system()),
         ("field_poly_gf7", field_poly_gf7_system()),
@@ -164,7 +220,7 @@ fn bench_end_to_end(c: &mut Criterion) {
     for (name, sys) in &systems {
         group.bench_with_input(BenchmarkId::new("solve", name), sys, |b, sys| {
             b.iter(|| {
-                let encoded = encode(black_box(sys)).unwrap();
+                let encoded = encode_named(black_box(sys));
                 solve_encoded(&encoded)
             });
         });

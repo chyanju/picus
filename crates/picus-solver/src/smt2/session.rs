@@ -19,7 +19,7 @@ use super::{
     VarSort,
 };
 use crate::boolean::{Formula, Literal};
-use crate::encoder::LegacyPolyTerm;
+use crate::encoder::{ConstraintSystemBuilder, PolyTerm};
 
 /// Verdict returned by `(check-sat)`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -77,6 +77,11 @@ pub struct SmtSession {
     /// core to be any sufficient subset (not necessarily minimal),
     /// so the full named-assert list is a sound conservative answer.
     pub(super) last_unsat_core_names: Vec<String>,
+    /// Single persistent builder: every PolyTerm in `formulas` /
+    /// `side_constraints` references this builder's variable frame.
+    /// `borrow_ctx_mut` temporarily extracts it via `mem::replace`
+    /// for the `assert_to_formula` call, then puts it back.
+    pub(super) builder: ConstraintSystemBuilder,
 }
 
 #[derive(Clone)]
@@ -111,6 +116,7 @@ impl SmtSession {
             last_check: None,
             last_model: None,
             last_unsat_core_names: Vec::new(),
+            builder: ConstraintSystemBuilder::new(BigUint::from(2u32)),
         }
     }
 
@@ -181,11 +187,16 @@ impl SmtSession {
                 // ignored; the inner term is used as the assertion.
                 let (inner, name) = strip_named_annotation(&list[1]);
                 let mut ctx = self.borrow_ctx();
-                let formula = assert_to_formula(inner, &mut ctx)?;
-                let added_side = ctx.side_constraints.split_off(0);
-                let new_ite_count = ctx.next_ite_skolem;
-                drop(ctx);
-                self.next_ite_skolem = new_ite_count;
+                let formula = match assert_to_formula(inner, &mut ctx) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        // Reinstall builder even on failure to keep
+                        // the session usable.
+                        self.reinstall_ctx(ctx);
+                        return Err(e);
+                    }
+                };
+                let added_side = self.reinstall_ctx(ctx);
                 self.formulas.push(formula);
                 self.assert_names.push(name);
                 self.side_constraints.extend(added_side);
@@ -258,14 +269,31 @@ impl SmtSession {
         self.levels.len()
     }
 
-    fn borrow_ctx(&self) -> ParseCtx {
+    /// Extract a `ParseCtx` for one assert/get-value/check call.
+    /// `mem::replace`s `self.builder` with a placeholder; the caller
+    /// MUST move the returned ctx's builder back via
+    /// [`Self::reinstall_ctx`] when done.
+    fn borrow_ctx(&mut self) -> ParseCtx {
+        let prime = self.prime.clone().unwrap_or_else(|| BigUint::from(2u32));
+        let placeholder = ConstraintSystemBuilder::new(prime.clone());
+        let builder = std::mem::replace(&mut self.builder, placeholder);
         ParseCtx {
-            prime: self.prime.clone().unwrap_or_else(|| BigUint::from(2u32)),
+            prime,
             vars: self.vars.clone(),
             macros: self.macros.clone(),
             next_ite_skolem: self.next_ite_skolem,
             side_constraints: Vec::new(),
+            builder,
         }
+    }
+
+    /// Move the ctx's mutated builder + skolem counter back into the
+    /// session; return any side constraints accumulated during the
+    /// parse so the caller can append them.
+    fn reinstall_ctx(&mut self, ctx: ParseCtx) -> Vec<Formula> {
+        self.builder = ctx.builder;
+        self.next_ite_skolem = ctx.next_ite_skolem;
+        ctx.side_constraints
     }
 
     fn push(&mut self) {
@@ -311,13 +339,14 @@ impl SmtSession {
         let one = BigUint::from(1u32);
         for name in &self.var_order {
             if matches!(self.vars.get(name), Some(VarSort::Bool)) {
-                let b_sq: Polynomial = vec![LegacyPolyTerm {
+                let idx = self.builder.var(name);
+                let b_sq: Polynomial = vec![PolyTerm {
                     coeff: one.clone(),
-                    vars: vec![name.clone(), name.clone()],
+                    vars: vec![(idx, 2)],
                 }];
-                let b: Polynomial = vec![LegacyPolyTerm {
+                let b: Polynomial = vec![PolyTerm {
                     coeff: one.clone(),
-                    vars: vec![name.clone()],
+                    vars: vec![(idx, 1)],
                 }];
                 all.push(Formula::Lit(Literal::Eq(b_sq, b)));
             }
@@ -336,7 +365,7 @@ impl SmtSession {
             ),
             None => crate::timeout::CancelToken::none(),
         };
-        let outcome = crate::cdclt::solve_formula(prime, &combined, &cancel);
+        let outcome = crate::cdclt::solve_formula(prime, self.builder.var_names(), &combined, &cancel);
         match outcome {
             crate::core::SolveOutcome::Sat(model) => {
                 self.last_check = Some(SessionVerdict::Sat);
@@ -405,6 +434,7 @@ impl SmtSession {
                         let n = p.parse::<BigUint>().map_err(|_| {
                             ParseError::Malformed(format!("bad prime: {}", p))
                         })?;
+                        self.builder.set_prime(n.clone());
                         self.prime = Some(n);
                     }
                 }
@@ -435,6 +465,7 @@ impl SmtSession {
                     {
                         if u == "_" && ff == "FiniteField" {
                             if let Ok(n) = p.parse::<BigUint>() {
+                                self.builder.set_prime(n.clone());
                                 self.prime = Some(n);
                             }
                         }

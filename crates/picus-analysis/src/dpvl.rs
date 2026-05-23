@@ -368,7 +368,29 @@ impl DpvlContext {
             Ok(SolverResult::Unsat) => SolveResult::Verified,
             Ok(SolverResult::Sat(model)) => {
                 if self.target_set.contains(&sid) {
-                    SolveResult::Sat(model)
+                    // Defensive witness validation: a real counter-
+                    // example must have `model.x_target != model.y_target`.
+                    // cvc5's QF_FF backend has a known spurious-SAT bug
+                    // (cvc5 1.2.0–1.3.3, "or"-of-eq disjunctions) and
+                    // we have empirically observed the native GB
+                    // engine return models that violate the
+                    // Rabinowitsch polynomial on big circuits
+                    // (Pedersen@pedersen). Treat any "SAT" whose
+                    // target values agree as a spurious response and
+                    // skip — DPVL will try another wire or report
+                    // Unknown at the loop's end.
+                    let x_name = ir.x_name(sid).to_string();
+                    let y_name = ir.y_name(sid).to_string();
+                    match (model.get(&x_name), model.get(&y_name)) {
+                        (Some(x), Some(y)) if x != y => SolveResult::Sat(model),
+                        (xv, yv) => {
+                            log::warn!(
+                                "spurious SAT on target wire {}: x={:?} y={:?} (treating as Skip)",
+                                sid, xv, yv
+                            );
+                            SolveResult::Skip
+                        }
+                    }
                 } else {
                     SolveResult::Skip
                 }

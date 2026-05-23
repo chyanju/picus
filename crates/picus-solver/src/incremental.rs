@@ -1,21 +1,37 @@
 //! Incremental solver: push / pop / check API.
 //!
 //! A simple push/pop interface backed by a stack of checkpoint heights
-//! into a single `Vec<Constraint>`. Each `check()` re-encodes the
-//! current fact list from scratch and invokes
-//! [`crate::core::solve_split_gb`].
+//! into a single `Vec<Constraint>`. Each `check()` rebuilds a fresh
+//! [`ConstraintSystemBuilder`] from the accumulated facts and
+//! dispatches to [`crate::core::solve_encoded_with_cancel`].
+//!
+//! Facts are stored in name-keyed form ([`NamedTerm`]) because the
+//! push/pop API can't fix variable indices until check time — each
+//! check builds a fresh polynomial ring with its own index frame.
+
+use std::collections::BTreeMap;
 
 use num_bigint::BigUint;
 
 use crate::core::{solve_encoded_with_cancel, SolveOutcome};
-use crate::encoder::{encode, LegacyConstraintSystem, LegacyPolyTerm};
+use crate::encoder::{encode, ConstraintSystemBuilder, PolyTerm, VarIdx};
 use crate::timeout::CancelToken;
+
+/// AST scratch term: `coeff * prod(vars)` with `vars` carrying
+/// repeated names for higher exponents (`vec!["x", "x"]` = `x^2`).
+/// Used by [`IncrementalSolver::assert_equality`] for incremental
+/// fact storage; converted to [`PolyTerm`] at check time.
+#[derive(Clone, Debug)]
+pub struct NamedTerm {
+    pub coeff: BigUint,
+    pub vars: Vec<String>,
+}
 
 /// A single constraint that can be asserted incrementally.
 #[derive(Clone, Debug)]
 pub enum Constraint {
     /// A polynomial equation: sum(terms) == 0.
-    Equality(Vec<LegacyPolyTerm>),
+    Equality(Vec<NamedTerm>),
     /// A disequality: var_a != var_b.
     Disequality(String, String),
     /// A direct variable assignment: var == value.
@@ -65,7 +81,7 @@ impl IncrementalSolver {
     pub fn num_facts(&self) -> usize { self.facts.len() }
 
     /// Assert a polynomial equation `sum(terms) == 0`.
-    pub fn assert_equality(&mut self, terms: Vec<LegacyPolyTerm>) {
+    pub fn assert_equality(&mut self, terms: Vec<NamedTerm>) {
         self.facts.push(Constraint::Equality(terms));
     }
 
@@ -87,16 +103,40 @@ impl IncrementalSolver {
 
     /// Solve the current fact set with cooperative cancellation.
     pub fn check_with_cancel(&self, cancel: &CancelToken) -> SolveOutcome {
-        let (equalities, disequalities, assignments) = self.build_constraint_lists();
-        let cs = LegacyConstraintSystem {
-            prime: self.prime.clone(),
-            equalities,
-            disequalities,
-            assignments,
-            add_field_polys: self.add_field_polys,
-            bitsums: vec![],
-        };
-        let encoded = match encode(&cs) {
+        let mut builder = ConstraintSystemBuilder::new(self.prime.clone());
+        builder.set_add_field_polys(self.add_field_polys);
+        for fact in &self.facts {
+            match fact {
+                Constraint::Equality(terms) => {
+                    let intern_terms: Vec<PolyTerm> = terms
+                        .iter()
+                        .map(|t| {
+                            let mut counts: BTreeMap<VarIdx, u16> = BTreeMap::new();
+                            for v in &t.vars {
+                                let idx = builder.var(v);
+                                *counts.entry(idx).or_insert(0) += 1;
+                            }
+                            PolyTerm {
+                                coeff: t.coeff.clone(),
+                                vars: counts.into_iter().collect(),
+                            }
+                        })
+                        .collect();
+                    builder.add_equality(intern_terms);
+                }
+                Constraint::Disequality(a, b) => {
+                    let ai = builder.var(a);
+                    let bi = builder.var(b);
+                    builder.add_disequality(ai, bi);
+                }
+                Constraint::Assignment(v, val) => {
+                    let vi = builder.var(v);
+                    builder.add_assignment(vi, val.clone());
+                }
+            }
+        }
+        let sys = builder.build();
+        let encoded = match encode(&sys) {
             Ok(e) => e,
             Err(e) => {
                 log::error!("encode failed: {e}");
@@ -111,57 +151,33 @@ impl IncrementalSolver {
         let cancel = CancelToken::with_timeout(timeout);
         self.check_with_cancel(&cancel)
     }
-
-    fn build_constraint_lists(&self) -> (Vec<Vec<LegacyPolyTerm>>, Vec<(String, String)>, Vec<(String, BigUint)>) {
-        let mut equalities = Vec::new();
-        let mut disequalities = Vec::new();
-        let mut assignments = Vec::new();
-        for fact in &self.facts {
-            match fact {
-                Constraint::Equality(terms) => {
-                    equalities.push(terms.iter().map(|t| LegacyPolyTerm {
-                        coeff: t.coeff.clone(),
-                        vars: t.vars.clone(),
-                    }).collect());
-                }
-                Constraint::Disequality(a, b) => {
-                    disequalities.push((a.clone(), b.clone()));
-                }
-                Constraint::Assignment(v, val) => {
-                    assignments.push((v.clone(), val.clone()));
-                }
-            }
-        }
-        (equalities, disequalities, assignments)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn term(coeff: u32, vars: &[&str]) -> LegacyPolyTerm {
-        LegacyPolyTerm { coeff: BigUint::from(coeff), vars: vars.iter().map(|s| s.to_string()).collect() }
+    fn term(coeff: u32, vars: &[&str]) -> NamedTerm {
+        NamedTerm {
+            coeff: BigUint::from(coeff),
+            vars: vars.iter().map(|s| s.to_string()).collect(),
+        }
     }
 
     #[test]
     fn test_push_pop_basic() {
-        // GF(7); no facts -> SAT trivially.
         let mut solver = IncrementalSolver::new(BigUint::from(7u32), false);
         solver.assert_assignment("x", BigUint::from(2u32));
-        // x = 2: SAT
         match solver.check() {
             SolveOutcome::Sat(_) => {}
             _ => panic!("expected SAT before push"),
         }
         solver.push();
-        // Add contradictory fact: x = 3.
         solver.assert_assignment("x", BigUint::from(3u32));
         match solver.check() {
             SolveOutcome::Unsat(_) => {}
             _ => panic!("expected UNSAT after adding contradiction"),
         }
-        // Pop to remove the contradiction.
         solver.pop();
         match solver.check() {
             SolveOutcome::Sat(m) => assert_eq!(m["x"], BigUint::from(2u32)),
@@ -176,13 +192,12 @@ mod tests {
         solver.assert_equality(vec![
             term(1, &["x"]),
             term(1, &["y"]),
-            LegacyPolyTerm { coeff: BigUint::from(11u32 - 7), vars: vec![] },
+            NamedTerm { coeff: BigUint::from(11u32 - 7), vars: vec![] },
         ]);
         solver.push();
         solver.assert_assignment("x", BigUint::from(3u32));
         solver.push();
         solver.assert_assignment("y", BigUint::from(4u32));
-        // Now: x+y=7, x=3, y=4 → 3+4=7 ✓ SAT
         match solver.check() {
             SolveOutcome::Sat(m) => {
                 assert_eq!(m["x"], BigUint::from(3u32));
@@ -190,16 +205,14 @@ mod tests {
             }
             _ => panic!("expected SAT at depth 2"),
         }
-        solver.pop(); // remove y=4
+        solver.pop();
         solver.assert_assignment("y", BigUint::from(5u32));
-        // x=3, y=5 → 3+5=8 ≠ 7 UNSAT
         match solver.check() {
             SolveOutcome::Unsat(_) => {}
             _ => panic!("expected UNSAT at depth 2 with y=5"),
         }
-        solver.pop(); // remove x=3 and y=5
+        solver.pop();
         assert_eq!(solver.push_depth(), 0);
-        // back to just x+y=7, which is SAT
         match solver.check() {
             SolveOutcome::Sat(_) => {}
             _ => panic!("expected SAT at depth 0"),

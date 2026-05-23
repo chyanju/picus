@@ -29,7 +29,7 @@ use num_traits::Zero;
 use picus_r1cs::field_reduce;
 use picus_r1cs::grammar::{ConstraintBlock, R1csFile};
 use picus_solver::encoder::{
-    encode_indexed, ConstraintSystemBuilder, EncodedSystem, ConstraintSystem, PolyTerm,
+    encode, ConstraintSystemBuilder, EncodedSystem, ConstraintSystem, PolyTerm,
 };
 use picus_solver::field::FfField;
 use picus_solver::poly::{FfPolyRing, Poly};
@@ -69,11 +69,11 @@ pub struct PolyIR {
     // PolyIR is the unified GB query IR going forward; the fields
     // below mirror what `ConstraintSystem` carries, so each of
     // the four producers (R1CS lowering, SMT2 parser, boolean DNF,
-    // CDCL(T) ff_theory) can fully describe its query without an
-    // intermediate `LegacyConstraintSystem`. The R1CS lowering populates
-    // `disequalities` with a single entry derived from
-    // `target_signal` (and rebuilds it on `set_target`); other
-    // producers populate these freely.
+    // CDCL(T) ff_theory) can fully describe its query without
+    // touching the legacy String-keyed scratch type. The R1CS
+    // lowering populates `disequalities` with a single entry
+    // derived from `target_signal` (and rebuilds it on
+    // `set_target`); other producers populate these freely.
     /// Disequality witness sites: each `(a_idx, b_idx)` pair becomes
     /// a Rabinowitsch polynomial `(x_a - x_b) · w_i - 1 = 0` at
     /// encoding time. Indices are into `ring.var_names()`.
@@ -201,7 +201,7 @@ impl PolyIR {
     /// `Vec<PolyTerm>` via [`Self::poly_terms_idx`];
     /// `disequalities`, `assignments`, `bitsums`, and
     /// `add_field_polys` propagate as-is.
-    pub fn to_indexed_constraint_system(&self) -> ConstraintSystem {
+    pub fn to_constraint_system(&self) -> ConstraintSystem {
         let prime = self.ring.field.prime().clone();
         let mut builder = ConstraintSystemBuilder::new(prime);
         for name in self.ring.ring.var_names() {
@@ -236,12 +236,12 @@ impl PolyIR {
 
     /// Encode this `PolyIR` into an [`EncodedSystem`] ready for the
     /// GB engine. Internally builds an `ConstraintSystem` via
-    /// [`Self::to_indexed_constraint_system`] and routes through
-    /// [`picus_solver::encoder::encode_indexed`] (which runs
-    /// `rewriter::rewrite_indexed_system` and
-    /// `auto_extract_bitsums_indexed`).
+    /// [`Self::to_constraint_system`] and routes through
+    /// [`picus_solver::encoder::encode`] (which runs
+    /// `rewriter::rewrite_system` and
+    /// `auto_extract_bitsums`).
     pub fn encode(&self) -> Result<EncodedSystem, String> {
-        encode_indexed(&self.to_indexed_constraint_system())
+        encode(&self.to_constraint_system())
     }
 
     /// Iterate every term of `poly` as `(coeff, vars_with_exp)` where

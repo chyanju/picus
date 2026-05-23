@@ -8,10 +8,12 @@
 //! 3. Negation-normal form via [`Formula::nnf`].
 //! 4. Disjunctive normal form via [`Formula::to_dnf`] (worst case
 //!    exponential in the number of `or` nodes).
-//! 5. Dispatch each DNF disjunct as a conjunctive [`LegacyConstraintSystem`]
+//! 5. Dispatch each DNF disjunct as a conjunctive [`ConstraintSystem`]
 //!    to [`solve_encoded_with_cancel`]. The query is SAT iff some
 //!    disjunct is SAT; UNSAT iff every disjunct is UNSAT.
 //!
+//! [`Literal`] carries index-keyed `Vec<PolyTerm>` whose `VarIdx`
+//! values reference [`BooleanQuery::builder`]'s variable frame.
 //! [`rewrite_disjunctive_bit`] is the equivalent of cvc5
 //! `preprocessing/passes/ff_disjunctive_bit.cpp`.
 
@@ -20,15 +22,17 @@ use num_traits::Zero;
 
 use crate::core::{solve_encoded_with_cancel, SolveOutcome};
 use crate::encoder::{
-    encode_indexed, ConstraintSystemBuilder, ConstraintSystem, PolyTerm, LegacyPolyTerm,
+    encode, ConstraintSystemBuilder, ConstraintSystem, PolyTerm, VarIdx,
 };
 use crate::timeout::CancelToken;
 
 /// A literal over FF terms: an equality or a disequality.
+/// `Vec<PolyTerm>` indices reference the producing
+/// [`BooleanQuery::builder`]'s variable frame.
 #[derive(Clone, Debug)]
 pub enum Literal {
-    Eq(Vec<LegacyPolyTerm>, Vec<LegacyPolyTerm>),
-    Neq(Vec<LegacyPolyTerm>, Vec<LegacyPolyTerm>),
+    Eq(Vec<PolyTerm>, Vec<PolyTerm>),
+    Neq(Vec<PolyTerm>, Vec<PolyTerm>),
 }
 
 /// A Boolean formula over FF literals.
@@ -157,11 +161,13 @@ impl Formula {
 /// A parsed Boolean QF_FF query. `formula` is the preprocessed-NNF
 /// representation consumed by the CDCL(T) path; [`BooleanQuery::dnf`]
 /// computes the DNF expansion on demand (size `O(3^k)` for k-clause
-/// CNF inputs).
+/// CNF inputs). `builder` owns the query-level variable frame; every
+/// `PolyTerm` inside `formula`'s literals references indices in this
+/// frame.
 #[derive(Debug)]
 pub struct BooleanQuery {
     pub prime: BigUint,
-    pub var_names: Vec<String>,
+    pub builder: ConstraintSystemBuilder,
     /// Result of `rewrite_disjunctive_bit` + `nnf`. Suitable for
     /// Tseitin CNF conversion.
     pub formula: Formula,
@@ -169,19 +175,24 @@ pub struct BooleanQuery {
 }
 
 impl BooleanQuery {
-    /// Build a `BooleanQuery` from a Boolean formula. Applies the
-    /// `ff_disjunctive_bit` preprocessing pass and NNF normalization;
-    /// the DNF expansion is deferred until [`BooleanQuery::dnf`] is
-    /// called.
-    pub fn from_formula(prime: BigUint, var_names: Vec<String>, f: Formula) -> Self {
+    /// Build a `BooleanQuery` from a populated `builder` (containing
+    /// the query's variable frame) and a Boolean formula whose
+    /// `PolyTerm` indices reference that frame. Applies
+    /// `rewrite_disjunctive_bit` then NNF; DNF expansion is deferred.
+    pub fn from_builder_and_formula(builder: ConstraintSystemBuilder, f: Formula) -> Self {
+        let prime = builder.prime().clone();
         let preprocessed = rewrite_disjunctive_bit(f, &prime);
         let nnf = preprocessed.nnf();
         BooleanQuery {
             prime,
-            var_names,
+            builder,
             formula: nnf,
             dnf_cell: std::sync::OnceLock::new(),
         }
+    }
+
+    pub fn var_names(&self) -> &[String] {
+        self.builder.var_names()
     }
 
     /// Compute (or return the cached) DNF expansion of `self.formula`.
@@ -192,35 +203,35 @@ impl BooleanQuery {
     }
 
     /// Translate each DNF disjunct (a conjunction of literals) into a
-    /// stand-alone [`ConstraintSystem`] via the index-keyed
-    /// `ConstraintSystemBuilder`. `__zero` is interned (and pinned
-    /// to the field's zero) the first time a disjunct introduces a
-    /// disequality.
+    /// stand-alone [`ConstraintSystem`]. Each disjunct clones the
+    /// query-level builder (inheriting the variable frame the
+    /// `PolyTerm` indices reference), then appends disjunct-specific
+    /// `__diseq_d_N` / `__zero` synthetics. `compact_used_vars`
+    /// (called from `encode`) drops vars no disjunct
+    /// constraint references.
     pub fn to_disjunct_systems(&self) -> Vec<ConstraintSystem> {
-        let mut diseq_seq: usize = 0;
         self.dnf()
             .iter()
             .map(|disjunct| {
-                let mut builder = ConstraintSystemBuilder::new(self.prime.clone());
-                let mut zero_idx: Option<u32> = None;
+                let mut builder = self.builder.clone();
+                let mut diseq_seq: usize = 0;
+                let mut zero_idx: Option<VarIdx> = None;
                 for lit in disjunct {
                     match lit {
                         Literal::Eq(a, b) => {
-                            // Build (a - b) as a single equality.
-                            let mut combined: Vec<LegacyPolyTerm> = a.clone();
+                            let mut combined: Vec<PolyTerm> = a.clone();
                             for t in b {
                                 let neg_coeff = if t.coeff.is_zero() {
                                     BigUint::zero()
                                 } else {
                                     &self.prime - &t.coeff
                                 };
-                                combined.push(LegacyPolyTerm {
+                                combined.push(PolyTerm {
                                     coeff: neg_coeff,
                                     vars: t.vars.clone(),
                                 });
                             }
-                            let terms = builder.intern_poly_terms(&combined);
-                            builder.add_equality(terms);
+                            builder.add_equality(combined);
                         }
                         Literal::Neq(a, b) => {
                             let d_name = format!("__diseq_d_{}", diseq_seq);
@@ -235,25 +246,23 @@ impl BooleanQuery {
                                     z
                                 }
                             };
-                            // def = d - (a - b) = d - a + b
-                            let mut neg_a: Vec<LegacyPolyTerm> = Vec::with_capacity(a.len());
+                            // def = d - a + b
+                            let mut def: Vec<PolyTerm> = vec![PolyTerm {
+                                coeff: BigUint::from(1u32),
+                                vars: vec![(d_idx, 1)],
+                            }];
                             for t in a {
                                 let neg_coeff = if t.coeff.is_zero() {
                                     BigUint::zero()
                                 } else {
                                     &self.prime - &t.coeff
                                 };
-                                neg_a.push(LegacyPolyTerm {
+                                def.push(PolyTerm {
                                     coeff: neg_coeff,
                                     vars: t.vars.clone(),
                                 });
                             }
-                            let mut def: Vec<PolyTerm> = vec![PolyTerm {
-                                coeff: BigUint::from(1u32),
-                                vars: vec![(d_idx, 1)],
-                            }];
-                            def.extend(builder.intern_poly_terms(&neg_a));
-                            def.extend(builder.intern_poly_terms(b));
+                            def.extend(b.iter().cloned());
                             builder.add_equality(def);
                             builder.add_disequality(d_idx, zero);
                         }
@@ -266,17 +275,18 @@ impl BooleanQuery {
 }
 
 /// `Eq(a, b)` → normalized form of `a - b`. Returns `None` for
-/// disequalities.
-fn eq_normalized_poly(lit: &Literal, prime: &BigUint) -> Option<Vec<LegacyPolyTerm>> {
+/// disequalities. The result is a `Vec<PolyTerm>` in the same
+/// variable frame as `lit`.
+fn eq_normalized_poly(lit: &Literal, prime: &BigUint) -> Option<Vec<PolyTerm>> {
     if let Literal::Eq(a, b) = lit {
-        let mut poly: Vec<LegacyPolyTerm> = a.clone();
+        let mut poly: Vec<PolyTerm> = a.clone();
         for t in b {
             let neg_coeff = if t.coeff.is_zero() {
                 BigUint::zero()
             } else {
                 prime - &t.coeff
             };
-            poly.push(LegacyPolyTerm {
+            poly.push(PolyTerm {
                 coeff: neg_coeff,
                 vars: t.vars.clone(),
             });
@@ -288,20 +298,20 @@ fn eq_normalized_poly(lit: &Literal, prime: &BigUint) -> Option<Vec<LegacyPolyTe
     }
 }
 
-/// Match an equality literal of the form `x = const` (with the
-/// variable side having a coefficient of 1 in the canonical
-/// representation). Returns `(var_name, const_value)` on match.
-fn parse_var_equals_const(lit: &Literal, prime: &BigUint) -> Option<(String, BigUint)> {
+/// Match an equality literal of the form `x = const`. Returns
+/// `(var_idx, const_value)` on match; the index is in the input
+/// literal's frame.
+fn parse_var_equals_const(lit: &Literal, prime: &BigUint) -> Option<(VarIdx, BigUint)> {
     let poly = eq_normalized_poly(lit, prime)?;
-    let mut var_term: Option<&LegacyPolyTerm> = None;
-    let mut const_term: Option<&LegacyPolyTerm> = None;
+    let mut var_term: Option<&PolyTerm> = None;
+    let mut const_term: Option<&PolyTerm> = None;
     for t in &poly {
         if t.vars.is_empty() {
             if const_term.is_some() {
                 return None;
             }
             const_term = Some(t);
-        } else if t.vars.len() == 1 {
+        } else if t.vars.len() == 1 && t.vars[0].1 == 1 {
             if var_term.is_some() {
                 return None;
             }
@@ -324,12 +334,12 @@ fn parse_var_equals_const(lit: &Literal, prime: &BigUint) -> Option<(String, Big
         }
         None => BigUint::zero(),
     };
-    Some((vt.vars[0].clone(), val))
+    Some((vt.vars[0].0, val))
 }
 
 /// Match cvc5's `parse::disjunctiveBitConstraint`: `(or (= x 0) (= x 1))`
-/// or its symmetric form. On match return `Some(var_name)`.
-fn try_disjunctive_bit(or_children: &[Formula], prime: &BigUint) -> Option<String> {
+/// or its symmetric form. On match return `Some(var_idx)`.
+fn try_disjunctive_bit(or_children: &[Formula], prime: &BigUint) -> Option<VarIdx> {
     if or_children.len() != 2 {
         return None;
     }
@@ -359,15 +369,15 @@ fn try_disjunctive_bit(or_children: &[Formula], prime: &BigUint) -> Option<Strin
 pub fn rewrite_disjunctive_bit(f: Formula, prime: &BigUint) -> Formula {
     match f {
         Formula::Or(children) => {
-            if let Some(var) = try_disjunctive_bit(&children, prime) {
+            if let Some(idx) = try_disjunctive_bit(&children, prime) {
                 return Formula::Lit(Literal::Eq(
-                    vec![LegacyPolyTerm {
+                    vec![PolyTerm {
                         coeff: BigUint::from(1u32),
-                        vars: vec![var.clone(), var.clone()],
+                        vars: vec![(idx, 2)],
                     }],
-                    vec![LegacyPolyTerm {
+                    vec![PolyTerm {
                         coeff: BigUint::from(1u32),
-                        vars: vec![var],
+                        vars: vec![(idx, 1)],
                     }],
                 ));
             }
@@ -399,7 +409,12 @@ pub fn solve_boolean_query(query: &BooleanQuery, cancel: &CancelToken) -> SolveO
     if crate::config::with(|c| c.dnf_enabled) {
         solve_boolean_query_dnf(query, cancel)
     } else {
-        crate::cdclt::solve_formula(query.prime.clone(), &query.formula, cancel)
+        crate::cdclt::solve_formula(
+            query.prime.clone(),
+            query.var_names(),
+            &query.formula,
+            cancel,
+        )
     }
 }
 
@@ -432,7 +447,7 @@ pub fn solve_boolean_query_dnf(query: &BooleanQuery, cancel: &CancelToken) -> So
         if cancel.is_cancelled() {
             return SolveOutcome::Unknown;
         }
-        let encoded = match encode_indexed(sys) {
+        let encoded = match encode(sys) {
             Ok(e) => e,
             Err(_) => {
                 saw_unknown = true;
@@ -456,19 +471,35 @@ pub fn solve_boolean_query_dnf(query: &BooleanQuery, cancel: &CancelToken) -> So
 mod tests {
     use super::*;
 
-    fn t(coeff: u64, vars: &[&str]) -> LegacyPolyTerm {
-        LegacyPolyTerm {
+    /// PolyTerm constructor: `coeff * <idx>^exp` (exp=0 → constant).
+    fn pt(coeff: u64, idx: u32, exp: u16) -> PolyTerm {
+        let vars = if exp == 0 { vec![] } else { vec![(idx, exp)] };
+        PolyTerm {
             coeff: BigUint::from(coeff),
-            vars: vars.iter().map(|s| s.to_string()).collect(),
+            vars,
         }
+    }
+
+    /// Construct a builder pre-populated with the given var names.
+    fn builder_with_vars(prime: u64, names: &[&str]) -> ConstraintSystemBuilder {
+        let mut b = ConstraintSystemBuilder::new(BigUint::from(prime));
+        for n in names {
+            b.var(n);
+        }
+        b
+    }
+
+    /// Build a Lit::Eq for `coeff * <var_idx> == rhs_const`.
+    fn lit_eq(coeff: u64, var_idx: u32, rhs_const: u64) -> Formula {
+        Formula::Lit(Literal::Eq(vec![pt(coeff, var_idx, 1)], vec![pt(rhs_const, 0, 0)]))
     }
 
     #[test]
     fn nnf_distributes_not() {
-        // not(and(eq, eq)) → or(neq, neq)
+        // Frame: x=0, y=1
         let f = Formula::Not(Box::new(Formula::And(vec![
-            Formula::Lit(Literal::Eq(vec![t(1, &["x"])], vec![t(0, &[])])),
-            Formula::Lit(Literal::Eq(vec![t(1, &["y"])], vec![t(0, &[])])),
+            lit_eq(1, 0, 0),
+            lit_eq(1, 1, 0),
         ])));
         let nnf = f.nnf();
         match nnf {
@@ -484,15 +515,12 @@ mod tests {
 
     #[test]
     fn dnf_of_and_or() {
-        // and(or(a, b), or(c, d)) → 4 disjuncts: ac, ad, bc, bd
-        let a = Formula::Lit(Literal::Eq(vec![t(1, &["a"])], vec![t(0, &[])]));
-        let b = Formula::Lit(Literal::Eq(vec![t(1, &["b"])], vec![t(0, &[])]));
-        let c = Formula::Lit(Literal::Eq(vec![t(1, &["c"])], vec![t(0, &[])]));
-        let d = Formula::Lit(Literal::Eq(vec![t(1, &["d"])], vec![t(0, &[])]));
-        let f = Formula::And(vec![
-            Formula::Or(vec![a, b]),
-            Formula::Or(vec![c, d]),
-        ]);
+        // frame: a=0, b=1, c=2, d=3
+        let a = lit_eq(1, 0, 0);
+        let b = lit_eq(1, 1, 0);
+        let c = lit_eq(1, 2, 0);
+        let d = lit_eq(1, 3, 0);
+        let f = Formula::And(vec![Formula::Or(vec![a, b]), Formula::Or(vec![c, d])]);
         let dnf = f.nnf().to_dnf();
         assert_eq!(dnf.len(), 4);
         for d in &dnf {
@@ -504,7 +532,7 @@ mod tests {
     fn dnf_false_propagates() {
         let f = Formula::And(vec![Formula::True, Formula::False]);
         let dnf = f.nnf().to_dnf();
-        assert!(dnf.is_empty(), "False should DNF to empty disjunct list");
+        assert!(dnf.is_empty());
     }
 
     #[test]
@@ -517,12 +545,9 @@ mod tests {
     #[test]
     fn disjunct_systems_split() {
         // or(x = 0, y = 0) → two ConstraintSystems
-        let prime = BigUint::from(101u32);
-        let f = Formula::Or(vec![
-            Formula::Lit(Literal::Eq(vec![t(1, &["x"])], vec![t(0, &[])])),
-            Formula::Lit(Literal::Eq(vec![t(1, &["y"])], vec![t(0, &[])])),
-        ]);
-        let q = BooleanQuery::from_formula(prime, vec!["x".into(), "y".into()], f);
+        let builder = builder_with_vars(101, &["x", "y"]);
+        let f = Formula::Or(vec![lit_eq(1, 0, 0), lit_eq(1, 1, 0)]);
+        let q = BooleanQuery::from_builder_and_formula(builder, f);
         let systems = q.to_disjunct_systems();
         assert_eq!(systems.len(), 2);
         assert_eq!(systems[0].equalities.len(), 1);
@@ -531,16 +556,13 @@ mod tests {
 
     #[test]
     fn solve_disjunctive_bit_sat() {
-        // or(x = 0, x = 1) is satisfiable. The disjunctive-bit pass
-        // collapses the disjunction into the single polynomial
-        // `x*x = x`, so DNF length is 1.
         let src = "\
 (define-sort F () (_ FiniteField 101))
 (declare-fun x () F)
 (assert (or (= x (as ff0 F)) (= x (as ff1 F))))
 ";
         let q = crate::smt2::parse_boolean(src).expect("parse");
-        assert_eq!(q.dnf().len(), 1, "disjunctive-bit pass should collapse to one disjunct");
+        assert_eq!(q.dnf().len(), 1);
         let outcome = solve_boolean_query(&q, &CancelToken::none());
         assert!(matches!(outcome, SolveOutcome::Sat(_)));
     }
@@ -549,26 +571,19 @@ mod tests {
     fn disjunctive_bit_rewrites_pattern() {
         // Direct test of the rewrite pass: or(x=0, x=1) → x*x = x
         let prime = BigUint::from(101u32);
-        let f = Formula::Or(vec![
-            Formula::Lit(Literal::Eq(vec![t(1, &["x"])], vec![t(0, &[])])),
-            Formula::Lit(Literal::Eq(vec![t(1, &["x"])], vec![t(1, &[])])),
-        ]);
+        let f = Formula::Or(vec![lit_eq(1, 0, 0), lit_eq(1, 0, 1)]);
         let rewritten = rewrite_disjunctive_bit(f, &prime);
         match rewritten {
             Formula::Lit(Literal::Eq(lhs, rhs)) => {
-                // lhs is x*x, rhs is x
                 assert_eq!(lhs.len(), 1);
-                assert_eq!(lhs[0].vars, vec!["x".to_string(), "x".to_string()]);
+                assert_eq!(lhs[0].vars, vec![(0, 2)]);
                 assert_eq!(rhs.len(), 1);
-                assert_eq!(rhs[0].vars, vec!["x".to_string()]);
+                assert_eq!(rhs[0].vars, vec![(0, 1)]);
             }
             _ => panic!("expected single Eq literal after disjunctive-bit rewrite"),
         }
     }
 
-    /// Match outcome shape (SAT / UNSAT / Unknown) without comparing
-    /// model contents — different solver paths may return different
-    /// witnesses for the same SAT formula.
     fn outcome_kind(o: &SolveOutcome) -> &'static str {
         match o {
             SolveOutcome::Sat(_) => "sat",
@@ -581,18 +596,12 @@ mod tests {
         let q = crate::smt2::parse_boolean(src).expect("parse");
         let cdclt_out = crate::cdclt::solve_formula(
             q.prime.clone(),
+            q.var_names(),
             &q.formula,
             &CancelToken::none(),
         );
         let dnf_out = solve_boolean_query_dnf(&q, &CancelToken::none());
-        assert_eq!(
-            outcome_kind(&cdclt_out),
-            outcome_kind(&dnf_out),
-            "CDCL(T) and DNF disagree on\n{}\nCDCL(T): {:?}\nDNF: {:?}",
-            src,
-            cdclt_out,
-            dnf_out,
-        );
+        assert_eq!(outcome_kind(&cdclt_out), outcome_kind(&dnf_out));
     }
 
     #[test]
@@ -630,7 +639,6 @@ mod tests {
 
     #[test]
     fn cross_validate_three_or_unsat() {
-        // (or (= x 0) (= x 1) (= x 2)) ∧ (= x 7) on GF(101): UNSAT
         let src = "\
 (define-sort F () (_ FiniteField 101))
 (declare-fun x () F)
@@ -644,20 +652,13 @@ mod tests {
     fn disjunctive_bit_does_not_match_unrelated_vars() {
         // or(x = 0, y = 1) — different vars, should NOT collapse.
         let prime = BigUint::from(101u32);
-        let f = Formula::Or(vec![
-            Formula::Lit(Literal::Eq(vec![t(1, &["x"])], vec![t(0, &[])])),
-            Formula::Lit(Literal::Eq(vec![t(1, &["y"])], vec![t(1, &[])])),
-        ]);
+        let f = Formula::Or(vec![lit_eq(1, 0, 0), lit_eq(1, 1, 1)]);
         let rewritten = rewrite_disjunctive_bit(f, &prime);
-        assert!(
-            matches!(rewritten, Formula::Or(_)),
-            "different vars must not collapse"
-        );
+        assert!(matches!(rewritten, Formula::Or(_)));
     }
 
     #[test]
     fn solve_disjunctive_unsat() {
-        // and(x = 1, or(x = 0, x = 2)) on GF(101) is UNSAT.
         let src = "\
 (define-sort F () (_ FiniteField 101))
 (declare-fun x () F)
@@ -671,8 +672,6 @@ mod tests {
 
     #[test]
     fn solve_with_not_and_implies() {
-        // (=> (= x ff0) (= y ff0)), x = ff0 -> y must be 0.
-        // assert x = 0 and (=> (x = 0) (y = 0)) and y != 0 → UNSAT
         let src = "\
 (define-sort F () (_ FiniteField 101))
 (declare-fun x () F)
@@ -688,43 +687,30 @@ mod tests {
 
     #[test]
     fn dnf_size_estimate_lit_is_one() {
-        let f = Formula::Lit(Literal::Eq(vec![t(1, &["x"])], vec![t(0, &[])]));
+        let f = lit_eq(1, 0, 0);
         assert_eq!(f.dnf_size_estimate(1_000), 1);
     }
 
     #[test]
     fn dnf_size_estimate_and_of_ors_multiplies() {
         // 5 fold and-of-ors with each or having 2 disjuncts → 2^5 = 32.
-        let lit = |v: &str, c: u64| {
-            Formula::Lit(Literal::Eq(vec![t(1, &[v])], vec![t(c, &[])]))
-        };
+        // Use distinct indices 0..4 to keep literals over distinct vars.
         let ors: Vec<Formula> = (0..5)
-            .map(|i| {
-                let name = format!("a{}", i);
-                Formula::Or(vec![lit(&name, 0), lit(&name, 1)])
-            })
+            .map(|i| Formula::Or(vec![lit_eq(1, i as u32, 0), lit_eq(1, i as u32, 1)]))
             .collect();
         let f = Formula::And(ors).nnf();
         assert_eq!(f.dnf_size_estimate(1_000), 32);
-        // Real DNF length matches.
         assert_eq!(f.to_dnf().len(), 32);
     }
 
     #[test]
     fn dnf_size_estimate_saturates_at_cap() {
-        // 30 fold and-of-ors → 2^30, well over any reasonable cap.
-        let lit = |v: &str, c: u64| {
-            Formula::Lit(Literal::Eq(vec![t(1, &[v])], vec![t(c, &[])]))
-        };
         let ors: Vec<Formula> = (0..30)
-            .map(|i| {
-                let name = format!("a{}", i);
-                Formula::Or(vec![lit(&name, 0), lit(&name, 1)])
-            })
+            .map(|i| Formula::Or(vec![lit_eq(1, i as u32, 0), lit_eq(1, i as u32, 1)]))
             .collect();
         let f = Formula::And(ors).nnf();
         let est = f.dnf_size_estimate(100_000);
-        assert_eq!(est, 100_000); // saturated, never expanded
+        assert_eq!(est, 100_000);
     }
 
     #[test]
