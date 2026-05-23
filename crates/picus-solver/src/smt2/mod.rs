@@ -27,7 +27,7 @@ use std::fmt;
 use num_bigint::BigUint;
 use num_traits::Zero;
 
-use crate::encoder::{ConstraintSystem, PolyTerm};
+use crate::encoder::{ConstraintSystem, IndexedConstraintSystem, PolyTerm};
 use tokenizer::{parse_sexprs, tokenize, Sexpr};
 
 // ─────────────────────── Errors ──────────────────────────────────────────
@@ -356,8 +356,15 @@ fn handle_assert(
 
 // ─────────────────────── Top-level loop ──────────────────────────────────
 
-/// Parse an SMT-LIB v2 QF_FF source and produce a [`ConstraintSystem`].
-pub fn parse(src: &str) -> Result<ConstraintSystem, ParseError> {
+/// Parse an SMT-LIB v2 QF_FF source and produce an
+/// [`IndexedConstraintSystem`]. The internal pipeline still builds
+/// `ConstraintSystem` (String-keyed) and runs the legacy
+/// `rewriter::rewrite_system`; the result is lifted to the
+/// index-keyed form at the boundary via
+/// [`IndexedConstraintSystem::from_legacy`]. When B4 rewrites the
+/// parser to build PolyIR directly, the internal CS staging will
+/// also disappear.
+pub fn parse(src: &str) -> Result<IndexedConstraintSystem, ParseError> {
     let toks = tokenize(src);
     let sexprs = parse_sexprs(&toks)?;
 
@@ -479,7 +486,7 @@ pub fn parse(src: &str) -> Result<ConstraintSystem, ParseError> {
         bitsums: vec![],
     };
     crate::rewriter::rewrite_system(&mut sys);
-    Ok(sys)
+    Ok(IndexedConstraintSystem::from_legacy(&sys))
 }
 
 // ─────────────────────── Boolean structure parser ────────────────────────

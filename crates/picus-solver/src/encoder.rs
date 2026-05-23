@@ -607,6 +607,76 @@ pub struct ConstraintSystemBuilder {
 }
 
 impl IndexedConstraintSystem {
+    /// Lift a legacy String-keyed [`ConstraintSystem`] to the
+    /// index-keyed form. Variable names are interned in the order
+    /// returned by `cs.collect_vars` (alphabetical), matching the
+    /// ring ordering the legacy `encode` path uses. Each
+    /// `PolyTerm.vars: Vec<String>` (which lists each variable
+    /// repeated `exp` times for degree `exp`) collapses to a sparse
+    /// `Vec<(VarIdx, u16)>` by counting occurrences.
+    ///
+    /// Used during the Phase 7 migration as a producer-side bridge
+    /// so callers like the SMT-LIB v2 parser can keep their internal
+    /// String-keyed build pipeline while publishing the index-keyed
+    /// form at their boundary. Removed in A9.
+    pub fn from_legacy(cs: &ConstraintSystem) -> IndexedConstraintSystem {
+        let names = cs.collect_vars();
+        let mut name_to_idx: HashMap<String, VarIdx> = HashMap::with_capacity(names.len());
+        for (i, n) in names.iter().enumerate() {
+            name_to_idx.insert(n.clone(), i as VarIdx);
+        }
+
+        let intern = |n: &str| -> VarIdx { name_to_idx[n] };
+
+        let equalities: Vec<Vec<IndexedTerm>> = cs
+            .equalities
+            .iter()
+            .map(|eq| {
+                eq.iter()
+                    .map(|t| {
+                        let mut counts: BTreeMap<VarIdx, u16> = BTreeMap::new();
+                        for v in &t.vars {
+                            *counts.entry(intern(v)).or_insert(0) += 1;
+                        }
+                        let vars: Vec<(VarIdx, u16)> = counts.into_iter().collect();
+                        IndexedTerm {
+                            coeff: t.coeff.clone(),
+                            vars,
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+
+        let disequalities = cs
+            .disequalities
+            .iter()
+            .map(|(a, b)| (intern(a), intern(b)))
+            .collect();
+
+        let assignments = cs
+            .assignments
+            .iter()
+            .map(|(v, val)| (intern(v), val.clone()))
+            .collect();
+
+        let bitsums = cs
+            .bitsums
+            .iter()
+            .map(|bs| bs.iter().map(|n| intern(n)).collect())
+            .collect();
+
+        IndexedConstraintSystem {
+            prime: cs.prime.clone(),
+            var_names: names,
+            equalities,
+            disequalities,
+            assignments,
+            bitsums,
+            add_field_polys: cs.add_field_polys,
+        }
+    }
+
     /// Lower this index-keyed system to the legacy String-keyed
     /// [`ConstraintSystem`]. Each `IndexedTerm` expands to a
     /// `PolyTerm` whose `vars: Vec<String>` repeats each variable
