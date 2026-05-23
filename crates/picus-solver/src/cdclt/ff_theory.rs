@@ -12,7 +12,7 @@ use num_bigint::BigUint;
 use num_traits::Zero;
 
 use crate::core::{solve_encoded_with_cancel, SolveOutcome};
-use crate::encoder::{encode, ConstraintSystem, PolyTerm};
+use crate::encoder::{encode, ConstraintSystem, IndexedConstraintSystem, PolyTerm};
 use crate::sat::Var;
 use crate::timeout::CancelToken;
 
@@ -108,6 +108,12 @@ impl<'a> FfTheory<'a> {
             return CheckOutcome::Sat;
         }
 
+        // Build the legacy String-keyed `ConstraintSystem`, then lift
+        // to the index-keyed form for type consistency with other
+        // producers. The legacy `encode` entry still does the heavy
+        // lifting (rewriter + auto_extract_bitsums), so the indexed
+        // form converts back via `to_legacy` at the next hop. B6
+        // rewrites the internal build to publish PolyIR directly.
         let sys = ConstraintSystem {
             prime,
             equalities,
@@ -116,6 +122,8 @@ impl<'a> FfTheory<'a> {
             add_field_polys: false,
             bitsums: vec![],
         };
+        let indexed = IndexedConstraintSystem::from_legacy(&sys);
+        let sys = indexed.to_legacy();
         let encoded = match encode(&sys) {
             Ok(e) => e,
             Err(_) => return CheckOutcome::Unknown,
