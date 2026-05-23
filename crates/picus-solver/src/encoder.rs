@@ -5,6 +5,33 @@
 //! - Bitsum subpatterns in equalities are extracted by
 //!   [`auto_extract_bitsums`] and routed to `bitsum_polys` (basis 0
 //!   only).
+//!
+//! ## Phase 7 migration status (informational)
+//!
+//! This module currently maintains two parallel type families during
+//! the Phase 7 refactor:
+//!
+//! * **Legacy (String-keyed):** [`ConstraintSystem`], [`PolyTerm`],
+//!   [`encode`], [`encode_constraint_side`], [`encode_no_auto_bitsum`],
+//!   [`auto_extract_bitsums`]. Internals of the four producers
+//!   (`smt2::parse`, `boolean::to_disjunct_systems`,
+//!   `cdclt::ff_theory`, and the `dump_smt` formatter) still build
+//!   into this form. Phase 7B rewrites those internals onto PolyIR
+//!   directly.
+//! * **Index-keyed (Phase 7A):** [`IndexedConstraintSystem`],
+//!   [`IndexedTerm`], [`ConstraintSystemBuilder`], [`encode_indexed`],
+//!   [`encode_indexed_constraint_side`], [`auto_extract_bitsums_indexed`].
+//!   Every producer's PUBLIC return shape is now this form;
+//!   `to_legacy` / `from_legacy` bridges keep the legacy internals
+//!   functional. These bridges disappear in Phase 7B.
+//!
+//! Phase 7B (in progress) will: (1) extend `PolyIR` with the
+//! disequality / assignment / bitsum fields that `ConstraintSystem`
+//! currently carries, (2) move `rewriter` and `auto_extract_bitsums`
+//! to Poly-level passes that operate directly on a ring, (3) rewrite
+//! the four producers to build `PolyIR` directly, and (4) delete
+//! both the legacy and index-keyed `ConstraintSystem` shapes in
+//! favour of a single unified IR.
 
 use num_bigint::BigUint;
 use num_traits::Zero;
