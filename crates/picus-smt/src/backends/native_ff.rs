@@ -104,7 +104,35 @@ impl SolverBackend for NativeFfBackend {
             } else {
                 None
             };
-            let outcome = if cache_enabled {
+            let outcome = if !ir.disjunctions.is_empty() {
+                // Disjunction-aware path: route the whole query
+                // (conjunctive constraints + `or` clauses + target
+                // diseq) through the in-tree CDCL(T) engine. Each theory
+                // check re-validates its model via `verify_model`, so
+                // this path inherits the same spurious-SAT immunity as
+                // the plain GB path below.
+                log::debug!(
+                    "native-ff: {} disjunction(s) → CDCL(T) path",
+                    ir.disjunctions.len()
+                );
+                let query = ir.to_boolean_query();
+                // Primary: in-tree CDCL(T) (verify_model-backed). Its SAT
+                // core has a 1-UIP conflict-analysis panic on some clause
+                // shapes, and CDCL(T) can be incomplete over small fields,
+                // so guard the call and fall back to complete DNF
+                // enumeration (self-bounded by `dnf_cap`). On BN128 the
+                // CDCL(T) attempt decides, so the fallback stays inert.
+                let primary = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    picus_solver::boolean::solve_boolean_query(&query, &cancel)
+                }))
+                .unwrap_or(SolveOutcome::Unknown);
+                match primary {
+                    SolveOutcome::Unknown => {
+                        picus_solver::boolean::solve_boolean_query_dnf(&query, &cancel)
+                    }
+                    decided => decided,
+                }
+            } else if cache_enabled {
                 cache.solve(&indexed, &cancel)
             } else {
                 let enc_t0 = if stats_on {

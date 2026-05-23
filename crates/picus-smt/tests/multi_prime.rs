@@ -108,3 +108,55 @@ fn native_ff_solves_over_gf7() {
         outcome
     );
 }
+
+/// Lower the GF(7) system, target wire 2, and inject a benign
+/// always-true disjunction `(x0 = 1) ∨ (x2 = 5)`. Wire 0 is pinned to
+/// 1, so the clause holds unconditionally — the verdict must stay UNSAT,
+/// but a non-empty `disjunctions` forces the backend off the plain GB
+/// path. For native this is the CDCL(T) route; for cvc5 it is a real
+/// `(or ...)` assertion.
+fn ir_with_benign_disjunction() -> picus_smt::poly_ir::PolyIR {
+    let r1cs = build_x1_squared_eq_x2();
+    let known: HashSet<usize> = r1cs.inputs.iter().copied().collect();
+    let mut ir = r1cs_to_poly_ir(&r1cs, &known, 2).expect("lowering should succeed");
+    ir.set_target(2);
+    // (x0 - 1 = 0) ∨ (x2 - 5 = 0)
+    let one = ir.constant(&BigUint::from(1u32));
+    let five = ir.constant(&BigUint::from(5u32));
+    let x0_minus_1 = ir.ring.sub(ir.ring.var(0), one);
+    let x2_minus_5 = ir.ring.sub(ir.ring.var(2), five);
+    ir.disjunctions.push(vec![x0_minus_1, x2_minus_5]);
+    assert!(!ir.disjunctions.is_empty(), "disjunction must be present");
+    ir
+}
+
+#[test]
+fn native_ff_disjunction_path_agrees_with_gb() {
+    let ir = ir_with_benign_disjunction();
+    let mut backend = picus_smt::backends::native_ff::NativeFfBackend::new();
+    let cancel = picus_solver::timeout::CancelToken::none();
+    let outcome = backend
+        .solve(&ir, 5000, &cancel)
+        .expect("native_ff CDCL(T) path should not error");
+    assert!(
+        matches!(outcome, SolverResult::Unsat),
+        "benign disjunction must not change the verdict (expected UNSAT), got {:?}",
+        outcome
+    );
+}
+
+#[cfg(feature = "cvc5")]
+#[test]
+fn cvc5_ff_consumes_disjunction() {
+    let ir = ir_with_benign_disjunction();
+    let mut backend = picus_smt::backends::cvc5_ff::Cvc5FfBackend::new();
+    let cancel = picus_solver::timeout::CancelToken::none();
+    let outcome = backend
+        .solve(&ir, 5000, &cancel)
+        .expect("cvc5_ff should accept the (or ...) assertion");
+    assert!(
+        matches!(outcome, SolverResult::Unsat),
+        "benign disjunction must not change the verdict (expected UNSAT), got {:?}",
+        outcome
+    );
+}

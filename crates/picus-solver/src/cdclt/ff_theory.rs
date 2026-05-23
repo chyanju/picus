@@ -63,6 +63,13 @@ impl<'a> FfTheory<'a> {
         let prime = self.atoms.prime().clone();
 
         let mut builder = ConstraintSystemBuilder::new(prime.clone());
+        // Match the GB-direct path (`PolyIR::to_constraint_system`):
+        // request field polynomials `x^p - x = 0` for small primes.
+        // `encode` only materialises them when `prime <= 1000`, so this
+        // is a no-op for BN128 but essential for small-prime fields
+        // (GF(7)/GF(11)) — without it the per-branch GB can't model the
+        // field and returns Unknown instead of the real counter-example.
+        builder.set_add_field_polys(prime <= BigUint::from(1000u32));
         let mut equality_atoms: Vec<Var> = Vec::new();
         let mut disequality_atoms: Vec<Var> = Vec::new();
         let mut diseq_counter: usize = 0;

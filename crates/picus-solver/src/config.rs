@@ -43,6 +43,14 @@ pub struct RuntimeConfig {
     /// change. Disabling it forces every call to rebuild the basis from
     /// scratch — useful for benchmarking or for diagnosing cache bugs.
     pub cache_enabled: bool,
+    /// Let the `aboz` lemma emit the (entailed) zero-product
+    /// disjunctions for selector patterns whose selector cannot be
+    /// proved non-zero, feeding the disjunction-aware solver path. On by
+    /// default: each clause follows from an `s * o = 0` equality already
+    /// in the IR, so it is sound and verdict-neutral; this keeps the
+    /// pipeline's disjunction path live. Set `PICUS_NO_ABOZ_DISJ` to
+    /// disable (e.g. for an A/B perf comparison).
+    pub aboz_emit_disjunctions: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -57,6 +65,7 @@ impl Default for RuntimeConfig {
             gb_trace_enabled: false,
             profile_enabled: false,
             cache_enabled: true,
+            aboz_emit_disjunctions: true,
         }
     }
 }
@@ -93,6 +102,9 @@ impl RuntimeConfig {
         }
         if std::env::var_os("PICUS_NO_INCREMENTAL_CACHE").is_some() {
             c.cache_enabled = false;
+        }
+        if std::env::var_os("PICUS_NO_ABOZ_DISJ").is_some() {
+            c.aboz_emit_disjunctions = false;
         }
         c
     }

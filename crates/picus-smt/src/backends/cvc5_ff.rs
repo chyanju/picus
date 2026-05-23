@@ -76,6 +76,24 @@ impl SolverBackend for Cvc5FfBackend {
             solver.assert_formula(tm.mk_term(cvc5_ff::Kind::Not, &[eq]));
         }
 
+        // Disjunctions: clause `[p_1, ..., p_k]` ⇒ `(or (= p_1 0) ... (=
+        // p_k 0))`. We hand cvc5 the `or` directly (no special-casing);
+        // its QF_FF DPLL(T) does the case split. The dpvl-level target
+        // disequality guard is the backstop for cvc5's known
+        // `or`-spurious-SAT defect.
+        for clause in &ir.disjunctions {
+            let mut alts: Vec<cvc5_ff::Term> = Vec::with_capacity(clause.len());
+            for poly in clause {
+                let lhs = build_poly_term(&tm, &vars, ir, poly, ff.clone());
+                alts.push(tm.mk_term(cvc5_ff::Kind::Equal, &[lhs, zero.clone()]));
+            }
+            match alts.len() {
+                0 => {}
+                1 => solver.assert_formula(alts.into_iter().next().unwrap()),
+                _ => solver.assert_formula(tm.mk_term(cvc5_ff::Kind::Or, &alts)),
+            }
+        }
+
         let result = solver.check_sat();
         if result.is_unsat() {
             Ok(SolverResult::Unsat)
@@ -118,6 +136,17 @@ impl SolverBackend for Cvc5FfBackend {
             ir.x_name(s),
             ir.y_name(s)
         ));
+        for clause in &ir.disjunctions {
+            let parts: Vec<String> = clause
+                .iter()
+                .map(|poly| format!("(= #f0m{} {})", p, poly_to_smtlib_ff(ir, poly)))
+                .collect();
+            match parts.len() {
+                0 => {}
+                1 => lines.push(format!("(assert {})", parts[0])),
+                _ => lines.push(format!("(assert (or {}))", parts.join(" "))),
+            }
+        }
         lines.push("(check-sat)".to_string());
         lines.push("(get-model)".to_string());
         lines.join("\n")
