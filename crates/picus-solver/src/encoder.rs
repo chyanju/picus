@@ -798,19 +798,24 @@ impl ConstraintSystemBuilder {
 /// `collect_vars` / `var_map` round-trip, no String hashing on the
 /// equality scan.
 ///
-/// Like the legacy entry point, this routes through
-/// `rewriter::rewrite_indexed` and `auto_extract_bitsums_indexed`
-/// before emitting (added in A6 / A7); for A1 those passes are not
-/// yet implemented, so this function bypasses them.
+/// Runs [`crate::rewriter::rewrite_indexed_system`] first to
+/// canonicalise equalities. `auto_extract_bitsums` on the
+/// index-keyed form lands in A7; until then this entry skips the
+/// bitsum rewrite (callers that need it should round-trip through
+/// `to_legacy` to `encode`).
 pub fn encode_indexed(system: &IndexedConstraintSystem) -> Result<EncodedSystem, String> {
-    encode_indexed_impl(system, true)
+    let mut rewritten = system.clone();
+    crate::rewriter::rewrite_indexed_system(&mut rewritten);
+    encode_indexed_impl(&rewritten, true)
 }
 
 /// Index-keyed counterpart of [`encode_constraint_side`].
 pub fn encode_indexed_constraint_side(
     system: &IndexedConstraintSystem,
 ) -> Result<EncodedSystem, String> {
-    encode_indexed_impl(system, false)
+    let mut rewritten = system.clone();
+    crate::rewriter::rewrite_indexed_system(&mut rewritten);
+    encode_indexed_impl(&rewritten, false)
 }
 
 fn encode_indexed_impl(
