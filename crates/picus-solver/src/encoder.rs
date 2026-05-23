@@ -8,33 +8,55 @@
 //!
 //! ## Phase 7 migration status (informational)
 //!
-//! Two parallel type families coexist during the multi-phase IR
-//! refactor:
+//! Two parallel type families coexist after Phase 7:
 //!
-//! * **Legacy (String-keyed):** [`ConstraintSystem`], [`PolyTerm`],
-//!   [`encode`], [`encode_constraint_side`], [`encode_no_auto_bitsum`],
-//!   [`auto_extract_bitsums`], the legacy `rewriter::rewrite_system`,
-//!   `normalize_term_list`, and `digest_constraint_side`. Internals
-//!   of three producers (`smt2::parse`, `boolean::to_disjunct_systems`,
-//!   `cdclt::ff_theory`) and the `native_ff` cache + `dump_smt`
-//!   formatter still build into this form. Phase 8 rewrites those
-//!   internals to construct `PolyIR` directly.
-//! * **Index-keyed (Phase 7A):** [`IndexedConstraintSystem`],
-//!   [`IndexedTerm`], [`ConstraintSystemBuilder`], [`encode_indexed`],
-//!   [`encode_indexed_constraint_side`], [`auto_extract_bitsums_indexed`],
-//!   `rewriter::rewrite_indexed_system`, `normalize_indexed_term_list`,
-//!   `digest_indexed_constraint_side`. The encoder hot path runs
-//!   index-keyed end-to-end; every producer's PUBLIC return shape is
-//!   `IndexedConstraintSystem`. `to_legacy` / `from_legacy` bridge
-//!   between the two families.
+//! * **Index-keyed (the canonical encoder hot path):**
+//!   [`IndexedConstraintSystem`], [`IndexedTerm`],
+//!   [`ConstraintSystemBuilder`], [`encode_indexed`],
+//!   [`encode_indexed_constraint_side`],
+//!   [`auto_extract_bitsums_indexed`],
+//!   `rewriter::rewrite_indexed_system`,
+//!   `normalize_indexed_term_list`, and
+//!   `incremental_context::digest_indexed_constraint_side`. Every
+//!   producer's PUBLIC return shape is `IndexedConstraintSystem`,
+//!   and every producer (`native_ff` via `PolyIR::encode`,
+//!   `smt2::parse`, `boolean::to_disjunct_systems`,
+//!   `cdclt::ff_theory`) builds the index-keyed form via
+//!   `ConstraintSystemBuilder` instead of constructing the legacy
+//!   `ConstraintSystem` struct.
+//! * **Legacy (String-keyed), survives for one downstream consumer:**
+//!   [`ConstraintSystem`], [`PolyTerm`], [`encode`],
+//!   [`encode_constraint_side`], [`encode_no_auto_bitsum`],
+//!   [`auto_extract_bitsums`], `rewriter::rewrite_system`,
+//!   `normalize_term_list`, `digest_constraint_side`. The only
+//!   remaining caller is `IncrementalSolverContext` (the
+//!   `native_ff` cache) plus `NativeFfBackend::dump_smt`'s text
+//!   formatter — both still key on the legacy String-keyed
+//!   `ConstraintSystem`. `to_legacy` / `from_legacy` bridge across
+//!   the boundary.
 //!
-//! Phase 7B extended `PolyIR` (in `picus-smt`) with the
-//! disequality / assignment / bitsum / `add_field_polys` fields, so
-//! a `PolyIR` is now a complete GB-query description. `PolyIR::encode`
-//! routes through `IndexedConstraintSystem::encode_indexed` — no
-//! per-call legacy `ConstraintSystem` is constructed on the R1CS
-//! solving path. The `native_ff` cache and the smt2/boolean/ff_theory
-//! producers' internal pipelines are scheduled for Phase 8.
+//! Phase 7B extended [`crate::poly::FfPolyRing`]-consumer `PolyIR`
+//! (in `picus-smt`) with `disequalities`, `assignments`, `bitsums`,
+//! `add_field_polys` so a `PolyIR` is a complete GB-query
+//! description; `PolyIR::encode` is the one-call lowering path.
+//!
+//! Phase 8 will: (1) migrate the cache's internal split-GB seed +
+//! digest path to consume `IndexedConstraintSystem`, preserving the
+//! alphabetical user-var sort the GB engine's DegRevLex layer
+//! expects; (2) migrate the `dump_smt` text formatter; (3) once the
+//! legacy `ConstraintSystem` has no remaining caller, delete it
+//! along with the legacy `PolyTerm`, encode / rewriter / digest
+//! variants, and the `to_legacy` / `from_legacy` bridges; (4)
+//! rename `IndexedConstraintSystem` → `ConstraintSystem`,
+//! `IndexedTerm` → `PolyTerm`, `encode_indexed` → `encode`, etc., so
+//! the canonical names point at the index-keyed forms.
+//!
+//! Phase 7 attempted (1) — the migration is straightforward in
+//! signature but the GB engine's monomial ordering is sensitive to
+//! the ring's variable layout, and the naive port produced
+//! PLDI-smoke regressions that the included sort-fix did not fully
+//! resolve. The attempt was reverted; (1) needs a closer look at
+//! the cache's split-GB seed path before retrying.
 
 use num_bigint::BigUint;
 use num_traits::Zero;
