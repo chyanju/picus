@@ -11,17 +11,6 @@ small-prime bit-decomposition shapes; SMT does the work. If a future
 research lemma needs to exploit this pattern soundly, it would need
 range refinement that rules out the wrap-around.
 
-### `native_ff` over small primes returns spurious UNSAT on some queries
-
-The Phase 1 / Phase 4 regression suite contains an `#[ignore]`d test
-(`basis2_native_ff_finds_counterexample`) where `native_ff` returns
-UNSAT on a GF(11) bit-decomposition uniqueness query that the cvc5
-QF_FF backend correctly resolves to SAT. The aboz analogue on GF(7)
-works, so the bug is structural — likely in the way Rabinowitsch
-disequality interacts with the small-prime field polynomials, or in
-the bitsum handling of the encoder. Needs investigation before
-landing more multi-prime work.
-
 ## Removed Components
 
 | Component | File | Removed in | Status |

@@ -447,6 +447,26 @@ fn find_bitsum_chain_in_terms(
     });
 
     let two = BigUint::from(2u32);
+
+    // Soundness gate: a bitsum chain of `n` bits uniquely decomposes
+    // its target only when `2^n <= p`. Beyond that, two distinct bit
+    // patterns can wrap to the same value mod p (same trap the
+    // `basis2` lemma is gated against in phase 1). Cap chain length
+    // accordingly so the rewrite stays equivalence-preserving.
+    //
+    // `max_chain_bits` = largest `n` with `2^n <= p`. For cryptographic
+    // primes this is ~254; for our small-prime regression cases
+    // (GF(7), GF(11), GF(13), ...) it's 2-3.
+    let max_chain_bits: usize = {
+        let mut n = 0usize;
+        let mut pow = BigUint::from(1u32);
+        while &pow * &two <= *p {
+            pow = pow * &two;
+            n += 1;
+        }
+        n
+    };
+
     let mut best: Option<(Vec<String>, BigUint, HashSet<usize>)> = None;
 
     for base in &candidates {
@@ -456,6 +476,10 @@ fn find_bitsum_chain_in_terms(
 
         let mut cur = base.clone();
         loop {
+            if chain_vars.len() >= max_chain_bits {
+                // Extending further would violate `2^n <= p`.
+                break;
+            }
             let bucket = match by_coeff.get(&cur) {
                 Some(b) => b,
                 None => break,

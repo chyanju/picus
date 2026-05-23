@@ -214,11 +214,13 @@ fn aboz_native_ff_finds_counterexample() {
     );
 }
 
+/// Same as `basis2_cvc5_ff_finds_counterexample` but driving the
+/// native FF backend. Pre-Phase-6b this returned spurious UNSAT — the
+/// encoder's `auto_extract_bitsums` rewrote the chain as if 2^n ≤ p
+/// were guaranteed, which over GF(11) with n=4 it isn't. The fix
+/// gates chain extension on the same soundness invariant as the
+/// `basis2` propagation lemma.
 #[test]
-#[ignore = "native_ff returns UNSAT on this query even after add_field_polys is enabled; \
-            cvc5 finds the witness pair, so the test setup is sound. A second native_ff \
-            bug (separate from add_field_polys) needs investigating — likely in Rabinowitsch \
-            encoding or the way binary constraints interact with field polys on GF(11)."]
 fn basis2_native_ff_finds_counterexample() {
     let r1cs = basis2_trap_r1cs();
     let result = run_dpvl(&r1cs, &native_ff_config()).expect("DPVL should not error");
