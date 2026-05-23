@@ -28,6 +28,7 @@ use num_bigint::BigUint;
 use num_traits::Zero;
 use picus_r1cs::field_reduce;
 use picus_r1cs::grammar::{ConstraintBlock, R1csFile};
+use picus_solver::boolean::{BooleanQuery, Formula, Literal};
 use picus_solver::encoder::{
     encode, ConstraintSystemBuilder, EncodedSystem, ConstraintSystem, PolyTerm,
 };
@@ -232,6 +233,80 @@ impl PolyIR {
         }
         builder.set_add_field_polys(self.add_field_polys);
         builder.build()
+    }
+
+    /// Lower this `PolyIR` to a CDCL(T) [`BooleanQuery`] for the native
+    /// solver's disjunction-aware path. The conjunctive constraints
+    /// (`equalities`, `assignments`, the target `disequalities`) become
+    /// a top-level `And` of `Eq`/`Neq` literals; each clause in
+    /// `disjunctions` becomes an `Or` of `Eq` literals. Bitsum chains
+    /// are intentionally not materialised here — the CDCL(T) theory
+    /// check re-runs `encode` (hence `auto_extract_bitsums`) on each
+    /// branch's conjunctive system, so they are recovered there.
+    pub fn to_boolean_query(&self) -> BooleanQuery {
+        let prime = self.ring.field.prime().clone();
+        let mut builder = ConstraintSystemBuilder::new(prime);
+        for name in self.ring.ring.var_names() {
+            builder.var(name);
+        }
+
+        let mut conj: Vec<Formula> = Vec::new();
+        for poly in &self.equalities {
+            let terms = self.poly_terms_vec(poly);
+            if !terms.is_empty() {
+                conj.push(Formula::Lit(Literal::Eq(terms, Vec::new())));
+            }
+        }
+        for (v, val) in &self.assignments {
+            conj.push(Formula::Lit(Literal::Eq(
+                vec![PolyTerm {
+                    coeff: BigUint::from(1u32),
+                    vars: vec![(*v as u32, 1)],
+                }],
+                vec![PolyTerm {
+                    coeff: val.clone(),
+                    vars: Vec::new(),
+                }],
+            )));
+        }
+        for &(a, b) in &self.disequalities {
+            conj.push(Formula::Lit(Literal::Neq(
+                vec![PolyTerm {
+                    coeff: BigUint::from(1u32),
+                    vars: vec![(a as u32, 1)],
+                }],
+                vec![PolyTerm {
+                    coeff: BigUint::from(1u32),
+                    vars: vec![(b as u32, 1)],
+                }],
+            )));
+        }
+        for clause in &self.disjunctions {
+            let lits: Vec<Formula> = clause
+                .iter()
+                .map(|poly| Formula::Lit(Literal::Eq(self.poly_terms_vec(poly), Vec::new())))
+                .collect();
+            conj.push(Formula::Or(lits));
+        }
+
+        let formula = if conj.is_empty() {
+            Formula::True
+        } else {
+            Formula::And(conj)
+        };
+        BooleanQuery::from_builder_and_formula(builder, formula)
+    }
+
+    /// `poly_terms_idx` collected into the `Vec<PolyTerm>` form that
+    /// `Literal` / `add_equality` consume (zero-coeff terms dropped).
+    fn poly_terms_vec(&self, poly: &Poly) -> Vec<PolyTerm> {
+        self.poly_terms_idx(poly)
+            .filter(|(coeff, _)| !coeff.is_zero())
+            .map(|(coeff, vars)| PolyTerm {
+                coeff,
+                vars: vars.into_iter().map(|(v, e)| (v as u32, e)).collect(),
+            })
+            .collect()
     }
 
     /// Encode this `PolyIR` into an [`EncodedSystem`] ready for the

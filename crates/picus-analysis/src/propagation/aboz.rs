@@ -16,12 +16,18 @@ use std::collections::HashSet;
 
 use num_traits::Zero;
 use picus_smt::poly_ir::PolyIR;
+use picus_solver::config;
 use picus_solver::poly::Poly;
 
 use super::lemma::{LemmaDescriptor, PropagationCtx, PropagationLemma};
 
 #[derive(Default)]
-pub struct AbozLemma;
+pub struct AbozLemma {
+    /// Zero-product disjunctions already emitted this run, keyed by the
+    /// `(selector_wire, other_wire)` pair, so re-running the lemma to a
+    /// fixed point does not flood `learned_disjunctions` with dupes.
+    emitted: HashSet<(usize, usize)>,
+}
 
 impl PropagationLemma for AbozLemma {
     fn name(&self) -> &'static str {
@@ -83,11 +89,27 @@ impl PropagationLemma for AbozLemma {
                     // `x` cannot be zero, two witnesses with `x = 0`
                     // can disagree on `y_0` / `y_1` while satisfying
                     // every constraint.
-                    if !ctx
+                    let selector_nonzero = ctx
                         .ranges
                         .get(&x)
-                        .map_or(false, |r| r.excludes_zero())
-                    {
+                        .map_or(false, |r| r.excludes_zero());
+                    if !selector_nonzero {
+                        // Selector not provably non-zero ⇒ `y0`/`y1` are
+                        // not forced unique here. Optionally hand the
+                        // disjunction-aware solver path the (entailed)
+                        // zero-product clauses `x_s = 0 ∨ x_o = 0` so it
+                        // can case-split. Sound — each follows from a
+                        // `s * o = 0` equality already in the IR — and on
+                        // by default (verdict-neutral, exercises the
+                        // disjunction path).
+                        if config::with(|c| c.aboz_emit_disjunctions) {
+                            if self.emit_zero_product(ir, ctx, x, y0) {
+                                progress = true;
+                            }
+                            if self.emit_zero_product(ir, ctx, x, y1) {
+                                progress = true;
+                            }
+                        }
                         continue;
                     }
                     // Promote y0, y1 to known if they were unknown.
@@ -103,6 +125,31 @@ impl PropagationLemma for AbozLemma {
             }
         }
         progress
+    }
+}
+
+impl AbozLemma {
+    /// Push the zero-product disjunction `(var_s = 0) ∨ (var_o = 0)` for
+    /// both the original and alt copies, deduplicating on `(s, o)` so
+    /// fixed-point re-runs don't flood `learned_disjunctions`. Each
+    /// clause is entailed by an `s * o = 0` equality already in the IR,
+    /// so adding it never changes the solution set. Returns whether a
+    /// new clause was emitted.
+    fn emit_zero_product(
+        &mut self,
+        ir: &PolyIR,
+        ctx: &mut PropagationCtx,
+        s: usize,
+        o: usize,
+    ) -> bool {
+        if !self.emitted.insert((s, o)) {
+            return false;
+        }
+        ctx.learned_disjunctions
+            .push(vec![ir.ring.var(ir.orig_var(s)), ir.ring.var(ir.orig_var(o))]);
+        ctx.learned_disjunctions
+            .push(vec![ir.ring.var(ir.alt_var(s)), ir.ring.var(ir.alt_var(o))]);
+        true
     }
 }
 
