@@ -1,13 +1,12 @@
 //! Verifies that `RuntimeConfig::gb_strategy` actually steers the GB
-//! algorithm choice on every public entry point — not just
-//! `Ideal::new`. The post-Phase-2 contract is:
+//! algorithm choice on every public entry point. Contract:
 //!
 //! * `compute_gb_with_order` routes through `compute_gb_dispatch`,
 //!   so `--gb-by-homog on` affects this entry point.
 //! * `compute_gb_with_order_traced` likewise routes through dispatch
 //!   but silently falls back to `BuchbergerDirect` when the chosen
 //!   algorithm doesn't support tracing (`BuchbergerByHomog` doesn't).
-//! * `Ideal::new` continues to honour the strategy.
+//! * `Ideal::new` honours the strategy.
 //!
 //! `last_dispatched_algorithm()` exposes the actual algorithm name
 //! the dispatch chose on this thread, so the assertions don't depend
@@ -58,7 +57,7 @@ fn compute_gb_with_order_honours_by_homog() {
         last_dispatched_algorithm(),
         Some("buchberger-by-homog"),
         "ByHomog strategy must invoke BuchbergerByHomog via dispatch \
-         from compute_gb_with_order (was bypassed pre-Phase-2)"
+         from compute_gb_with_order"
     );
 }
 
@@ -101,8 +100,7 @@ fn traced_path_falls_back_to_direct_when_strategy_lacks_tracing() {
 }
 
 #[test]
-fn ideal_new_still_routes_through_dispatch() {
-    // Sanity check: the pre-Phase-2 dispatch site keeps working.
+fn ideal_new_routes_through_dispatch() {
     let _guard = ConfigGuard::with_override(|c| c.gb_strategy = GbStrategy::ByHomog);
     let (pr, gens) = gens_xy_minus_1();
     let _ideal = Ideal::new(&pr, gens);

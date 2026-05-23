@@ -153,9 +153,10 @@ fn main() {
             gb_trace,
             no_cache,
         } => {
-            // Env-var fallbacks: PICUS_PROFILE and PICUS_GB_STATS still
-            // turn on the respective dump (matches pre-Phase-2 behavior
-            // for benchmark scripts that drive picus via env vars).
+            // Env-var fallbacks: `PICUS_PROFILE` and `PICUS_GB_STATS`
+            // enable the respective dump even when the corresponding
+            // CLI flag is absent — supports benchmark scripts that
+            // drive picus via environment variables.
             let profile_on = profile.as_str() == "wall"
                 || std::env::var_os("PICUS_PROFILE").is_some();
             let gb_stats_on = std::env::var_os("PICUS_GB_STATS").is_some();

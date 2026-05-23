@@ -33,9 +33,11 @@ The DPVL driver discovers descriptors at link time via
 `inventory::iter::<LemmaDescriptor>`. `LemmaSet::parse` validates the
 `--lemmas` flag against the live registry, so adding a new lemma is
 two edits: one new file under `crates/picus-analysis/src/propagation/`
-plus a one-line `pub mod` declaration in `propagation/mod.rs`.
+plus a one-line `pub mod` declaration in `propagation/mod.rs`. A
+range-aware lemma additionally uses the `RangeValue` type from
+`propagation::range`; no other lemma needs to be touched.
 
-`PropagationCtx` exposes four mutable channels:
+`PropagationCtx` exposes five mutable channels:
 
 | Field | Use |
 |---|---|
@@ -43,19 +45,28 @@ plus a one-line `pub mod` declaration in `propagation/mod.rs`.
 | `unknown: &mut HashSet<usize>` | Wires still to be checked. |
 | `ranges: &mut HashMap<usize, RangeValue>` | Per-wire value-set constraints (`Bottom` / `Values(set)`). |
 | `learned: &mut Vec<Poly>` | New polynomial equalities the lemma wants the framework to fold into the IR for the next iteration. |
+| `learned_disjunctions: &mut Vec<Vec<Poly>>` | New `(p_1 = 0 ∨ p_2 = 0 ∨ ...)` clauses; the driver appends them to `ir.disjunctions` at iteration end. |
 
-`run` returns `true` iff the call learned something. The outer DPVL
-loop runs every lemma once per iteration; at the end of each iteration
-`ctx.learned` is appended to `ir.equalities` and the iteration repeats
-until no lemma reports progress. Inter-lemma ordering within an
-iteration is therefore irrelevant — the next iteration starts with
-everyone's facts merged.
+`run` returns `true` iff the call made progress. The outer DPVL
+loop runs every lemma once per iteration; at the end of each
+iteration `ctx.learned` is appended to `ir.equalities` and
+`ctx.learned_disjunctions` to `ir.disjunctions`, then the iteration
+repeats. The fixed-point detector counts four kinds of progress
+(`known` growth, `run() == true`, a new learned equality, a new
+learned disjunction), so a lemma whose only output is a tightened
+range or a new constraint still triggers another iteration.
+
+Inter-lemma ordering within an iteration is irrelevant: every lemma
+in an iteration reads the same IR snapshot, and the next iteration
+starts with everyone's facts merged. Per-lemma contribution counts
+(`ks` / `ranges` / `learned` / `disjunctions` deltas) are emitted at
+`log::debug!` for ablation work.
 
 ## Built-in lemmas
 
 All five built-ins operate on `PolyIR` directly; they pattern-match
-on polynomial structure (via `total_degree`,
-`appearing_indeterminates`, `poly_terms`) rather than on an AST.
+on polynomial structure (via `appearing_indeterminates`,
+`poly_terms`, and direct monomial inspection) rather than on an AST.
 
 ### `linear`
 
@@ -86,14 +97,25 @@ recoverable bit-by-bit and so move to `ctx.known`. Coefficients are
 checked against the power-of-2 set after both sign normalisations
 (coefficient or its field negation must be a power of 2).
 
+**Soundness gate**: only fires when `2^n ≤ p`, where `n` is the
+chain length. When `2^n > p`, two distinct bit patterns can sum to
+the same value modulo `p` (e.g. `0` and `(1,1,...,1)` with
+`2^n - 1 ≡ 0 mod p`), so target uniqueness no longer implies bit
+uniqueness and the lemma must skip.
+
 ### `aboz`
 
 All-But-One-Zero: detects selector-shaped triples
-`x · y_0 = 0`, `z · y_1 = 0`, `x + y_0 + y_1 + c = 0` (the first two
-are bilinear monomials; the third is a linear sum touching the same
-wires plus at least one additional known partner). When `x` and the
-known partner are in `ctx.known`, both `y_0` and `y_1` are forced and
-join `ctx.known`.
+`x · y_0 = 0`, `x · y_1 = 0`, `x + y_0 + y_1 + c = 0` (the first two
+are bilinear monomials sharing wire `x`; the third is a linear sum
+touching the same wires plus at least one additional known partner).
+From `x · y_i = 0` and `x ≠ 0` it follows that `y_i = 0`.
+
+**Soundness gate**: only fires when `ctx.ranges[x].excludes_zero()`
+is true. Without that gate, two witnesses with `x = 0` could
+disagree on `y_0` / `y_1` (the bilinear products vanish, and the
+linear sum admits a one-parameter family of solutions), so marking
+them uniquely-determined would be unsound.
 
 ### `bim`
 

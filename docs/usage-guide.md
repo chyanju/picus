@@ -28,7 +28,7 @@ The QF_FF and QF_NIA encodings are semantically equivalent. If two solvers termi
 - **One safe, one unknown** — normal. The unknown solver timed out. Trust the one that terminated.
 - **One safe, one unsafe** — this should not happen with correct encodings. If it does, verify the counter-example manually by checking that both witnesses satisfy all R1CS constraints. The solver reporting unsafe may have a soundness issue, or there may be an encoding discrepancy.
 
-> **Known issue**: cvc5 1.2.0–1.3.3 has a bug where `or` disjunctions in QF_FF can produce spurious SAT results with inconsistent models. Picus works around this by disabling the AB0 optimization for cvc5. See [TODO.md](TODO.md) for details.
+> **Known issue**: cvc5 1.2.0–1.3.3 has a bug where `or` disjunctions in QF_FF can produce spurious SAT results with inconsistent models. The PolyIR lowering avoids emitting `or`-shaped queries entirely, so this does not affect default Picus usage.
 
 ## Troubleshooting
 
@@ -47,6 +47,8 @@ Options:
 - Increase `--timeout` (e.g., `--timeout 60000` for 60 seconds)
 - Try a different solver (`--solver z3 --theory nia`, `--solver native --theory ff`, or the default `--solver cvc5 --theory ff`)
 - Use `--solver none` to see how much propagation alone can resolve
+- Try `--gb-by-homog auto` on `native + ff`: routes through a homogenisation-based GB pipeline that wins on bit-decomposition-shaped ideals
+- Enable the F4 matrix path with `--use-f4` (research flag; native FF only)
 
 ## Analyzing Large Circuits
 

@@ -66,25 +66,49 @@ types that the rest of the workspace builds on, plus the
 
 - **`config.rs`** — `RuntimeConfig` (`gb_strategy`, `use_f4`,
   `dnf_cap`, `dnf_enabled`, `cdclt_iter_cap`, `gb_stats_enabled`,
-  `gb_trace_enabled`, `profile_enabled`). Thread-local storage with
-  `ConfigGuard::with_override` for RAII overrides. The DPVL driver
-  installs a guard for each `check_r1cs` call.
+  `gb_trace_enabled`, `profile_enabled`, `cache_enabled`).
+  Thread-local storage with `ConfigGuard::with_override` for RAII
+  overrides. The `picus::check_r1cs` driver installs a guard for
+  each call, mirroring every field of `picus::Config` into the
+  active thread's `RuntimeConfig`. `from_env()` seeds defaults from
+  the `PICUS_*` environment variables for benchmark-script
+  compatibility.
 - **`poly.rs`** — `FfPolyRing` (multivariate polynomial ring over
   `FfField`), `Poly` / `Mono` aliases, `PolyRingFacade`
   (`terms`, `exponent_at`, `appearing_indeterminates`, owned-Poly
-  `add` / `sub` / `mul`, and the pattern-matching helpers
-  `total_degree`, `is_linear`, `sole_variable`,
-  `as_linear_univariate`, `leading_var`).
+  `add` / `sub` / `mul`).
 - **`field.rs`** — `FfField` is a re-export of
   `crate::ff::field::PrimeField`, which dispatches between a
   `u64`/`u128` small-prime backend and a `rug::Integer` (GMP)
   backend based on `bits(prime)` at construction time.
 - **`ideal.rs`** — `Ideal` + `compute_gb_with_order`
-  (`_traced`, `_incremental`) + `interreduce_basis`. The
-  `GbAlgorithm` trait + `BuchbergerDirect` / `BuchbergerByHomog`
-  impls are the extension point for new GB algorithms;
-  `compute_gb_dispatch` reads `config::with(|c| c.gb_strategy)` and
-  routes through the trait.
+  (`_traced`, `_incremental`) + `interreduce_basis`. Every public
+  GB entry point routes through `compute_gb_dispatch`, which reads
+  `config::with(|c| c.gb_strategy)` and forwards to the configured
+  `GbAlgorithm` impl. The trait signature is:
+
+  ```rust
+  pub trait GbAlgorithm {
+      fn name(&self) -> &'static str;
+      fn compute(&self, pr, gens, cancel, order)
+          -> Result<Vec<Poly>, SolverError>;
+      fn supports_tracing(&self) -> bool { false }
+      fn compute_traced(&self, pr, gens, cancel, order, tracer)
+          -> Result<Vec<Poly>, SolverError> { /* default panics */ }
+  }
+  ```
+
+  Built-in impls: `BuchbergerDirect` (always; supports tracing) and
+  `BuchbergerByHomog` (only meaningful for DegRevLex; tracing not
+  supported, so dispatch falls back to `BuchbergerDirect` for
+  traced requests). `last_dispatched_algorithm()` exposes the most
+  recent algorithm name selected on the current thread — used by
+  tests to confirm strategy dispatch actually fires.
+
+  `compute_gb_buchberger(_traced)` is the raw entry point that
+  bypasses dispatch; algorithm implementations call it directly to
+  avoid recursive dispatch (e.g. `BuchbergerByHomog` lowers its
+  inner DegRevLex computation through this entry).
 - **`core.rs`** — `solve_split_gb`, `solve_single_gb`, `SolverMode`,
   `SolveOutcome`. The top-level QF_FF solving entry point used by
   the `native_ff` backend.
@@ -151,7 +175,11 @@ types that the rest of the workspace builds on, plus the
 - **`roots.rs`** — Univariate root finding (Cantor-Zassenhaus, see
   `ff/univariate.rs`).
 - **`timeout.rs`** — `CancelToken` (atomic cancellation threaded
-  through the GB engine).
+  through the GB engine). `CancelToken::either(a, b)` combines two
+  sources into a single token that fires when either fires; the
+  `native_ff` backend uses it to merge the caller's external cancel
+  with its internal `with_timeout` token so mid-solve external
+  cancellation is observed within ≤ 1 ms (initial polling delay).
 - **`smt2/`** — QF_FF SMT-LIB v2 parser
   (`smt2/{mod, tokenizer, session, tests}.rs`).
   `parse(&str) -> Result<ConstraintSystem, ParseError>` handles the
@@ -205,35 +233,71 @@ R1CS-to-PolyIR lowering and solver-backend trait.
   never appears as a distinct linear monomial); `x_0 = 1` is
   surfaced as one explicit equality.
 
-  `r1cs_to_poly_ir(r1cs, &known, target)` performs the lowering in a
-  single pass over the R1CS constraint blocks: each `A * B = C`
-  becomes one polynomial equality
+  `r1cs_to_poly_ir(r1cs, &known, target) -> Result<PolyIR, LowerError>`
+  performs the lowering in a single pass over the R1CS constraint
+  blocks: each `A * B = C` becomes one polynomial equality
   `(expand(A))(expand(B)) - expand(C) = 0`. The prime comes from
-  `r1cs.header.prime_number` (no hard-coded curve).
+  `r1cs.header.prime_number` (no hard-coded curve). An out-of-bounds
+  wire id in any constraint block surfaces as
+  `LowerError::WireOutOfBounds` rather than a silent skip.
 
   `PolyIR::add_known_wire(w)` appends `x_w - y_w = 0` so the next
   backend call sees newly-verified wires as constraints;
   `PolyIR::set_target(w)` selects the disequality target.
-  `PolyIR::poly_terms(poly)` is the iterator backends walk to emit
-  per-coefficient terms.
+  `PolyIR::var_to_wire(idx)` maps a ring variable index back to its
+  underlying wire (both `x_i` and `y_i` indices return wire `i`).
+  `PolyIR::poly_terms(poly)` yields each monomial as
+  `(coeff, Vec<String>)` (one name per degree); the sibling
+  `PolyIR::poly_terms_idx(poly)` yields `(coeff, Vec<(var_idx, exp)>)`
+  for callers that don't need names.
 - **`backends/`** — Solver-backend implementations, each consuming
   `&PolyIR`:
   - **`z3_nia.rs`** — z3 Rust API, QF_NIA (integer arithmetic with
-    `rem p`).
+    `rem p`). Gated by the `z3` Cargo feature.
   - **`cvc5_ff.rs`** — cvc5 Rust API, QF_FF (native finite field).
-  - **`cvc5_nia.rs`** — cvc5 Rust API, QF_NIA (`mod p`).
-  - **`native_ff.rs`** — Pure-Rust QF_FF via `picus-solver`. The
+    Gated by the `cvc5` Cargo feature.
+  - **`cvc5_nia.rs`** — cvc5 Rust API, QF_NIA (`mod p`). Gated by
+    the `cvc5` Cargo feature.
+  - **`native_ff.rs`** — Pure-Rust QF_FF via `picus-solver`. Always
+    available. The encoder's `add_field_polys` flag is enabled for
+    primes ≤ 1000 (essential for sound GB reasoning over small
+    primes; prohibitive for cryptographic primes). The
     `IncrementalSolverContext` cache is enabled by default;
-    `PICUS_NO_INCREMENTAL_CACHE=1` opts out.
+    `RuntimeConfig::cache_enabled = false` (`--no-cache` on the
+    CLI, or `PICUS_NO_INCREMENTAL_CACHE=1` at process start) opts
+    out.
   - `mod.rs` defines the `SolverBackend` trait
-    (`solve(&PolyIR, timeout_ms)` + `dump_smt(&PolyIR)`) and shared
-    `poly_to_smtlib_nia` / `poly_to_smtlib_ff` text emitters used
-    by every backend's `dump_smt`.
+    (`solve(&PolyIR, timeout_ms, &CancelToken)` + `dump_smt(&PolyIR)`),
+    the `SolverResult { Unsat, Sat(model), Unknown(UnknownReason) }`
+    return type with `UnknownReason { Timeout, IncompleteTheory,
+    BackendError(String) }`, the shared `poly_to_smtlib_nia` /
+    `poly_to_smtlib_ff` text emitters, and the
+    `SolverBackendDescriptor { name, theory, factory }` inventory
+    registry that `create_backend_by_name` walks at dispatch time.
 - **`lib.rs`** — `SolverKind` / `Theory` enums,
-  `validate_combination`, `create_backend`. `SUBP_CONSTANT_NAMES`
-  lists the named field constants the legacy SMT-emitted query
-  used; the `picus` witness post-processor still consults it when
-  filtering names out of solver-produced models.
+  `validate_combination`, `create_backend`. Dispatch goes through
+  the inventory of `SolverBackendDescriptor`s: built-in `SolverKind`
+  variants are ergonomic aliases that match the descriptor's `name`
+  field. Adding a new backend (research solver, in-house QF_FF
+  alternative, etc.) is a new `inventory::submit!` block — no edits
+  to enums or match tables required. `SUBP_CONSTANT_NAMES` lists the
+  named field constants the legacy SMT-emitted query used; the
+  `picus` witness post-processor still consults it when filtering
+  names out of solver-produced models.
+
+#### Cargo features
+
+`picus-smt` exposes three features, propagated through `picus` and
+`picus-cli`:
+
+| Feature | Effect |
+|---|---|
+| `cvc5` (default) | Enable `cvc5_ff` and `cvc5_nia` backends; build cvc5 from source via `cvc5-ff-sys` |
+| `z3` (default) | Enable `z3_nia` backend; build z3 from source via the vendored `z3-sys` |
+| `native` (nominal) | Always available; explicit name for `--no-default-features --features native` |
+
+A `--no-default-features --features native` build skips both
+external SMT chains entirely.
 
 ### `picus-analysis`
 
@@ -273,7 +337,10 @@ Public library facade.
 - **`Config`** — Analysis configuration. Defaults:
   `solver = Cvc5`, `theory = Ff`, `timeout_ms = 5000`,
   `lemmas = LemmaSet::all()`, `selector = Counter`,
-  `gb_strategy = Direct`, `profile = false`, `gb_stats = false`.
+  `gb_strategy = Direct`, `profile = false`, `gb_stats = false`,
+  `use_f4 = false`, `dnf_enabled = false`, `dnf_cap = 100_000`,
+  `cdclt_iter_cap = 1_000_000`, `gb_trace = false`,
+  `cache_enabled = true`.
 - **`CheckResult`** — `Safe`, `Unsafe { witness_1, witness_2 }`,
   or `Unknown`.
 - **`dump_profile(tag)`** / **`dump_gb_stats()`** — facade for the
@@ -284,11 +351,12 @@ Public library facade.
 Thin CLI entry point:
 
 - **`picus check`** — Runs DPVL on an R1CS file and prints `safe`,
-  `unsafe` (with counter-example), or `unknown`. `--profile wall`
-  and `--gb-by-homog {on,auto}` set fields on `picus::Config`;
-  `PICUS_PROFILE` and `PICUS_GB_STATS` env vars are honoured as
-  fallbacks. Depends only on `picus`; does not import
-  `picus_solver::*`.
+  `unsafe` (with counter-example), or `unknown`. `--profile wall`,
+  `--gb-by-homog {on,auto}`, `--use-f4`, `--dnf`, `--dnf-cap`,
+  `--cdclt-iter-cap`, `--gb-trace`, `--no-cache` set fields on
+  `picus::Config`; `PICUS_PROFILE` and `PICUS_GB_STATS` env vars
+  are honoured as fallbacks. Depends only on `picus`; does not
+  import `picus_solver::*`.
 - **`picus info`** — Prints R1CS metadata and optionally all
   constraints in human-readable form.
 
@@ -311,18 +379,20 @@ PolyIR  (polynomial ring + Vec<Poly> equalities)
   │       ▼
   │     known_set grows; ctx.learned folded into ir.equalities
   │       │
-  └──► SolverBackend::solve(&PolyIR, timeout)
-          ├── Z3NiaBackend       (QF_NIA, rem p)
-          ├── Cvc5FfBackend      (QF_FF, native field theory)
-          ├── Cvc5NiaBackend     (QF_NIA, mod p)
+  └──► SolverBackend::solve(&PolyIR, timeout, &CancelToken)
+          ├── Z3NiaBackend       (QF_NIA, rem p)      [`z3` feature]
+          ├── Cvc5FfBackend      (QF_FF, native FF)   [`cvc5` feature]
+          ├── Cvc5NiaBackend     (QF_NIA, mod p)      [`cvc5` feature]
           └── NativeFfBackend    (in-tree GB engine via picus-solver)
                   │
                   ▼
         DpvlResult { Safe | Unsafe(model) | Unknown }
 ```
 
-Propagation and solving consume the same `PolyIR`. Lemmas pattern-
-match on polynomial structure (`total_degree`, `appearing_variables`,
-`poly_terms`); backends translate each `Poly` into their solver-
-native term tree via `poly_to_smtlib_ff` / `poly_to_smtlib_nia` or
-through `picus_solver::encoder::ConstraintSystem`.
+Propagation and solving consume the same `PolyIR`. Lemmas
+pattern-match on polynomial structure via `appearing_indeterminates`
+and `poly_terms` / `poly_terms_idx`; SMT backends translate each
+`Poly` into their solver-native term tree via `poly_to_smtlib_ff` /
+`poly_to_smtlib_nia`, and the `native_ff` backend lowers each `Poly`
+into `picus_solver::encoder::ConstraintSystem` for the in-tree GB
+engine.

@@ -1,13 +1,12 @@
-//! Soundness regression tests for propagation lemmas. Each test
-//! constructs a synthetic R1CS where a previously-overzealous lemma
-//! would have falsely concluded uniqueness, and asserts that
-//! propagation alone (no SMT backend) does NOT report `Safe`.
+//! Soundness regression tests for propagation lemmas.
 //!
-//! Backend-assisted `Unsafe` discovery for the same cases is covered
-//! by the `#[ignore]`d tests at the bottom: they currently fail
-//! because `NativeFfBackend` hard-codes `add_field_polys: false`,
-//! making it incomplete on small primes (≤ 1000). Phase 4 fixes
-//! that knob; un-ignore these tests then.
+//! Each test constructs a synthetic R1CS that previously triggered a
+//! lemma misfire (the lemma marking wires uniquely-determined when
+//! they aren't) and asserts that the analyzer either:
+//!   * with `SolverKind::None`: does NOT report `Safe` — propagation
+//!     alone must not overpromote, and
+//!   * with `SolverKind::Native` / `SolverKind::Cvc5`: reports
+//!     `Unsafe` — the backend finds the two-witness counter-example.
 
 use num_bigint::BigUint;
 use picus_analysis::dpvl::{run_dpvl, DpvlConfig, DpvlResult, LemmaSet};
@@ -75,8 +74,9 @@ fn aboz_trap_r1cs() -> R1csFile {
     // Witnesses with sel = c_extra = 0:
     //   W1: y0 = 0, y1 = 0
     //   W2: y0 = 1, y1 = 6  (1 + 6 ≡ 0 mod 7)
-    // A pre-fix aboz would mark y0 / y1 known and return Safe; the
-    // fix gates on `sel ≠ 0`, so the lemma must skip.
+    // The `aboz` lemma must gate on `sel ≠ 0` (proven from
+    // ranges); marking y0 / y1 uniquely-determined here would be
+    // unsound because the bilinear products vanish under sel = 0.
     let p = BigUint::from(7u32);
     let header = HeaderSection {
         field_size: 32,
@@ -198,11 +198,11 @@ fn basis2_does_not_overreport_when_bitwidth_exceeds_prime() {
     );
 }
 
-/// End-to-end: with the native FF backend the analyzer must find the
-/// two distinct witnesses and report `Unsafe`. Pre-Phase-4 this hit
-/// `NativeFfBackend`'s hard-coded `add_field_polys: false`, returning
-/// a spurious UNSAT on small primes; phase 4 gates the flag on
-/// `prime ≤ 1000` and the test passes.
+/// End-to-end: with the native FF backend the analyzer must find
+/// the two distinct witnesses and report `Unsafe`. Exercises the
+/// `NativeFfBackend` `add_field_polys` gate: on primes ≤ 1000 the
+/// `x^p - x = 0` constraints are essential for the GB engine to
+/// model GF(p) correctly.
 #[test]
 fn aboz_native_ff_finds_counterexample() {
     let r1cs = aboz_trap_r1cs();
@@ -215,11 +215,11 @@ fn aboz_native_ff_finds_counterexample() {
 }
 
 /// Same as `basis2_cvc5_ff_finds_counterexample` but driving the
-/// native FF backend. Pre-Phase-6b this returned spurious UNSAT — the
-/// encoder's `auto_extract_bitsums` rewrote the chain as if 2^n ≤ p
-/// were guaranteed, which over GF(11) with n=4 it isn't. The fix
-/// gates chain extension on the same soundness invariant as the
-/// `basis2` propagation lemma.
+/// native FF backend. Exercises the encoder's `auto_extract_bitsums`
+/// chain-length gate: rewriting `c·b0 + 2c·b1 + ... + 2^(n-1)c·b_{n-1}`
+/// into a single auxiliary variable is sound only when `2^n ≤ p`,
+/// otherwise distinct bit patterns can collide modulo `p` and the
+/// rewrite over-constrains.
 #[test]
 fn basis2_native_ff_finds_counterexample() {
     let r1cs = basis2_trap_r1cs();

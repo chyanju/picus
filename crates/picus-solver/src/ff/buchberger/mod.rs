@@ -597,10 +597,11 @@ impl BuchbergerState {
             .map(|&i| self.basis[i].poly.clone())
             .collect();
 
-        // For each i, build refs from workspace skipping i. Note we skip
-        // ALREADY-zero entries to avoid wasted work. Each dense reduce
-        // can take O(seconds) on a fat basis, so honour cancellation —
-        // pre-phase-5 this loop was a known stall point on Ctrl-C.
+        // For each i, build refs from workspace skipping i. Skip
+        // already-zero entries to avoid wasted work. Each dense
+        // reduction can be O(seconds) on a fat basis, so the cancel
+        // token is consulted before each reduce; a cancelled request
+        // returns immediately rather than completing the loop.
         let cancel_owned;
         let cancel: &crate::timeout::CancelToken = match self.cfg.cancel_token.as_ref() {
             Some(c) => c,

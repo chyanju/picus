@@ -60,12 +60,11 @@ fn verdict_str(r: &CheckResult) -> &'static str {
 fn r1cs_smoke_native_ff() {
     let dir = circuit_dir();
     if !dir.exists() {
-        // Pre-Phase-6 this was a silent `return` — the test would
-        // count as PASS even when the submodule was missing, so a
-        // forgotten submodule init looked like a green run. Now we
-        // fail loudly. `PICUS_SKIP_PLDI_SMOKE=1` keeps the escape
-        // hatch for contributors who deliberately don't initialise
-        // the benchmarks submodule.
+        // Missing fixtures fail the test rather than skip silently —
+        // a forgotten submodule init must not show up as a green run.
+        // `PICUS_SKIP_PLDI_SMOKE=1` is the explicit opt-out for
+        // contributors who deliberately don't initialise the
+        // benchmarks submodule.
         if std::env::var_os("PICUS_SKIP_PLDI_SMOKE").is_some() {
             eprintln!(
                 "r1cs_smoke: {} not present and PICUS_SKIP_PLDI_SMOKE=1 — skipping",

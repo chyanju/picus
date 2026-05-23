@@ -278,13 +278,14 @@ impl DpvlContext {
     /// equalities and disjunctions are then folded back into the IR
     /// so the next iteration's lemmas see the new facts.
     ///
-    /// The fixed-point detector now considers four kinds of progress:
+    /// The fixed-point detector recognises four kinds of progress:
     ///   * `ks.len()` grew,
     ///   * some lemma's `run` returned `true`,
-    ///   * the equality out-buffer received a poly,
+    ///   * the equality out-buffer received a polynomial,
     ///   * the disjunction out-buffer received a clause.
-    /// A future range-only or disjunction-only lemma is therefore not
-    /// silently stalled. Per-lemma contribution counts are emitted at
+    /// A lemma whose only output is a tightened range or a new
+    /// learned constraint counts as progress and triggers another
+    /// iteration. Per-lemma contribution counts are emitted at
     /// `debug!` for ablation work.
     fn propagate(
         &mut self,
@@ -358,9 +359,10 @@ impl DpvlContext {
             }
         }
 
-        // DPVL doesn't yet thread an external cancel token through;
-        // pass a never-firing token so per-call `timeout_ms` is the
-        // only budget. A future phase will plumb a real cancel.
+        // DPVL has no external cancel channel of its own; pass a
+        // never-firing token so per-call `timeout_ms` is the only
+        // budget. Callers wanting interruptible analysis would plumb
+        // their own token through `DpvlConfig`.
         let cancel = picus_solver::timeout::CancelToken::none();
         match backend.solve(ir, self.timeout_ms, &cancel) {
             Ok(SolverResult::Unsat) => SolveResult::Verified,
