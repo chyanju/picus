@@ -1034,6 +1034,32 @@ impl ConstraintSystemBuilder {
             add_field_polys: self.add_field_polys,
         }
     }
+
+    /// Intern each variable name in a legacy `PolyTerm` list and
+    /// emit the equivalent `Vec<IndexedTerm>`. Used by producers
+    /// that hold an upstream `Vec<PolyTerm>` (e.g. atoms in the
+    /// CDCL(T) trail, Literal AST nodes in the boolean DNF expander)
+    /// and want to commit those terms to the index-keyed form.
+    ///
+    /// Within-term repeated names (`x * x` represented as
+    /// `vars = ["x", "x"]`) collapse to a sparse `(VarIdx, exp)`
+    /// pair.
+    pub fn intern_poly_terms(&mut self, terms: &[PolyTerm]) -> Vec<IndexedTerm> {
+        terms
+            .iter()
+            .map(|t| {
+                let mut counts: BTreeMap<VarIdx, u16> = BTreeMap::new();
+                for v in &t.vars {
+                    let idx = self.var(v);
+                    *counts.entry(idx).or_insert(0) += 1;
+                }
+                IndexedTerm {
+                    coeff: t.coeff.clone(),
+                    vars: counts.into_iter().collect(),
+                }
+            })
+            .collect()
+    }
 }
 
 /// Encode an [`IndexedConstraintSystem`] into polynomials. Mirrors

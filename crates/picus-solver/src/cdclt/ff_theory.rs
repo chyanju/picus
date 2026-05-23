@@ -12,7 +12,9 @@ use num_bigint::BigUint;
 use num_traits::Zero;
 
 use crate::core::{solve_encoded_with_cancel, SolveOutcome};
-use crate::encoder::{encode, ConstraintSystem, IndexedConstraintSystem, PolyTerm};
+use crate::encoder::{
+    encode_indexed, ConstraintSystemBuilder, IndexedTerm, PolyTerm,
+};
 use crate::sat::Var;
 use crate::timeout::CancelToken;
 
@@ -49,82 +51,85 @@ impl<'a> FfTheory<'a> {
         }
     }
 
-    /// Build a `ConstraintSystem` from the trail, encode, dispatch to
-    /// the GB solver, and map any returned `original_polys` core
-    /// indices back to atom variables. Encoded-input ordering is
+    /// Build an `IndexedConstraintSystem` from the trail via
+    /// `ConstraintSystemBuilder`, encode, dispatch to the GB solver,
+    /// and map any returned `original_polys` core indices back to
+    /// atom variables. Encoded-input ordering is
     /// `equality_atoms ++ disequality_atoms` (see
-    /// `encoder::encode_impl`).
+    /// `encoder::encode_indexed_impl`).
     fn check_full_with_mapping(&mut self) -> CheckOutcome {
         let prime = self.atoms.prime().clone();
 
-        let mut equalities: Vec<Vec<PolyTerm>> = Vec::new();
-        let mut disequalities: Vec<(String, String)> = Vec::new();
-        let mut assignments: Vec<(String, BigUint)> = Vec::new();
+        let mut builder = ConstraintSystemBuilder::new(prime.clone());
         let mut equality_atoms: Vec<Var> = Vec::new();
         let mut disequality_atoms: Vec<Var> = Vec::new();
         let mut diseq_counter: usize = 0;
-        let mut zero_added = false;
+        let mut zero_idx: Option<u32> = None;
+        let mut had_any = false;
 
         for &(atom_var, polarity) in &self.facts {
             let key = match self.atoms.atom(atom_var) {
                 Some(k) => k,
                 None => continue,
             };
+            had_any = true;
             if polarity {
-                equalities.push(key.to_poly_terms());
+                let polyterms = key.to_poly_terms();
+                let terms = builder.intern_poly_terms(&polyterms);
+                builder.add_equality(terms);
                 equality_atoms.push(atom_var);
             } else {
                 let d_name = format!("__diseq_d_{}", diseq_counter);
                 diseq_counter += 1;
-                let mut def: Vec<PolyTerm> = vec![PolyTerm {
+                let d_idx = builder.var(&d_name);
+                let zero = match zero_idx {
+                    Some(z) => z,
+                    None => {
+                        let z = builder.var("__zero");
+                        builder.add_assignment(z, BigUint::zero());
+                        zero_idx = Some(z);
+                        z
+                    }
+                };
+
+                // Encode `(d - lhs) = 0`: starts with `+1 * d_var`
+                // then appends `-coeff · vars` for each term of the
+                // atom's polynomial.
+                let mut def: Vec<IndexedTerm> = Vec::with_capacity(key.terms.len() + 1);
+                def.push(IndexedTerm {
                     coeff: BigUint::from(1u32),
-                    vars: vec![d_name.clone()],
-                }];
-                for t in key.terms.iter() {
-                    let neg_coeff = if t.0.is_zero() {
-                        BigUint::zero()
-                    } else {
-                        &prime - &t.0
-                    };
-                    def.push(PolyTerm {
-                        coeff: neg_coeff,
-                        vars: t.1.clone(),
-                    });
-                }
-                equalities.push(def);
+                    vars: vec![(d_idx, 1)],
+                });
+                // Convert each atom term to IndexedTerm, then negate
+                // (i.e. replace coeff with `(p - coeff) mod p`).
+                let polyterms_legacy: Vec<PolyTerm> = key
+                    .terms
+                    .iter()
+                    .map(|(c, vs)| {
+                        let neg = if c.is_zero() { BigUint::zero() } else { &prime - c };
+                        PolyTerm {
+                            coeff: neg,
+                            vars: vs.clone(),
+                        }
+                    })
+                    .collect();
+                let negated = builder.intern_poly_terms(&polyterms_legacy);
+                def.extend(negated);
+                builder.add_equality(def);
                 equality_atoms.push(atom_var);
-                disequalities.push((d_name, "__zero".to_string()));
+                builder.add_disequality(d_idx, zero);
                 disequality_atoms.push(atom_var);
-                if !zero_added {
-                    assignments.push(("__zero".into(), BigUint::zero()));
-                    zero_added = true;
-                }
             }
         }
 
-        if equalities.is_empty() && disequalities.is_empty() {
+        if !had_any {
             self.last_model = Some(HashMap::new());
             self.has_model = true;
             return CheckOutcome::Sat;
         }
 
-        // Build the legacy String-keyed `ConstraintSystem`, then lift
-        // to the index-keyed form for type consistency with other
-        // producers. The legacy `encode` entry still does the heavy
-        // lifting (rewriter + auto_extract_bitsums), so the indexed
-        // form converts back via `to_legacy` at the next hop. B6
-        // rewrites the internal build to publish PolyIR directly.
-        let sys = ConstraintSystem {
-            prime,
-            equalities,
-            disequalities,
-            assignments,
-            add_field_polys: false,
-            bitsums: vec![],
-        };
-        let indexed = IndexedConstraintSystem::from_legacy(&sys);
-        let sys = indexed.to_legacy();
-        let encoded = match encode(&sys) {
+        let indexed = builder.build();
+        let encoded = match encode_indexed(&indexed) {
             Ok(e) => e,
             Err(_) => return CheckOutcome::Unknown,
         };
