@@ -15,7 +15,9 @@ use num_bigint::BigUint;
 
 use crate::bitprop::{BitProp, BitPropState};
 use crate::core::{populate_bitprop, SolveOutcome};
-use crate::encoder::{encode, encode_constraint_side, ConstraintSystem};
+use crate::encoder::{
+    encode_indexed, encode_indexed_constraint_side, IndexedConstraintSystem,
+};
 use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
 use crate::ff::monomial::MonomialOrder;
 use crate::ideal::{interreduce_basis, ring_for_order, Ideal};
@@ -86,9 +88,9 @@ impl IncrementalSolverContext {
         self.partial_build = None;
     }
 
-    pub fn solve(&mut self, cs: &ConstraintSystem, cancel: &CancelToken) -> SolveOutcome {
+    pub fn solve(&mut self, cs: &IndexedConstraintSystem, cancel: &CancelToken) -> SolveOutcome {
         let stats_on = crate::profile::gb_stats_enabled();
-        let digest = digest_constraint_side(cs);
+        let digest = digest_indexed_constraint_side(cs);
 
         let cache_matches = matches!(&self.cached_base, Some(c) if c.digest == digest);
         let partial_matches = matches!(&self.partial_build, Some(p) if p.digest == digest);
@@ -190,7 +192,7 @@ impl IncrementalSolverContext {
     /// matching digest can resume via [`continue_partial`].
     fn rebuild_base(
         &mut self,
-        cs: &ConstraintSystem,
+        cs: &IndexedConstraintSystem,
         digest: u64,
         cancel: &CancelToken,
     ) -> Result<(), ()> {
@@ -203,7 +205,7 @@ impl IncrementalSolverContext {
         // `encode_constraint_side` still reserves the `__w_diseq_i`
         // variable slots so [`encode_query_disequalities`] can build the
         // Rabinowitsch polynomial in this ring later.
-        let encoded = match encode_constraint_side(cs) {
+        let encoded = match encode_indexed_constraint_side(cs) {
             Ok(e) => e,
             Err(_) => return Err(()),
         };
@@ -492,18 +494,33 @@ fn finalize_partial(partial: PartialBuild) -> Option<CachedBase> {
 }
 
 fn encode_query_disequalities(
-    cs: &ConstraintSystem,
+    cs: &IndexedConstraintSystem,
     poly_ring: &FfPolyRing,
     var_map: &HashMap<String, usize>,
 ) -> Result<Vec<Poly>, String> {
     let mut out = Vec::with_capacity(cs.disequalities.len());
-    for (i, (a, b)) in cs.disequalities.iter().enumerate() {
+    for (i, &(a, b)) in cs.disequalities.iter().enumerate() {
+        // Translate the query's producer-frame VarIdx into the
+        // cached ring's frame via name lookup. The cached ring's
+        // variables are stored in alphabetically sorted order
+        // (see `encode_indexed_impl`), so the integer `a`/`b`
+        // from the input cannot be used directly as a ring slot
+        // index — they refer to positions in `cs.var_names`, not
+        // in the ring.
+        let a_name = cs
+            .var_names
+            .get(a as usize)
+            .ok_or_else(|| format!("disequality refs var_idx {} but cs.var_names has {} entries", a, cs.var_names.len()))?;
+        let b_name = cs
+            .var_names
+            .get(b as usize)
+            .ok_or_else(|| format!("disequality refs var_idx {} but cs.var_names has {} entries", b, cs.var_names.len()))?;
         let a_idx = *var_map
-            .get(a)
-            .ok_or_else(|| format!("cached var_map missing: {}", a))?;
+            .get(a_name)
+            .ok_or_else(|| format!("cached var_map missing: {}", a_name))?;
         let b_idx = *var_map
-            .get(b)
-            .ok_or_else(|| format!("cached var_map missing: {}", b))?;
+            .get(b_name)
+            .ok_or_else(|| format!("cached var_map missing: {}", b_name))?;
         let w_name = format!("__w_diseq_{}", i);
         let w_idx = *var_map
             .get(&w_name)
@@ -518,7 +535,7 @@ fn encode_query_disequalities(
 
 fn solve_with_cached(
     cached: &CachedBase,
-    cs: &ConstraintSystem,
+    cs: &IndexedConstraintSystem,
     cancel: &CancelToken,
 ) -> SolveOutcome {
     let poly_ring: &FfPolyRing = &cached.poly_ring;
@@ -609,14 +626,14 @@ fn solve_with_cached(
     outcome
 }
 
-fn stateless_solve(cs: &ConstraintSystem, cancel: &CancelToken) -> SolveOutcome {
-    match encode(cs) {
+fn stateless_solve(cs: &IndexedConstraintSystem, cancel: &CancelToken) -> SolveOutcome {
+    match encode_indexed(cs) {
         Ok(encoded) => crate::core::solve_encoded_with_cancel(&encoded, cancel),
         Err(_) => SolveOutcome::Unknown,
     }
 }
 
-pub fn digest_constraint_side(cs: &ConstraintSystem) -> u64 {
+pub fn digest_constraint_side(cs: &IndexedConstraintSystem) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     cs.prime.hash(&mut h);

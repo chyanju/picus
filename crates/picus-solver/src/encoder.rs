@@ -1085,15 +1085,23 @@ impl ConstraintSystemBuilder {
 }
 
 /// Encode an [`IndexedConstraintSystem`] into polynomials. Mirrors
-/// [`encode`] but consumes the index-keyed form: no
-/// `collect_vars` / `var_map` round-trip, no String hashing on the
-/// equality scan.
+/// [`encode`] but consumes the index-keyed form.
 ///
-/// Runs `rewriter::rewrite_indexed_system` then
-/// `auto_extract_bitsums_indexed` to canonicalise + extract bitsums
-/// before lowering, matching the legacy `encode` staging.
+/// Pre-encode pipeline:
+///   1. `compact_used_vars`: drop variables from `var_names` that
+///      no equality / disequality / assignment / bitsum references
+///      — keeps the polynomial ring tight, matching the legacy
+///      `ConstraintSystem::collect_vars` behaviour. Without this,
+///      `PolyIR`'s `2 * n_wires` ring exposes every `y_i` even
+///      when most are never referenced, inflating the GB engine's
+///      monomial table and causing pathological slowdowns on big
+///      circuits.
+///   2. `rewriter::rewrite_indexed_system`: canonicalise terms.
+///   3. `auto_extract_bitsums_indexed`: extract bitsum chains into
+///      `bitsum_polys`.
 pub fn encode_indexed(system: &IndexedConstraintSystem) -> Result<EncodedSystem, String> {
-    let mut rewritten = system.clone();
+    let compacted = compact_used_vars(system);
+    let mut rewritten = compacted;
     crate::rewriter::rewrite_indexed_system(&mut rewritten);
     let extracted = auto_extract_bitsums_indexed(&rewritten);
     encode_indexed_impl(&extracted, true)
@@ -1103,10 +1111,97 @@ pub fn encode_indexed(system: &IndexedConstraintSystem) -> Result<EncodedSystem,
 pub fn encode_indexed_constraint_side(
     system: &IndexedConstraintSystem,
 ) -> Result<EncodedSystem, String> {
-    let mut rewritten = system.clone();
+    let compacted = compact_used_vars(system);
+    let mut rewritten = compacted;
     crate::rewriter::rewrite_indexed_system(&mut rewritten);
     let extracted = auto_extract_bitsums_indexed(&rewritten);
     encode_indexed_impl(&extracted, false)
+}
+
+/// Compact `system.var_names` to only the variables actually
+/// referenced by some equality, disequality, assignment, or
+/// bitsum. Returns a new `IndexedConstraintSystem` with renumbered
+/// indices.
+///
+/// Mirrors `ConstraintSystem::collect_vars` — the legacy
+/// `encode_impl` builds its ring from `collect_vars()` (a SET that
+/// contains only names appearing in the constraint side), so the
+/// index-keyed path must do the same or it produces a ring with
+/// spurious extra variables that the GB engine has to factor in.
+fn compact_used_vars(system: &IndexedConstraintSystem) -> IndexedConstraintSystem {
+    use std::collections::BTreeSet;
+    let mut used: BTreeSet<VarIdx> = BTreeSet::new();
+    for eq in &system.equalities {
+        for term in eq {
+            for &(idx, _) in &term.vars {
+                used.insert(idx);
+            }
+        }
+    }
+    for &(a, b) in &system.disequalities {
+        used.insert(a);
+        used.insert(b);
+    }
+    for (v, _) in &system.assignments {
+        used.insert(*v);
+    }
+    for chain in &system.bitsums {
+        for &v in chain {
+            used.insert(v);
+        }
+    }
+    if used.len() == system.var_names.len() {
+        return system.clone();
+    }
+    let used_sorted: Vec<VarIdx> = used.into_iter().collect();
+    let mut input_to_compact: HashMap<VarIdx, VarIdx> = HashMap::with_capacity(used_sorted.len());
+    for (compact_idx, &input_idx) in used_sorted.iter().enumerate() {
+        input_to_compact.insert(input_idx, compact_idx as VarIdx);
+    }
+    let new_var_names: Vec<String> = used_sorted
+        .iter()
+        .map(|&idx| system.var_names[idx as usize].clone())
+        .collect();
+    let new_equalities: Vec<Vec<IndexedTerm>> = system
+        .equalities
+        .iter()
+        .map(|eq| {
+            eq.iter()
+                .map(|t| IndexedTerm {
+                    coeff: t.coeff.clone(),
+                    vars: t
+                        .vars
+                        .iter()
+                        .map(|&(idx, exp)| (input_to_compact[&idx], exp))
+                        .collect(),
+                })
+                .collect()
+        })
+        .collect();
+    let new_disequalities: Vec<(VarIdx, VarIdx)> = system
+        .disequalities
+        .iter()
+        .map(|&(a, b)| (input_to_compact[&a], input_to_compact[&b]))
+        .collect();
+    let new_assignments: Vec<(VarIdx, BigUint)> = system
+        .assignments
+        .iter()
+        .map(|(v, val)| (input_to_compact[v], val.clone()))
+        .collect();
+    let new_bitsums: Vec<Vec<VarIdx>> = system
+        .bitsums
+        .iter()
+        .map(|chain| chain.iter().map(|v| input_to_compact[v]).collect())
+        .collect();
+    IndexedConstraintSystem {
+        prime: system.prime.clone(),
+        var_names: new_var_names,
+        equalities: new_equalities,
+        disequalities: new_disequalities,
+        assignments: new_assignments,
+        bitsums: new_bitsums,
+        add_field_polys: system.add_field_polys,
+    }
 }
 
 fn encode_indexed_impl(

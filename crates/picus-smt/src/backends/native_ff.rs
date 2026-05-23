@@ -71,7 +71,6 @@ impl SolverBackend for NativeFfBackend {
             return Ok(SolverResult::Unknown(UnknownReason::Timeout));
         }
         let indexed = ir.to_indexed_constraint_system();
-        let cs = indexed.to_legacy();
         let stats_on = picus_solver::profile::gb_stats_enabled();
         let cs_digest = if stats_on {
             Some(digest_native_constraint_side(&indexed))
@@ -114,7 +113,7 @@ impl SolverBackend for NativeFfBackend {
                 None
             };
             let outcome = if cache_enabled {
-                cache.solve(&cs, &cancel)
+                cache.solve(&indexed, &cancel)
             } else {
                 let enc_t0 = if stats_on {
                     Some(std::time::Instant::now())
