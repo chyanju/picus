@@ -633,46 +633,9 @@ fn stateless_solve(cs: &IndexedConstraintSystem, cancel: &CancelToken) -> SolveO
     }
 }
 
-pub fn digest_constraint_side(cs: &IndexedConstraintSystem) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    cs.prime.hash(&mut h);
-    cs.add_field_polys.hash(&mut h);
-    cs.bitsums.len().hash(&mut h);
-    for bs in &cs.bitsums {
-        bs.len().hash(&mut h);
-        for v in bs {
-            v.hash(&mut h);
-        }
-    }
-    cs.assignments.len().hash(&mut h);
-    for (n, v) in &cs.assignments {
-        n.hash(&mut h);
-        v.hash(&mut h);
-    }
-    cs.equalities.len().hash(&mut h);
-    for eq in &cs.equalities {
-        eq.len().hash(&mut h);
-        for t in eq {
-            t.coeff.hash(&mut h);
-            t.vars.len().hash(&mut h);
-            for v in &t.vars {
-                v.hash(&mut h);
-            }
-        }
-    }
-    h.finish()
-}
-
-/// Index-keyed counterpart of [`digest_constraint_side`]. Hashes
-/// `u32` variable indices and `BigUint` coefficients directly,
-/// skipping the per-variable String hashing the legacy form
-/// performs.
-///
-/// The output value differs from `digest_constraint_side(&cs.to_legacy())`
-/// because the input shape differs (indices vs repeated names), but
-/// is self-consistent: two `IndexedConstraintSystem` values that
-/// agree on `(prime, var_names, equalities, disequalities,
+/// Hash an [`IndexedConstraintSystem`]'s constraint side (everything
+/// except `disequalities`) into a `u64` cache key. Self-consistent:
+/// two systems agreeing on `(prime, var_names, equalities,
 /// assignments, bitsums, add_field_polys)` produce the same digest.
 pub fn digest_indexed_constraint_side(cs: &crate::encoder::IndexedConstraintSystem) -> u64 {
     use std::hash::{Hash, Hasher};
