@@ -19,7 +19,7 @@ use num_bigint::BigUint;
 use num_traits::Zero;
 
 use crate::core::{solve_encoded_with_cancel, SolveOutcome};
-use crate::encoder::{encode, ConstraintSystem, PolyTerm};
+use crate::encoder::{encode, ConstraintSystem, IndexedConstraintSystem, PolyTerm};
 use crate::timeout::CancelToken;
 
 /// A literal over FF terms: an equality or a disequality.
@@ -190,9 +190,13 @@ impl BooleanQuery {
     }
 
     /// Translate each DNF disjunct (a conjunction of literals) into a
-    /// stand-alone [`ConstraintSystem`]. `__zero` is pinned to the
-    /// field's zero for any disjunct that contains a disequality.
-    pub fn to_disjunct_systems(&self) -> Vec<ConstraintSystem> {
+    /// stand-alone [`IndexedConstraintSystem`]. `__zero` is pinned
+    /// to the field's zero for any disjunct that contains a
+    /// disequality. The internal pipeline still builds a String-keyed
+    /// `ConstraintSystem` and runs `rewriter::rewrite_system`; the
+    /// result is lifted to the index-keyed form via
+    /// [`IndexedConstraintSystem::from_legacy`] at the boundary.
+    pub fn to_disjunct_systems(&self) -> Vec<IndexedConstraintSystem> {
         let mut diseq_seq: usize = 0;
         self.dnf()
             .iter()
@@ -255,7 +259,7 @@ impl BooleanQuery {
                     bitsums: vec![],
                 };
                 crate::rewriter::rewrite_system(&mut sys);
-                sys
+                IndexedConstraintSystem::from_legacy(&sys)
             })
             .collect()
     }
@@ -428,7 +432,12 @@ pub fn solve_boolean_query_dnf(query: &BooleanQuery, cancel: &CancelToken) -> So
         if cancel.is_cancelled() {
             return SolveOutcome::Unknown;
         }
-        let encoded = match encode(sys) {
+        // `to_legacy` converts back to the String-keyed form so the
+        // legacy `encode` (with rewriter + auto_extract_bitsums) can
+        // service this disjunct. A7 / A8 lift those passes to the
+        // index-keyed form and this round-trip disappears.
+        let legacy = sys.to_legacy();
+        let encoded = match encode(&legacy) {
             Ok(e) => e,
             Err(_) => {
                 saw_unknown = true;
