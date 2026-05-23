@@ -8,30 +8,33 @@
 //!
 //! ## Phase 7 migration status (informational)
 //!
-//! This module currently maintains two parallel type families during
-//! the Phase 7 refactor:
+//! Two parallel type families coexist during the multi-phase IR
+//! refactor:
 //!
 //! * **Legacy (String-keyed):** [`ConstraintSystem`], [`PolyTerm`],
 //!   [`encode`], [`encode_constraint_side`], [`encode_no_auto_bitsum`],
-//!   [`auto_extract_bitsums`]. Internals of the four producers
-//!   (`smt2::parse`, `boolean::to_disjunct_systems`,
-//!   `cdclt::ff_theory`, and the `dump_smt` formatter) still build
-//!   into this form. Phase 7B rewrites those internals onto PolyIR
-//!   directly.
+//!   [`auto_extract_bitsums`], the legacy `rewriter::rewrite_system`,
+//!   `normalize_term_list`, and `digest_constraint_side`. Internals
+//!   of three producers (`smt2::parse`, `boolean::to_disjunct_systems`,
+//!   `cdclt::ff_theory`) and the `native_ff` cache + `dump_smt`
+//!   formatter still build into this form. Phase 8 rewrites those
+//!   internals to construct `PolyIR` directly.
 //! * **Index-keyed (Phase 7A):** [`IndexedConstraintSystem`],
 //!   [`IndexedTerm`], [`ConstraintSystemBuilder`], [`encode_indexed`],
-//!   [`encode_indexed_constraint_side`], [`auto_extract_bitsums_indexed`].
-//!   Every producer's PUBLIC return shape is now this form;
-//!   `to_legacy` / `from_legacy` bridges keep the legacy internals
-//!   functional. These bridges disappear in Phase 7B.
+//!   [`encode_indexed_constraint_side`], [`auto_extract_bitsums_indexed`],
+//!   `rewriter::rewrite_indexed_system`, `normalize_indexed_term_list`,
+//!   `digest_indexed_constraint_side`. The encoder hot path runs
+//!   index-keyed end-to-end; every producer's PUBLIC return shape is
+//!   `IndexedConstraintSystem`. `to_legacy` / `from_legacy` bridge
+//!   between the two families.
 //!
-//! Phase 7B (in progress) will: (1) extend `PolyIR` with the
-//! disequality / assignment / bitsum fields that `ConstraintSystem`
-//! currently carries, (2) move `rewriter` and `auto_extract_bitsums`
-//! to Poly-level passes that operate directly on a ring, (3) rewrite
-//! the four producers to build `PolyIR` directly, and (4) delete
-//! both the legacy and index-keyed `ConstraintSystem` shapes in
-//! favour of a single unified IR.
+//! Phase 7B extended `PolyIR` (in `picus-smt`) with the
+//! disequality / assignment / bitsum / `add_field_polys` fields, so
+//! a `PolyIR` is now a complete GB-query description. `PolyIR::encode`
+//! routes through `IndexedConstraintSystem::encode_indexed` — no
+//! per-call legacy `ConstraintSystem` is constructed on the R1CS
+//! solving path. The `native_ff` cache and the smt2/boolean/ff_theory
+//! producers' internal pipelines are scheduled for Phase 8.
 
 use num_bigint::BigUint;
 use num_traits::Zero;
