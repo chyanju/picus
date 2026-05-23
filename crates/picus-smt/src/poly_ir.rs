@@ -25,8 +25,12 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use num_bigint::BigUint;
+use num_traits::Zero;
 use picus_r1cs::field_reduce;
 use picus_r1cs::grammar::{ConstraintBlock, R1csFile};
+use picus_solver::encoder::{
+    encode_indexed, ConstraintSystemBuilder, EncodedSystem, IndexedConstraintSystem, IndexedTerm,
+};
 use picus_solver::field::FfField;
 use picus_solver::poly::{FfPolyRing, Poly};
 use thiserror::Error;
@@ -188,6 +192,56 @@ impl PolyIR {
             }
             (coeff, vars)
         })
+    }
+
+    /// Lower this `PolyIR` to an [`IndexedConstraintSystem`] via the
+    /// `ConstraintSystemBuilder`. Variable names are interned in
+    /// `ring.var_names()` order so builder indices match ring
+    /// indices; each `Poly` in `self.equalities` yields a
+    /// `Vec<IndexedTerm>` via [`Self::poly_terms_idx`];
+    /// `disequalities`, `assignments`, `bitsums`, and
+    /// `add_field_polys` propagate as-is.
+    pub fn to_indexed_constraint_system(&self) -> IndexedConstraintSystem {
+        let prime = self.ring.field.prime().clone();
+        let mut builder = ConstraintSystemBuilder::new(prime);
+        for name in self.ring.ring.var_names() {
+            builder.var(name);
+        }
+        for poly in &self.equalities {
+            let terms: Vec<IndexedTerm> = self
+                .poly_terms_idx(poly)
+                .filter(|(coeff, _)| !coeff.is_zero())
+                .map(|(coeff, vars)| IndexedTerm {
+                    coeff,
+                    vars: vars.into_iter().map(|(v, e)| (v as u32, e)).collect(),
+                })
+                .collect();
+            if !terms.is_empty() {
+                builder.add_equality(terms);
+            }
+        }
+        for &(a, b) in &self.disequalities {
+            builder.add_disequality(a as u32, b as u32);
+        }
+        for (v, val) in &self.assignments {
+            builder.add_assignment(*v as u32, val.clone());
+        }
+        for chain in &self.bitsums {
+            let bits: Vec<u32> = chain.iter().map(|&v| v as u32).collect();
+            builder.add_bitsum(bits);
+        }
+        builder.set_add_field_polys(self.add_field_polys);
+        builder.build()
+    }
+
+    /// Encode this `PolyIR` into an [`EncodedSystem`] ready for the
+    /// GB engine. Internally builds an `IndexedConstraintSystem` via
+    /// [`Self::to_indexed_constraint_system`] and routes through
+    /// [`picus_solver::encoder::encode_indexed`] (which runs
+    /// `rewriter::rewrite_indexed_system` and
+    /// `auto_extract_bitsums_indexed`).
+    pub fn encode(&self) -> Result<EncodedSystem, String> {
+        encode_indexed(&self.to_indexed_constraint_system())
     }
 
     /// Iterate every term of `poly` as `(coeff, vars_with_exp)` where
