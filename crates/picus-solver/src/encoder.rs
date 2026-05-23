@@ -606,6 +606,59 @@ pub struct ConstraintSystemBuilder {
     add_field_polys: bool,
 }
 
+impl IndexedConstraintSystem {
+    /// Lower this index-keyed system to the legacy String-keyed
+    /// [`ConstraintSystem`]. Each `IndexedTerm` expands to a
+    /// `PolyTerm` whose `vars: Vec<String>` repeats each variable
+    /// name `exp` times. Used during the Phase 7 migration as a
+    /// bridge so producers that have moved to the index-keyed
+    /// builder can still feed the legacy `encode` / cache /
+    /// `digest_constraint_side` paths. Removed in A9.
+    pub fn to_legacy(&self) -> ConstraintSystem {
+        let resolve = |idx: VarIdx| self.var_names[idx as usize].clone();
+        ConstraintSystem {
+            prime: self.prime.clone(),
+            equalities: self
+                .equalities
+                .iter()
+                .map(|eq| {
+                    eq.iter()
+                        .map(|t| {
+                            let mut vars: Vec<String> = Vec::new();
+                            for &(idx, exp) in &t.vars {
+                                let name = resolve(idx);
+                                for _ in 0..exp {
+                                    vars.push(name.clone());
+                                }
+                            }
+                            PolyTerm {
+                                coeff: t.coeff.clone(),
+                                vars,
+                            }
+                        })
+                        .collect()
+                })
+                .collect(),
+            disequalities: self
+                .disequalities
+                .iter()
+                .map(|&(a, b)| (resolve(a), resolve(b)))
+                .collect(),
+            assignments: self
+                .assignments
+                .iter()
+                .map(|(v, val)| (resolve(*v), val.clone()))
+                .collect(),
+            add_field_polys: self.add_field_polys,
+            bitsums: self
+                .bitsums
+                .iter()
+                .map(|bs| bs.iter().map(|&v| resolve(v)).collect())
+                .collect(),
+        }
+    }
+}
+
 impl ConstraintSystemBuilder {
     pub fn new(prime: BigUint) -> Self {
         Self {
