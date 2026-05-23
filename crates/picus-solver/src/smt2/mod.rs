@@ -27,7 +27,7 @@ use std::fmt;
 use num_bigint::BigUint;
 use num_traits::Zero;
 
-use crate::encoder::{ConstraintSystem, PolyTerm};
+use crate::encoder::{ConstraintSystemBuilder, IndexedConstraintSystem, PolyTerm};
 use tokenizer::{parse_sexprs, tokenize, Sexpr};
 
 // ─────────────────────── Errors ──────────────────────────────────────────
@@ -356,8 +356,13 @@ fn handle_assert(
 
 // ─────────────────────── Top-level loop ──────────────────────────────────
 
-/// Parse an SMT-LIB v2 QF_FF source and produce a [`ConstraintSystem`].
-pub fn parse(src: &str) -> Result<ConstraintSystem, ParseError> {
+/// Parse an SMT-LIB v2 QF_FF source and produce an
+/// [`IndexedConstraintSystem`]. The recursive `build_poly` helper
+/// still returns a String-keyed `Vec<PolyTerm>` while walking the
+/// SMT-LIB AST (a natural shape for that recursion), but `parse`
+/// commits each equation to a `ConstraintSystemBuilder` at its
+/// boundary; no `ConstraintSystem` struct is constructed.
+pub fn parse(src: &str) -> Result<IndexedConstraintSystem, ParseError> {
     let toks = tokenize(src);
     let sexprs = parse_sexprs(&toks)?;
 
@@ -464,22 +469,29 @@ pub fn parse(src: &str) -> Result<ConstraintSystem, ParseError> {
 
     let prime = prime.ok_or(ParseError::MissingPrime)?;
 
-    // Pin `__zero` to the field's zero so `__diseq_d_i != __zero` matches `d != 0`.
-    let mut assignments: Vec<(String, BigUint)> = Vec::new();
-    if diseq_counter > 0 {
-        assignments.push(("__zero".into(), BigUint::zero()));
+    // Commit accumulated equalities + diseqs to the index-keyed
+    // builder. Variable names appearing in the parser's term lists
+    // (`x0`, `__diseq_d_N`, `__zero`) are interned in encounter
+    // order; the indexed rewriter then canonicalises every
+    // equality.
+    let mut builder = ConstraintSystemBuilder::new(prime);
+    for eq in &equalities {
+        let terms = builder.intern_poly_terms(eq);
+        builder.add_equality(terms);
     }
-
-    let mut sys = ConstraintSystem {
-        prime,
-        equalities,
-        disequalities: diseqs,
-        assignments,
-        add_field_polys: false,
-        bitsums: vec![],
-    };
-    crate::rewriter::rewrite_system(&mut sys);
-    Ok(sys)
+    let mut zero_idx: Option<u32> = None;
+    for (a, b) in &diseqs {
+        let a_idx = builder.var(a);
+        let b_idx = builder.var(b);
+        builder.add_disequality(a_idx, b_idx);
+        if b == "__zero" && zero_idx.is_none() {
+            builder.add_assignment(b_idx, BigUint::zero());
+            zero_idx = Some(b_idx);
+        }
+    }
+    let mut indexed = builder.build();
+    crate::rewriter::rewrite_indexed_system(&mut indexed);
+    Ok(indexed)
 }
 
 // ─────────────────────── Boolean structure parser ────────────────────────

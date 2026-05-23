@@ -6,14 +6,12 @@
 //! disequality `x_target ≠ y_target` is handed to the GB solver via
 //! the Rabinowitsch trick wired into [`IncrementalSolverContext`].
 
-use num_bigint::BigUint;
-
 use crate::backends::{SolverBackend, SolverBackendDescriptor, SolverError, SolverResult, UnknownReason};
 use crate::poly_ir::PolyIR;
 use crate::Theory;
 
 use picus_solver::core::{solve_encoded_with_cancel, SolveOutcome};
-use picus_solver::encoder::{encode, ConstraintSystem, PolyTerm};
+use picus_solver::encoder::{ConstraintSystem, IndexedConstraintSystem};
 use picus_solver::incremental_context::IncrementalSolverContext;
 use picus_solver::timeout::CancelToken;
 
@@ -45,59 +43,21 @@ impl NativeFfBackend {
 }
 
 /// Thin wrapper around the cache module's
-/// [`picus_solver::incremental_context::digest_constraint_side`]. The
-/// cache itself uses the same function for its hit/miss decisions, so
-/// the digests agree.
-fn digest_constraint_side(cs: &ConstraintSystem) -> u64 {
-    picus_solver::incremental_context::digest_constraint_side(cs)
+/// `digest_indexed_constraint_side`. Used for the stats path's
+/// `last_cs_digest` tracking; the cache itself still keys on the
+/// legacy String-keyed digest until A9 unifies the two paths.
+fn digest_native_constraint_side(ics: &IndexedConstraintSystem) -> u64 {
+    picus_solver::incremental_context::digest_indexed_constraint_side(ics)
 }
 
-/// Lower a `PolyIR` to the `ConstraintSystem` shape consumed by
-/// [`picus_solver::core::solve_encoded_with_cancel`]. Each polynomial
-/// equality becomes one `Vec<PolyTerm>` summing to zero; the target
-/// disequality lifts to the solver's `disequalities` slot.
+/// Legacy bridge: lowers `PolyIR` to a String-keyed
+/// `ConstraintSystem` for the cache path (which still keys on the
+/// legacy digest) and for the `dump_smt` formatter. Routes through
+/// `PolyIR::to_indexed_constraint_system` so the lowering logic
+/// stays in one place. Removed in phase 7B7 when the cache and
+/// dump path consume the index-keyed form directly.
 fn ir_to_constraint_system(ir: &PolyIR) -> ConstraintSystem {
-    let prime = ir.ring.field.prime().clone();
-
-    let mut equalities: Vec<Vec<PolyTerm>> = Vec::with_capacity(ir.equalities.len());
-    for poly in &ir.equalities {
-        let terms: Vec<PolyTerm> = ir
-            .poly_terms(poly)
-            .filter(|(coeff, _)| !coeff_is_zero(coeff))
-            .map(|(coeff, vars)| PolyTerm { coeff, vars })
-            .collect();
-        if !terms.is_empty() {
-            equalities.push(terms);
-        }
-    }
-
-    // Field polynomials `x^p - x = 0` are essential for sound GB
-    // reasoning over small primes (otherwise the GB engine treats `x`
-    // as ranging over the algebraic closure, not GF(p)), but are
-    // prohibitively expensive for cryptographic primes. The encoder
-    // refuses to materialise them past `prime > 1000` anyway, so just
-    // mirror its gate here.
-    let small_prime_threshold = num_bigint::BigUint::from(1000u32);
-    let add_field_polys = prime <= small_prime_threshold;
-    ConstraintSystem {
-        prime,
-        equalities,
-        disequalities: vec![(
-            ir.x_name(ir.target_signal).to_string(),
-            ir.y_name(ir.target_signal).to_string(),
-        )],
-        // PolyIR bakes `x_0 = 1` and the input equalities `x_i = y_i`
-        // straight into `equalities`, so no explicit assignments are
-        // required by the encoder.
-        assignments: Vec::new(),
-        add_field_polys,
-        bitsums: vec![],
-    }
-}
-
-fn coeff_is_zero(c: &BigUint) -> bool {
-    use num_traits::Zero;
-    c.is_zero()
+    ir.to_indexed_constraint_system().to_legacy()
 }
 
 impl SolverBackend for NativeFfBackend {
@@ -110,10 +70,11 @@ impl SolverBackend for NativeFfBackend {
         if cancel.is_cancelled() {
             return Ok(SolverResult::Unknown(UnknownReason::Timeout));
         }
-        let cs = ir_to_constraint_system(ir);
+        let indexed = ir.to_indexed_constraint_system();
+        let cs = indexed.to_legacy();
         let stats_on = picus_solver::profile::gb_stats_enabled();
         let cs_digest = if stats_on {
-            Some(digest_constraint_side(&cs))
+            Some(digest_native_constraint_side(&indexed))
         } else {
             None
         };
@@ -160,7 +121,10 @@ impl SolverBackend for NativeFfBackend {
                 } else {
                     None
                 };
-                let encoded = encode(&cs).map_err(|e| SolverError::Internal(e))?;
+                // Stateless path: use the index-keyed encode_indexed
+                // directly via `PolyIR::encode`. No `to_legacy`
+                // round-trip; the cache path still uses `cs` above.
+                let encoded = ir.encode().map_err(|e| SolverError::Internal(e))?;
                 if let Some(t0) = enc_t0 {
                     use std::sync::atomic::Ordering::Relaxed;
                     let dt = t0.elapsed().as_nanos() as u64;

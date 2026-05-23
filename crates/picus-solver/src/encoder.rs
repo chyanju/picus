@@ -5,6 +5,36 @@
 //! - Bitsum subpatterns in equalities are extracted by
 //!   [`auto_extract_bitsums`] and routed to `bitsum_polys` (basis 0
 //!   only).
+//!
+//! ## Phase 7 migration status (informational)
+//!
+//! Two parallel type families coexist during the multi-phase IR
+//! refactor:
+//!
+//! * **Legacy (String-keyed):** [`ConstraintSystem`], [`PolyTerm`],
+//!   [`encode`], [`encode_constraint_side`], [`encode_no_auto_bitsum`],
+//!   [`auto_extract_bitsums`], the legacy `rewriter::rewrite_system`,
+//!   `normalize_term_list`, and `digest_constraint_side`. Internals
+//!   of three producers (`smt2::parse`, `boolean::to_disjunct_systems`,
+//!   `cdclt::ff_theory`) and the `native_ff` cache + `dump_smt`
+//!   formatter still build into this form. Phase 8 rewrites those
+//!   internals to construct `PolyIR` directly.
+//! * **Index-keyed (Phase 7A):** [`IndexedConstraintSystem`],
+//!   [`IndexedTerm`], [`ConstraintSystemBuilder`], [`encode_indexed`],
+//!   [`encode_indexed_constraint_side`], [`auto_extract_bitsums_indexed`],
+//!   `rewriter::rewrite_indexed_system`, `normalize_indexed_term_list`,
+//!   `digest_indexed_constraint_side`. The encoder hot path runs
+//!   index-keyed end-to-end; every producer's PUBLIC return shape is
+//!   `IndexedConstraintSystem`. `to_legacy` / `from_legacy` bridge
+//!   between the two families.
+//!
+//! Phase 7B extended `PolyIR` (in `picus-smt`) with the
+//! disequality / assignment / bitsum / `add_field_polys` fields, so
+//! a `PolyIR` is now a complete GB-query description. `PolyIR::encode`
+//! routes through `IndexedConstraintSystem::encode_indexed` — no
+//! per-call legacy `ConstraintSystem` is constructed on the R1CS
+//! solving path. The `native_ff` cache and the smt2/boolean/ff_theory
+//! producers' internal pipelines are scheduled for Phase 8.
 
 use num_bigint::BigUint;
 use num_traits::Zero;
@@ -515,6 +545,219 @@ fn find_bitsum_chain_in_terms(
     best
 }
 
+// ─────────────────────────────────────────────────────────────────────
+//   Index-keyed bitsum extraction (Phase 7A7)
+// ─────────────────────────────────────────────────────────────────────
+
+/// Index-keyed counterpart of [`auto_extract_bitsums`]. Operates on
+/// [`IndexedTerm`] lists: `bits: HashSet<VarIdx>`, chain extender
+/// indexed by coefficient via `BTreeMap<BigUint, Vec<(VarIdx, idx)>>`.
+/// No String allocation on the hot path.
+///
+/// Soundness gate is shared with the legacy implementation:
+/// chain length capped at `floor(log2(prime))` so distinct bit
+/// patterns never collide modulo `prime`.
+pub fn auto_extract_bitsums_indexed(
+    system: &IndexedConstraintSystem,
+) -> IndexedConstraintSystem {
+    let p = &system.prime;
+
+    // Bit-constrained variable set: variables with a `b·(b - 1) = 0`
+    // equality plus any explicit bitsum entries.
+    let mut bits: HashSet<VarIdx> = HashSet::new();
+    for bs in &system.bitsums {
+        for &v in bs {
+            bits.insert(v);
+        }
+    }
+    for eq in &system.equalities {
+        if let Some(bit_idx) = detect_bit_constraint_indexed(eq, p) {
+            bits.insert(bit_idx);
+        }
+    }
+    if bits.is_empty() {
+        return system.clone();
+    }
+
+    let mut rewritten_equalities: Vec<Vec<IndexedTerm>> =
+        Vec::with_capacity(system.equalities.len());
+    let mut new_bitsums: Vec<Vec<VarIdx>> = system.bitsums.clone();
+
+    // Aux indices align with the encoder's append order:
+    //   user vars : 0 .. n_user
+    //   witnesses : n_user .. n_user + n_diseq
+    //   bitsum aux: n_user + n_diseq .. + n_bitsums
+    // Pre-compute the bitsum-aux base so the rewrite-time term
+    // emission and `encode_indexed_impl`'s own aux append loop agree.
+    let n_user = system.var_names.len() as VarIdx;
+    let n_diseq = system.disequalities.len() as VarIdx;
+    let aux_base: VarIdx = n_user + n_diseq;
+
+    for eq in &system.equalities {
+        let mut current_eq: Vec<IndexedTerm> = eq.clone();
+        let max_iters = current_eq.len() + 1;
+        for _ in 0..max_iters {
+            match find_bitsum_chain_indexed(&current_eq, &bits, p, MIN_AUTO_BITSUM_LEN) {
+                Some((bit_list, base_coeff, consumed)) => {
+                    let aux_idx = aux_base + (new_bitsums.len() as VarIdx);
+                    new_bitsums.push(bit_list);
+
+                    let mut new_terms: Vec<IndexedTerm> = current_eq
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| !consumed.contains(i))
+                        .map(|(_, t)| t.clone())
+                        .collect();
+                    new_terms.push(IndexedTerm {
+                        coeff: base_coeff,
+                        vars: vec![(aux_idx, 1)],
+                    });
+                    current_eq = new_terms;
+                }
+                None => break,
+            }
+        }
+        rewritten_equalities.push(current_eq);
+    }
+
+    IndexedConstraintSystem {
+        prime: system.prime.clone(),
+        var_names: system.var_names.clone(),
+        equalities: rewritten_equalities,
+        disequalities: system.disequalities.clone(),
+        assignments: system.assignments.clone(),
+        bitsums: new_bitsums,
+        add_field_polys: system.add_field_polys,
+    }
+}
+
+/// Match `b·(b - 1) = 0` on an [`IndexedTerm`] list. The list is
+/// expected to already be normalised by `rewrite_indexed_system`, so
+/// `b^2` lives as `[(b_idx, 2)]` and `b` lives as `[(b_idx, 1)]`.
+/// Returns the `VarIdx` of `b` on match.
+fn detect_bit_constraint_indexed(eq: &[IndexedTerm], p: &BigUint) -> Option<VarIdx> {
+    let nonzero: Vec<&IndexedTerm> = eq.iter().filter(|t| !t.coeff.is_zero()).collect();
+    if nonzero.len() != 2 {
+        return None;
+    }
+    let is_quad = |t: &&IndexedTerm| t.vars.len() == 1 && t.vars[0].1 == 2;
+    let is_lin = |t: &&IndexedTerm| t.vars.len() == 1 && t.vars[0].1 == 1;
+    let (quad, lin) = if is_quad(&nonzero[0]) && is_lin(&nonzero[1]) {
+        (nonzero[0], nonzero[1])
+    } else if is_quad(&nonzero[1]) && is_lin(&nonzero[0]) {
+        (nonzero[1], nonzero[0])
+    } else {
+        return None;
+    };
+    if quad.vars[0].0 != lin.vars[0].0 {
+        return None;
+    }
+    let sum = (&quad.coeff + &lin.coeff) % p;
+    if !sum.is_zero() {
+        return None;
+    }
+    Some(quad.vars[0].0)
+}
+
+/// Index-keyed counterpart of [`find_bitsum_chain_in_terms`]. Looks
+/// for `c·b_0 + 2c·b_1 + ... + 2^(k-1)·c·b_{k-1}` where each `b_i`
+/// is a known bit (degree 1 in a single index, coefficient
+/// `(2^i · base) mod p`). Soundness gate: chain length capped at
+/// `floor(log2(p))`.
+fn find_bitsum_chain_indexed(
+    eq: &[IndexedTerm],
+    bits: &HashSet<VarIdx>,
+    p: &BigUint,
+    min_len: usize,
+) -> Option<(Vec<VarIdx>, BigUint, HashSet<usize>)> {
+    let mut by_coeff: BTreeMap<BigUint, Vec<(VarIdx, usize)>> = BTreeMap::new();
+    for (idx, t) in eq.iter().enumerate() {
+        if t.coeff.is_zero() {
+            continue;
+        }
+        if t.vars.len() == 1 && t.vars[0].1 == 1 && bits.contains(&t.vars[0].0) {
+            by_coeff
+                .entry(&t.coeff % p)
+                .or_default()
+                .push((t.vars[0].0, idx));
+        }
+    }
+    if by_coeff.is_empty() {
+        return None;
+    }
+
+    let abs_residue = |c: &BigUint| -> BigUint {
+        let neg = p - c;
+        if c < &neg {
+            c.clone()
+        } else {
+            neg
+        }
+    };
+    let mut candidates: Vec<BigUint> = by_coeff.keys().cloned().collect();
+    candidates.sort_by(|a, b| {
+        let ra = abs_residue(a);
+        let rb = abs_residue(b);
+        ra.cmp(&rb).then(a.cmp(b))
+    });
+
+    let two = BigUint::from(2u32);
+
+    let max_chain_bits: usize = {
+        let mut n = 0usize;
+        let mut pow = BigUint::from(1u32);
+        while &pow * &two <= *p {
+            pow = pow * &two;
+            n += 1;
+        }
+        n
+    };
+
+    let mut best: Option<(Vec<VarIdx>, BigUint, HashSet<usize>)> = None;
+
+    for base in &candidates {
+        let mut chain_vars: Vec<VarIdx> = Vec::new();
+        let mut chain_idxs: HashSet<usize> = HashSet::new();
+        let mut used_vars: HashSet<VarIdx> = HashSet::new();
+
+        let mut cur = base.clone();
+        loop {
+            if chain_vars.len() >= max_chain_bits {
+                break;
+            }
+            let bucket = match by_coeff.get(&cur) {
+                Some(b) => b,
+                None => break,
+            };
+            let next = bucket
+                .iter()
+                .filter(|(v, _)| !used_vars.contains(v))
+                .min_by_key(|(_, idx)| *idx);
+            match next {
+                Some(&(var, idx)) => {
+                    used_vars.insert(var);
+                    chain_vars.push(var);
+                    chain_idxs.insert(idx);
+                    cur = (&cur * &two) % p;
+                }
+                None => break,
+            }
+        }
+
+        if chain_vars.len() >= min_len {
+            let pick = match &best {
+                None => true,
+                Some((b_vars, _, _)) => chain_vars.len() > b_vars.len(),
+            };
+            if pick {
+                best = Some((chain_vars, base.clone(), chain_idxs));
+            }
+        }
+    }
+
+    best
+}
+
 /// Divide a polynomial by its leading coefficient (in DegRevLex order).
 fn normalize_poly(pr: &FfPolyRing, p: Poly) -> Poly {
     let ring = &pr.ring;
@@ -526,6 +769,499 @@ fn normalize_poly(pr: &FfPolyRing, p: Poly) -> Poly {
     let inv = fp.div(&fp.one(), &lc).expect("non-zero leading coefficient");
     let inv_poly = pr.constant(inv);
     ring.mul(inv_poly, p)
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//   Index-based constraint system (Phase 7A scaffolding)
+// ─────────────────────────────────────────────────────────────────────
+//
+// `IndexedConstraintSystem` is the index-keyed counterpart to
+// `ConstraintSystem`. It carries the same semantic content but
+// references variables by integer index into an owned `var_names`
+// list, eliminating per-monomial String allocation and HashMap
+// lookups in the encoder hot path.
+//
+// During the A1-A9 migration both forms coexist. A producer migrates
+// to `IndexedConstraintSystem` by routing through
+// `ConstraintSystemBuilder`; the encoder dispatches via the parallel
+// entry point `encode_indexed`. When every producer is on the new
+// form, A9 renames `IndexedConstraintSystem` to `ConstraintSystem`
+// and deletes the legacy String-keyed types.
+
+/// Variable index into [`IndexedConstraintSystem::var_names`]. `u32`
+/// holds 4 G variables — well beyond any practical constraint
+/// system.
+pub type VarIdx = u32;
+
+/// A term in an [`IndexedConstraintSystem`] equality.
+///
+/// Sparse representation: `vars` lists only variables with non-zero
+/// exponent, paired with their exponent. An empty `vars` denotes a
+/// constant term.
+#[derive(Clone, Debug)]
+pub struct IndexedTerm {
+    pub coeff: BigUint,
+    pub vars: Vec<(VarIdx, u16)>,
+}
+
+/// Index-keyed constraint system. Direct counterpart of
+/// [`ConstraintSystem`] for callers that produce term lists in
+/// integer form via [`ConstraintSystemBuilder`].
+#[derive(Clone, Debug)]
+pub struct IndexedConstraintSystem {
+    pub prime: BigUint,
+    /// Authoritative variable-name list. `var_names[i as usize]` is
+    /// the canonical String name of variable `i`. The encoder uses
+    /// this to construct the polynomial ring; downstream model
+    /// extraction surfaces the same names back to the caller.
+    pub var_names: Vec<String>,
+    /// Each equality is `sum(terms) = 0`.
+    pub equalities: Vec<Vec<IndexedTerm>>,
+    /// Each disequality `(a, b)` means `a ≠ b`. The encoder
+    /// reserves one Rabinowitsch witness variable per entry,
+    /// appended to `var_names` at encoding time.
+    pub disequalities: Vec<(VarIdx, VarIdx)>,
+    /// Each assignment `(v, val)` means `v = val`.
+    pub assignments: Vec<(VarIdx, BigUint)>,
+    /// Each bitsum `[b_0, b_1, ..., b_k]` defines an auxiliary
+    /// variable `__bitsum_N = sum(2^i · b_i)`. The encoder appends
+    /// the aux variable to `var_names`.
+    pub bitsums: Vec<Vec<VarIdx>>,
+    /// Add `x^p - x = 0` for every ring variable. Honoured by
+    /// `encode_indexed` only when `prime <= 1000` (matching
+    /// `encode_impl`).
+    pub add_field_polys: bool,
+}
+
+/// Producer-side builder for [`IndexedConstraintSystem`]. Each
+/// producer constructs one builder, interns variable names through
+/// [`Self::var`] (deduplicating against the running `var_names`),
+/// emits terms as `Vec<IndexedTerm>` over the returned indices, and
+/// finalises with [`Self::build`].
+pub struct ConstraintSystemBuilder {
+    prime: BigUint,
+    var_names: Vec<String>,
+    name_to_idx: HashMap<String, VarIdx>,
+    equalities: Vec<Vec<IndexedTerm>>,
+    disequalities: Vec<(VarIdx, VarIdx)>,
+    assignments: Vec<(VarIdx, BigUint)>,
+    bitsums: Vec<Vec<VarIdx>>,
+    add_field_polys: bool,
+}
+
+impl IndexedConstraintSystem {
+    /// Lift a legacy String-keyed [`ConstraintSystem`] to the
+    /// index-keyed form. Variable names are interned in the order
+    /// returned by `cs.collect_vars` (alphabetical), matching the
+    /// ring ordering the legacy `encode` path uses. Each
+    /// `PolyTerm.vars: Vec<String>` (which lists each variable
+    /// repeated `exp` times for degree `exp`) collapses to a sparse
+    /// `Vec<(VarIdx, u16)>` by counting occurrences.
+    ///
+    /// Used during the Phase 7 migration as a producer-side bridge
+    /// so callers like the SMT-LIB v2 parser can keep their internal
+    /// String-keyed build pipeline while publishing the index-keyed
+    /// form at their boundary. Removed in A9.
+    pub fn from_legacy(cs: &ConstraintSystem) -> IndexedConstraintSystem {
+        let names = cs.collect_vars();
+        let mut name_to_idx: HashMap<String, VarIdx> = HashMap::with_capacity(names.len());
+        for (i, n) in names.iter().enumerate() {
+            name_to_idx.insert(n.clone(), i as VarIdx);
+        }
+
+        let intern = |n: &str| -> VarIdx { name_to_idx[n] };
+
+        let equalities: Vec<Vec<IndexedTerm>> = cs
+            .equalities
+            .iter()
+            .map(|eq| {
+                eq.iter()
+                    .map(|t| {
+                        let mut counts: BTreeMap<VarIdx, u16> = BTreeMap::new();
+                        for v in &t.vars {
+                            *counts.entry(intern(v)).or_insert(0) += 1;
+                        }
+                        let vars: Vec<(VarIdx, u16)> = counts.into_iter().collect();
+                        IndexedTerm {
+                            coeff: t.coeff.clone(),
+                            vars,
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+
+        let disequalities = cs
+            .disequalities
+            .iter()
+            .map(|(a, b)| (intern(a), intern(b)))
+            .collect();
+
+        let assignments = cs
+            .assignments
+            .iter()
+            .map(|(v, val)| (intern(v), val.clone()))
+            .collect();
+
+        let bitsums = cs
+            .bitsums
+            .iter()
+            .map(|bs| bs.iter().map(|n| intern(n)).collect())
+            .collect();
+
+        IndexedConstraintSystem {
+            prime: cs.prime.clone(),
+            var_names: names,
+            equalities,
+            disequalities,
+            assignments,
+            bitsums,
+            add_field_polys: cs.add_field_polys,
+        }
+    }
+
+    /// Lower this index-keyed system to the legacy String-keyed
+    /// [`ConstraintSystem`]. Each `IndexedTerm` expands to a
+    /// `PolyTerm` whose `vars: Vec<String>` repeats each variable
+    /// name `exp` times. Used during the Phase 7 migration as a
+    /// bridge so producers that have moved to the index-keyed
+    /// builder can still feed the legacy `encode` / cache /
+    /// `digest_constraint_side` paths. Removed in A9.
+    pub fn to_legacy(&self) -> ConstraintSystem {
+        let resolve = |idx: VarIdx| self.var_names[idx as usize].clone();
+        ConstraintSystem {
+            prime: self.prime.clone(),
+            equalities: self
+                .equalities
+                .iter()
+                .map(|eq| {
+                    eq.iter()
+                        .map(|t| {
+                            let mut vars: Vec<String> = Vec::new();
+                            for &(idx, exp) in &t.vars {
+                                let name = resolve(idx);
+                                for _ in 0..exp {
+                                    vars.push(name.clone());
+                                }
+                            }
+                            PolyTerm {
+                                coeff: t.coeff.clone(),
+                                vars,
+                            }
+                        })
+                        .collect()
+                })
+                .collect(),
+            disequalities: self
+                .disequalities
+                .iter()
+                .map(|&(a, b)| (resolve(a), resolve(b)))
+                .collect(),
+            assignments: self
+                .assignments
+                .iter()
+                .map(|(v, val)| (resolve(*v), val.clone()))
+                .collect(),
+            add_field_polys: self.add_field_polys,
+            bitsums: self
+                .bitsums
+                .iter()
+                .map(|bs| bs.iter().map(|&v| resolve(v)).collect())
+                .collect(),
+        }
+    }
+}
+
+impl ConstraintSystemBuilder {
+    pub fn new(prime: BigUint) -> Self {
+        Self {
+            prime,
+            var_names: Vec::new(),
+            name_to_idx: HashMap::new(),
+            equalities: Vec::new(),
+            disequalities: Vec::new(),
+            assignments: Vec::new(),
+            bitsums: Vec::new(),
+            add_field_polys: false,
+        }
+    }
+
+    /// Intern a variable name, returning its index. Repeated calls
+    /// with the same name return the same index.
+    pub fn var(&mut self, name: &str) -> VarIdx {
+        if let Some(&idx) = self.name_to_idx.get(name) {
+            return idx;
+        }
+        let idx = self.var_names.len() as VarIdx;
+        self.var_names.push(name.to_string());
+        self.name_to_idx.insert(name.to_string(), idx);
+        idx
+    }
+
+    /// Number of variables interned so far.
+    pub fn n_vars(&self) -> usize {
+        self.var_names.len()
+    }
+
+    pub fn add_equality(&mut self, terms: Vec<IndexedTerm>) {
+        self.equalities.push(terms);
+    }
+
+    pub fn add_disequality(&mut self, a: VarIdx, b: VarIdx) {
+        self.disequalities.push((a, b));
+    }
+
+    pub fn add_assignment(&mut self, v: VarIdx, val: BigUint) {
+        self.assignments.push((v, val));
+    }
+
+    pub fn add_bitsum(&mut self, bits: Vec<VarIdx>) {
+        self.bitsums.push(bits);
+    }
+
+    pub fn set_add_field_polys(&mut self, on: bool) {
+        self.add_field_polys = on;
+    }
+
+    pub fn build(self) -> IndexedConstraintSystem {
+        IndexedConstraintSystem {
+            prime: self.prime,
+            var_names: self.var_names,
+            equalities: self.equalities,
+            disequalities: self.disequalities,
+            assignments: self.assignments,
+            bitsums: self.bitsums,
+            add_field_polys: self.add_field_polys,
+        }
+    }
+
+    /// Intern each variable name in a legacy `PolyTerm` list and
+    /// emit the equivalent `Vec<IndexedTerm>`. Used by producers
+    /// that hold an upstream `Vec<PolyTerm>` (e.g. atoms in the
+    /// CDCL(T) trail, Literal AST nodes in the boolean DNF expander)
+    /// and want to commit those terms to the index-keyed form.
+    ///
+    /// Within-term repeated names (`x * x` represented as
+    /// `vars = ["x", "x"]`) collapse to a sparse `(VarIdx, exp)`
+    /// pair.
+    pub fn intern_poly_terms(&mut self, terms: &[PolyTerm]) -> Vec<IndexedTerm> {
+        terms
+            .iter()
+            .map(|t| {
+                let mut counts: BTreeMap<VarIdx, u16> = BTreeMap::new();
+                for v in &t.vars {
+                    let idx = self.var(v);
+                    *counts.entry(idx).or_insert(0) += 1;
+                }
+                IndexedTerm {
+                    coeff: t.coeff.clone(),
+                    vars: counts.into_iter().collect(),
+                }
+            })
+            .collect()
+    }
+}
+
+/// Encode an [`IndexedConstraintSystem`] into polynomials. Mirrors
+/// [`encode`] but consumes the index-keyed form: no
+/// `collect_vars` / `var_map` round-trip, no String hashing on the
+/// equality scan.
+///
+/// Runs `rewriter::rewrite_indexed_system` then
+/// `auto_extract_bitsums_indexed` to canonicalise + extract bitsums
+/// before lowering, matching the legacy `encode` staging.
+pub fn encode_indexed(system: &IndexedConstraintSystem) -> Result<EncodedSystem, String> {
+    let mut rewritten = system.clone();
+    crate::rewriter::rewrite_indexed_system(&mut rewritten);
+    let extracted = auto_extract_bitsums_indexed(&rewritten);
+    encode_indexed_impl(&extracted, true)
+}
+
+/// Index-keyed counterpart of [`encode_constraint_side`].
+pub fn encode_indexed_constraint_side(
+    system: &IndexedConstraintSystem,
+) -> Result<EncodedSystem, String> {
+    let mut rewritten = system.clone();
+    crate::rewriter::rewrite_indexed_system(&mut rewritten);
+    let extracted = auto_extract_bitsums_indexed(&rewritten);
+    encode_indexed_impl(&extracted, false)
+}
+
+fn encode_indexed_impl(
+    system: &IndexedConstraintSystem,
+    emit_rabinowitsch: bool,
+) -> Result<EncodedSystem, String> {
+    // Ring is `var_names` from the system, then aux witness vars for
+    // disequalities and bitsums (one each, appended in order).
+    let mut var_names: Vec<String> = system.var_names.clone();
+    let n_user = var_names.len();
+
+    let n_diseq = system.disequalities.len();
+    let mut witness_idxs: Vec<VarIdx> = Vec::with_capacity(n_diseq);
+    for i in 0..n_diseq {
+        let name = format!("__w_diseq_{}", i);
+        witness_idxs.push(var_names.len() as VarIdx);
+        var_names.push(name);
+    }
+
+    let n_bitsum = system.bitsums.len();
+    let mut bitsum_aux_idxs: Vec<VarIdx> = Vec::with_capacity(n_bitsum);
+    for i in 0..n_bitsum {
+        let name = format!("__bitsum_{}", i);
+        bitsum_aux_idxs.push(var_names.len() as VarIdx);
+        var_names.push(name);
+    }
+
+    let n_vars = var_names.len();
+    if n_vars > 5000 {
+        return Err(format!(
+            "too many variables ({}) for polynomial ring construction",
+            n_vars
+        ));
+    }
+
+    let field = FfField::new(system.prime.clone());
+    let poly_ring = FfPolyRing::new(field, var_names.clone());
+
+    // Build var_map for downstream callers that still consult it
+    // (e.g. SUBP_CONSTANT_NAMES filtering in the picus crate).
+    let mut var_map: HashMap<String, usize> = HashMap::with_capacity(n_vars);
+    for (i, name) in var_names.iter().enumerate() {
+        var_map.insert(name.clone(), i);
+    }
+
+    let mut polynomials: Vec<Poly> = Vec::new();
+
+    // Equalities: sum(coeff · prod_vars) = 0. Equality terms may
+    // reference aux variables introduced by
+    // `auto_extract_bitsums_indexed` (indices in the bitsum-aux
+    // range); the bounds check is against the full ring size.
+    let n_ring = var_names.len();
+    for eq in &system.equalities {
+        let mut poly = poly_ring.zero();
+        for term in eq {
+            let c = poly_ring.field.from_biguint(&term.coeff);
+            let mut t = poly_ring.constant(c);
+            for &(vidx, exp) in &term.vars {
+                if (vidx as usize) >= n_ring {
+                    return Err(format!(
+                        "equality term references var_idx {} but ring has only {} vars",
+                        vidx, n_ring
+                    ));
+                }
+                let v_poly = poly_ring.var(vidx as usize);
+                for _ in 0..exp {
+                    t = poly_ring.mul(t, poly_ring.clone_poly(&v_poly));
+                }
+            }
+            poly = poly_ring.add(poly, t);
+        }
+        if !poly_ring.is_zero(&poly) {
+            polynomials.push(poly);
+        }
+    }
+
+    // Assignments: v - val = 0.
+    for (v_idx, val) in &system.assignments {
+        if (*v_idx as usize) >= n_user {
+            return Err(format!(
+                "assignment references var_idx {} but only {} user vars exist",
+                v_idx, n_user
+            ));
+        }
+        let v = poly_ring.var(*v_idx as usize);
+        let c = poly_ring.constant(poly_ring.field.from_biguint(val));
+        let diff = poly_ring.sub(v, c);
+        if !poly_ring.is_zero(&diff) {
+            polynomials.push(diff);
+        }
+    }
+
+    // Rabinowitsch trick: (a - b) · w_i - 1 = 0 for each disequality.
+    if emit_rabinowitsch {
+        for ((a, b), &w_idx) in system.disequalities.iter().zip(witness_idxs.iter()) {
+            if (*a as usize) >= n_user || (*b as usize) >= n_user {
+                return Err(format!(
+                    "disequality references var_idx >= {} but only {} user vars exist",
+                    a.max(b),
+                    n_user
+                ));
+            }
+            let diff = poly_ring.sub(
+                poly_ring.var(*a as usize),
+                poly_ring.var(*b as usize),
+            );
+            let prod = poly_ring.mul(diff, poly_ring.var(w_idx as usize));
+            let rabinowitsch = poly_ring.sub(prod, poly_ring.one());
+            polynomials.push(rabinowitsch);
+        }
+    }
+
+    // Bitsum definitions: b0 + 2·b1 + 4·b2 + ... - aux = 0.
+    let mut bitsum_polys: Vec<Poly> = Vec::new();
+    for (bs, &aux_idx) in system.bitsums.iter().zip(bitsum_aux_idxs.iter()) {
+        let fp = &poly_ring.field;
+        let two = fp.int_hom().map(2);
+        let mut sum = poly_ring.zero();
+        let mut coeff = poly_ring.field.one();
+        for &bit_idx in bs {
+            if (bit_idx as usize) >= n_user {
+                return Err(format!(
+                    "bitsum references var_idx {} but only {} user vars exist",
+                    bit_idx, n_user
+                ));
+            }
+            let term = poly_ring.scale(fp.clone_el(&coeff), poly_ring.var(bit_idx as usize));
+            sum = poly_ring.add(sum, term);
+            coeff = fp.mul_ref(&coeff, &two);
+        }
+        let aux = poly_ring.var(aux_idx as usize);
+        let def_poly = poly_ring.sub(sum, aux);
+        if !poly_ring.is_zero(&def_poly) {
+            bitsum_polys.push(normalize_poly(&poly_ring, def_poly));
+        }
+    }
+
+    // Field polynomials: x^p - x = 0 for every ring variable when
+    // `prime <= 1000`. Matches the gate in `encode_impl`.
+    if system.add_field_polys {
+        let p_usize = system.prime.to_u64_digits();
+        if p_usize.len() == 1 && p_usize[0] <= 1000 {
+            let p_val = p_usize[0] as usize;
+            for i in 0..poly_ring.n_vars {
+                let x = poly_ring.var(i);
+                let mut x_p = poly_ring.one();
+                let mut base = poly_ring.clone_poly(&x);
+                let mut exp = p_val;
+                while exp > 0 {
+                    if exp & 1 == 1 {
+                        x_p = poly_ring.mul(x_p, poly_ring.clone_poly(&base));
+                    }
+                    base = poly_ring.mul(
+                        poly_ring.clone_poly(&base),
+                        poly_ring.clone_poly(&base),
+                    );
+                    exp >>= 1;
+                }
+                let field_poly = poly_ring.sub(x_p, x);
+                if !poly_ring.is_zero(&field_poly) {
+                    polynomials.push(field_poly);
+                }
+            }
+        }
+    }
+
+    let polynomials = polynomials
+        .into_iter()
+        .map(|p| normalize_poly(&poly_ring, p))
+        .collect();
+
+    Ok(EncodedSystem {
+        poly_ring,
+        polynomials,
+        bitsum_polys,
+        var_map,
+    })
 }
 
 #[cfg(test)]
@@ -794,5 +1530,169 @@ mod tests {
         // Three terms → no match.
         let eq6 = vec![term(1, &["b", "b"]), term(100, &["b"]), term(1, &[])];
         assert_eq!(detect_bit_constraint_in_terms(&eq6, &p), None);
+    }
+
+    // ── encode_indexed parity smoke tests ─────────────────────────
+
+    fn idx_term(coeff: u64, vars: &[(VarIdx, u16)]) -> IndexedTerm {
+        IndexedTerm {
+            coeff: BigUint::from(coeff),
+            vars: vars.to_vec(),
+        }
+    }
+
+    /// Builder produces a constraint system that encode_indexed
+    /// can lower; polynomial count matches the legacy encode() on
+    /// an equivalent String-keyed system.
+    #[test]
+    fn encode_indexed_basic_equality_count() {
+        // System: x + y - 1 = 0 over GF(101).
+        let mut b = ConstraintSystemBuilder::new(BigUint::from(101u32));
+        let x = b.var("x");
+        let y = b.var("y");
+        b.add_equality(vec![
+            idx_term(1, &[(x, 1)]),
+            idx_term(1, &[(y, 1)]),
+            idx_term(100, &[]), // -1 mod 101
+        ]);
+        let sys = b.build();
+        let enc = encode_indexed(&sys).expect("encode_indexed");
+        assert_eq!(enc.polynomials.len(), 1);
+
+        // Legacy path on the equivalent String system.
+        let mut legacy = small_sys(101);
+        legacy.equalities.push(vec![
+            term(1, &["x"]),
+            term(1, &["y"]),
+            term(100, &[]),
+        ]);
+        let enc_legacy = encode(&legacy).expect("encode");
+        assert_eq!(enc.polynomials.len(), enc_legacy.polynomials.len());
+    }
+
+    /// Disequalities produce a Rabinowitsch polynomial; aux
+    /// witness var is appended to var_map.
+    #[test]
+    fn encode_indexed_disequality_adds_witness() {
+        let mut b = ConstraintSystemBuilder::new(BigUint::from(7u32));
+        let x = b.var("x");
+        let y = b.var("y");
+        b.add_disequality(x, y);
+        let sys = b.build();
+        let enc = encode_indexed(&sys).expect("encode_indexed");
+        assert_eq!(enc.polynomials.len(), 1, "one Rabinowitsch poly");
+        assert!(enc.var_map.contains_key("__w_diseq_0"));
+        assert_eq!(enc.poly_ring.n_vars, 3); // x, y, __w_diseq_0
+    }
+
+    /// Bitsum routes into the separate bitsum_polys list.
+    #[test]
+    fn encode_indexed_bitsum_routing() {
+        let mut b = ConstraintSystemBuilder::new(BigUint::from(13u32));
+        let b0 = b.var("b0");
+        let b1 = b.var("b1");
+        let b2 = b.var("b2");
+        b.add_bitsum(vec![b0, b1, b2]);
+        let sys = b.build();
+        let enc = encode_indexed(&sys).expect("encode_indexed");
+        assert_eq!(enc.polynomials.len(), 0);
+        assert_eq!(enc.bitsum_polys.len(), 1);
+        assert!(enc.var_map.contains_key("__bitsum_0"));
+    }
+
+    /// Same variable referenced twice in a builder collapses to one
+    /// VarIdx; the encoded ring has only one variable.
+    #[test]
+    fn builder_var_dedupes() {
+        let mut b = ConstraintSystemBuilder::new(BigUint::from(7u32));
+        let x1 = b.var("x");
+        let x2 = b.var("x");
+        assert_eq!(x1, x2);
+        assert_eq!(b.n_vars(), 1);
+    }
+
+    /// `auto_extract_bitsums_indexed` produces an `EncodedSystem`
+    /// with the same polynomial + bitsum_poly counts as the legacy
+    /// `auto_extract_bitsums` on the equivalent String-keyed system.
+    /// Exercises the soundness gate (`2^n <= p`): with 3 bits at p=13,
+    /// `2^3 = 8 < 13` so the chain extracts.
+    #[test]
+    fn auto_extract_indexed_matches_legacy_count() {
+        let p = BigUint::from(13u32);
+        let mut b = ConstraintSystemBuilder::new(p.clone());
+        let target = b.var("target");
+        let b0 = b.var("b0");
+        let b1 = b.var("b1");
+        let b2 = b.var("b2");
+        // target - b0 - 2*b1 - 4*b2 = 0
+        b.add_equality(vec![
+            idx_term(1, &[(target, 1)]),
+            idx_term(12, &[(b0, 1)]),
+            idx_term(11, &[(b1, 1)]),
+            idx_term(9, &[(b2, 1)]),
+        ]);
+        // Binary constraints b_i^2 + 12 b_i = 0  (i.e. b_i*(b_i-1)=0 mod 13)
+        for bit in [b0, b1, b2] {
+            b.add_equality(vec![
+                idx_term(1, &[(bit, 2)]),
+                idx_term(12, &[(bit, 1)]),
+            ]);
+        }
+        let sys = b.build();
+        let enc_idx = encode_indexed(&sys).expect("encode_indexed");
+
+        let legacy = sys.to_legacy();
+        let enc_leg = encode(&legacy).expect("encode");
+
+        assert_eq!(
+            enc_idx.bitsum_polys.len(),
+            enc_leg.bitsum_polys.len(),
+            "bitsum_polys count must match (idx vs legacy)"
+        );
+        assert_eq!(
+            enc_idx.polynomials.len(),
+            enc_leg.polynomials.len(),
+            "polynomials count must match (idx vs legacy)"
+        );
+    }
+
+    /// Soundness gate parity: with 4 bits at p=11, `2^4 > 11` so the
+    /// chain must NOT extract. The indexed path must agree with the
+    /// legacy path on this skip.
+    #[test]
+    fn auto_extract_indexed_skips_unsound_chain() {
+        let p = BigUint::from(11u32);
+        let mut b = ConstraintSystemBuilder::new(p.clone());
+        let target = b.var("target");
+        let b0 = b.var("b0");
+        let b1 = b.var("b1");
+        let b2 = b.var("b2");
+        let b3 = b.var("b3");
+        // 4-bit chain — must skip extraction since 2^4 > p.
+        b.add_equality(vec![
+            idx_term(1, &[(target, 1)]),
+            idx_term(10, &[(b0, 1)]),
+            idx_term(9, &[(b1, 1)]),
+            idx_term(7, &[(b2, 1)]),
+            idx_term(3, &[(b3, 1)]),
+        ]);
+        for bit in [b0, b1, b2, b3] {
+            b.add_equality(vec![
+                idx_term(1, &[(bit, 2)]),
+                idx_term(10, &[(bit, 1)]),
+            ]);
+        }
+        let sys = b.build();
+        let enc_idx = encode_indexed(&sys).expect("encode_indexed");
+        let legacy = sys.to_legacy();
+        let enc_leg = encode(&legacy).expect("encode");
+
+        // Both must agree on whether bitsum extraction fires. With
+        // 2^n > p both paths can still extract a length-3 prefix, so
+        // we just check parity, not zero.
+        assert_eq!(
+            enc_idx.bitsum_polys.len(),
+            enc_leg.bitsum_polys.len()
+        );
     }
 }

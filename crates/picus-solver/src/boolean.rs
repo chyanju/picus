@@ -19,7 +19,9 @@ use num_bigint::BigUint;
 use num_traits::Zero;
 
 use crate::core::{solve_encoded_with_cancel, SolveOutcome};
-use crate::encoder::{encode, ConstraintSystem, PolyTerm};
+use crate::encoder::{
+    encode_indexed, ConstraintSystemBuilder, IndexedConstraintSystem, IndexedTerm, PolyTerm,
+};
 use crate::timeout::CancelToken;
 
 /// A literal over FF terms: an equality or a disequality.
@@ -190,72 +192,74 @@ impl BooleanQuery {
     }
 
     /// Translate each DNF disjunct (a conjunction of literals) into a
-    /// stand-alone [`ConstraintSystem`]. `__zero` is pinned to the
-    /// field's zero for any disjunct that contains a disequality.
-    pub fn to_disjunct_systems(&self) -> Vec<ConstraintSystem> {
+    /// stand-alone [`IndexedConstraintSystem`] via the index-keyed
+    /// `ConstraintSystemBuilder`. `__zero` is interned (and pinned
+    /// to the field's zero) the first time a disjunct introduces a
+    /// disequality.
+    pub fn to_disjunct_systems(&self) -> Vec<IndexedConstraintSystem> {
         let mut diseq_seq: usize = 0;
         self.dnf()
             .iter()
             .map(|disjunct| {
-                let mut equalities: Vec<Vec<PolyTerm>> = Vec::new();
-                let mut disequalities: Vec<(String, String)> = Vec::new();
-                let mut needs_zero = false;
+                let mut builder = ConstraintSystemBuilder::new(self.prime.clone());
+                let mut zero_idx: Option<u32> = None;
                 for lit in disjunct {
                     match lit {
                         Literal::Eq(a, b) => {
-                            let mut poly: Vec<PolyTerm> = a.clone();
+                            // Build (a - b) as a single equality.
+                            let mut combined: Vec<PolyTerm> = a.clone();
                             for t in b {
                                 let neg_coeff = if t.coeff.is_zero() {
                                     BigUint::zero()
                                 } else {
                                     &self.prime - &t.coeff
                                 };
-                                poly.push(PolyTerm {
+                                combined.push(PolyTerm {
                                     coeff: neg_coeff,
                                     vars: t.vars.clone(),
                                 });
                             }
-                            equalities.push(poly);
+                            let terms = builder.intern_poly_terms(&combined);
+                            builder.add_equality(terms);
                         }
                         Literal::Neq(a, b) => {
                             let d_name = format!("__diseq_d_{}", diseq_seq);
                             diseq_seq += 1;
-                            let mut def: Vec<PolyTerm> = vec![PolyTerm {
-                                coeff: BigUint::from(1u32),
-                                vars: vec![d_name.clone()],
-                            }];
+                            let d_idx = builder.var(&d_name);
+                            let zero = match zero_idx {
+                                Some(z) => z,
+                                None => {
+                                    let z = builder.var("__zero");
+                                    builder.add_assignment(z, BigUint::zero());
+                                    zero_idx = Some(z);
+                                    z
+                                }
+                            };
+                            // def = d - (a - b) = d - a + b
+                            let mut neg_a: Vec<PolyTerm> = Vec::with_capacity(a.len());
                             for t in a {
                                 let neg_coeff = if t.coeff.is_zero() {
                                     BigUint::zero()
                                 } else {
                                     &self.prime - &t.coeff
                                 };
-                                def.push(PolyTerm {
+                                neg_a.push(PolyTerm {
                                     coeff: neg_coeff,
                                     vars: t.vars.clone(),
                                 });
                             }
-                            def.extend(b.iter().cloned());
-                            equalities.push(def);
-                            disequalities.push((d_name, "__zero".to_string()));
-                            needs_zero = true;
+                            let mut def: Vec<IndexedTerm> = vec![IndexedTerm {
+                                coeff: BigUint::from(1u32),
+                                vars: vec![(d_idx, 1)],
+                            }];
+                            def.extend(builder.intern_poly_terms(&neg_a));
+                            def.extend(builder.intern_poly_terms(b));
+                            builder.add_equality(def);
+                            builder.add_disequality(d_idx, zero);
                         }
                     }
                 }
-                let mut assignments: Vec<(String, BigUint)> = Vec::new();
-                if needs_zero {
-                    assignments.push(("__zero".into(), BigUint::zero()));
-                }
-                let mut sys = ConstraintSystem {
-                    prime: self.prime.clone(),
-                    equalities,
-                    disequalities,
-                    assignments,
-                    add_field_polys: false,
-                    bitsums: vec![],
-                };
-                crate::rewriter::rewrite_system(&mut sys);
-                sys
+                builder.build()
             })
             .collect()
     }
@@ -428,7 +432,7 @@ pub fn solve_boolean_query_dnf(query: &BooleanQuery, cancel: &CancelToken) -> So
         if cancel.is_cancelled() {
             return SolveOutcome::Unknown;
         }
-        let encoded = match encode(sys) {
+        let encoded = match encode_indexed(sys) {
             Ok(e) => e,
             Err(_) => {
                 saw_unknown = true;

@@ -647,6 +647,56 @@ pub fn digest_constraint_side(cs: &ConstraintSystem) -> u64 {
     h.finish()
 }
 
+/// Index-keyed counterpart of [`digest_constraint_side`]. Hashes
+/// `u32` variable indices and `BigUint` coefficients directly,
+/// skipping the per-variable String hashing the legacy form
+/// performs.
+///
+/// The output value differs from `digest_constraint_side(&cs.to_legacy())`
+/// because the input shape differs (indices vs repeated names), but
+/// is self-consistent: two `IndexedConstraintSystem` values that
+/// agree on `(prime, var_names, equalities, disequalities,
+/// assignments, bitsums, add_field_polys)` produce the same digest.
+pub fn digest_indexed_constraint_side(cs: &crate::encoder::IndexedConstraintSystem) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    cs.prime.hash(&mut h);
+    cs.add_field_polys.hash(&mut h);
+    // `var_names` is part of the system's identity for caching:
+    // two systems with identical equalities but different name
+    // strings must be treated as distinct (downstream consumers
+    // surface names to users).
+    cs.var_names.len().hash(&mut h);
+    for n in &cs.var_names {
+        n.hash(&mut h);
+    }
+    cs.bitsums.len().hash(&mut h);
+    for bs in &cs.bitsums {
+        bs.len().hash(&mut h);
+        for v in bs {
+            v.hash(&mut h);
+        }
+    }
+    cs.assignments.len().hash(&mut h);
+    for (v, val) in &cs.assignments {
+        v.hash(&mut h);
+        val.hash(&mut h);
+    }
+    cs.equalities.len().hash(&mut h);
+    for eq in &cs.equalities {
+        eq.len().hash(&mut h);
+        for t in eq {
+            t.coeff.hash(&mut h);
+            t.vars.len().hash(&mut h);
+            for &(idx, exp) in &t.vars {
+                idx.hash(&mut h);
+                exp.hash(&mut h);
+            }
+        }
+    }
+    h.finish()
+}
+
 #[allow(dead_code)]
 fn _unused() -> BigUint {
     BigUint::from(0u32)

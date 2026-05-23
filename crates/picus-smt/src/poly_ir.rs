@@ -25,8 +25,12 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use num_bigint::BigUint;
+use num_traits::Zero;
 use picus_r1cs::field_reduce;
 use picus_r1cs::grammar::{ConstraintBlock, R1csFile};
+use picus_solver::encoder::{
+    encode_indexed, ConstraintSystemBuilder, EncodedSystem, IndexedConstraintSystem, IndexedTerm,
+};
 use picus_solver::field::FfField;
 use picus_solver::poly::{FfPolyRing, Poly};
 use thiserror::Error;
@@ -59,6 +63,31 @@ pub struct PolyIR {
     /// Wire whose uniqueness we are testing this round; SAT means a
     /// witness pair exists where `x_target ≠ y_target`.
     pub target_signal: usize,
+
+    // ── General-purpose GB query fields (Phase 7B1) ─────────────────
+    //
+    // PolyIR is the unified GB query IR going forward; the fields
+    // below mirror what `IndexedConstraintSystem` carries, so each of
+    // the four producers (R1CS lowering, SMT2 parser, boolean DNF,
+    // CDCL(T) ff_theory) can fully describe its query without an
+    // intermediate `ConstraintSystem`. The R1CS lowering populates
+    // `disequalities` with a single entry derived from
+    // `target_signal` (and rebuilds it on `set_target`); other
+    // producers populate these freely.
+    /// Disequality witness sites: each `(a_idx, b_idx)` pair becomes
+    /// a Rabinowitsch polynomial `(x_a - x_b) · w_i - 1 = 0` at
+    /// encoding time. Indices are into `ring.var_names()`.
+    pub disequalities: Vec<(usize, usize)>,
+    /// Variable assignments: `(idx, val)` emits `x_idx - val = 0`.
+    pub assignments: Vec<(usize, BigUint)>,
+    /// Bitsum chain declarations: each `[b_0, ..., b_{k-1}]` defines
+    /// an auxiliary `__bitsum_N = sum(2^i · x_{b_i})`, routed into
+    /// `bitsum_polys` (basis-0 only for split-GB).
+    pub bitsums: Vec<Vec<usize>>,
+    /// Append `x^p - x = 0` field polynomials for every ring
+    /// variable when `prime <= 1000` (the encoder still gates on the
+    /// prime size; this flag just opts in).
+    pub add_field_polys: bool,
 }
 
 impl PolyIR {
@@ -126,12 +155,14 @@ impl PolyIR {
         }
     }
 
-    /// Set the current uniqueness target. Does not mutate the
-    /// constraint set; backends consume `target_signal` directly when
-    /// emitting the closing disequality.
+    /// Set the current uniqueness target. Updates `target_signal`
+    /// and rebuilds `disequalities` to point at the new target's
+    /// `(x, y)` pair. The constraint set (equalities / disjunctions
+    /// / assignments / bitsums) is unaffected.
     pub fn set_target(&mut self, w: usize) {
         debug_assert!(w < self.n_wires);
         self.target_signal = w;
+        self.disequalities = vec![(self.orig_var(w), self.alt_var(w))];
     }
 
     /// Iterate every term of `poly` as `(coeff, monomial_vars)`, where
@@ -161,6 +192,56 @@ impl PolyIR {
             }
             (coeff, vars)
         })
+    }
+
+    /// Lower this `PolyIR` to an [`IndexedConstraintSystem`] via the
+    /// `ConstraintSystemBuilder`. Variable names are interned in
+    /// `ring.var_names()` order so builder indices match ring
+    /// indices; each `Poly` in `self.equalities` yields a
+    /// `Vec<IndexedTerm>` via [`Self::poly_terms_idx`];
+    /// `disequalities`, `assignments`, `bitsums`, and
+    /// `add_field_polys` propagate as-is.
+    pub fn to_indexed_constraint_system(&self) -> IndexedConstraintSystem {
+        let prime = self.ring.field.prime().clone();
+        let mut builder = ConstraintSystemBuilder::new(prime);
+        for name in self.ring.ring.var_names() {
+            builder.var(name);
+        }
+        for poly in &self.equalities {
+            let terms: Vec<IndexedTerm> = self
+                .poly_terms_idx(poly)
+                .filter(|(coeff, _)| !coeff.is_zero())
+                .map(|(coeff, vars)| IndexedTerm {
+                    coeff,
+                    vars: vars.into_iter().map(|(v, e)| (v as u32, e)).collect(),
+                })
+                .collect();
+            if !terms.is_empty() {
+                builder.add_equality(terms);
+            }
+        }
+        for &(a, b) in &self.disequalities {
+            builder.add_disequality(a as u32, b as u32);
+        }
+        for (v, val) in &self.assignments {
+            builder.add_assignment(*v as u32, val.clone());
+        }
+        for chain in &self.bitsums {
+            let bits: Vec<u32> = chain.iter().map(|&v| v as u32).collect();
+            builder.add_bitsum(bits);
+        }
+        builder.set_add_field_polys(self.add_field_polys);
+        builder.build()
+    }
+
+    /// Encode this `PolyIR` into an [`EncodedSystem`] ready for the
+    /// GB engine. Internally builds an `IndexedConstraintSystem` via
+    /// [`Self::to_indexed_constraint_system`] and routes through
+    /// [`picus_solver::encoder::encode_indexed`] (which runs
+    /// `rewriter::rewrite_indexed_system` and
+    /// `auto_extract_bitsums_indexed`).
+    pub fn encode(&self) -> Result<EncodedSystem, String> {
+        encode_indexed(&self.to_indexed_constraint_system())
     }
 
     /// Iterate every term of `poly` as `(coeff, vars_with_exp)` where
@@ -250,6 +331,16 @@ pub fn r1cs_to_poly_ir(
     // explicit `x_i - y_i = 0` equality is required: `y_i` for input
     // wires is simply never referenced.
 
+    // R1CS lowering populates the general-purpose GB query fields
+    // for the uniqueness query: a single disequality at the target
+    // signal, no assignments / bitsums, field polys enabled iff the
+    // prime is small (matches the encoder's gate).
+    let target_x_idx = target_signal;
+    let target_y_idx = n_wires + target_signal;
+    let disequalities = vec![(target_x_idx, target_y_idx)];
+    let small_prime_threshold = BigUint::from(1000u32);
+    let add_field_polys = prime <= &small_prime_threshold;
+
     Ok(PolyIR {
         ring,
         n_wires,
@@ -258,6 +349,10 @@ pub fn r1cs_to_poly_ir(
         disjunctions: Vec::new(),
         known_signals: known_signals.clone(),
         target_signal,
+        disequalities,
+        assignments: Vec::new(),
+        bitsums: Vec::new(),
+        add_field_polys,
     })
 }
 

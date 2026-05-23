@@ -220,8 +220,15 @@ R1CS-to-PolyIR lowering and solver-backend trait.
 - **`poly_ir.rs`** — `PolyIR` bundles a polynomial ring over GF(p)
   with the constraint system extracted from a uniqueness query: a
   flat `Vec<Poly>` of equality constraints, an optional disjunction
-  list, and metadata (`input_indices`, `known_signals`,
-  `target_signal`).
+  list, R1CS-specific metadata (`input_indices`, `known_signals`,
+  `target_signal`), and the four general-purpose GB-query fields
+  (`disequalities`, `assignments`, `bitsums`, `add_field_polys`)
+  that let the encoder lower a `PolyIR` to an `EncodedSystem`
+  without a separate `ConstraintSystem` intermediate.
+
+  `PolyIR::to_indexed_constraint_system` and `PolyIR::encode` give
+  callers a one-call path to the encoder; the `native_ff` backend's
+  stateless path goes through `ir.encode()` directly.
 
   Variable layout: for an R1CS with `n_wires` wires, the ring carries
   `2 * n_wires` variables. Variable index `i` (for `i < n_wires`) is
