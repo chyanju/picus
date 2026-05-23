@@ -9,18 +9,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 Phase 7 — index-keyed encoder hot path and PolyIR-direct encoding.
 
 The encoder gains a fully index-keyed parallel pipeline; every
-producer publishes the index-keyed form at its public boundary; the
-`native_ff` backend's stateless solve path lowers `PolyIR` to
-`EncodedSystem` in a single `ir.encode()` call without
-materialising a `String`-keyed `ConstraintSystem`. The legacy
-String-keyed type family is retained internally for now —
-three of the four producers (`smt2::parse`, `boolean::to_disjunct_systems`,
-`cdclt::ff_theory`) still build their term lists with `PolyTerm`
-and convert at the boundary, and the `native_ff` cache + `dump_smt`
-formatter still key off the legacy `ConstraintSystem` digest.
-Phase 8 will rewrite those producer-internal builders to construct
-`PolyIR` / `IndexedConstraintSystem` natively and delete the
-legacy types.
+producer publishes the index-keyed form at its public boundary AND
+builds it internally via `ConstraintSystemBuilder` (no transient
+legacy `ConstraintSystem` struct). The `native_ff` backend's
+stateless solve path lowers `PolyIR` to `EncodedSystem` in a
+single `ir.encode()` call without materialising a `String`-keyed
+`ConstraintSystem`.
+
+The legacy String-keyed type family persists for ONE remaining
+consumer: the `native_ff` `IncrementalSolverContext` cache (which
+still keys on `digest_constraint_side`) and `dump_smt` formatter.
+A cache migration was attempted in Phase 7 but reverted: the
+GB engine's monomial ordering is sensitive to the polynomial
+ring's variable layout in ways the straightforward port broke
+on the PLDI smoke suite. The deletion of legacy
+`ConstraintSystem` / `PolyTerm` / legacy `encode` / `rewriter` /
+`digest` variants is deferred to Phase 8 along with the cache +
+dump_smt migration.
 
 ### Added
 
@@ -83,17 +88,28 @@ legacy types.
 ### Changed
 
 - Every public GB-query producer now publishes
-  `IndexedConstraintSystem`:
+  `IndexedConstraintSystem` AND builds it internally via the
+  index-keyed `ConstraintSystemBuilder`:
   * `smt2::parse` returns `Result<IndexedConstraintSystem,
-    ParseError>` (legacy internal pipeline retained via
-    `from_legacy` bridge);
+    ParseError>`. The recursive `build_poly` still returns
+    `Vec<PolyTerm>` (a natural fit for SMT-LIB AST recursion);
+    `parse()` interns those term lists through the builder at
+    its boundary via `intern_poly_terms`.
   * `BooleanQuery::to_disjunct_systems` returns
-    `Vec<IndexedConstraintSystem>`;
-  * `cdclt::ff_theory::check_full_with_mapping` lifts its
-    trail-built `ConstraintSystem` through `from_legacy` /
-    `to_legacy` for type consistency;
-  * `NativeFfBackend::solve` builds the index-keyed form first
-    and lowers to legacy only for the cache path.
+    `Vec<IndexedConstraintSystem>`, built per disjunct through a
+    fresh `ConstraintSystemBuilder`.
+  * `cdclt::ff_theory::check_full_with_mapping` walks the SAT
+    trail through `ConstraintSystemBuilder`. The
+    `__diseq_d_N` / `__zero` synthetic vars are interned through
+    the builder; the legacy `ConstraintSystem` round-trip that
+    landed in phase 7A5 is removed.
+  * `NativeFfBackend::solve` lowers `PolyIR` through
+    `to_indexed_constraint_system`, uses `digest_indexed_constraint_side`
+    for the stats path, and the stateless branch
+    (`cache_enabled = false`) calls `ir.encode()` directly.
+    The cache branch still converts to legacy `ConstraintSystem`
+    via `to_legacy` because the cache itself has not yet
+    migrated.
 - `picus-solver::encoder::encode_indexed` /
   `encode_indexed_constraint_side` route through
   `rewrite_indexed_system` and `auto_extract_bitsums_indexed`
@@ -112,20 +128,42 @@ legacy types.
   pipeline (hot path vs producer-internal scratch) and points to
   Phase 8 for the final unification.
 
+### Added
+
+- `ConstraintSystemBuilder::intern_poly_terms(&[PolyTerm])` —
+  helper that takes a transient `Vec<PolyTerm>` (e.g. the
+  `Vec<PolyTerm>` produced by `cdclt::AtomKey::to_poly_terms`,
+  by `smt2::build_poly`, or attached to a boolean `Literal::Eq` /
+  `Neq`) and emits the equivalent `Vec<IndexedTerm>`, collapsing
+  within-term repeated names (`vars = ["x", "x"]`) into a sparse
+  `(VarIdx, 2)` exponent pair. Used by `smt2::parse`,
+  `BooleanQuery::to_disjunct_systems`, and
+  `cdclt::ff_theory::check_full_with_mapping` to commit their
+  internal term lists to the index-keyed form at the encoder
+  boundary.
+
 ### Deferred to Phase 8
 
-- Rewriting the three producer internals (`smt2::parse`,
-  `boolean::to_disjunct_systems`, `cdclt::ff_theory`) to build
-  `PolyIR` / `IndexedConstraintSystem` directly via the
-  `ConstraintSystemBuilder` — eliminating their dependency on
-  the legacy String-keyed `ConstraintSystem` / `PolyTerm`.
 - Migrating the `NativeFfBackend` cache (`IncrementalSolverContext`)
-  and `dump_smt` formatter to the index-keyed form.
-- Renaming `IndexedConstraintSystem` → `ConstraintSystem` and
-  `IndexedTerm` → `PolyTerm` (legacy types take the
-  `Legacy*` prefix or are deleted entirely).
-- Deleting `to_legacy` / `from_legacy` bridges once no caller
-  uses the legacy form.
+  and `dump_smt` text formatter to the index-keyed form.
+  Phase 7 attempted this; the migration is signature-mechanical
+  but the GB engine's DegRevLex monomial ordering is sensitive
+  to the polynomial ring's variable layout in ways the
+  straightforward port broke on the PLDI 17-fixture smoke. The
+  in-progress encoder sort fix preserved the legacy
+  alphabetical-user-var layout but still produced timeouts; the
+  attempt was reverted and needs a closer look at the cache's
+  split-GB seed path (notably how `solve_with_cached` matches
+  query disequalities against cached variable indices) before a
+  second try.
+- Deleting the legacy `ConstraintSystem`, `PolyTerm`, `encode`,
+  `encode_constraint_side`, `encode_no_auto_bitsum`,
+  `rewriter::rewrite_system`, `normalize_term_list`,
+  `digest_constraint_side`, and the `to_legacy` / `from_legacy`
+  bridges. Blocked on the cache migration above.
+- Renaming `IndexedConstraintSystem` → `ConstraintSystem`,
+  `IndexedTerm` → `PolyTerm`, `encode_indexed` → `encode`, etc.
+  Best done atomically with the legacy deletion.
 
 ### Tests
 
