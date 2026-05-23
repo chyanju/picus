@@ -47,11 +47,11 @@ impl NativeFfBackend {
 }
 
 /// Thin wrapper around the cache module's
-/// [`picus_solver::incremental_context::digest_constraint_side`]. The
-/// cache itself uses the same function for its hit/miss decisions, so
-/// the digests agree.
-fn digest_constraint_side(cs: &ConstraintSystem) -> u64 {
-    picus_solver::incremental_context::digest_constraint_side(cs)
+/// `digest_indexed_constraint_side`. Used for the stats path's
+/// `last_cs_digest` tracking; the cache itself still keys on the
+/// legacy String-keyed digest until A9 unifies the two paths.
+fn digest_native_constraint_side(ics: &IndexedConstraintSystem) -> u64 {
+    picus_solver::incremental_context::digest_indexed_constraint_side(ics)
 }
 
 /// Lower a `PolyIR` to an [`IndexedConstraintSystem`] via the
@@ -134,10 +134,11 @@ impl SolverBackend for NativeFfBackend {
         if cancel.is_cancelled() {
             return Ok(SolverResult::Unknown(UnknownReason::Timeout));
         }
-        let cs = ir_to_constraint_system(ir);
+        let indexed = ir_to_indexed_constraint_system(ir);
+        let cs = indexed.to_legacy();
         let stats_on = picus_solver::profile::gb_stats_enabled();
         let cs_digest = if stats_on {
-            Some(digest_constraint_side(&cs))
+            Some(digest_native_constraint_side(&indexed))
         } else {
             None
         };
