@@ -92,6 +92,22 @@ impl SparsePolynomial {
         self.terms.iter().map(|(m, c)| (m, c))
     }
 
+    /// Variables that appear (nonzero exponent) in any term, ascending by
+    /// index, paired with their max exponent. Sparse-native (O(nnz)); no
+    /// dense materialisation.
+    pub fn appearing_variables(&self) -> Vec<(usize, u16)> {
+        let mut max_deg: std::collections::BTreeMap<usize, u16> = std::collections::BTreeMap::new();
+        for (m, _) in &self.terms {
+            m.for_each_nonzero(|v, e| {
+                let slot = max_deg.entry(v).or_insert(0);
+                if e > *slot {
+                    *slot = e;
+                }
+            });
+        }
+        max_deg.into_iter().collect()
+    }
+
     /// Content fingerprint for incremental-GB caching (matches the role
     /// of `DensePoly::content_hash`; need not agree across arms since a
     /// run uses a single representation).
