@@ -128,6 +128,21 @@ impl SparsePolynomial {
         self.terms.get(idx).map(|(m, c)| (m, c))
     }
 
+    /// The backing term list (descending ring order, nonzero coeffs).
+    /// For the sparse geobucket: seed the subject and read divisor tails.
+    pub(crate) fn terms_ref(&self) -> &[(SparseMonomial, FieldElem)] {
+        &self.terms
+    }
+
+    /// Build directly from a term list that is already in canonical form
+    /// (sorted descending by the ring order, every coeff nonzero, no
+    /// duplicate monomials) — e.g. the descending stream of irreducible
+    /// terms the geobucket reducer collects. Skips the `from_terms`
+    /// sort/combine pass.
+    pub(crate) fn from_sorted_terms(terms: Vec<(SparseMonomial, FieldElem)>) -> Self {
+        SparsePolynomial { terms }
+    }
+
     pub fn negate(&self, ring: &PolyRing) -> Self {
         SparsePolynomial {
             terms: self.terms.iter().map(|(m, c)| (m.clone(), ring.field.neg(c))).collect(),
@@ -224,16 +239,28 @@ impl SparsePolynomial {
         acc
     }
 
-    /// Normal form of `self` modulo `divisors` (multivariate division).
-    ///
-    /// For each leading term, the first divisor whose leading monomial
-    /// divides it cancels that term (subtract `(lt/d_lt) · divisor`);
-    /// a leading term divisible by none is irreducible and moves to the
-    /// result. Divisibility and the quotient monomial come straight from
-    /// [`MonomialRepr`] (no dense divmask). The dense
-    /// `DensePoly::reduce_by_refs_naive` is the differential oracle for
-    /// this (same divisor order ⇒ identical normal form).
+    /// Normal form of `self` modulo `divisors` (multivariate division),
+    /// the production entry point: routed through the sparse geobucket
+    /// ([`super::sparse_geobucket`]) so multi-step reduction is amortised
+    /// instead of paying an O(n) leading-term removal and full re-merge per
+    /// step. Same divisor-selection rule (first divisor by index whose
+    /// leading monomial divides the current one) as
+    /// [`Self::reduce_by_refs_naive`], so the two agree term-for-term
+    /// (`repr_oracle` checks that).
     pub fn reduce_by_refs(&self, divisors: &[&SparsePolynomial], ring: &PolyRing) -> SparsePolynomial {
+        if self.is_zero() || divisors.is_empty() {
+            return self.clone();
+        }
+        super::sparse_geobucket::reduce(self, divisors, ring)
+    }
+
+    /// Reference multivariate division: keep the partially-reduced
+    /// polynomial in one descending-sorted vector, cancelling the leading
+    /// term against the first divisor that divides it. O(n) per step; the
+    /// geobucket [`Self::reduce_by_refs`] is the production path. The dense
+    /// `DensePoly::reduce_by_refs_naive` is the differential oracle for this
+    /// (same divisor order ⇒ identical normal form).
+    pub fn reduce_by_refs_naive(&self, divisors: &[&SparsePolynomial], ring: &PolyRing) -> SparsePolynomial {
         if self.is_zero() {
             return self.clone();
         }

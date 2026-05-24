@@ -485,6 +485,31 @@ fn sparse_groebner_basis_matches_dense_random() {
     }
 }
 
+/// The sparse geobucket reduction (`reduce_by_refs`, production) must
+/// produce the same normal form as the sparse naive reduction
+/// (`reduce_by_refs_naive`, reference) on random subjects and divisor
+/// sets, using the same divisor order — the sparse reduction oracle.
+#[test]
+fn sparse_reduce_geobucket_matches_naive_random() {
+    let r = ring();
+    let mut rng = Rng::new(58);
+    for _ in 0..2_000 {
+        let subject = build_sparse(&rand_terms(&mut rng, 10), &r);
+        let n_div = 1 + rng.below(3) as usize;
+        let divisors: Vec<SparsePolynomial> = (0..n_div)
+            .map(|_| build_sparse(&rand_terms(&mut rng, 5), &r))
+            .filter(|d| !d.is_zero())
+            .collect();
+        if divisors.is_empty() {
+            continue;
+        }
+        let refs: Vec<&SparsePolynomial> = divisors.iter().collect();
+        let geo = subject.reduce_by_refs(&refs, &r);
+        let naive = subject.reduce_by_refs_naive(&refs, &r);
+        assert_eq!(sparse_to_map(&geo, &r), sparse_to_map(&naive, &r));
+    }
+}
+
 /// `DensePoly`↔`SparsePolynomial` conversions (the boundary the native
 /// GB dispatch uses) must be exact: a polynomial built directly in each
 /// representation equals the one converted from the other.
