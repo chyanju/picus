@@ -632,20 +632,12 @@ fn use_sparse_gb() -> bool {
     crate::config::with(|c| c.poly_repr == crate::config::ReprKind::Sparse)
 }
 
-/// Route a Gröbner-basis computation through the sparse engine
-/// (`ff::sparse_gb`): convert the dense generators at the boundary,
-/// compute + inter-reduce sparsely, materialise back to dense `Poly`.
-///
-/// This wires the sparse engine into the native solve while leaving the
-/// rest of the solve core (which is typed on dense `Poly`) untouched;
-/// it is validated by the dual-representation verdict diff. Keeping the
-/// basis resident in the sparse form (the actual wide-ring memory win)
-/// is the follow-on step; correctness of the sparse engine in the real
-/// pipeline is established first.
+/// Compute a Gröbner basis through the sparse engine (`ff::sparse_gb`)
+/// when the ring's representation is sparse: extract each generator's
+/// sparse arm, compute and inter-reduce sparsely, and return a sparse-arm
+/// basis (the polynomials stay resident-sparse, no dense materialisation).
 fn sparse_gb_route(poly_ring: &FfPolyRing, generators: Vec<Poly>, order: FfOrder) -> Vec<Poly> {
     let ring = ring_for_order(poly_ring, order);
-    // Generators built over a sparse ring are already the Sparse arm:
-    // extract (no densification), compute sparsely, keep the basis sparse.
     let sparse: Vec<crate::ff::sparse_polynomial::SparsePolynomial> =
         generators.iter().map(|p| p.to_sparse(&ring)).collect();
     let gb = crate::ff::sparse_gb::groebner_basis(sparse, &ring);
@@ -762,8 +754,8 @@ pub fn compute_gb_incremental_with_order(
         return compute_gb_with_order(poly_ring, new_polys, cancel, order);
     }
     if use_sparse_gb() {
-        // Sparse engine has no incremental seeding yet: recompute the GB
-        // of the union (still correct; incremental sparse is perf follow-on).
+        // The sparse engine has no incremental seeding; recompute the GB of
+        // the union (the seed is discarded, not trusted, so this is sound).
         let mut all = known_gb;
         all.extend(new_polys);
         return sparse_gb_route(poly_ring, all, order);

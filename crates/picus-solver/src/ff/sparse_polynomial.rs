@@ -1,12 +1,11 @@
 //! Sparse multivariate polynomial: a list of `(SparseMonomial, coeff)`
 //! terms, sorted descending by the ring's monomial order, coeffs nonzero.
 //!
-//! Pairs with [`SparseMonomial`] so the polynomial layer scales to many
-//! variables. This is the L1 surface — construction, `add`/`sub`/`mul`,
-//! `evaluate`, leading-term, term iteration — that the IR, lowering, and
-//! the cvc5 lowering path need. Gröbner reduction over the sparse
-//! representation is a later stage. Validated against the dense
-//! `DensePoly` by `repr_oracle`.
+//! Stores only nonzero entries, so it scales to rings with many variables
+//! where the dense [`DensePoly`] would carry a full-length exponent vector
+//! per term. Provides construction, ring arithmetic, evaluation, term
+//! iteration, and multivariate reduction (Gröbner-basis computation builds
+//! on these in `sparse_gb`). Validated against `DensePoly` by `repr_oracle`.
 
 use std::cmp::Ordering;
 

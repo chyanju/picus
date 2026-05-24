@@ -76,7 +76,8 @@ types that the rest of the workspace builds on, plus the
 - **`poly.rs`** — `FfPolyRing` (multivariate polynomial ring over
   `FfField`), `Poly` / `Mono` aliases, `PolyRingFacade`
   (`terms`, `exponent_at`, `appearing_indeterminates`, owned-Poly
-  `add` / `sub` / `mul`).
+  `add` / `sub` / `mul`). `Poly` is the runtime dense/sparse
+  `ff::Polynomial` enum, selected by `ReprKind` (`PolyRing::repr`).
 - **`field.rs`** — `FfField` is a re-export of
   `crate::ff::field::PrimeField`, which dispatches between a
   `u64`/`u128` small-prime backend and a `rug::Integer` (GMP)
@@ -207,10 +208,14 @@ types that the rest of the workspace builds on, plus the
   `gb_stats_enabled` at the call site; dumps no-op when nothing
   has accumulated.
 - **`ff/`** — In-tree GB engine: `field` (`PrimeField` /
-  `FieldElem`), `monomial`, `polynomial` (the bare `Polynomial` +
-  `PolyRing`), `divmask`, `geobucket`, `spair`, `hilbert`,
-  `univariate`, `buchberger/` (engine, GM-criterion incremental
-  path, S-pair criteria), `f4/` (matrix layer, workspace,
+  `FieldElem`), `monomial`, `polynomial` (`DensePoly` dense flat
+  storage + the runtime dense/sparse `Polynomial` enum + `PolyRing`,
+  whose `repr` fixes the arm), `sparse_monomial` / `sparse_polynomial` /
+  `sparse_gb` (the sparse representation and its Buchberger), `repr`
+  (the `MonomialRepr` / `PolyRepr` shared interface; `repr_oracle`
+  cross-checks sparse against dense), `divmask`, `geobucket`, `spair`,
+  `hilbert`, `univariate`, `buchberger/` (engine, GM-criterion
+  incremental path, S-pair criteria), `f4/` (matrix layer, workspace,
   symbolic preprocessing).
 
 ### `picus-smt`

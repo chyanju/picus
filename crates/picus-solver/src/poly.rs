@@ -243,14 +243,13 @@ impl<'a> IntoIterator for &'a AppearingVars {
     fn into_iter(self) -> Self::IntoIter { self.vars.iter() }
 }
 
-// ─── IR-layer polynomial: unified with the engine `Polynomial` enum ──
+// ─── IR-layer polynomial ────────────────────────────────────────────
 //
-// Stage 2's `IrPoly` / `IrPolyRing` were a dense/sparse union for the IR
-// layer; Stage 3 made the engine's `Polynomial` itself that union, so
-// they coincide. `IrPoly` is now an alias for `Polynomial`, `IrTermsIter`
-// for the facade `TermsIter`, and `IrPolyRing` a thin rep-aware facade
-// over `FfPolyRing` (whose constructors build the arm fixed by the ring's
-// `repr`, seeded from config).
+// The IR layer and the engine share one dense/sparse polynomial type:
+// `IrPoly` aliases `Polynomial`, `IrTermsIter` aliases the facade
+// `TermsIter`, and `IrPolyRing` is a thin representation-aware facade over
+// `FfPolyRing` whose constructors build the arm fixed by the ring's
+// `repr` (seeded from config).
 
 /// IR polynomial — the dense/sparse `Polynomial` enum.
 pub type IrPoly = Polynomial;

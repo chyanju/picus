@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.33] - 2026-05-24
+- Runtime dense/sparse polynomial representation (`config::ReprKind`, `PICUS_POLY_REPR`, default `sparse`): `Polynomial` is a `Dense(DensePoly)` / `Sparse(SparsePolynomial)` enum; sparse stores only nonzero `(var, exp)` pairs (O(nnz) per term), keeping the IR and native solve resident-sparse on wide rings where the dense per-term exponent vector is O(n_vars). Arm fixed per ring by `PolyRing::repr`.
+- Sparse Gröbner engine `ff::sparse_gb` (Buchberger + inter-reduction) and `SparsePolynomial` reduction; `ideal.rs` GB entry points route through it under the sparse representation, dense path unchanged.
+- `ff::repr_oracle` differential tests: sparse monomial/polynomial ops and reduced Gröbner bases checked against the dense implementation; suite green under both representations.
+- Propagation lemmas (`binary01`/`linear`/`bim`/`aboz`) read terms via the nonzero `(var, exp)` accessor instead of a per-term `0..n_vars` scan.
+
 ## [1.7.32] - 2026-05-23
 - Single index-keyed `ConstraintSystem` + `ConstraintSystemBuilder`; `PolyIR::to_constraint_system`/`encode` lower to it; `compact_used_vars` drops unreferenced variables.
 - `basis2` recognises circomlib `CompConstant` + AliasCheck and relaxes the `2^n > p` gate so bit decompositions propagate.
