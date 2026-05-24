@@ -103,22 +103,19 @@ fn classify_poly_vars(
     ir: &PolyIR,
     poly: &Poly,
 ) -> (HashSet<usize>, HashSet<usize>, HashSet<usize>) {
-    let ring = &ir.ring;
-    let n_vars = ring.n_vars();
     let mut linear = HashSet::new();
     let mut nonlinear = HashSet::new();
     let mut all = HashSet::new();
 
-    for (_, m) in ring.terms(poly) {
+    // Sparse-native: iterate each term's nonzero (var, exp) pairs (no
+    // `0..n_vars` scan, no dense monomial materialisation on wide rings).
+    for (_coeff, vars) in ir.poly_terms_idx(poly) {
         let mut deg_total = 0usize;
-        let mut term_vars: Vec<usize> = Vec::new();
-        for v in 0..n_vars {
-            let e = ring.exponent_at(&m, v);
-            if e > 0 {
-                deg_total += e;
-                term_vars.push(v);
-                all.insert(v);
-            }
+        let mut term_vars: Vec<usize> = Vec::with_capacity(vars.len());
+        for (v, e) in vars {
+            deg_total += e as usize;
+            term_vars.push(v);
+            all.insert(v);
         }
         match deg_total {
             0 => {}
