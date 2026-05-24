@@ -11,7 +11,8 @@
 use std::cmp::Ordering;
 
 use super::field::FieldElem;
-use super::polynomial::PolyRing;
+use super::monomial::Monomial;
+use super::polynomial::{PolyRing, Polynomial};
 use super::repr::MonomialRepr;
 use super::sparse_monomial::SparseMonomial;
 
@@ -262,6 +263,30 @@ impl SparsePolynomial {
                 }
             }
         }
+    }
+
+    /// Build a sparse polynomial from a dense one (same terms). The
+    /// boundary conversion the native GB dispatch uses when routing a
+    /// dense-built generator set through the sparse engine.
+    pub fn from_dense(p: &Polynomial, ring: &PolyRing) -> Self {
+        let mut terms: Vec<(SparseMonomial, FieldElem)> = Vec::with_capacity(p.num_terms());
+        for i in 0..p.num_terms() {
+            let t = p.term(i, ring);
+            terms.push((SparseMonomial::from_exponents(t.exponents().to_vec()), t.coefficient().clone()));
+        }
+        // Dense terms are already sorted/canonical; from_terms re-canonicalises
+        // (cheap) and guarantees the sparse invariants regardless.
+        SparsePolynomial::from_terms(terms, ring)
+    }
+
+    /// Materialise a dense polynomial with the same terms.
+    pub fn to_dense(&self, ring: &PolyRing) -> Polynomial {
+        let terms: Vec<(Monomial, FieldElem)> = self
+            .terms
+            .iter()
+            .map(|(m, c)| (Monomial::from_exponents(MonomialRepr::to_dense(m)), c.clone()))
+            .collect();
+        Polynomial::from_terms(terms, ring)
     }
 }
 

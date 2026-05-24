@@ -599,6 +599,14 @@ pub(crate) fn interreduce_basis(
     if cancel.is_cancelled() {
         return basis;
     }
+    if use_sparse_gb() {
+        use crate::ff::sparse_polynomial::SparsePolynomial;
+        let ctx = poly_ring.ctx();
+        let sparse: Vec<SparsePolynomial> =
+            basis.iter().map(|p| SparsePolynomial::from_dense(p, ctx)).collect();
+        let reduced = crate::ff::sparse_gb::interreduce(sparse, ctx);
+        return reduced.iter().map(|p| p.to_dense(ctx)).collect();
+    }
     buchberger::interreduce_with_cancel(basis, poly_ring.ctx(), Some(cancel))
 }
 
@@ -614,6 +622,35 @@ pub(crate) fn ring_for_order(poly_ring: &FfPolyRing, order: FfOrder) -> std::syn
     )
 }
 
+/// True when the configured IR representation is sparse, so native GB
+/// computation should be routed through the sparse engine.
+#[inline]
+fn use_sparse_gb() -> bool {
+    crate::config::with(|c| c.poly_repr == crate::config::ReprKind::Sparse)
+}
+
+/// Route a Gröbner-basis computation through the sparse engine
+/// (`ff::sparse_gb`): convert the dense generators at the boundary,
+/// compute + inter-reduce sparsely, materialise back to dense `Poly`.
+///
+/// This wires the sparse engine into the native solve while leaving the
+/// rest of the solve core (which is typed on dense `Poly`) untouched;
+/// it is validated by the dual-representation verdict diff. Keeping the
+/// basis resident in the sparse form (the actual wide-ring memory win)
+/// is the follow-on step; correctness of the sparse engine in the real
+/// pipeline is established first.
+fn sparse_gb_route(poly_ring: &FfPolyRing, generators: Vec<Poly>, order: FfOrder) -> Vec<Poly> {
+    use crate::ff::sparse_polynomial::SparsePolynomial;
+    let ring = ring_for_order(poly_ring, order);
+    let sparse: Vec<SparsePolynomial> = generators
+        .iter()
+        .map(|p| SparsePolynomial::from_dense(p, &ring))
+        .collect();
+    let gb = crate::ff::sparse_gb::groebner_basis(sparse, &ring);
+    let reduced = crate::ff::sparse_gb::interreduce(gb, &ring);
+    reduced.iter().map(|p| p.to_dense(&ring)).collect()
+}
+
 /// Compute a Groebner basis of `generators` in the requested monomial
 /// order, routed through [`compute_gb_dispatch`]. Falls back to the
 /// unreduced generators on cancellation or panic so callers can
@@ -627,6 +664,9 @@ pub fn compute_gb_with_order(
     let _t = crate::profile::ScopedTimer::new("compute_gb_with_order");
     if generators.is_empty() {
         return Vec::new();
+    }
+    if use_sparse_gb() {
+        return sparse_gb_route(poly_ring, generators, order);
     }
     let n_gens = generators.len();
     let n_vars = poly_ring.n_vars;
@@ -700,6 +740,13 @@ pub fn compute_gb_incremental_with_order(
     }
     if known_gb.is_empty() {
         return compute_gb_with_order(poly_ring, new_polys, cancel, order);
+    }
+    if use_sparse_gb() {
+        // Sparse engine has no incremental seeding yet: recompute the GB
+        // of the union (still correct; incremental sparse is perf follow-on).
+        let mut all = known_gb;
+        all.extend(new_polys);
+        return sparse_gb_route(poly_ring, all, order);
     }
     let ring = ring_for_order(poly_ring, order);
     let cfg = BuchbergerConfig {

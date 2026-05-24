@@ -484,6 +484,25 @@ fn sparse_groebner_basis_matches_dense_random() {
     }
 }
 
+/// `Polynomial`↔`SparsePolynomial` conversions (the boundary the native
+/// GB dispatch uses) must be exact: a polynomial built directly in each
+/// representation equals the one converted from the other.
+#[test]
+fn dense_sparse_roundtrip_random() {
+    let r = ring();
+    let mut rng = Rng::new(123);
+    for _ in 0..2_000 {
+        let terms = rand_terms(&mut rng, 10);
+        let d = build_dense(&terms, &r);
+        let s = build_sparse(&terms, &r);
+        assert_eq!(
+            sparse_to_map(&SparsePolynomial::from_dense(&d, &r), &r),
+            sparse_to_map(&s, &r)
+        );
+        assert_eq!(dense_to_map(&s.to_dense(&r), &r), dense_to_map(&d, &r));
+    }
+}
+
 /// Exercise the `PolyRepr` trait generically: build via the trait,
 /// run add/mul through it, and check `collect_terms_idx` against the
 /// coefficient-map reference — for both representations.
