@@ -78,7 +78,10 @@ fn cdclt_loop(
             if sat.decision_level() == 0 {
                 return SolveOutcome::Unsat(Vec::new());
             }
-            let (learnt, bt) = sat.analyze(conflict);
+            let (learnt, bt) = match sat.analyze(conflict) {
+                Some(lb) => lb,
+                None => return SolveOutcome::Unknown,
+            };
             sat.backtrack_to(bt);
             // Snapshot trail length before `learn_clause` so the next
             // notify pass starts at the position the asserting literal
@@ -109,6 +112,7 @@ fn cdclt_loop(
                 continue;
             }
             TheoryStep::RootUnsat => return SolveOutcome::Unsat(Vec::new()),
+            TheoryStep::GiveUp => return SolveOutcome::Unknown,
             TheoryStep::Idle => {}
         }
 
@@ -129,6 +133,7 @@ fn cdclt_loop(
                     let trail_pre_lemma = apply_theory_conflict(sat, &core);
                     let trail_pre_lemma = match trail_pre_lemma {
                         Some(n) => n,
+                        None if sat.gave_up() => return SolveOutcome::Unknown,
                         None => return SolveOutcome::Unsat(Vec::new()),
                     };
                     sync_theory_after_backtrack(sat, theory, &mut theory_levels);
@@ -157,6 +162,8 @@ enum TheoryStep {
     Conflict(usize),
     /// Lemma forced root-level UNSAT.
     RootUnsat,
+    /// Theory-conflict resolution bailed; solve is Unknown (not UNSAT).
+    GiveUp,
 }
 
 /// One round of theory propagation. Each derived `(atom, polarity)`
@@ -197,6 +204,7 @@ fn run_theory_propagation(sat: &mut Solver, theory: &mut FfTheory<'_>) -> Theory
                 }
                 match sat.add_theory_lemma_with_trail(lemma) {
                     Some(trail_pre) => return TheoryStep::Conflict(trail_pre),
+                    None if sat.gave_up() => return TheoryStep::GiveUp,
                     None => return TheoryStep::RootUnsat,
                 }
             }

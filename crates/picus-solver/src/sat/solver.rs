@@ -50,6 +50,12 @@ pub struct Solver {
     /// Persisted UNSAT flag (set by `add_clause` when an input clause
     /// is empty, or by `propagate` at decision level 0).
     unsat: bool,
+    /// Set when conflict analysis on a theory conflict could not be
+    /// completed (its 1-UIP resolution bailed). Distinct from `unsat`:
+    /// callers MUST treat this as Unknown, never UNSAT. Should not
+    /// arise once every learnt reason clause is asserting; kept as a
+    /// sound never-panic safety net.
+    give_up: bool,
     /// VSIDS activity score per variable. Bumped when the variable
     /// participates in conflict-clause resolution; decayed implicitly
     /// by growing `var_inc`.
@@ -92,6 +98,7 @@ impl Solver {
             arena: ClauseArena::new(),
             watches: Vec::new(),
             unsat: false,
+            give_up: false,
             var_activity: Vec::new(),
             var_inc: 1.0,
             var_decay: 1.05,
@@ -519,17 +526,54 @@ impl Solver {
             self.unsat = true;
             return None;
         }
-        let assertion_level = lits
+        let n_at_max = lits
             .iter()
-            .skip(1)
-            .map(|l| self.level[l.var().index()])
-            .filter(|&lv| lv < max_level && lv >= 0)
-            .max()
-            .unwrap_or(max_level - 1);
-        self.backtrack_to(assertion_level);
-        let trail_pre_lemma = self.trail.len();
-        self.learn_clause(lits);
-        Some(trail_pre_lemma)
+            .filter(|l| self.level[l.var().index()] == max_level)
+            .count();
+        if n_at_max >= 2 {
+            // More than one literal at the top level ⇒ this lemma is a
+            // genuine conflict, not assertable by backtracking (you
+            // cannot make it unit). Resolve it to a proper 1-UIP
+            // asserting clause via the standard conflict-analysis path,
+            // then learn that. Learning the raw lemma would build a
+            // reason clause whose `lits[1..]` are not all
+            // false-and-earlier than `lits[0]`, which breaks `analyze`.
+            self.backtrack_to(max_level);
+            let cref = self.arena.add(Clause::new(lits, true));
+            match self.analyze(cref) {
+                Some((learnt, bt)) => {
+                    self.backtrack_to(bt);
+                    let trail_pre = self.trail.len();
+                    self.learn_clause(learnt);
+                    Some(trail_pre)
+                }
+                None => {
+                    // 1-UIP resolution bailed — unreachable once every
+                    // learnt reason is asserting. Must NOT report UNSAT:
+                    // flag give-up so the caller returns Unknown.
+                    self.give_up = true;
+                    None
+                }
+            }
+        } else {
+            let assertion_level = lits
+                .iter()
+                .skip(1)
+                .map(|l| self.level[l.var().index()])
+                .filter(|&lv| lv < max_level && lv >= 0)
+                .max()
+                .unwrap_or(max_level - 1);
+            self.backtrack_to(assertion_level);
+            let trail_pre_lemma = self.trail.len();
+            self.learn_clause(lits);
+            Some(trail_pre_lemma)
+        }
+    }
+
+    /// `true` iff a theory-conflict resolution bailed out (see
+    /// [`Self::give_up`]). Callers must treat this as Unknown, not UNSAT.
+    pub fn gave_up(&self) -> bool {
+        self.give_up
     }
 
     /// Number of literals on the trail.
@@ -547,7 +591,7 @@ impl Solver {
     /// `learnt[0]` is the asserting literal (negated 1-UIP), `learnt[1..]`
     /// are lower-level literals, and `bt_level` is the second-highest
     /// decision level among the learnt clause (0 if length 1).
-    pub fn analyze(&mut self, conflict: ClauseRef) -> (Vec<Lit>, i32) {
+    pub fn analyze(&mut self, conflict: ClauseRef) -> Option<(Vec<Lit>, i32)> {
         let cur_level = self.decision_level();
         debug_assert!(cur_level > 0, "analyze called at root level");
         self.n_conflicts += 1;
@@ -564,7 +608,14 @@ impl Solver {
         let mut trail_idx = self.trail.len();
 
         loop {
-            let cref = conf.expect("conflict must be set");
+            // `conf` is `Some` for the initial conflict and is re-set to
+            // each resolved pivot's reason below. If a non-final pivot
+            // turns out to have no reason clause (a CDCL(T)/theory
+            // interaction gap on some inputs), `conf?` bails to `None`
+            // here rather than panicking — the caller then falls back to
+            // a complete engine instead of producing a bogus learnt
+            // clause.
+            let cref = conf?;
             let clause = self.arena.get(cref);
             for &q in &clause.lits {
                 if Some(q) == pivot {
@@ -602,7 +653,6 @@ impl Solver {
                 break;
             }
             conf = self.reason[next_lit.var().index()];
-            debug_assert!(conf.is_some(), "non-final pivot must have a reason");
             pivot = Some(next_lit);
         }
 
@@ -626,7 +676,7 @@ impl Solver {
         }
         self.decay_var_activity();
 
-        (learnt, bt_level)
+        Some((learnt, bt_level))
     }
 
     /// Cancel assignments down to (but not including) `level + 1`, so
@@ -687,7 +737,10 @@ impl Solver {
                         if self.decision_level() == 0 {
                             return SolveResult::Unsat;
                         }
-                        let (learnt, bt) = self.analyze(conflict);
+                        let (learnt, bt) = match self.analyze(conflict) {
+                            Some(lb) => lb,
+                            None => return SolveResult::Unknown,
+                        };
                         self.backtrack_to(bt);
                         self.learn_clause(learnt);
                         if self.should_restart() {
@@ -920,7 +973,7 @@ mod tests {
         assert!(s.decide(Lit::neg(v[0])));
         let conflict = s.propagate();
         assert!(conflict.is_some(), "expected propagation conflict");
-        let (learnt, bt) = s.analyze(conflict.unwrap());
+        let (learnt, bt) = s.analyze(conflict.unwrap()).expect("analyze produces a clause");
         // 1-UIP should be x0 (decision). Learnt clause asserts -(-x0) = x0.
         assert_eq!(learnt.len(), 1);
         assert_eq!(learnt[0], Lit::pos(v[0]));
@@ -963,7 +1016,7 @@ mod tests {
         assert!(s.add_clause(vec![Lit::pos(v[0]), Lit::neg(v[1])]));
         assert!(s.decide(Lit::neg(v[0])));
         let conflict = s.propagate().expect("conflict expected");
-        let (learnt, bt) = s.analyze(conflict);
+        let (learnt, bt) = s.analyze(conflict).expect("analyze produces a clause");
         s.backtrack_to(bt);
         s.learn_clause(learnt);
         assert!(s.propagate().is_none());
@@ -1090,7 +1143,7 @@ mod tests {
         assert!(s.add_clause(vec![Lit::neg(v[1]), Lit::neg(v[2])]));
         assert!(s.decide(Lit::neg(v[0])));
         let conflict = s.propagate().expect("conflict expected");
-        let (learnt, bt) = s.analyze(conflict);
+        let (learnt, bt) = s.analyze(conflict).expect("analyze produces a clause");
         assert_eq!(learnt.len(), 1);
         assert_eq!(learnt[0], Lit::pos(v[0]));
         assert_eq!(bt, 0);
@@ -1147,7 +1200,7 @@ mod tests {
         assert!(s.add_clause(vec![Lit::neg(v[0]), Lit::neg(v[3])]));
         assert!(s.decide(Lit::pos(v[0])));
         let conflict = s.propagate().expect("conflict expected");
-        let (learnt, bt) = s.analyze(conflict);
+        let (learnt, bt) = s.analyze(conflict).expect("analyze produces a clause");
         assert_eq!(learnt.len(), 1);
         assert_eq!(learnt[0], Lit::neg(v[0]));
         assert_eq!(bt, 0);
@@ -1179,7 +1232,7 @@ mod tests {
         assert!(s.add_clause(vec![Lit::neg(v[1]), Lit::neg(v[2])]));
         assert!(s.decide(Lit::neg(v[0])));
         let conflict = s.propagate().expect("conflict expected");
-        let (learnt, _) = s.analyze(conflict);
+        let (learnt, _) = s.analyze(conflict).expect("analyze produces a clause");
         assert_eq!(learnt.len(), 1, "test premise: 1-UIP collapses to a unit");
         for i in 0..3 {
             assert!(

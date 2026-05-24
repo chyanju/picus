@@ -203,6 +203,15 @@ fn basis2_does_not_overreport_when_bitwidth_exceeds_prime() {
 /// `NativeFfBackend` `add_field_polys` gate: on primes ≤ 1000 the
 /// `x^p - x = 0` constraints are essential for the GB engine to
 /// model GF(p) correctly.
+///
+/// Also the regression guard for the CDCL(T) 1-UIP fix: with
+/// `aboz_emit_disjunctions` on (default), this routes through the
+/// in-tree CDCL(T) engine, whose theory hands it conflict lemmas with
+/// several literals at the top decision level. Those must be resolved
+/// to a proper 1-UIP asserting clause (see
+/// `Solver::add_theory_lemma_with_trail`); learning them raw used to
+/// break conflict analysis. The native backend no longer has a DNF
+/// fallback, so this asserts CDCL(T) handles it on its own.
 #[test]
 fn aboz_native_ff_finds_counterexample() {
     let r1cs = aboz_trap_r1cs();
