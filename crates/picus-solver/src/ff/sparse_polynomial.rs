@@ -6,13 +6,13 @@
 //! `evaluate`, leading-term, term iteration — that the IR, lowering, and
 //! the cvc5 lowering path need. Gröbner reduction over the sparse
 //! representation is a later stage. Validated against the dense
-//! `Polynomial` by `repr_oracle`.
+//! `DensePoly` by `repr_oracle`.
 
 use std::cmp::Ordering;
 
 use super::field::FieldElem;
 use super::monomial::Monomial;
-use super::polynomial::{PolyRing, Polynomial};
+use super::polynomial::{PolyRing, DensePoly};
 use super::repr::MonomialRepr;
 use super::sparse_monomial::SparseMonomial;
 
@@ -90,6 +90,20 @@ impl SparsePolynomial {
     }
     pub fn iter_terms(&self) -> impl Iterator<Item = (&SparseMonomial, &FieldElem)> {
         self.terms.iter().map(|(m, c)| (m, c))
+    }
+
+    /// Content fingerprint for incremental-GB caching (matches the role
+    /// of `DensePoly::content_hash`; need not agree across arms since a
+    /// run uses a single representation).
+    pub fn content_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.terms.len().hash(&mut h);
+        for (m, c) in &self.terms {
+            m.hash(&mut h);
+            c.hash(&mut h);
+        }
+        h.finish()
     }
 
     /// The `idx`-th `(monomial, coeff)` term in descending ring order,
@@ -202,7 +216,7 @@ impl SparsePolynomial {
     /// a leading term divisible by none is irreducible and moves to the
     /// result. Divisibility and the quotient monomial come straight from
     /// [`MonomialRepr`] (no dense divmask). The dense
-    /// `Polynomial::reduce_by_refs_naive` is the differential oracle for
+    /// `DensePoly::reduce_by_refs_naive` is the differential oracle for
     /// this (same divisor order ⇒ identical normal form).
     pub fn reduce_by_refs(&self, divisors: &[&SparsePolynomial], ring: &PolyRing) -> SparsePolynomial {
         if self.is_zero() {
@@ -268,7 +282,7 @@ impl SparsePolynomial {
     /// Build a sparse polynomial from a dense one (same terms). The
     /// boundary conversion the native GB dispatch uses when routing a
     /// dense-built generator set through the sparse engine.
-    pub fn from_dense(p: &Polynomial, ring: &PolyRing) -> Self {
+    pub fn from_dense(p: &DensePoly, ring: &PolyRing) -> Self {
         let mut terms: Vec<(SparseMonomial, FieldElem)> = Vec::with_capacity(p.num_terms());
         for i in 0..p.num_terms() {
             let t = p.term(i, ring);
@@ -280,13 +294,13 @@ impl SparsePolynomial {
     }
 
     /// Materialise a dense polynomial with the same terms.
-    pub fn to_dense(&self, ring: &PolyRing) -> Polynomial {
+    pub fn to_dense(&self, ring: &PolyRing) -> DensePoly {
         let terms: Vec<(Monomial, FieldElem)> = self
             .terms
             .iter()
             .map(|(m, c)| (Monomial::from_exponents(MonomialRepr::to_dense(m)), c.clone()))
             .collect();
-        Polynomial::from_terms(terms, ring)
+        DensePoly::from_terms(terms, ring)
     }
 }
 

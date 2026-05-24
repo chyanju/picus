@@ -17,6 +17,9 @@ use std::sync::Arc;
 use super::field::{FieldElem, PrimeField};
 use super::monomial::{Monomial, MonomialOrder};
 use super::divmask::DivMaskScheme;
+use super::repr::MonomialRepr;
+use super::sparse_monomial::SparseMonomial;
+use super::sparse_polynomial::SparsePolynomial;
 use crate::config::ReprKind;
 
 /// Shared context describing the polynomial ring `GF(p)[x_0, ..., x_{n-1}]`.
@@ -73,11 +76,259 @@ pub struct DensePoly {
     total_degs: Vec<u32>,
 }
 
-/// The dense flat-storage polynomial is the default polynomial type.
-/// (Stage 3 will turn `Polynomial` into a runtime dense/sparse enum so
-/// the solve core can stay resident-sparse on wide rings; for now it is
-/// an alias so the rename is behaviour-preserving.)
-pub type Polynomial = DensePoly;
+/// The solve core's polynomial: a runtime dense/sparse union so a ring
+/// built under `ReprKind::Sparse` keeps its polynomials resident-sparse
+/// on wide rings (no O(n_vars)-per-term dense exponent vectors), while a
+/// `Dense` ring keeps the cache-friendly flat layout the Gröbner engine
+/// is tuned for. The arm is fixed per ring (constructors consult
+/// `ring.repr`), so values built over one ring share one arm.
+///
+/// Common ops (arithmetic, leading term, reduction, monic) dispatch to a
+/// representation-native implementation. The few dense-flavoured readers
+/// (`TermRef` iteration, raw exponent access, `substitute_var`, …) fall
+/// back to a one-shot dense materialisation on the sparse arm — correct,
+/// and off the resident-memory path. The dense Gröbner engine
+/// (`buchberger`, `geobucket`) works on `DensePoly` directly and never
+/// sees the sparse arm (the sparse path routes GB through `ff::sparse_gb`).
+#[derive(Clone, Debug)]
+pub enum Polynomial {
+    Dense(DensePoly),
+    Sparse(SparsePolynomial),
+}
+
+impl Polynomial {
+    /// Coerce to the ring's configured arm (no-op when already correct).
+    /// Used to reconcile a representation-neutral `zero()` with operands
+    /// built over the ring.
+    fn into_arm(self, ring: &PolyRing) -> Polynomial {
+        match (self, ring.repr) {
+            (Polynomial::Dense(d), ReprKind::Sparse) => {
+                Polynomial::Sparse(SparsePolynomial::from_dense(&d, ring))
+            }
+            (Polynomial::Sparse(s), ReprKind::Dense) => Polynomial::Dense(s.to_dense(ring)),
+            (p, _) => p,
+        }
+    }
+
+    /// View as the dense arm, materialising the sparse arm if needed.
+    /// For the rare dense-flavoured readers.
+    pub(crate) fn as_dense(&self, ring: &PolyRing) -> std::borrow::Cow<'_, DensePoly> {
+        match self {
+            Polynomial::Dense(d) => std::borrow::Cow::Borrowed(d),
+            Polynomial::Sparse(s) => std::borrow::Cow::Owned(s.to_dense(ring)),
+        }
+    }
+
+    // ── constructors (arm chosen by ring.repr) ──────────────────────
+    pub fn zero() -> Self {
+        // Representation-neutral empty; binary ops coerce it to the
+        // ring's arm via `into_arm`.
+        Polynomial::Dense(DensePoly::zero())
+    }
+    pub fn constant(c: FieldElem, ring: &PolyRing) -> Self {
+        match ring.repr {
+            ReprKind::Dense => Polynomial::Dense(DensePoly::constant(c, ring)),
+            ReprKind::Sparse => Polynomial::Sparse(SparsePolynomial::constant(c, ring)),
+        }
+    }
+    pub fn variable(var: usize, ring: &PolyRing) -> Self {
+        match ring.repr {
+            ReprKind::Dense => Polynomial::Dense(DensePoly::variable(var, ring)),
+            ReprKind::Sparse => Polynomial::Sparse(SparsePolynomial::variable(var, ring)),
+        }
+    }
+    pub fn from_terms(terms: Vec<(Monomial, FieldElem)>, ring: &PolyRing) -> Self {
+        match ring.repr {
+            ReprKind::Dense => Polynomial::Dense(DensePoly::from_terms(terms, ring)),
+            ReprKind::Sparse => {
+                let sterms: Vec<(SparseMonomial, FieldElem)> = terms
+                    .into_iter()
+                    .map(|(m, c)| (SparseMonomial::from_exponents(m.exponents().to_vec()), c))
+                    .collect();
+                Polynomial::Sparse(SparsePolynomial::from_terms(sterms, ring))
+            }
+        }
+    }
+
+    // ── queries ─────────────────────────────────────────────────────
+    pub fn is_zero(&self) -> bool {
+        match self {
+            Polynomial::Dense(d) => d.is_zero(),
+            Polynomial::Sparse(s) => s.is_zero(),
+        }
+    }
+    pub fn num_terms(&self) -> usize {
+        match self {
+            Polynomial::Dense(d) => d.num_terms(),
+            Polynomial::Sparse(s) => s.num_terms(),
+        }
+    }
+    pub fn is_constant(&self) -> bool {
+        match self {
+            Polynomial::Dense(d) => d.is_constant(),
+            Polynomial::Sparse(s) => s.is_constant(),
+        }
+    }
+    pub fn total_degree(&self) -> u32 {
+        match self {
+            Polynomial::Dense(d) => d.total_degree(),
+            Polynomial::Sparse(s) => s.total_degree(),
+        }
+    }
+    pub fn leading_coefficient(&self) -> Option<&FieldElem> {
+        match self {
+            Polynomial::Dense(d) => d.leading_coefficient(),
+            Polynomial::Sparse(s) => s.leading_coefficient(),
+        }
+    }
+    pub fn leading_monomial(&self, ring: &PolyRing) -> Option<Monomial> {
+        match self {
+            Polynomial::Dense(d) => d.leading_monomial(ring),
+            Polynomial::Sparse(s) => {
+                s.leading_monomial().map(|m| Monomial::from_exponents(MonomialRepr::to_dense(m)))
+            }
+        }
+    }
+
+    // ── arithmetic (operands coerced to a common arm) ───────────────
+    pub fn add(&self, other: &Self, ring: &PolyRing) -> Self {
+        match (self, other) {
+            (Polynomial::Dense(a), Polynomial::Dense(b)) => Polynomial::Dense(a.add(b, ring)),
+            (Polynomial::Sparse(a), Polynomial::Sparse(b)) => Polynomial::Sparse(a.add(b, ring)),
+            _ => self.clone().into_arm(ring).add(&other.clone().into_arm(ring), ring),
+        }
+    }
+    pub fn sub(&self, other: &Self, ring: &PolyRing) -> Self {
+        match (self, other) {
+            (Polynomial::Dense(a), Polynomial::Dense(b)) => Polynomial::Dense(a.sub(b, ring)),
+            (Polynomial::Sparse(a), Polynomial::Sparse(b)) => Polynomial::Sparse(a.sub(b, ring)),
+            _ => self.clone().into_arm(ring).sub(&other.clone().into_arm(ring), ring),
+        }
+    }
+    pub fn mul(&self, other: &Self, ring: &PolyRing) -> Self {
+        match (self, other) {
+            (Polynomial::Dense(a), Polynomial::Dense(b)) => Polynomial::Dense(a.mul(b, ring)),
+            (Polynomial::Sparse(a), Polynomial::Sparse(b)) => Polynomial::Sparse(a.mul(b, ring)),
+            _ => self.clone().into_arm(ring).mul(&other.clone().into_arm(ring), ring),
+        }
+    }
+    pub fn scale(&self, c: &FieldElem, ring: &PolyRing) -> Self {
+        match self {
+            Polynomial::Dense(d) => Polynomial::Dense(d.scale(c, ring)),
+            Polynomial::Sparse(s) => Polynomial::Sparse(s.scale(c, ring)),
+        }
+    }
+    pub fn negate(&self, ring: &PolyRing) -> Self {
+        match self {
+            Polynomial::Dense(d) => Polynomial::Dense(d.negate(ring)),
+            Polynomial::Sparse(s) => Polynomial::Sparse(s.negate(ring)),
+        }
+    }
+    pub fn make_monic(&self, ring: &PolyRing) -> Self {
+        match self {
+            Polynomial::Dense(d) => Polynomial::Dense(d.make_monic(ring)),
+            Polynomial::Sparse(s) => Polynomial::Sparse(s.make_monic(ring)),
+        }
+    }
+    pub fn evaluate(&self, values: &[FieldElem], ring: &PolyRing) -> FieldElem {
+        match self {
+            Polynomial::Dense(d) => d.evaluate(values, ring),
+            Polynomial::Sparse(s) => s.evaluate(values, ring),
+        }
+    }
+
+    // ── reduction (normal form modulo divisors) ─────────────────────
+    pub fn reduce_by(&self, divisors: &[Polynomial], ring: &PolyRing) -> Self {
+        let refs: Vec<&Polynomial> = divisors.iter().collect();
+        self.reduce_by_refs(&refs, ring)
+    }
+    pub fn reduce_by_refs(&self, divisors: &[&Polynomial], ring: &PolyRing) -> Self {
+        match self {
+            Polynomial::Sparse(s) => {
+                let ds: Vec<SparsePolynomial> =
+                    divisors.iter().map(|p| p.to_sparse(ring)).collect();
+                let dr: Vec<&SparsePolynomial> = ds.iter().collect();
+                Polynomial::Sparse(s.reduce_by_refs(&dr, ring))
+            }
+            Polynomial::Dense(d) => {
+                let ds: Vec<std::borrow::Cow<DensePoly>> =
+                    divisors.iter().map(|p| p.as_dense(ring)).collect();
+                let dr: Vec<&DensePoly> = ds.iter().map(|c| c.as_ref()).collect();
+                Polynomial::Dense(d.reduce_by_refs(&dr, ring))
+            }
+        }
+    }
+    pub fn reduce_by_refs_cancel(
+        &self,
+        divisors: &[&Polynomial],
+        ring: &PolyRing,
+        cancel: &crate::timeout::CancelToken,
+    ) -> Self {
+        match self {
+            Polynomial::Sparse(s) => {
+                let ds: Vec<SparsePolynomial> =
+                    divisors.iter().map(|p| p.to_sparse(ring)).collect();
+                let dr: Vec<&SparsePolynomial> = ds.iter().collect();
+                // Sparse reducer has no cooperative cancel yet; it is used
+                // on the (small) per-branch cores where this is acceptable.
+                let _ = cancel;
+                Polynomial::Sparse(s.reduce_by_refs(&dr, ring))
+            }
+            Polynomial::Dense(d) => {
+                let ds: Vec<std::borrow::Cow<DensePoly>> =
+                    divisors.iter().map(|p| p.as_dense(ring)).collect();
+                let dr: Vec<&DensePoly> = ds.iter().map(|c| c.as_ref()).collect();
+                Polynomial::Dense(d.reduce_by_refs_cancel(&dr, ring, cancel))
+            }
+        }
+    }
+
+    /// Convert to the sparse representation (boundary helper).
+    pub(crate) fn to_sparse(&self, ring: &PolyRing) -> SparsePolynomial {
+        match self {
+            Polynomial::Sparse(s) => s.clone(),
+            Polynomial::Dense(d) => SparsePolynomial::from_dense(d, ring),
+        }
+    }
+
+    // ── dense-flavoured readers (sparse arm materialises) ───────────
+    pub fn appearing_variables(&self, ring: &PolyRing) -> Vec<(usize, u16)> {
+        self.as_dense(ring).appearing_variables(ring)
+    }
+    pub fn substitute_var(&self, var: usize, value: &FieldElem, ring: &PolyRing) -> Self {
+        match self {
+            Polynomial::Dense(d) => Polynomial::Dense(d.substitute_var(var, value, ring)),
+            Polynomial::Sparse(s) => {
+                Polynomial::Sparse(SparsePolynomial::from_dense(
+                    &s.to_dense(ring).substitute_var(var, value, ring),
+                    ring,
+                ))
+            }
+        }
+    }
+    pub fn is_univariate(&self, ring: &PolyRing) -> Option<usize> {
+        self.as_dense(ring).is_univariate(ring)
+    }
+    pub fn content_hash(&self) -> u64 {
+        match self {
+            Polynomial::Dense(d) => d.content_hash(),
+            Polynomial::Sparse(s) => s.content_hash(),
+        }
+    }
+    /// Each term as `(coeff, sorted nonzero (var, exp) pairs)` — the
+    /// representation-native read the IR lowering / SMT backends use.
+    pub fn collect_terms_idx(
+        &self,
+        ctx: &PolyRing,
+    ) -> Vec<(num_bigint::BigUint, Vec<(usize, u16)>)> {
+        match self {
+            Polynomial::Dense(d) => <DensePoly as super::repr::PolyRepr>::collect_terms_idx(d, ctx),
+            Polynomial::Sparse(s) => {
+                <SparsePolynomial as super::repr::PolyRepr>::collect_terms_idx(s, ctx)
+            }
+        }
+    }
+}
 
 /// A lightweight reference to a single term within a polynomial.
 #[derive(Copy, Clone, Debug)]

@@ -277,7 +277,7 @@ fn normalize_poly(pr: &FfPolyRing, p: Poly) -> Poly {
     let fp = &pr.field;
     if ring.is_zero(&p) || p.num_terms() == 0 { return p; }
     // Leading term is at index 0 (polynomials are stored sorted descending).
-    let lc = fp.clone_el(p.term(0, ring.ctx.as_ref()).coefficient());
+    let lc = fp.clone_el(p.leading_coefficient().expect("nonzero polynomial has a leading term"));
     if fp.is_zero(&lc) || fp.is_one(&lc) { return p; }
     let inv = fp.div(&fp.one(), &lc).expect("non-zero leading coefficient");
     let inv_poly = pr.constant(inv);

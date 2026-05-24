@@ -509,9 +509,9 @@ impl<'r> Ideal<'r> {
             // Reduce row against existing echelon rows.
             for (i, nf_i) in nfs.iter().enumerate() {
                 let lm_i = &pivot_monos[i];
-                let coeff_at_lm = poly_coefficient_at(&row_poly, lm_i, ring);
+                let coeff_at_lm = poly_coefficient_at(row_poly.as_dense(ring).as_ref(), lm_i, ring);
                 if !f.is_zero(&coeff_at_lm) {
-                    let lc_i = poly_coefficient_at(nf_i, lm_i, ring);
+                    let lc_i = poly_coefficient_at(nf_i.as_dense(ring).as_ref(), lm_i, ring);
                     debug_assert!(!f.is_zero(&lc_i));
                     let factor = f.div(&coeff_at_lm, &lc_i).unwrap();
                     let neg_factor = f.neg(&factor);
@@ -600,14 +600,17 @@ pub(crate) fn interreduce_basis(
         return basis;
     }
     if use_sparse_gb() {
-        use crate::ff::sparse_polynomial::SparsePolynomial;
         let ctx = poly_ring.ctx();
-        let sparse: Vec<SparsePolynomial> =
-            basis.iter().map(|p| SparsePolynomial::from_dense(p, ctx)).collect();
+        let sparse: Vec<crate::ff::sparse_polynomial::SparsePolynomial> =
+            basis.iter().map(|p| p.to_sparse(ctx)).collect();
         let reduced = crate::ff::sparse_gb::interreduce(sparse, ctx);
-        return reduced.iter().map(|p| p.to_dense(ctx)).collect();
+        return reduced.into_iter().map(Poly::Sparse).collect();
     }
-    buchberger::interreduce_with_cancel(basis, poly_ring.ctx(), Some(cancel))
+    wrap_dense_vec(buchberger::interreduce_with_cancel(
+        unwrap_dense_vec(basis, poly_ring.ctx()),
+        poly_ring.ctx(),
+        Some(cancel),
+    ))
 }
 
 // ──────────────────── compute_gb_with_order family ────────────────────────
@@ -640,15 +643,31 @@ fn use_sparse_gb() -> bool {
 /// is the follow-on step; correctness of the sparse engine in the real
 /// pipeline is established first.
 fn sparse_gb_route(poly_ring: &FfPolyRing, generators: Vec<Poly>, order: FfOrder) -> Vec<Poly> {
-    use crate::ff::sparse_polynomial::SparsePolynomial;
     let ring = ring_for_order(poly_ring, order);
-    let sparse: Vec<SparsePolynomial> = generators
-        .iter()
-        .map(|p| SparsePolynomial::from_dense(p, &ring))
-        .collect();
+    // Generators built over a sparse ring are already the Sparse arm:
+    // extract (no densification), compute sparsely, keep the basis sparse.
+    let sparse: Vec<crate::ff::sparse_polynomial::SparsePolynomial> =
+        generators.iter().map(|p| p.to_sparse(&ring)).collect();
     let gb = crate::ff::sparse_gb::groebner_basis(sparse, &ring);
     let reduced = crate::ff::sparse_gb::interreduce(gb, &ring);
-    reduced.iter().map(|p| p.to_dense(&ring)).collect()
+    reduced.into_iter().map(Poly::Sparse).collect()
+}
+
+/// Unwrap a vector of solve-core `Poly` to the dense `DensePoly` the
+/// Gröbner engine consumes. On the dense path every element is already
+/// the `Dense` arm; a stray sparse element is materialised defensively.
+pub(crate) fn unwrap_dense_vec(v: Vec<Poly>, ring: &crate::ff::polynomial::PolyRing) -> Vec<crate::ff::DensePoly> {
+    v.into_iter()
+        .map(|p| match p {
+            Poly::Dense(d) => d,
+            Poly::Sparse(s) => s.to_dense(ring),
+        })
+        .collect()
+}
+
+/// Wrap dense engine output back into solve-core `Poly`.
+pub(crate) fn wrap_dense_vec(v: Vec<crate::ff::DensePoly>) -> Vec<Poly> {
+    v.into_iter().map(Poly::Dense).collect()
 }
 
 /// Compute a Groebner basis of `generators` in the requested monomial
@@ -709,11 +728,12 @@ pub(crate) fn compute_gb_buchberger(
         abort_on_trivial: true,
         use_f4: crate::ff::buchberger::use_f4_default(),
     };
+    let dense_gens = unwrap_dense_vec(generators, &ring);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        buchberger::groebner_basis(generators, &ring, &cfg)
+        buchberger::groebner_basis(dense_gens, &ring, &cfg)
     }));
     match result {
-        Ok(Ok(GBasis { basis, .. })) => Ok(basis),
+        Ok(Ok(GBasis { basis, .. })) => Ok(wrap_dense_vec(basis)),
         Ok(Err(e)) => Err(e),
         Err(_) => {
             log::warn!("GB computation panicked");
@@ -761,6 +781,8 @@ pub fn compute_gb_incremental_with_order(
         .map(|p| p.clone())
         .collect();
 
+    let dense_known = unwrap_dense_vec(known_gb, &ring);
+    let dense_new = unwrap_dense_vec(new_polys, &ring);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut igb = IncrementalGB::new(ring.clone(), cfg);
         // Seed with the trusted reduced GB via the pair-free fast path.
@@ -769,14 +791,14 @@ pub fn compute_gb_incremental_with_order(
         // O(n³)/O(n⁴) total); since the seed is already a reduced GB,
         // every one of those pairs reduces to zero by Buchberger's
         // criterion. We skip them entirely.
-        igb.seed_reduced_basis(known_gb);
+        igb.seed_reduced_basis(dense_known);
         // Genuinely incremental: only the cross-pairs (known_gb × new) and
         // intra-new pairs are processed by add_generators below.
-        igb.add_generators(new_polys)?;
-        Ok::<Vec<Poly>, crate::SolverError>(igb.basis())
+        igb.add_generators(dense_new)?;
+        Ok::<Vec<crate::ff::DensePoly>, crate::SolverError>(igb.basis())
     }));
     match result {
-        Ok(Ok(basis)) => basis,
+        Ok(Ok(basis)) => wrap_dense_vec(basis),
         Ok(Err(_)) => backup,
         Err(_) => {
             log::warn!("Incremental GB computation panicked; returning concatenated generators unreduced");
@@ -838,11 +860,12 @@ pub(crate) fn compute_gb_buchberger_traced(
         abort_on_trivial: true,
         use_f4: crate::ff::buchberger::use_f4_default(),
     };
+    let dense_gens = unwrap_dense_vec(generators, &ring);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        buchberger::groebner_basis_observed(generators, &ring, &cfg, tracer)
+        buchberger::groebner_basis_observed(dense_gens, &ring, &cfg, tracer)
     }));
     match result {
-        Ok(Ok(GBasis { basis, .. })) => Ok(basis),
+        Ok(Ok(GBasis { basis, .. })) => Ok(wrap_dense_vec(basis)),
         Ok(Err(e)) => Err(e),
         Err(_) => {
             log::warn!("traced GB computation panicked");
@@ -884,14 +907,16 @@ pub fn compute_gb_incremental_with_order_traced(
     let backup: Vec<Poly> = known_gb.iter().chain(new_polys.iter())
         .map(|p| p.clone())
         .collect();
+    let dense_known = unwrap_dense_vec(known_gb, &ring);
+    let dense_new = unwrap_dense_vec(new_polys, &ring);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut igb = IncrementalGB::new(ring.clone(), cfg);
-        igb.add_generators_observed(known_gb, tracer)?;
-        igb.add_generators_observed(new_polys, tracer)?;
-        Ok::<Vec<Poly>, crate::SolverError>(igb.basis())
+        igb.add_generators_observed(dense_known, tracer)?;
+        igb.add_generators_observed(dense_new, tracer)?;
+        Ok::<Vec<crate::ff::DensePoly>, crate::SolverError>(igb.basis())
     }));
     match result {
-        Ok(Ok(basis)) => basis,
+        Ok(Ok(basis)) => wrap_dense_vec(basis),
         Ok(Err(_)) => backup,
         Err(_) => {
             log::warn!("Traced incremental GB computation panicked; returning concatenated generators unreduced");
