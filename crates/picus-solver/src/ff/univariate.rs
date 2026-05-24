@@ -131,7 +131,7 @@ impl UnivariatePoly {
         UnivariatePoly { coeffs }
     }
 
-    /// Polynomial long division: returns `(q, r)` such that `self = q * other + r`
+    /// DensePoly long division: returns `(q, r)` such that `self = q * other + r`
     /// with `deg(r) < deg(other)`. Panics if `other` is zero.
     pub fn div_rem(&self, other: &Self, field: &PrimeField) -> (Self, Self) {
         assert!(!other.is_zero(), "division by zero polynomial");

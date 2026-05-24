@@ -26,7 +26,7 @@ use super::field::FieldElem;
 #[cfg(test)]
 use super::field::PrimeField;
 use super::monomial::{Monomial, MonomialOrder};
-use super::polynomial::{PolyRing, Polynomial};
+use super::polynomial::{PolyRing, DensePoly};
 use super::spair::SPair;
 
 /// Configuration for `groebner_basis`.
@@ -64,7 +64,7 @@ pub fn use_f4_default() -> bool {
 /// A computed Groebner basis.
 #[derive(Clone, Debug)]
 pub struct GBasis {
-    pub basis: Vec<Polynomial>,
+    pub basis: Vec<DensePoly>,
     pub order: MonomialOrder,
 }
 
@@ -76,14 +76,14 @@ pub trait BuchbergerObserver {
     /// over-approximate dependencies can union the deps of these reducers
     /// into the new entry.
     fn on_initial_reducers(&mut self, _reducer_indices: &[usize]) {}
-    fn on_initial_basis(&mut self, _idx: usize, _poly: &Polynomial) {}
+    fn on_initial_basis(&mut self, _idx: usize, _poly: &DensePoly) {}
     /// Called immediately before [`on_new_poly`] to report the
     /// active-basis indices that contributed to reducing the
     /// S-polynomial to its normal form. Observers must fold these
     /// reducers' deps into the new entry; the two pair parents alone
     /// under-approximate the dependency set.
     fn on_pair_reducers(&mut self, _reducer_indices: &[usize]) {}
-    fn on_new_poly(&mut self, _idx: usize, _poly: &Polynomial, _from_pair: (usize, usize)) {}
+    fn on_new_poly(&mut self, _idx: usize, _poly: &DensePoly, _from_pair: (usize, usize)) {}
     fn on_inter_reduce(&mut self, _old_idx: usize, _new_idx: usize) {}
 }
 
@@ -96,7 +96,7 @@ impl BuchbergerObserver for NoObserver {}
 /// `BuchbergerState::basis` slice.
 #[derive(Clone, Debug)]
 pub(super) struct BasisElement {
-    pub(super) poly: Polynomial,
+    pub(super) poly: DensePoly,
     pub(super) lt: Monomial,
     /// Divisibility fingerprint of `lt`. Read by `run_f4` when
     /// constructing `F4BasisRef`; the F4 symbolic-preprocessing
@@ -118,7 +118,7 @@ pub(super) struct BasisElement {
 
 /// Compute a Groebner basis of `generators` from scratch.
 pub fn groebner_basis(
-    generators: Vec<Polynomial>,
+    generators: Vec<DensePoly>,
     ring: &Arc<PolyRing>,
     config: &BuchbergerConfig,
 ) -> Result<GBasis, SolverError> {
@@ -139,7 +139,7 @@ pub fn groebner_basis(
 
 /// Run Buchberger with an observer (for UNSAT-core tracing).
 pub fn groebner_basis_observed<O: BuchbergerObserver>(
-    generators: Vec<Polynomial>,
+    generators: Vec<DensePoly>,
     ring: &Arc<PolyRing>,
     config: &BuchbergerConfig,
     observer: &mut O,
@@ -154,7 +154,7 @@ pub fn groebner_basis_observed<O: BuchbergerObserver>(
 /// Extend an existing GB with new generators (re-run Buchberger from the existing basis).
 pub fn groebner_basis_incremental(
     existing: GBasis,
-    new_generators: Vec<Polynomial>,
+    new_generators: Vec<DensePoly>,
     ring: &Arc<PolyRing>,
     config: &BuchbergerConfig,
 ) -> Result<GBasis, SolverError> {
@@ -164,22 +164,22 @@ pub fn groebner_basis_incremental(
 }
 
 /// Inter-reduce a basis (make every element's tail reduced w.r.t. all others; make monic).
-pub fn interreduce(basis: Vec<Polynomial>, ring: &Arc<PolyRing>) -> Vec<Polynomial> {
+pub fn interreduce(basis: Vec<DensePoly>, ring: &Arc<PolyRing>) -> Vec<DensePoly> {
     interreduce_with_cancel(basis, ring, None)
 }
 
 /// Inter-reduce with cooperative cancellation. Returns the partially-reduced
 /// basis (still valid generators, just not yet inter-reduced) on cancel.
 pub fn interreduce_with_cancel(
-    mut basis: Vec<Polynomial>,
+    mut basis: Vec<DensePoly>,
     ring: &Arc<PolyRing>,
     cancel: Option<&crate::timeout::CancelToken>,
-) -> Vec<Polynomial> {
+) -> Vec<DensePoly> {
     // Drop zeros and constants > 0 collapse to {1}.
     basis.retain(|p| !p.is_zero());
     // If any constant is present, the ideal is the whole ring.
     if basis.iter().any(|p| p.is_constant()) {
-        return vec![Polynomial::constant(ring.field.one(), ring)];
+        return vec![DensePoly::constant(ring.field.one(), ring)];
     }
     // Make monic.
     for p in basis.iter_mut() {
@@ -205,7 +205,7 @@ pub fn interreduce_with_cancel(
             }
         }
     }
-    let mut filtered: Vec<Polynomial> = basis
+    let mut filtered: Vec<DensePoly> = basis
         .into_iter()
         .zip(keep.iter())
         .filter_map(|(p, &k)| if k { Some(p) } else { None })
@@ -223,7 +223,7 @@ pub fn interreduce_with_cancel(
         if let Some(c) = cancel {
             if c.is_cancelled() { break; }
         }
-        let mut others: Vec<&Polynomial> = Vec::with_capacity(n.saturating_sub(1));
+        let mut others: Vec<&DensePoly> = Vec::with_capacity(n.saturating_sub(1));
         for (j, p) in filtered.iter().enumerate() {
             if j != i && !p.is_zero() {
                 others.push(p);
@@ -237,7 +237,7 @@ pub fn interreduce_with_cancel(
             None => filtered[i].reduce_by_refs(&others, ring),
         };
         filtered[i] = if red.is_zero() {
-            Polynomial::zero()
+            DensePoly::zero()
         } else {
             red.make_monic(ring)
         };
@@ -345,7 +345,7 @@ impl BuchbergerState {
     ///
     /// Caller responsibility: the input must already be a reduced GB
     /// in `self.ring.order`. No validation is performed.
-    pub(super) fn seed_with_reduced_basis(&mut self, basis: Vec<Polynomial>) {
+    pub(super) fn seed_with_reduced_basis(&mut self, basis: Vec<DensePoly>) {
         for poly in basis {
             if poly.is_zero() {
                 continue;
@@ -378,7 +378,7 @@ impl BuchbergerState {
 
     pub(super) fn add_generators<O: BuchbergerObserver>(
         &mut self,
-        generators: Vec<Polynomial>,
+        generators: Vec<DensePoly>,
         observer: &mut O,
     ) -> Result<(), SolverError> {
         // Detect homogeneous input. If every generator's terms all
@@ -409,7 +409,7 @@ impl BuchbergerState {
             }
             let mut use_counts = vec![0u64; active_idxs.len()];
             let mut g_red = {
-                let active_refs: Vec<&Polynomial> = active_idxs
+                let active_refs: Vec<&DensePoly> = active_idxs
                     .iter()
                     .map(|&i| &self.basis[i].poly)
                     .collect();
@@ -550,7 +550,7 @@ impl BuchbergerState {
         merge_sorted_descending(&mut self.open, new_pairs);
     }
 
-    pub(super) fn active_polys(&self) -> Vec<Polynomial> {
+    pub(super) fn active_polys(&self) -> Vec<DensePoly> {
         self.basis
             .iter()
             .filter(|e| e.active)
@@ -558,7 +558,7 @@ impl BuchbergerState {
             .collect()
     }
 
-    pub(super) fn active_poly_refs(&self) -> Vec<&Polynomial> {
+    pub(super) fn active_poly_refs(&self) -> Vec<&DensePoly> {
         self.basis
             .iter()
             .filter(|e| e.active)
@@ -593,7 +593,7 @@ impl BuchbergerState {
             return;
         }
         // Workspace = active polys, in active_idx order.
-        let mut workspace: Vec<Polynomial> = active_idx.iter()
+        let mut workspace: Vec<DensePoly> = active_idx.iter()
             .map(|&i| self.basis[i].poly.clone())
             .collect();
 
@@ -614,7 +614,7 @@ impl BuchbergerState {
             if cancel.is_cancelled() {
                 return;
             }
-            let others: Vec<&Polynomial> = workspace.iter()
+            let others: Vec<&DensePoly> = workspace.iter()
                 .enumerate()
                 .filter(|(j, p)| *j != i && !p.is_zero())
                 .map(|(_, p)| p)
@@ -729,7 +729,7 @@ impl BuchbergerState {
             }
             let mut use_counts = vec![0u64; active_idxs.len()];
             let mut nf = {
-                let active_refs: Vec<&Polynomial> = active_idxs
+                let active_refs: Vec<&DensePoly> = active_idxs
                     .iter()
                     .map(|&i| &self.basis[i].poly)
                     .collect();
@@ -866,9 +866,9 @@ impl BuchbergerState {
         Ok(())
     }
 
-    fn finalize_basis(self) -> Vec<Polynomial> {
+    fn finalize_basis(self) -> Vec<DensePoly> {
         // Take active polynomials and inter-reduce once.
-        let active: Vec<Polynomial> = self
+        let active: Vec<DensePoly> = self
             .basis
             .into_iter()
             .filter(|e| e.active)
@@ -876,7 +876,7 @@ impl BuchbergerState {
             .collect();
         // If there's a constant, the basis is just {1}.
         if active.iter().any(|p| p.is_constant()) {
-            return vec![Polynomial::constant(self.ring.field.one(), &self.ring)];
+            return vec![DensePoly::constant(self.ring.field.one(), &self.ring)];
         }
         interreduce(active, &self.ring)
     }
@@ -911,7 +911,7 @@ impl BuchbergerState {
         }
         let mut use_counts = vec![0u64; active_idxs.len()];
         let mut nf = {
-            let active_refs: Vec<&Polynomial> = active_idxs
+            let active_refs: Vec<&DensePoly> = active_idxs
                 .iter()
                 .map(|&i| &self.basis[i].poly)
                 .collect();
@@ -1207,12 +1207,12 @@ impl BuchbergerState {
 mod incremental;
 pub use incremental::IncrementalGB;
 
-// ─── Polynomial coefficient lookup ─────────────────────────────────────────
+// ─── DensePoly coefficient lookup ─────────────────────────────────────────
 
 /// Look up the coefficient at a specific monomial within a polynomial,
 /// using binary search over the polynomial's descending term order.
 /// Used by `crate::ideal::Ideal::min_poly_cancel`'s Gaussian elimination.
-pub(crate) fn poly_coefficient_at(p: &Polynomial, mon: &Monomial, ring: &PolyRing) -> FieldElem {
+pub(crate) fn poly_coefficient_at(p: &DensePoly, mon: &Monomial, ring: &PolyRing) -> FieldElem {
     let n = ring.n_vars;
     let target_deg = mon.total_degree();
     let target_exps = mon.exponents();
@@ -1226,7 +1226,7 @@ pub(crate) fn poly_coefficient_at(p: &Polynomial, mon: &Monomial, ring: &PolyRin
         let mid = lo + (hi - lo) / 2;
         let mid_exps = &exps[mid * n..(mid + 1) * n];
         let mid_deg = degs[mid];
-        let cmp = Polynomial::cmp_term_at(mid_exps, mid_deg, target_exps, target_deg, ring.order);
+        let cmp = DensePoly::cmp_term_at(mid_exps, mid_deg, target_exps, target_deg, ring.order);
         match cmp {
             std::cmp::Ordering::Equal => return coeffs[mid].clone(),
             std::cmp::Ordering::Greater => lo = mid + 1,

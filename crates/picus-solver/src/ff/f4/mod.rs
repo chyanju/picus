@@ -73,7 +73,7 @@ use std::sync::Arc;
 
 use super::divmask::DivMask;
 use super::monomial::Monomial;
-use super::polynomial::{PolyRing, Polynomial};
+use super::polynomial::{PolyRing, DensePoly};
 use super::spair::SPair;
 use crate::timeout::CancelToken;
 use matrix::{poly_to_sparse_row, sparse_echelon, sparse_row_to_poly, MonoKey, RowProv, SparseRow};
@@ -89,7 +89,7 @@ use matrix::{poly_to_sparse_row, sparse_echelon, sparse_row_to_poly, MonoKey, Ro
 /// used by `symbolic_preprocess` as a constant-time filter before
 /// the O(n_vars) `Monomial::divides` check.
 pub struct F4BasisRef<'a> {
-    pub poly: &'a Polynomial,
+    pub poly: &'a DensePoly,
     pub lt: &'a Monomial,
     pub lt_divmask: DivMask,
     pub active: bool,
@@ -103,7 +103,7 @@ pub struct F4BasisRef<'a> {
 /// stays accurate under F4.
 #[derive(Debug, Clone)]
 pub struct F4Output {
-    pub poly: Polynomial,
+    pub poly: DensePoly,
     /// Indices into the `batch[]` argument of [`process_batch`] —
     /// every pair whose S-polynomial row contributed to this output.
     pub from_pairs: Vec<usize>,
@@ -145,7 +145,7 @@ pub struct F4Workspace {
     /// `m -> (basis_idx, reducer_poly)`. The cache is keyed only by
     /// the monomial because the basis-element choice is uniquely
     /// determined by `m` and the current active set.
-    reducer_cache: std::collections::HashMap<MonoKey, (usize, Polynomial)>,
+    reducer_cache: std::collections::HashMap<MonoKey, (usize, DensePoly)>,
     /// Diagnostic counters; updated by `process_batch_with_workspace`.
     pub stats: F4WorkspaceStats,
     // Per-batch scratch collections. `process_batch_with_workspace`
@@ -218,7 +218,7 @@ pub fn process_batch_with_workspace(
     // Step 1: build S-polynomial for each pair, carrying the pair's
     // index in `batch[]` as the S-poly's provenance seed.
     // Each pair gives S = (lcm/lt_i) * f_i - (lc_i/lc_j) * (lcm/lt_j) * f_j.
-    let mut spolys: Vec<Polynomial> = Vec::with_capacity(batch.len());
+    let mut spolys: Vec<DensePoly> = Vec::with_capacity(batch.len());
     let mut spoly_pair_idx: Vec<usize> = Vec::with_capacity(batch.len());
     for (pair_idx, pair) in batch.iter().enumerate() {
         if cancel.map(|c| c.is_cancelled()).unwrap_or(false) {
@@ -405,12 +405,12 @@ pub fn process_batch_with_workspace(
 ///   `all_polys[n_spolys..]` slice), the basis index it was built
 ///   from. Caller seeds row provenance from this.
 fn symbolic_preprocess(
-    spolys: Vec<Polynomial>,
+    spolys: Vec<DensePoly>,
     basis: &[F4BasisRef],
     ring: &Arc<PolyRing>,
     cancel: Option<&CancelToken>,
     workspace: &mut F4Workspace,
-) -> (Vec<Polynomial>, usize, Vec<Monomial>, Vec<usize>) {
+) -> (Vec<DensePoly>, usize, Vec<Monomial>, Vec<usize>) {
     let n_spolys = spolys.len();
     // Destructure-borrow `workspace` so the reducer cache and the
     // per-batch scratch buffers are held as independent `&mut`
@@ -443,7 +443,7 @@ fn symbolic_preprocess(
             }
         }
     }
-    let mut all_polys: Vec<Polynomial> = spolys;
+    let mut all_polys: Vec<DensePoly> = spolys;
 
     let mut idx = 0;
     while idx < worklist_scratch.len() {

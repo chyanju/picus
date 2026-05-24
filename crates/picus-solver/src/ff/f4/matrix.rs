@@ -2,7 +2,7 @@
 //!
 //! Provides the row-echelon reduction over GF(p) used by F4's
 //! per-batch matrix step: row encoding/decoding between
-//! [`Polynomial`] and sparse `(column, coefficient)` pairs, plus the
+//! [`DensePoly`] and sparse `(column, coefficient)` pairs, plus the
 //! in-place echelon driver.
 //!
 //! Columns are assigned with the LARGEST monomial at column 0; rows
@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 
 use crate::ff::field::{FieldElem, PrimeField};
 use crate::ff::monomial::{Monomial, MonomialOrder};
-use crate::ff::polynomial::{PolyRing, Polynomial};
+use crate::ff::polynomial::{PolyRing, DensePoly};
 use crate::timeout::CancelToken;
 
 /// Row-provenance bookkeeping for sparse echelon. Tracks which input
@@ -49,7 +49,7 @@ pub(super) type SparseRow = Vec<(usize, FieldElem)>;
 /// iterating terms in source order already yields ascending columns;
 /// only a debug-mode sortedness check is run.
 pub(super) fn poly_to_sparse_row(
-    poly: &Polynomial,
+    poly: &DensePoly,
     monomial_to_col: &std::collections::HashMap<MonoKey, usize>,
     ring: &PolyRing,
 ) -> SparseRow {
@@ -72,17 +72,17 @@ pub(super) fn poly_to_sparse_row(
     row
 }
 
-/// Convert a sparse row back to a Polynomial.
+/// Convert a sparse row back to a DensePoly.
 pub(super) fn sparse_row_to_poly(
     row: &SparseRow,
     col_to_monomial: &[Monomial],
     ring: &PolyRing,
-) -> Polynomial {
+) -> DensePoly {
     let terms: Vec<(Monomial, FieldElem)> = row
         .iter()
         .map(|(c, v)| (col_to_monomial[*c].clone(), v.clone()))
         .collect();
-    Polynomial::from_terms(terms, ring)
+    DensePoly::from_terms(terms, ring)
 }
 
 /// Sparse row echelon reduction over GF(p) with parallel provenance
