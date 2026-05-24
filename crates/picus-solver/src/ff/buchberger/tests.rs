@@ -7,8 +7,8 @@ fn ring(n_vars: usize) -> Arc<PolyRing> {
     PolyRing::new(f, names, MonomialOrder::DegRevLex)
 }
 
-fn const_p(ring: &Arc<PolyRing>, v: u64) -> Polynomial {
-    Polynomial::constant(ring.field.from_u64(v), ring)
+fn const_p(ring: &Arc<PolyRing>, v: u64) -> DensePoly {
+    DensePoly::constant(ring.field.from_u64(v), ring)
 }
 
 #[test]
@@ -25,7 +25,7 @@ fn gb_unit_ideal() {
 fn incremental_push_pop() {
     let r = ring(2);
     let f = &r.field;
-    let p1 = Polynomial::from_terms(
+    let p1 = DensePoly::from_terms(
         vec![
             (Monomial::from_exponents(vec![2, 0]), f.from_u64(1)),
             (Monomial::from_exponents(vec![0, 0]), f.from_i64(-1)),
@@ -38,7 +38,7 @@ fn incremental_push_pop() {
     let basis_pre = igb.basis().len();
     igb.push();
     // Add a strong constraint that makes the system inconsistent: x = 2 AND x^2 = 1
-    let xeq2 = Polynomial::from_terms(
+    let xeq2 = DensePoly::from_terms(
         vec![
             (Monomial::from_exponents(vec![1, 0]), f.from_u64(1)),
             (Monomial::from_exponents(vec![0, 0]), f.from_i64(-2)),
@@ -134,7 +134,7 @@ fn mk_basis_elem(lt_exps: Vec<u16>, ring: &PolyRing) -> BasisElement {
     let lt = Monomial::from_exponents(lt_exps);
     let lt_divmask = ring.divmask.compute(&lt);
     BasisElement {
-        poly: Polynomial::zero(),
+        poly: DensePoly::zero(),
         lt,
         lt_divmask,
         active: true,

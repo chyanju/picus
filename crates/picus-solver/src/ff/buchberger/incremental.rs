@@ -12,7 +12,7 @@ use std::sync::Arc;
 use crate::SolverError;
 use crate::timeout::CancelToken;
 
-use super::super::polynomial::{PolyRing, Polynomial};
+use super::super::polynomial::{PolyRing, DensePoly};
 use super::super::spair::SPair;
 use super::{BuchbergerConfig, BuchbergerObserver, BuchbergerState, NoObserver};
 
@@ -51,11 +51,11 @@ impl IncrementalGB {
     /// GB in the engine's order. Skips S-pair generation among these
     /// inputs entirely — the caller asserts the seeded set has no open
     /// obligations.
-    pub fn seed_reduced_basis(&mut self, basis: Vec<Polynomial>) {
+    pub fn seed_reduced_basis(&mut self, basis: Vec<DensePoly>) {
         self.state.seed_with_reduced_basis(basis);
     }
 
-    pub fn add_generators(&mut self, polys: Vec<Polynomial>) -> Result<bool, SolverError> {
+    pub fn add_generators(&mut self, polys: Vec<DensePoly>) -> Result<bool, SolverError> {
         let mut obs = NoObserver;
         self.state.add_generators(polys, &mut obs)?;
         self.state.run(&mut obs)?;
@@ -110,7 +110,7 @@ impl IncrementalGB {
     /// [`crate::tracer::GbTracer`] for UNSAT-core extraction.
     pub fn add_generators_observed<O: BuchbergerObserver>(
         &mut self,
-        polys: Vec<Polynomial>,
+        polys: Vec<DensePoly>,
         observer: &mut O,
     ) -> Result<bool, SolverError> {
         self.state.add_generators(polys, observer)?;
@@ -151,11 +151,11 @@ impl IncrementalGB {
         }
     }
 
-    pub fn basis(&self) -> Vec<Polynomial> {
+    pub fn basis(&self) -> Vec<DensePoly> {
         self.state.active_polys()
     }
 
-    pub fn reduce(&self, p: &Polynomial) -> Polynomial {
+    pub fn reduce(&self, p: &DensePoly) -> DensePoly {
         let refs = self.state.active_poly_refs();
         p.reduce_by_refs(&refs, &self.state.ring)
     }

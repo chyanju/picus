@@ -22,7 +22,7 @@ use crate::encoder::{
 };
 use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
 use crate::ff::monomial::MonomialOrder;
-use crate::ideal::{interreduce_basis, ring_for_order, Ideal};
+use crate::ideal::{interreduce_basis, ring_for_order, unwrap_dense_vec, wrap_dense_vec, Ideal};
 use crate::model;
 use crate::poly::{FfPolyRing, Poly};
 use crate::split_gb::{
@@ -349,7 +349,7 @@ fn continue_partial(partial: &mut PartialBuild, cancel: &CancelToken) -> ResumeO
             }
             any_extend_work = true;
             let surviving: Vec<Poly> = if has_pending {
-                let basis = partial.inflight[i].basis();
+                let basis = wrap_dense_vec(partial.inflight[i].basis());
                 if basis.is_empty() {
                     pending_i
                 } else {
@@ -371,7 +371,7 @@ fn continue_partial(partial: &mut PartialBuild, cancel: &CancelToken) -> ResumeO
             }
 
             let res = if !surviving.is_empty() {
-                partial.inflight[i].add_generators(surviving)
+                partial.inflight[i].add_generators(unwrap_dense_vec(surviving, poly_ring.ctx()))
             } else {
                 partial.inflight[i].run_only()
             };
@@ -392,7 +392,7 @@ fn continue_partial(partial: &mut PartialBuild, cancel: &CancelToken) -> ResumeO
         let split_basis: Vec<Ideal> = partial
             .inflight
             .iter()
-            .map(|igb| Ideal::from_gb(poly_ring, igb.basis()))
+            .map(|igb| Ideal::from_gb(poly_ring, wrap_dense_vec(igb.basis())))
             .collect();
         for j in 0..k {
             for p in &split_basis[j].basis {
@@ -480,7 +480,7 @@ fn finalize_partial(partial: PartialBuild) -> Option<CachedBase> {
     let poly_ring: &FfPolyRing = &partial.poly_ring;
     let mut split_gb_owned: Vec<Vec<Poly>> = Vec::with_capacity(partial.inflight.len());
     for igb in partial.inflight.iter() {
-        let basis = igb.basis();
+        let basis = wrap_dense_vec(igb.basis());
         let reduced = interreduce_basis(poly_ring, basis, &cancel);
         split_gb_owned.push(reduced);
     }

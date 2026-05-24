@@ -10,11 +10,11 @@ fn ring_mod7(n_vars: usize) -> Arc<PolyRing> {
     PolyRing::new(f, names, MonomialOrder::DegRevLex)
 }
 
-fn x(idx: usize, ring: &Arc<PolyRing>) -> Polynomial {
-    Polynomial::variable(idx, ring)
+fn x(idx: usize, ring: &Arc<PolyRing>) -> DensePoly {
+    DensePoly::variable(idx, ring)
 }
 
-fn lt(p: &Polynomial, ring: &Arc<PolyRing>) -> Monomial {
+fn lt(p: &DensePoly, ring: &Arc<PolyRing>) -> Monomial {
     p.leading_monomial(ring).unwrap()
 }
 
@@ -27,7 +27,7 @@ fn f4_minimal_two_variables() {
     let x1 = x(1, &ring);
     // f1 = x*y - 1
     let xy = x0.mul(&x1, &ring);
-    let f1 = xy.sub(&Polynomial::constant(ring.field.one(), &ring), &ring);
+    let f1 = xy.sub(&DensePoly::constant(ring.field.one(), &ring), &ring);
     // f2 = y^2 - x
     let y2 = x1.mul(&x1, &ring);
     let f2 = y2.sub(&x0, &ring);
@@ -115,7 +115,7 @@ fn f4_matches_geobucket_on_random_pair_3vars() {
     let neg_one = ring.field.neg(&one);
     let part2 = f2.mul_term(mul2.exponents(), &neg_one, &ring);
     let s_poly = part1.add(&part2, &ring);
-    let basis_refs: Vec<&Polynomial> = basis_polys.iter().collect();
+    let basis_refs: Vec<&DensePoly> = basis_polys.iter().collect();
     let reduced = s_poly.reduce_by_refs(&basis_refs, &ring);
 
     if reduced.is_zero() {
@@ -141,7 +141,7 @@ fn f4_matches_geobucket_on_random_pair_3vars() {
 /// per-pair `reduce_by_refs`, and check the two paths produce the
 /// SAME set of normal-form residues (modulo reordering, modulo
 /// trailing zeros).
-fn cross_check_all_pairs(basis_polys: Vec<Polynomial>, ring: &Arc<PolyRing>) {
+fn cross_check_all_pairs(basis_polys: Vec<DensePoly>, ring: &Arc<PolyRing>) {
     let basis_lts: Vec<Monomial> = basis_polys
         .iter()
         .map(|p| lt(p, ring))
@@ -179,8 +179,8 @@ fn cross_check_all_pairs(basis_polys: Vec<Polynomial>, ring: &Arc<PolyRing>) {
     let f4_polys = process_batch(&pair_refs, &basis_refs, ring, None);
 
     // Reference: per-pair S-poly + reduce_by_refs.
-    let basis_poly_refs: Vec<&Polynomial> = basis_polys.iter().collect();
-    let mut ref_polys: Vec<Polynomial> = Vec::new();
+    let basis_poly_refs: Vec<&DensePoly> = basis_polys.iter().collect();
+    let mut ref_polys: Vec<DensePoly> = Vec::new();
     for pair in &pairs {
         let bi = &basis_polys[pair.i];
         let bj = &basis_polys[pair.j];
@@ -243,7 +243,7 @@ fn f4_multipair_3vars_cyclic() {
         .add(&x1.mul(&x2, &ring), &ring)
         .add(&x2.mul(&x0, &ring), &ring);
     let f3_part1 = x0.mul(&x1, &ring).mul(&x2, &ring);
-    let f3 = f3_part1.add(&Polynomial::constant(neg_one, &ring), &ring);
+    let f3 = f3_part1.add(&DensePoly::constant(neg_one, &ring), &ring);
     cross_check_all_pairs(vec![f1, f2, f3], &ring);
 }
 
@@ -405,7 +405,7 @@ fn f4_prov_multibatch_unions_pair_indices() {
     let x0 = x(0, &ring);
     let x1 = x(1, &ring);
     let f0 = x0.mul(&x0, &ring).sub(&x1, &ring);
-    let f1 = x0.mul(&x1, &ring).sub(&Polynomial::constant(ring.field.one(), &ring), &ring);
+    let f1 = x0.mul(&x1, &ring).sub(&DensePoly::constant(ring.field.one(), &ring), &ring);
     let f2 = x1.mul(&x1, &ring).sub(&x0, &ring);
     let basis_polys = vec![f0, f1, f2];
     let basis_lts: Vec<Monomial> = basis_polys.iter().map(|p| lt(p, &ring)).collect();
@@ -511,7 +511,7 @@ fn f4_incremental_pop_clears_trivial_state() {
     let mut igb = IncrementalGB::new(Arc::clone(&ring), cfg);
     igb.add_generators(vec![
         x0.mul(&x1, &ring).sub(
-            &Polynomial::constant(ring.field.one(), &ring),
+            &DensePoly::constant(ring.field.one(), &ring),
             &ring,
         ),
     ])
@@ -704,7 +704,7 @@ fn f4_vs_per_pair_random_cross_check() {
         let ring = ring_mod7(2);
         let mut rng = lcg(seed);
         // Build 3 random bivariate polynomials, each of degree ≤ 2.
-        let mut polys: Vec<Polynomial> = Vec::new();
+        let mut polys: Vec<DensePoly> = Vec::new();
         for _ in 0..3 {
             let one = ring.field.one();
             let x0 = x(0, &ring);
@@ -712,13 +712,13 @@ fn f4_vs_per_pair_random_cross_check() {
             let xx = x0.mul(&x0, &ring);
             let yy = x1.mul(&x1, &ring);
             let xy = x0.mul(&x1, &ring);
-            let const_one = Polynomial::constant(one.clone(), &ring);
-            let mut acc = Polynomial::zero();
+            let const_one = DensePoly::constant(one.clone(), &ring);
+            let mut acc = DensePoly::zero();
             for atom in [&xx, &xy, &yy, &x0, &x1, &const_one] {
                 let coeff = (rng() % 7) as u32;
                 if coeff == 0 { continue; }
                 let c = ring.field.from_int(coeff as i64);
-                let scaled = atom.mul(&Polynomial::constant(c, &ring), &ring);
+                let scaled = atom.mul(&DensePoly::constant(c, &ring), &ring);
                 acc = acc.add(&scaled, &ring);
             }
             if !acc.is_zero() {
@@ -795,14 +795,14 @@ fn f4_size_fallback_fires_on_small_batches() {
     use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
     use std::collections::HashSet;
     let ring = ring_mod7(4);
-    let xs: Vec<Polynomial> = (0..4).map(|i| Polynomial::variable(i, &ring)).collect();
+    let xs: Vec<DensePoly> = (0..4).map(|i| DensePoly::variable(i, &ring)).collect();
     // Katsura-3: 4 polynomials in `u_0, u_1, u_2, u_3`.
     // P_i = Σ_{j=-n..n} u_{|j|}·u_{|i-j|} - u_i  for 0 ≤ i ≤ 2,
     // and P_3 = u_0 + 2·u_1 + 2·u_2 + 2·u_3 - 1.
     let n = 3i32;
-    let mut polys: Vec<Polynomial> = Vec::new();
+    let mut polys: Vec<DensePoly> = Vec::new();
     for i in 0..3usize {
-        let mut acc = Polynomial::zero();
+        let mut acc = DensePoly::zero();
         for j in -n..=n {
             let aj = (j.unsigned_abs()) as usize;
             let ak = ((i as i32 - j).unsigned_abs()) as usize;
@@ -816,13 +816,13 @@ fn f4_size_fallback_fires_on_small_batches() {
         polys.push(acc);
     }
     let two = ring.field.from_int(2);
-    let two_poly = Polynomial::constant(two, &ring);
+    let two_poly = DensePoly::constant(two, &ring);
     let mut tail = xs[0].clone();
     for k in 1..4 {
         tail = tail.add(&xs[k].mul(&two_poly, &ring), &ring);
     }
     let one = ring.field.one();
-    tail = tail.sub(&Polynomial::constant(one, &ring), &ring);
+    tail = tail.sub(&DensePoly::constant(one, &ring), &ring);
     polys.push(tail);
 
     let cfg_f4 = BuchbergerConfig {
@@ -879,13 +879,13 @@ fn f4_size_fallback_fires_on_small_batches() {
 fn f4_matrix_path_fires_on_cyclic_5() {
     use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
     let ring = ring_mod7(5);
-    let xs: Vec<Polynomial> = (0..5).map(|i| Polynomial::variable(i, &ring)).collect();
+    let xs: Vec<DensePoly> = (0..5).map(|i| DensePoly::variable(i, &ring)).collect();
     let one = ring.field.one();
     let neg_one = ring.field.neg(&one);
-    let mut polys: Vec<Polynomial> = Vec::new();
+    let mut polys: Vec<DensePoly> = Vec::new();
     // f_d = Σ_{r=0..n} ∏_{k=0..d} x_{(r+k) mod n}  for d = 1..n.
     for d in 1..5 {
-        let mut acc = Polynomial::zero();
+        let mut acc = DensePoly::zero();
         for r in 0..5 {
             let mut prod = xs[r % 5].clone();
             for k in 1..d {
@@ -900,7 +900,7 @@ fn f4_matrix_path_fires_on_cyclic_5() {
     for k in 1..5 {
         p = p.mul(&xs[k], &ring);
     }
-    p = p.add(&Polynomial::constant(neg_one, &ring), &ring);
+    p = p.add(&DensePoly::constant(neg_one, &ring), &ring);
     polys.push(p);
 
     let cfg = BuchbergerConfig {
@@ -943,13 +943,13 @@ fn f4_large_batch_cyclic_6() {
     use std::collections::HashSet;
     let n = 6usize;
     let ring = ring_mod7(n);
-    let xs: Vec<Polynomial> = (0..n).map(|i| Polynomial::variable(i, &ring)).collect();
+    let xs: Vec<DensePoly> = (0..n).map(|i| DensePoly::variable(i, &ring)).collect();
     let one = ring.field.one();
     let neg_one = ring.field.neg(&one);
-    let mut polys: Vec<Polynomial> = Vec::new();
+    let mut polys: Vec<DensePoly> = Vec::new();
     // Cyclic-n: f_d = Σ_{r=0..n} ∏_{k=0..d} x_{(r+k) mod n}  for d = 1..n.
     for d in 1..n {
-        let mut acc = Polynomial::zero();
+        let mut acc = DensePoly::zero();
         for r in 0..n {
             let mut prod = xs[r % n].clone();
             for k in 1..d {
@@ -964,7 +964,7 @@ fn f4_large_batch_cyclic_6() {
     for k in 1..n {
         p = p.mul(&xs[k], &ring);
     }
-    p = p.add(&Polynomial::constant(neg_one, &ring), &ring);
+    p = p.add(&DensePoly::constant(neg_one, &ring), &ring);
     polys.push(p);
 
     let cfg_f4 = BuchbergerConfig {
@@ -1049,14 +1049,14 @@ fn f4_large_batch_homog_5vars_deg2() {
             .wrapping_add(1442695040888963407);
         seed
     };
-    let xs: Vec<Polynomial> = (0..5).map(|i| Polynomial::variable(i, &ring)).collect();
-    let mut polys: Vec<Polynomial> = Vec::new();
+    let xs: Vec<DensePoly> = (0..5).map(|i| DensePoly::variable(i, &ring)).collect();
+    let mut polys: Vec<DensePoly> = Vec::new();
     for _ in 0..8 {
         // Sum of 5 random degree-2 atoms `c · x_i · x_j` with
         // distinct (i, j) pairs. No constant tail — keeps the
         // poly homogeneous degree 2 and prevents the basis from
         // collapsing to `1`.
-        let mut acc = Polynomial::zero();
+        let mut acc = DensePoly::zero();
         let mut used: std::collections::HashSet<(usize, usize)> =
             std::collections::HashSet::new();
         let mut tries = 0;
@@ -1073,7 +1073,7 @@ fn f4_large_batch_homog_5vars_deg2() {
                 continue;
             }
             let term = xs[i].mul(&xs[j], &ring);
-            acc = acc.add(&term.mul(&Polynomial::constant(c, &ring), &ring), &ring);
+            acc = acc.add(&term.mul(&DensePoly::constant(c, &ring), &ring), &ring);
         }
         if !acc.is_zero() {
             polys.push(acc);

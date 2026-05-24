@@ -33,7 +33,7 @@ mod repr_oracle;
 pub use field::{PrimeField, FieldElem};
 pub use monomial::{Monomial, MonomialOrder};
 pub use divmask::{DivMask, DivMaskScheme};
-pub use polynomial::{PolyRing, Polynomial, TermRef};
+pub use polynomial::{DensePoly, PolyRing, Polynomial, TermRef};
 pub use spair::SPair;
 pub use buchberger::{
     BuchbergerConfig, BuchbergerObserver, GBasis, IncrementalGB, NoObserver,

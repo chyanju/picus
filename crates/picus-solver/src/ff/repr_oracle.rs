@@ -18,7 +18,7 @@ use num_bigint::BigUint;
 
 use super::field::PrimeField;
 use super::monomial::{Monomial, MonomialOrder};
-use super::polynomial::{PolyRing, Polynomial};
+use super::polynomial::{PolyRing, DensePoly};
 use super::repr::{MonomialRepr, PolyRepr};
 use super::sparse_monomial::SparseMonomial;
 use super::sparse_polynomial::SparsePolynomial;
@@ -228,12 +228,12 @@ fn rand_terms(rng: &mut Rng, max_terms: usize) -> Vec<(Vec<u16>, u64)> {
     (0..n).map(|_| (rand_exps(rng), 1 + rng.below(PRIME - 1))).collect()
 }
 
-fn build_dense(terms: &[(Vec<u16>, u64)], r: &PolyRing) -> Polynomial {
+fn build_dense(terms: &[(Vec<u16>, u64)], r: &PolyRing) -> DensePoly {
     let ts = terms
         .iter()
         .map(|(e, c)| (Monomial::from_exponents(e.clone()), r.field.from_u64(*c)))
         .collect();
-    Polynomial::from_terms(ts, r)
+    DensePoly::from_terms(ts, r)
 }
 
 fn build_sparse(terms: &[(Vec<u16>, u64)], r: &PolyRing) -> SparsePolynomial {
@@ -256,7 +256,7 @@ fn terms_ref_map(terms: &[(Vec<u16>, u64)]) -> PolyMap {
     m
 }
 
-fn dense_to_map(p: &Polynomial, r: &PolyRing) -> PolyMap {
+fn dense_to_map(p: &DensePoly, r: &PolyRing) -> PolyMap {
     let mut m = PolyMap::new();
     for t in p.terms(r) {
         let c = u64::try_from(r.field.to_biguint(t.coefficient())).unwrap();
@@ -365,14 +365,14 @@ fn reduce_geobucket_matches_naive_random() {
     for _ in 0..2_000 {
         let subject = build_dense(&rand_terms(&mut rng, 10), &r);
         let n_div = 1 + rng.below(3) as usize;
-        let divisors: Vec<Polynomial> = (0..n_div)
+        let divisors: Vec<DensePoly> = (0..n_div)
             .map(|_| build_dense(&rand_terms(&mut rng, 5), &r))
             .filter(|d| !d.is_zero())
             .collect();
         if divisors.is_empty() {
             continue;
         }
-        let refs: Vec<&Polynomial> = divisors.iter().collect();
+        let refs: Vec<&DensePoly> = divisors.iter().collect();
         let geo = subject.reduce_by_refs_geobucket(&refs, &r, None, None);
         let naive = subject.reduce_by_refs_naive(&refs, &r);
         assert_eq!(dense_to_map(&geo, &r), dense_to_map(&naive, &r));
@@ -397,7 +397,7 @@ fn sparse_reduce_matches_dense_naive_random() {
 
         // Dense reference (filter zero divisors, preserve order).
         let subject_d = build_dense(&subj_terms, &r);
-        let divisors_d: Vec<Polynomial> = div_terms
+        let divisors_d: Vec<DensePoly> = div_terms
             .iter()
             .map(|t| build_dense(t, &r))
             .filter(|d| !d.is_zero())
@@ -405,7 +405,7 @@ fn sparse_reduce_matches_dense_naive_random() {
         if divisors_d.is_empty() {
             continue;
         }
-        let refs_d: Vec<&Polynomial> = divisors_d.iter().collect();
+        let refs_d: Vec<&DensePoly> = divisors_d.iter().collect();
         let dense_nf = subject_d.reduce_by_refs_naive(&refs_d, &r);
 
         // Sparse: same term lists, same filter, same order.
@@ -456,7 +456,7 @@ fn sparse_groebner_basis_matches_dense_random() {
             .collect();
 
         // Dense reduced GB.
-        let gens_d: Vec<Polynomial> = gen_terms
+        let gens_d: Vec<DensePoly> = gen_terms
             .iter()
             .map(|t| build_dense(t, r))
             .filter(|p| !p.is_zero())
@@ -484,7 +484,7 @@ fn sparse_groebner_basis_matches_dense_random() {
     }
 }
 
-/// `Polynomial`↔`SparsePolynomial` conversions (the boundary the native
+/// `DensePoly`↔`SparsePolynomial` conversions (the boundary the native
 /// GB dispatch uses) must be exact: a polynomial built directly in each
 /// representation equals the one converted from the other.
 #[test]
@@ -557,7 +557,7 @@ fn check_polyrepr<P: PolyRepr>(seed: u64, iters: usize) {
 
 #[test]
 fn polyrepr_trait_dense() {
-    check_polyrepr::<Polynomial>(41, 2_000);
+    check_polyrepr::<DensePoly>(41, 2_000);
 }
 
 #[test]

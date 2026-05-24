@@ -11,9 +11,9 @@
 use std::collections::BTreeSet;
 
 use crate::ff::buchberger::BuchbergerObserver;
-use crate::ff::polynomial::{PolyRing, Polynomial};
+use crate::ff::polynomial::{PolyRing, DensePoly};
 
-/// Polynomial dependency tracker for a Buchberger computation.
+/// DensePoly dependency tracker for a Buchberger computation.
 ///
 /// After the computation finishes, call [`GbTracer::unsat_core_for`] to
 /// extract the input indices responsible for any particular basis
@@ -121,7 +121,7 @@ impl GbTracer {
     /// elements.  Returns `None` if no constant is present.
     pub fn unsat_core_for_trivial(
         &self,
-        basis: &[Polynomial],
+        basis: &[DensePoly],
         _ring: &PolyRing,
     ) -> Option<Vec<usize>> {
         let mut combined: BTreeSet<usize> = BTreeSet::new();
@@ -150,7 +150,7 @@ impl BuchbergerObserver for GbTracer {
         self.pending_reducers.extend_from_slice(reducer_indices);
     }
 
-    fn on_initial_basis(&mut self, _idx: usize, _poly: &Polynomial) {
+    fn on_initial_basis(&mut self, _idx: usize, _poly: &DensePoly) {
         // Each `on_initial_basis` event corresponds to introducing one
         // original input poly. We assign it the next input index in
         // sequence (`input_count`), independent of how many derived
@@ -184,7 +184,7 @@ impl BuchbergerObserver for GbTracer {
         self.pending_pair_reducers.extend_from_slice(reducer_indices);
     }
 
-    fn on_new_poly(&mut self, _idx: usize, _poly: &Polynomial, from_pair: (usize, usize)) {
+    fn on_new_poly(&mut self, _idx: usize, _poly: &DensePoly, from_pair: (usize, usize)) {
         // New basis element depends on the union of its parents' deps
         // plus the deps of any reducer that participated in the NF
         // computation (reported by the preceding `on_pair_reducers`).
@@ -238,7 +238,7 @@ mod tests {
     fn test_tracer_initial_one_input_per_call() {
         let mut tracer = GbTracer::new(5);
         // Simulate add_generators calling on_initial_basis 3 times.
-        let p = Polynomial::zero();
+        let p = DensePoly::zero();
         for _ in 0..3 {
             tracer.on_initial_basis(0, &p);
         }
@@ -251,7 +251,7 @@ mod tests {
     #[test]
     fn test_tracer_derived_narrows_core() {
         let mut tracer = GbTracer::new(4);
-        let p = Polynomial::zero();
+        let p = DensePoly::zero();
         for _ in 0..4 {
             tracer.on_initial_basis(0, &p);
         }
@@ -277,7 +277,7 @@ mod tests {
         // active basis members 2 and 3 — those reducers must show up
         // in the new poly's core.
         let mut tracer = GbTracer::new(4);
-        let p = Polynomial::zero();
+        let p = DensePoly::zero();
         for _ in 0..4 {
             tracer.on_initial_basis(0, &p);
         }
