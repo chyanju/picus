@@ -379,6 +379,49 @@ fn reduce_geobucket_matches_naive_random() {
     }
 }
 
+/// Sparse multivariate reduction (`SparsePolynomial::reduce_by_refs`)
+/// must produce the same normal form as the dense naive reduction (the
+/// reference) on random subjects and divisor sets, using the SAME
+/// divisor order — the sparse reduction oracle. (Reduction is
+/// order-dependent, so the same order is required for term-for-term
+/// agreement.)
+#[test]
+fn sparse_reduce_matches_dense_naive_random() {
+    let r = ring();
+    let mut rng = Rng::new(57);
+    for _ in 0..2_000 {
+        let subj_terms = rand_terms(&mut rng, 10);
+        let n_div = 1 + rng.below(3) as usize;
+        let div_terms: Vec<Vec<(Vec<u16>, u64)>> =
+            (0..n_div).map(|_| rand_terms(&mut rng, 5)).collect();
+
+        // Dense reference (filter zero divisors, preserve order).
+        let subject_d = build_dense(&subj_terms, &r);
+        let divisors_d: Vec<Polynomial> = div_terms
+            .iter()
+            .map(|t| build_dense(t, &r))
+            .filter(|d| !d.is_zero())
+            .collect();
+        if divisors_d.is_empty() {
+            continue;
+        }
+        let refs_d: Vec<&Polynomial> = divisors_d.iter().collect();
+        let dense_nf = subject_d.reduce_by_refs_naive(&refs_d, &r);
+
+        // Sparse: same term lists, same filter, same order.
+        let subject_s = build_sparse(&subj_terms, &r);
+        let divisors_s: Vec<SparsePolynomial> = div_terms
+            .iter()
+            .map(|t| build_sparse(t, &r))
+            .filter(|d| !d.is_zero())
+            .collect();
+        let refs_s: Vec<&SparsePolynomial> = divisors_s.iter().collect();
+        let sparse_nf = subject_s.reduce_by_refs(&refs_s, &r);
+
+        assert_eq!(dense_to_map(&dense_nf, &r), sparse_to_map(&sparse_nf, &r));
+    }
+}
+
 /// Exercise the `PolyRepr` trait generically: build via the trait,
 /// run add/mul through it, and check `collect_terms_idx` against the
 /// coefficient-map reference — for both representations.

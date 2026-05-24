@@ -193,6 +193,61 @@ impl SparsePolynomial {
         }
         acc
     }
+
+    /// Normal form of `self` modulo `divisors` (multivariate division).
+    ///
+    /// For each leading term, the first divisor whose leading monomial
+    /// divides it cancels that term (subtract `(lt/d_lt) · divisor`);
+    /// a leading term divisible by none is irreducible and moves to the
+    /// result. Divisibility and the quotient monomial come straight from
+    /// [`MonomialRepr`] (no dense divmask). The dense
+    /// `Polynomial::reduce_by_refs_naive` is the differential oracle for
+    /// this (same divisor order ⇒ identical normal form).
+    pub fn reduce_by_refs(&self, divisors: &[&SparsePolynomial], ring: &PolyRing) -> SparsePolynomial {
+        if self.is_zero() {
+            return self.clone();
+        }
+        // Leading (monomial, coeff) of each divisor that has one.
+        let div_lt: Vec<Option<(SparseMonomial, FieldElem)>> =
+            divisors.iter().map(|d| d.terms.first().cloned()).collect();
+
+        let mut current = self.clone();
+        let mut result: Vec<(SparseMonomial, FieldElem)> = Vec::new();
+
+        while let Some((lm, lc)) = current.terms.first().cloned() {
+            let mut chosen: Option<usize> = None;
+            for (di, lt) in div_lt.iter().enumerate() {
+                if let Some((dlm, _)) = lt {
+                    if MonomialRepr::divides(dlm, &lm) {
+                        chosen = Some(di);
+                        break;
+                    }
+                }
+            }
+            match chosen {
+                Some(di) => {
+                    let (dlm, dlc) = div_lt[di].as_ref().unwrap();
+                    let ratio = ring
+                        .field
+                        .div(&lc, dlc)
+                        .expect("divisor leading coefficient is nonzero");
+                    let neg_ratio = ring.field.neg(&ratio);
+                    let shift = MonomialRepr::div(&lm, dlm);
+                    // current += (-ratio · shift) · divisor  ⇒ cancels the leading term.
+                    let factor = SparsePolynomial::from_terms(vec![(shift, neg_ratio)], ring);
+                    let prod = factor.mul(divisors[di], ring);
+                    current = current.add(&prod, ring);
+                }
+                None => {
+                    // Irreducible leading term: move it to the result and
+                    // drop it from `current` (terms stay sorted descending).
+                    result.push((lm, lc));
+                    current.terms.remove(0);
+                }
+            }
+        }
+        SparsePolynomial::from_terms(result, ring)
+    }
 }
 
 impl super::repr::PolyRepr for SparsePolynomial {
