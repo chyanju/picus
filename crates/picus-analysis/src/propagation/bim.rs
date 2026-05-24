@@ -85,36 +85,22 @@ impl PropagationLemma for BimLemma {
 /// a non-zero coefficient. Returns `Vec<(wire, coeff)>` per equation.
 /// Constant terms are tolerated if and only if they are exactly zero.
 fn collect_linear_homogeneous(ir: &PolyIR) -> Vec<Vec<(usize, BigUint)>> {
-    let ring = &ir.ring;
-    let n_vars = ring.n_vars();
-    let field = ir.ring.field();
-
     let mut out = Vec::new();
+    // Sparse-native: a term is admissible iff it is the zero constant, or a
+    // single linear variable (one nonzero entry with exponent 1).
     'poly: for poly in &ir.equalities {
         let mut row: Vec<(usize, BigUint)> = Vec::new();
-        for (c, m) in ring.terms(poly) {
-            let mut single_var = None;
-            let mut total = 0usize;
-            for v in 0..n_vars {
-                let e = ring.exponent_at(&m, v);
-                total += e;
-                if e > 0 {
-                    if single_var.is_some() {
-                        continue 'poly;
-                    }
-                    if e != 1 {
-                        continue 'poly;
-                    }
-                    single_var = Some(v);
-                }
-            }
-            if total == 0 {
-                if !field.to_biguint(c).is_zero() {
+        for (coeff, vars) in ir.poly_terms_idx(poly) {
+            if vars.is_empty() {
+                // constant term: tolerated only if exactly zero
+                if !coeff.is_zero() {
                     continue 'poly;
                 }
+            } else if vars.len() == 1 && vars[0].1 == 1 {
+                row.push((ir.var_to_wire(vars[0].0), coeff));
             } else {
-                let v = single_var.unwrap();
-                row.push((ir.var_to_wire(v), field.to_biguint(c)));
+                // nonlinear (deg ≥ 2, or a product of variables)
+                continue 'poly;
             }
         }
         if !row.is_empty() {

@@ -67,22 +67,16 @@ fn match_x_squared_minus_x(
     poly: &picus_solver::poly::IrPoly,
     p_minus_1: &BigUint,
 ) -> Option<usize> {
-    let ring = &ir.ring;
-    let n_vars = ring.n_vars();
-    let field = ir.ring.field();
-
-    // Two-term degree-2 polynomial: gather terms and check the shape.
-    let mut terms: Vec<(BigUint, Vec<(usize, usize)>)> = Vec::new();
-    for (c, m) in ring.terms(poly) {
-        let mut exps = Vec::new();
-        for v in 0..n_vars {
-            let e = ring.exponent_at(&m, v);
-            if e > 0 {
-                exps.push((v, e));
-            }
-        }
-        terms.push((field.to_biguint(c), exps));
-    }
+    // Two-term degree-2 polynomial: gather terms sparse-natively as
+    // (coeff, nonzero (var, exp) pairs) — no `0..n_vars` scan, no dense
+    // monomial materialisation (matters on wide rings).
+    let terms: Vec<(BigUint, Vec<(usize, usize)>)> = ir
+        .poly_terms_idx(poly)
+        .map(|(coeff, vars)| {
+            let exps: Vec<(usize, usize)> = vars.into_iter().map(|(v, e)| (v, e as usize)).collect();
+            (coeff, exps)
+        })
+        .collect();
     if terms.len() != 2 {
         return None;
     }

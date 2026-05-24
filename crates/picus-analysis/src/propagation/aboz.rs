@@ -157,50 +157,36 @@ impl AbozLemma {
 /// = 0`. Skips constraints that have any other terms beyond the
 /// single bilinear monomial.
 fn collect_bilinear_zero(ir: &PolyIR) -> Vec<(usize, usize)> {
-    let ring = &ir.ring;
-    let n_vars = ring.n_vars();
-    let field = ir.ring.field();
     let mut out = Vec::new();
     for poly in &ir.equalities {
-        if let Some((a, b)) = match_bilinear(ir, poly, ring, n_vars, field) {
+        if let Some((a, b)) = match_bilinear(ir, poly) {
             out.push((a, b));
         }
     }
     out
 }
 
-fn match_bilinear(
-    ir: &PolyIR,
-    poly: &Poly,
-    ring: &picus_solver::poly::IrPolyRing,
-    n_vars: usize,
-    field: &picus_solver::ff::field::PrimeField,
-) -> Option<(usize, usize)> {
+fn match_bilinear(ir: &PolyIR, poly: &Poly) -> Option<(usize, usize)> {
     let mut bilinear: Option<(usize, usize)> = None;
-    for (c, m) in ring.terms(poly) {
-        let mut total = 0usize;
-        let mut vars: Vec<usize> = Vec::new();
-        for v in 0..n_vars {
-            let e = ring.exponent_at(&m, v);
-            total += e;
-            if e == 1 {
-                vars.push(v);
-            } else if e > 1 {
-                return None;
-            }
+    // Sparse-native: each term as nonzero (var, exp) pairs. After the
+    // (e > 1) reject, the nonzero count IS the total degree, so a term is
+    // the zero constant, or exactly the bilinear `x_a·x_b` monomial.
+    for (coeff, vars) in ir.poly_terms_idx(poly) {
+        if vars.iter().any(|&(_, e)| e > 1) {
+            return None;
         }
-        match total {
+        match vars.len() {
             0 => {
-                if !field.to_biguint(c).is_zero() {
+                if !coeff.is_zero() {
                     return None;
                 }
             }
-            2 if vars.len() == 2 => {
+            2 => {
                 if bilinear.is_some() {
                     return None;
                 }
-                let a = ir.var_to_wire(vars[0]);
-                let b = ir.var_to_wire(vars[1]);
+                let a = ir.var_to_wire(vars[0].0);
+                let b = ir.var_to_wire(vars[1].0);
                 bilinear = Some((a.min(b), a.max(b)));
             }
             _ => return None,
@@ -212,30 +198,19 @@ fn match_bilinear(
 /// Wire-index sets for every equality whose terms are all linear
 /// monomials (no quadratic terms). Constants are ignored.
 fn collect_linear_sums(ir: &PolyIR) -> Vec<HashSet<usize>> {
-    let ring = &ir.ring;
-    let n_vars = ring.n_vars();
     let mut out = Vec::new();
+    // Sparse-native: accept a poly only if every term is a constant or a
+    // single linear variable (one nonzero entry with exponent 1).
     'poly: for poly in &ir.equalities {
         let mut wires: HashSet<usize> = HashSet::new();
-        for (_, m) in ring.terms(poly) {
-            let mut total = 0usize;
-            let mut var: Option<usize> = None;
-            for v in 0..n_vars {
-                let e = ring.exponent_at(&m, v);
-                total += e;
-                if e == 1 {
-                    if var.is_some() {
-                        continue 'poly;
-                    }
-                    var = Some(v);
-                } else if e > 1 {
-                    continue 'poly;
-                }
+        for (_coeff, vars) in ir.poly_terms_idx(poly) {
+            if vars.is_empty() {
+                continue; // constant term
             }
-            if total == 0 {
-                continue;
+            if vars.len() != 1 || vars[0].1 != 1 {
+                continue 'poly; // nonlinear / product term
             }
-            wires.insert(ir.var_to_wire(var.unwrap()));
+            wires.insert(ir.var_to_wire(vars[0].0));
         }
         if !wires.is_empty() {
             out.push(wires);
