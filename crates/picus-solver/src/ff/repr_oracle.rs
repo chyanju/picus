@@ -426,12 +426,13 @@ fn sparse_reduce_matches_dense_naive_random() {
 /// must equal the dense engine's reduced Gröbner basis on random
 /// generator sets. The reduced GB under a fixed order is unique, so the
 /// two representations must agree exactly (compared as monic,
-/// canonically-sorted term maps). Uses a small 3-variable, low-degree
-/// ring so the naive (criteria-free) sparse Buchberger stays fast.
+/// canonically-sorted term maps). The sparse engine's product / M / B
+/// criteria and sugar selection change only which S-pairs are processed,
+/// never the final ideal, so this agreement holds regardless.
 #[test]
 fn sparse_groebner_basis_matches_dense_random() {
     use super::buchberger::{groebner_basis, interreduce, BuchbergerConfig};
-    const GV: usize = 3;
+    const GV: usize = 4;
     const GMAX: u64 = 2;
     let arc_r = PolyRing::new(
         PrimeField::new(BigUint::from(PRIME)),
@@ -441,8 +442,8 @@ fn sparse_groebner_basis_matches_dense_random() {
     let r: &PolyRing = &arc_r;
     let mut rng = Rng::new(91);
 
-    for _ in 0..200 {
-        let n_gen = 2 + rng.below(2) as usize; // 2–3 generators
+    for _ in 0..300 {
+        let n_gen = 2 + rng.below(3) as usize; // 2–4 generators
         let gen_terms: Vec<Vec<(Vec<u16>, u64)>> = (0..n_gen)
             .map(|_| {
                 let n = 1 + rng.below(3) as usize;
@@ -475,8 +476,8 @@ fn sparse_groebner_basis_matches_dense_random() {
             .map(|t| build_sparse(t, r))
             .filter(|p| !p.is_zero())
             .collect();
-        let gb_s = super::sparse_gb::groebner_basis(gens_s, r);
-        let red_s = super::sparse_gb::interreduce(gb_s, r);
+        let gb_s = super::sparse_gb::groebner_basis(gens_s, r, None);
+        let red_s = super::sparse_gb::interreduce(gb_s, r, None);
         let mut canon_s: Vec<PolyMap> = red_s.iter().map(|p| sparse_to_map(p, r)).collect();
         canon_s.sort();
 
