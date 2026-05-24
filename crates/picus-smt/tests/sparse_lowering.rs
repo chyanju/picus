@@ -66,6 +66,25 @@ fn eddsa_poseidon_lowering_footprint() {
         if sparse_mono_bytes > 0 { dense_mono_bytes / sparse_mono_bytes } else { 0 }
     );
 
+    // The DPVL setup also runs `wire_connectivity_score`, which reads
+    // every equality via `appearing_indeterminates` before any solve.
+    // Confirm that read path is cheap under sparse (no densification): it
+    // localises memory cost away from the IR representation.
+    {
+        use std::collections::{HashMap, HashSet};
+        let mut counter: HashMap<usize, usize> = HashMap::new();
+        for poly in &ir.equalities {
+            let mut seen: HashSet<usize> = HashSet::new();
+            for v in ir.ring.appearing_indeterminates(poly).iter() {
+                seen.insert(ir.var_to_wire(v));
+            }
+            for w in seen {
+                *counter.entry(w).or_insert(0) += 1;
+            }
+        }
+        eprintln!("  connectivity wires touched: {}", counter.len());
+    }
+
     assert!(n_vars > 40_000, "EdDSAPoseidon should be a wide two-copy ring");
     assert!(total_terms > 0, "lowering must produce equalities");
     // The assertion that matters is implicit: under the sparse rep this
