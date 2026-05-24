@@ -187,3 +187,54 @@ impl SparsePolynomial {
         acc
     }
 }
+
+impl super::repr::PolyRepr for SparsePolynomial {
+    type Mono = SparseMonomial;
+
+    fn zero() -> Self {
+        SparsePolynomial::zero()
+    }
+    fn constant(c: FieldElem, ring: &PolyRing) -> Self {
+        SparsePolynomial::constant(c, ring)
+    }
+    fn variable(var: usize, ring: &PolyRing) -> Self {
+        SparsePolynomial::variable(var, ring)
+    }
+    fn from_terms(terms: Vec<(SparseMonomial, FieldElem)>, ring: &PolyRing) -> Self {
+        SparsePolynomial::from_terms(terms, ring)
+    }
+    fn is_zero(&self) -> bool {
+        SparsePolynomial::is_zero(self)
+    }
+    fn num_terms(&self) -> usize {
+        SparsePolynomial::num_terms(self)
+    }
+    fn add(&self, other: &Self, ring: &PolyRing) -> Self {
+        SparsePolynomial::add(self, other, ring)
+    }
+    fn sub(&self, other: &Self, ring: &PolyRing) -> Self {
+        SparsePolynomial::sub(self, other, ring)
+    }
+    fn mul(&self, other: &Self, ring: &PolyRing) -> Self {
+        SparsePolynomial::mul(self, other, ring)
+    }
+    fn scale(&self, c: &FieldElem, ring: &PolyRing) -> Self {
+        SparsePolynomial::scale(self, c, ring)
+    }
+    fn negate(&self, ring: &PolyRing) -> Self {
+        SparsePolynomial::negate(self, ring)
+    }
+    fn evaluate(&self, values: &[FieldElem], ring: &PolyRing) -> FieldElem {
+        SparsePolynomial::evaluate(self, values, ring)
+    }
+    fn collect_terms_idx(&self, ring: &PolyRing) -> Vec<(num_bigint::BigUint, Vec<(usize, u16)>)> {
+        self.iter_terms()
+            .map(|(m, c)| {
+                let coeff = ring.field.to_biguint(c);
+                let mut vars = Vec::new();
+                m.for_each_nonzero(|v, e| vars.push((v, e)));
+                (coeff, vars)
+            })
+            .collect()
+    }
+}

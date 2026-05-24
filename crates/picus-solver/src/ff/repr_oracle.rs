@@ -19,7 +19,7 @@ use num_bigint::BigUint;
 use super::field::PrimeField;
 use super::monomial::{Monomial, MonomialOrder};
 use super::polynomial::{PolyRing, Polynomial};
-use super::repr::MonomialRepr;
+use super::repr::{MonomialRepr, PolyRepr};
 use super::sparse_monomial::SparseMonomial;
 use super::sparse_polynomial::SparsePolynomial;
 
@@ -377,4 +377,66 @@ fn reduce_geobucket_matches_naive_random() {
         let naive = subject.reduce_by_refs_naive(&refs, &r);
         assert_eq!(dense_to_map(&geo, &r), dense_to_map(&naive, &r));
     }
+}
+
+/// Exercise the `PolyRepr` trait generically: build via the trait,
+/// run add/mul through it, and check `collect_terms_idx` against the
+/// coefficient-map reference — for both representations.
+fn idx_to_map(terms: &[(BigUint, Vec<(usize, u16)>)]) -> PolyMap {
+    let mut m = PolyMap::new();
+    for (c, vars) in terms {
+        let cc = u64::try_from(c.clone()).unwrap();
+        if cc == 0 {
+            continue;
+        }
+        let mut e = vec![0u16; N_VARS];
+        for &(v, ex) in vars {
+            e[v] = ex;
+        }
+        m.insert(e, cc);
+    }
+    m
+}
+
+fn check_polyrepr<P: PolyRepr>(seed: u64, iters: usize) {
+    let r = ring();
+    let mut rng = Rng::new(seed);
+    for _ in 0..iters {
+        let ta = rand_terms(&mut rng, 8);
+        let tb = rand_terms(&mut rng, 8);
+        let build = |t: &[(Vec<u16>, u64)]| {
+            P::from_terms(
+                t.iter()
+                    .map(|(e, c)| (P::Mono::from_exponents(e.clone()), r.field.from_u64(*c)))
+                    .collect(),
+                &r,
+            )
+        };
+        let (pa, pb) = (build(&ta), build(&tb));
+        let (ma, mb) = (terms_ref_map(&ta), terms_ref_map(&tb));
+
+        assert_eq!(idx_to_map(&pa.collect_terms_idx(&r)), ma);
+        assert_eq!(idx_to_map(&pa.add(&pb, &r).collect_terms_idx(&r)), map_add(&ma, &mb, false));
+        assert_eq!(idx_to_map(&pa.sub(&pb, &r).collect_terms_idx(&r)), map_add(&ma, &mb, true));
+
+        let mut mul_ref = PolyMap::new();
+        for (ea, &ca) in &ma {
+            for (eb, &cb) in &mb {
+                let slot = mul_ref.entry(ref_mul(ea, eb)).or_insert(0);
+                *slot = (*slot + ca * cb) % PRIME;
+            }
+        }
+        mul_ref.retain(|_, c| *c != 0);
+        assert_eq!(idx_to_map(&pa.mul(&pb, &r).collect_terms_idx(&r)), mul_ref);
+    }
+}
+
+#[test]
+fn polyrepr_trait_dense() {
+    check_polyrepr::<Polynomial>(41, 2_000);
+}
+
+#[test]
+fn polyrepr_trait_sparse() {
+    check_polyrepr::<SparsePolynomial>(41, 2_000);
 }
