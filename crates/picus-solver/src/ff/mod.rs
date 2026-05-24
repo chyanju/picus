@@ -22,6 +22,11 @@ pub mod buchberger;
 pub mod f4;
 pub mod hilbert;
 pub mod univariate;
+pub mod repr;
+pub mod sparse_monomial;
+
+#[cfg(test)]
+mod repr_oracle;
 
 pub use field::{PrimeField, FieldElem};
 pub use monomial::{Monomial, MonomialOrder};
