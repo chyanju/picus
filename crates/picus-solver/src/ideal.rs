@@ -603,7 +603,7 @@ pub(crate) fn interreduce_basis(
         let ctx = poly_ring.ctx();
         let sparse: Vec<crate::ff::sparse_polynomial::SparsePolynomial> =
             basis.iter().map(|p| p.to_sparse(ctx)).collect();
-        let reduced = crate::ff::sparse_gb::interreduce(sparse, ctx);
+        let reduced = crate::ff::sparse_gb::interreduce(sparse, ctx, Some(cancel));
         return reduced.into_iter().map(Poly::Sparse).collect();
     }
     wrap_dense_vec(buchberger::interreduce_with_cancel(
@@ -636,12 +636,17 @@ fn use_sparse_gb() -> bool {
 /// when the ring's representation is sparse: extract each generator's
 /// sparse arm, compute and inter-reduce sparsely, and return a sparse-arm
 /// basis (the polynomials stay resident-sparse, no dense materialisation).
-fn sparse_gb_route(poly_ring: &FfPolyRing, generators: Vec<Poly>, order: FfOrder) -> Vec<Poly> {
+fn sparse_gb_route(
+    poly_ring: &FfPolyRing,
+    generators: Vec<Poly>,
+    order: FfOrder,
+    cancel: &CancelToken,
+) -> Vec<Poly> {
     let ring = ring_for_order(poly_ring, order);
     let sparse: Vec<crate::ff::sparse_polynomial::SparsePolynomial> =
         generators.iter().map(|p| p.to_sparse(&ring)).collect();
-    let gb = crate::ff::sparse_gb::groebner_basis(sparse, &ring);
-    let reduced = crate::ff::sparse_gb::interreduce(gb, &ring);
+    let gb = crate::ff::sparse_gb::groebner_basis(sparse, &ring, Some(cancel));
+    let reduced = crate::ff::sparse_gb::interreduce(gb, &ring, Some(cancel));
     reduced.into_iter().map(Poly::Sparse).collect()
 }
 
@@ -677,7 +682,7 @@ pub fn compute_gb_with_order(
         return Vec::new();
     }
     if use_sparse_gb() {
-        return sparse_gb_route(poly_ring, generators, order);
+        return sparse_gb_route(poly_ring, generators, order, cancel);
     }
     let n_gens = generators.len();
     let n_vars = poly_ring.n_vars;
@@ -754,11 +759,19 @@ pub fn compute_gb_incremental_with_order(
         return compute_gb_with_order(poly_ring, new_polys, cancel, order);
     }
     if use_sparse_gb() {
-        // The sparse engine has no incremental seeding; recompute the GB of
-        // the union (the seed is discarded, not trusted, so this is sound).
-        let mut all = known_gb;
-        all.extend(new_polys);
-        return sparse_gb_route(poly_ring, all, order);
+        // Incremental seeding: trust `known_gb` as a reduced GB (the same
+        // contract the dense path relies on via `seed_reduced_basis`) and
+        // process only the cross / intra-new S-pairs, then inter-reduce —
+        // identical to recomputing the union, but skips the O(n²) seed
+        // pairs.
+        let ring = ring_for_order(poly_ring, order);
+        let known: Vec<crate::ff::sparse_polynomial::SparsePolynomial> =
+            known_gb.iter().map(|p| p.to_sparse(&ring)).collect();
+        let fresh: Vec<crate::ff::sparse_polynomial::SparsePolynomial> =
+            new_polys.iter().map(|p| p.to_sparse(&ring)).collect();
+        let gb = crate::ff::sparse_gb::groebner_basis_incremental(known, fresh, &ring, Some(cancel));
+        let reduced = crate::ff::sparse_gb::interreduce(gb, &ring, Some(cancel));
+        return reduced.into_iter().map(Poly::Sparse).collect();
     }
     let ring = ring_for_order(poly_ring, order);
     let cfg = BuchbergerConfig {

@@ -25,6 +25,7 @@ pub mod univariate;
 pub mod repr;
 pub mod sparse_monomial;
 pub mod sparse_polynomial;
+pub mod sparse_geobucket;
 pub mod sparse_gb;
 
 #[cfg(test)]

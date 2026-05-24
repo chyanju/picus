@@ -426,12 +426,13 @@ fn sparse_reduce_matches_dense_naive_random() {
 /// must equal the dense engine's reduced Gröbner basis on random
 /// generator sets. The reduced GB under a fixed order is unique, so the
 /// two representations must agree exactly (compared as monic,
-/// canonically-sorted term maps). Uses a small 3-variable, low-degree
-/// ring so the naive (criteria-free) sparse Buchberger stays fast.
+/// canonically-sorted term maps). The sparse engine's product / M / B
+/// criteria and sugar selection change only which S-pairs are processed,
+/// never the final ideal, so this agreement holds regardless.
 #[test]
 fn sparse_groebner_basis_matches_dense_random() {
     use super::buchberger::{groebner_basis, interreduce, BuchbergerConfig};
-    const GV: usize = 3;
+    const GV: usize = 4;
     const GMAX: u64 = 2;
     let arc_r = PolyRing::new(
         PrimeField::new(BigUint::from(PRIME)),
@@ -441,8 +442,8 @@ fn sparse_groebner_basis_matches_dense_random() {
     let r: &PolyRing = &arc_r;
     let mut rng = Rng::new(91);
 
-    for _ in 0..200 {
-        let n_gen = 2 + rng.below(2) as usize; // 2–3 generators
+    for _ in 0..300 {
+        let n_gen = 2 + rng.below(3) as usize; // 2–4 generators
         let gen_terms: Vec<Vec<(Vec<u16>, u64)>> = (0..n_gen)
             .map(|_| {
                 let n = 1 + rng.below(3) as usize;
@@ -475,12 +476,97 @@ fn sparse_groebner_basis_matches_dense_random() {
             .map(|t| build_sparse(t, r))
             .filter(|p| !p.is_zero())
             .collect();
-        let gb_s = super::sparse_gb::groebner_basis(gens_s, r);
-        let red_s = super::sparse_gb::interreduce(gb_s, r);
+        let gb_s = super::sparse_gb::groebner_basis(gens_s, r, None);
+        let red_s = super::sparse_gb::interreduce(gb_s, r, None);
         let mut canon_s: Vec<PolyMap> = red_s.iter().map(|p| sparse_to_map(p, r)).collect();
         canon_s.sort();
 
         assert_eq!(canon_d, canon_s, "reduced GB mismatch for generators {:?}", gen_terms);
+    }
+}
+
+/// Incremental sparse GB (seed the reduced GB of A, extend with B) must
+/// equal the from-scratch reduced GB of A ∪ B — the incremental-seeding
+/// soundness oracle. Both are GBs of the same ideal, and the reduced GB
+/// under a fixed order is unique.
+#[test]
+fn sparse_groebner_incremental_matches_from_scratch_random() {
+    const GV: usize = 4;
+    const GMAX: u64 = 2;
+    let arc_r = PolyRing::new(
+        PrimeField::new(BigUint::from(PRIME)),
+        (0..GV).map(|i| format!("v{i}")).collect(),
+        MonomialOrder::DegRevLex,
+    );
+    let r: &PolyRing = &arc_r;
+    let mut rng = Rng::new(73);
+
+    let mut rand_gens = |rng: &mut Rng| -> Vec<SparsePolynomial> {
+        let count = 1 + rng.below(2) as usize;
+        (0..count)
+            .map(|_| {
+                let n = 1 + rng.below(3) as usize;
+                let terms: Vec<(Vec<u16>, u64)> = (0..n)
+                    .map(|_| {
+                        let e: Vec<u16> = (0..GV).map(|_| rng.below(GMAX + 1) as u16).collect();
+                        (e, 1 + rng.below(PRIME - 1))
+                    })
+                    .collect();
+                build_sparse(&terms, r)
+            })
+            .filter(|p| !p.is_zero())
+            .collect()
+    };
+
+    for _ in 0..300 {
+        let gens_a = rand_gens(&mut rng);
+        let gens_b = rand_gens(&mut rng);
+        if gens_a.is_empty() {
+            continue;
+        }
+
+        // From scratch: reduced GB of A ∪ B.
+        let mut all = gens_a.clone();
+        all.extend(gens_b.clone());
+        let gb_full = super::sparse_gb::groebner_basis(all, r, None);
+        let red_full = super::sparse_gb::interreduce(gb_full, r, None);
+        let mut canon_full: Vec<PolyMap> = red_full.iter().map(|p| sparse_to_map(p, r)).collect();
+        canon_full.sort();
+
+        // Incremental: reduced GB of A, then seeded extension with B.
+        let gb_a = super::sparse_gb::groebner_basis(gens_a, r, None);
+        let known = super::sparse_gb::interreduce(gb_a, r, None);
+        let gb_inc = super::sparse_gb::groebner_basis_incremental(known, gens_b, r, None);
+        let red_inc = super::sparse_gb::interreduce(gb_inc, r, None);
+        let mut canon_inc: Vec<PolyMap> = red_inc.iter().map(|p| sparse_to_map(p, r)).collect();
+        canon_inc.sort();
+
+        assert_eq!(canon_full, canon_inc, "incremental vs from-scratch GB mismatch");
+    }
+}
+
+/// The sparse geobucket reduction (`reduce_by_refs`, production) must
+/// produce the same normal form as the sparse naive reduction
+/// (`reduce_by_refs_naive`, reference) on random subjects and divisor
+/// sets, using the same divisor order — the sparse reduction oracle.
+#[test]
+fn sparse_reduce_geobucket_matches_naive_random() {
+    let r = ring();
+    let mut rng = Rng::new(58);
+    for _ in 0..2_000 {
+        let subject = build_sparse(&rand_terms(&mut rng, 10), &r);
+        let n_div = 1 + rng.below(3) as usize;
+        let divisors: Vec<SparsePolynomial> = (0..n_div)
+            .map(|_| build_sparse(&rand_terms(&mut rng, 5), &r))
+            .filter(|d| !d.is_zero())
+            .collect();
+        if divisors.is_empty() {
+            continue;
+        }
+        let refs: Vec<&SparsePolynomial> = divisors.iter().collect();
+        let geo = subject.reduce_by_refs(&refs, &r);
+        let naive = subject.reduce_by_refs_naive(&refs, &r);
+        assert_eq!(sparse_to_map(&geo, &r), sparse_to_map(&naive, &r));
     }
 }
 
