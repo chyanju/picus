@@ -285,21 +285,14 @@ fn normalize_poly(pr: &FfPolyRing, p: Poly) -> Poly {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-//   Index-based constraint system (Phase 7A scaffolding)
+//   Index-based constraint system
 // ─────────────────────────────────────────────────────────────────────
 //
-// `ConstraintSystem` is the index-keyed counterpart to
-// `LegacyConstraintSystem`. It carries the same semantic content but
-// references variables by integer index into an owned `var_names`
-// list, eliminating per-monomial String allocation and HashMap
-// lookups in the encoder hot path.
-//
-// During the A1-A9 migration both forms coexist. A producer migrates
-// to `ConstraintSystem` by routing through
-// `ConstraintSystemBuilder`; the encoder dispatches via the parallel
-// entry point `encode`. When every producer is on the new
-// form, A9 renames `ConstraintSystem` to `LegacyConstraintSystem`
-// and deletes the legacy String-keyed types.
+// `ConstraintSystem` references variables by integer index into an
+// owned `var_names` list, eliminating per-monomial String allocation
+// and HashMap lookups in the encoder hot path. Producers build one via
+// `ConstraintSystemBuilder`; `encode` is the entry point that turns it
+// into polynomials.
 
 /// Variable index into [`ConstraintSystem::var_names`]. `u32`
 /// holds 4 G variables — well beyond any practical constraint
@@ -317,9 +310,8 @@ pub struct PolyTerm {
     pub vars: Vec<(VarIdx, u16)>,
 }
 
-/// Index-keyed constraint system. Direct counterpart of
-/// [`LegacyConstraintSystem`] for callers that produce term lists in
-/// integer form via [`ConstraintSystemBuilder`].
+/// Index-keyed constraint system for callers that produce term lists
+/// in integer form via [`ConstraintSystemBuilder`].
 #[derive(Clone, Debug)]
 pub struct ConstraintSystem {
     pub prime: BigUint,
@@ -448,14 +440,12 @@ impl ConstraintSystemBuilder {
 
 }
 
-/// Encode an [`ConstraintSystem`] into polynomials. Mirrors
-/// [`encode`] but consumes the index-keyed form.
+/// Encode a [`ConstraintSystem`] into polynomials.
 ///
 /// Pre-encode pipeline:
 ///   1. `compact_used_vars`: drop variables from `var_names` that
 ///      no equality / disequality / assignment / bitsum references
-///      — keeps the polynomial ring tight, matching the legacy
-///      `LegacyConstraintSystem::collect_vars` behaviour. Without this,
+///      — keeps the polynomial ring tight. Without this,
 ///      `PolyIR`'s `2 * n_wires` ring exposes every `y_i` even
 ///      when most are never referenced, inflating the GB engine's
 ///      monomial table and causing pathological slowdowns on big
@@ -471,7 +461,9 @@ pub fn encode(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
     encode_impl(&extracted, true)
 }
 
-/// Index-keyed counterpart of [`encode_constraint_side`].
+/// Like [`encode`], but passes `emit_rabinowitsch = false` to
+/// `encode_impl` so no Rabinowitsch witnesses are emitted for
+/// disequalities.
 pub fn encode_constraint_side(
     system: &ConstraintSystem,
 ) -> Result<EncodedSystem, String> {
@@ -487,11 +479,9 @@ pub fn encode_constraint_side(
 /// bitsum. Returns a new `ConstraintSystem` with renumbered
 /// indices.
 ///
-/// Mirrors `LegacyConstraintSystem::collect_vars` — the legacy
-/// `encode_impl` builds its ring from `collect_vars()` (a SET that
-/// contains only names appearing in the constraint side), so the
-/// index-keyed path must do the same or it produces a ring with
-/// spurious extra variables that the GB engine has to factor in.
+/// The ring must contain only variables that actually appear in the
+/// constraint side; otherwise it gains spurious extra variables that
+/// the GB engine has to factor in.
 fn compact_used_vars(system: &ConstraintSystem) -> ConstraintSystem {
     use std::collections::BTreeSet;
     let mut used: BTreeSet<VarIdx> = BTreeSet::new();

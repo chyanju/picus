@@ -71,10 +71,10 @@ Picus can also be used as a library crate in other Rust projects:
 
 ```toml
 [dependencies]
-picus = { git = "https://github.com/chyanju/Picus", tag = "v1.7.31" }
+picus = { git = "https://github.com/chyanju/Picus", tag = "v1.7.32" }
 
 # Native-only (no cvc5 / z3 build chain):
-# picus = { git = "...", tag = "v1.7.31", default-features = false, features = ["native"] }
+# picus = { git = "...", tag = "v1.7.32", default-features = false, features = ["native"] }
 ```
 
 ```rust

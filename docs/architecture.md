@@ -288,9 +288,8 @@ R1CS-to-PolyIR lowering and solver-backend trait.
   field. Adding a new backend (research solver, in-house QF_FF
   alternative, etc.) is a new `inventory::submit!` block — no edits
   to enums or match tables required. `SUBP_CONSTANT_NAMES` lists the
-  named field constants the legacy SMT-emitted query used; the
-  `picus` witness post-processor still consults it when filtering
-  names out of solver-produced models.
+  named field constants that the `picus` witness post-processor
+  filters out of solver-produced models.
 
 #### Cargo features
 

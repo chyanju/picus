@@ -33,9 +33,9 @@ use picus_solver::roots::find_roots;
 
 // ── Bench-local helpers ─────────────────────────────────────────────────────
 
-/// Same shape as `LegacyConstraintSystem` for ergonomic bench
-/// fixture writing; lowered to a real `ConstraintSystem` via
-/// [`Self::build`] before encoding.
+/// String-keyed system for ergonomic bench fixture writing; lowered
+/// to an index-keyed `ConstraintSystem` via [`build_system`] before
+/// encoding.
 struct NamedSystem {
     prime: BigUint,
     equalities: Vec<Vec<NamedTerm>>,

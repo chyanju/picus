@@ -65,16 +65,13 @@ pub struct PolyIR {
     /// witness pair exists where `x_target ≠ y_target`.
     pub target_signal: usize,
 
-    // ── General-purpose GB query fields (Phase 7B1) ─────────────────
+    // ── General-purpose GB query fields ─────────────────────────────
     //
-    // PolyIR is the unified GB query IR going forward; the fields
-    // below mirror what `ConstraintSystem` carries, so each of
-    // the four producers (R1CS lowering, SMT2 parser, boolean DNF,
-    // CDCL(T) ff_theory) can fully describe its query without
-    // touching the legacy String-keyed scratch type. The R1CS
-    // lowering populates `disequalities` with a single entry
-    // derived from `target_signal` (and rebuilds it on
-    // `set_target`); other producers populate these freely.
+    // These fields let each of the four producers (R1CS lowering, SMT2
+    // parser, boolean DNF, CDCL(T) ff_theory) fully describe its query.
+    // The R1CS lowering populates `disequalities` with a single entry
+    // derived from `target_signal` (and rebuilds it on `set_target`);
+    // other producers populate these freely.
     /// Disequality witness sites: each `(a_idx, b_idx)` pair becomes
     /// a Rabinowitsch polynomial `(x_a - x_b) · w_i - 1 = 0` at
     /// encoding time. Indices are into `ring.var_names()`.
