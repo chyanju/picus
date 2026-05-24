@@ -15,8 +15,8 @@
 //!   cargo test -p picus-smt --test sparse_lowering -- --ignored --nocapture
 //! ```
 //!
-//! Do NOT run it under the dense representation on this circuit — that is
-//! exactly the resident-memory blow-up this work removes.
+//! Do NOT run it under the dense representation on this circuit; that is
+//! the resident-memory blow-up the sparse representation avoids.
 
 use std::collections::HashSet;
 

@@ -59,18 +59,17 @@ pub trait MonomialRepr: Clone + PartialEq + Eq + Hash + Debug {
     fn cmp_with_order(&self, other: &Self, order: MonomialOrder) -> Ordering;
 }
 
-/// Representation-agnostic interface for polynomials at the IR layer
-/// (lowering, propagation, SMT lowering). The dense [`super::polynomial::
-/// Polynomial`] and the sparse [`super::sparse_polynomial::SparsePolynomial`]
-/// both implement it; `PolyIR` and the propagation lemmas are generic
-/// over it so the IR can be built in either representation.
+/// Representation-agnostic interface implemented by both the dense
+/// [`super::polynomial::DensePoly`] and the sparse
+/// [`super::sparse_polynomial::SparsePolynomial`]: construction, ring
+/// arithmetic, evaluation, and `(coeff, nonzero (var, exp))` term
+/// collection. The `Polynomial` enum dispatches to these per arm, and
+/// `repr_oracle` uses the trait to check the two implementations agree.
 ///
-/// This is the L1 surface — construction, ring arithmetic, evaluation,
-/// and term iteration. Gröbner reduction (the GB-engine hot path) is
-/// deliberately *not* here: the native backend lowers the IR to the
-/// (index-keyed) `ConstraintSystem` and the GB engine works on its own
-/// dense polynomials. The shared [`PolyRing`] carries the field, the
-/// variable count, and the monomial order for both representations.
+/// Gröbner reduction is intentionally not part of this trait; it lives on
+/// the concrete types (dense `reduce_by_refs`/geobucket, and `sparse_gb`).
+/// The shared [`PolyRing`] carries the field, variable count, and monomial
+/// order for both representations.
 pub trait PolyRepr: Clone + Debug {
     type Mono: MonomialRepr;
 

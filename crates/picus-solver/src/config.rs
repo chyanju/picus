@@ -16,20 +16,16 @@ use std::cell::RefCell;
 
 use crate::ideal::GbStrategy;
 
-/// Polynomial representation for the solver-agnostic IR layer
-/// (`PolyIR` equalities/disjunctions and the lemma `learned` buffers).
+/// Polynomial storage representation, selected at ring construction and
+/// carried by `ff::PolyRing.repr`. Applies to the IR (`PolyIR` equalities/
+/// disjunctions, lemma `learned` buffers) and the native Gröbner solve.
 ///
 /// `Dense` stores each monomial as a full-length exponent vector
 /// (O(n_vars) per term); `Sparse` stores only the nonzero `(var, exp)`
-/// pairs (O(nnz) per term). On wide rings (e.g. a circuit with tens of
-/// thousands of wires → tens of thousands of ring variables) the dense
-/// form makes the IR's *resident* memory blow up, so `Sparse` is the
-/// representation that scales the lowering + cvc5 path. The choice is a
-/// runtime knob because both forms are kept permanently: `Dense` is the
-/// differential-test oracle and is the faster choice on small circuits.
-///
-/// This selects the representation of the IR poly type only; the
-/// Gröbner-basis engine keeps its own dense `Polynomial`.
+/// pairs (O(nnz) per term). On wide rings (tens of thousands of variables)
+/// dense resident memory is O(n_vars · terms), so `Sparse` is the scalable
+/// choice. Both are kept permanently: `Dense` is the differential-test
+/// oracle and is faster on small/narrow rings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReprKind {
     Dense,

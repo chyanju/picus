@@ -1,13 +1,12 @@
 //! Gröbner basis on the sparse polynomial representation.
 //!
-//! Textbook Buchberger (naive S-pair enumeration, no criteria/sugar yet)
-//! plus inter-reduction to the canonical reduced basis, built entirely
-//! from [`SparsePolynomial`] ops (reduce, S-polynomial, monic scaling) —
-//! the path toward a native solver that scales without densifying wide
-//! rings. Correctness first; the dense engine's reduced Gröbner basis is
-//! the differential oracle (the reduced GB of an ideal under a fixed
-//! order is unique, so the two representations must agree exactly).
-//! Performance (Buchberger criteria, a sparse geobucket) is later work.
+//! Buchberger's algorithm (naive S-pair enumeration) plus inter-reduction
+//! to the canonical reduced basis, built from [`SparsePolynomial`]
+//! operations (reduction, S-polynomial, monic scaling). Buchberger
+//! criteria and a sparse geobucket are not yet implemented. The reduced
+//! Gröbner basis of an ideal under a fixed monomial order is unique, so
+//! this agrees term-for-term with the dense engine; `repr_oracle` checks
+//! that.
 
 use super::polynomial::PolyRing;
 use super::repr::MonomialRepr;
