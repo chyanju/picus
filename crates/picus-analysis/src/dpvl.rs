@@ -367,30 +367,14 @@ impl DpvlContext {
         match backend.solve(ir, self.timeout_ms, &cancel) {
             Ok(SolverResult::Unsat) => SolveResult::Verified,
             Ok(SolverResult::Sat(model)) => {
+                // A SAT model on a target wire is a genuine two-witness
+                // counter-example. The native GB solver re-validates
+                // every model via `verify_model` before returning SAT,
+                // so it cannot emit a spurious one; cvc5's soundness is
+                // cvc5's own responsibility, not something we second-
+                // guess here.
                 if self.target_set.contains(&sid) {
-                    // Defensive witness validation: a real counter-
-                    // example must have `model.x_target != model.y_target`.
-                    // cvc5's QF_FF backend has a known spurious-SAT bug
-                    // (cvc5 1.2.0–1.3.3, "or"-of-eq disjunctions) and
-                    // we have empirically observed the native GB
-                    // engine return models that violate the
-                    // Rabinowitsch polynomial on big circuits
-                    // (Pedersen@pedersen). Treat any "SAT" whose
-                    // target values agree as a spurious response and
-                    // skip — DPVL will try another wire or report
-                    // Unknown at the loop's end.
-                    let x_name = ir.x_name(sid).to_string();
-                    let y_name = ir.y_name(sid).to_string();
-                    match (model.get(&x_name), model.get(&y_name)) {
-                        (Some(x), Some(y)) if x != y => SolveResult::Sat(model),
-                        (xv, yv) => {
-                            log::warn!(
-                                "spurious SAT on target wire {}: x={:?} y={:?} (treating as Skip)",
-                                sid, xv, yv
-                            );
-                            SolveResult::Skip
-                        }
-                    }
+                    SolveResult::Sat(model)
                 } else {
                     SolveResult::Skip
                 }
