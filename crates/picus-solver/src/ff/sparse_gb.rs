@@ -196,6 +196,37 @@ impl<'a> Buchberger<'a> {
         self.cancel.is_some_and(|c| c.is_cancelled())
     }
 
+    /// Seed the basis with a set that is already a reduced Gröbner basis in
+    /// `ring.order`, skipping S-pair generation among the seed elements:
+    /// a reduced GB has no open obligations among its own members (every
+    /// S-pair reduces to zero), so `add_generators` of new polynomials need
+    /// only process the cross / intra-new pairs. Mirrors the dense
+    /// `BuchbergerState::seed_with_reduced_basis`. Caller asserts the input
+    /// is a reduced GB; no validation is performed.
+    fn seed_reduced_basis(&mut self, basis: Vec<SparsePolynomial>) {
+        for poly in basis {
+            if poly.is_zero() {
+                continue;
+            }
+            if poly.is_constant() {
+                // A reduced GB containing a constant is {1}: the whole ring.
+                self.trivial = true;
+                return;
+            }
+            let lt = poly.leading_monomial().unwrap().clone();
+            let sugar = lt.total_degree();
+            // Same non-strict deactivation as `integrate` (a no-op for a
+            // proper reduced GB, whose leading terms are incomparable).
+            let new_idx = self.basis.len();
+            for k in 0..new_idx {
+                if self.basis[k].active && MonomialRepr::divides(&lt, &self.basis[k].lt) {
+                    self.basis[k].active = false;
+                }
+            }
+            self.basis.push(BasisElement { poly, lt, active: true, sugar });
+        }
+    }
+
     /// Reduce each generator by the current basis, then integrate it:
     /// drop zeros, collapse to the trivial ideal on a constant, otherwise
     /// generate its S-pairs and add it (with non-strict deactivation).
@@ -325,6 +356,25 @@ pub fn groebner_basis(
 ) -> Vec<SparsePolynomial> {
     let mut b = Buchberger::new(ring, cancel);
     b.add_generators(gens);
+    b.run();
+    b.into_basis()
+}
+
+/// Incrementally extend a reduced Gröbner basis `known_gb` with
+/// `new_gens`: seed the engine with `known_gb` (pair-free) and run
+/// Buchberger only on the cross (`known_gb` × `new_gens`) and intra-new
+/// S-pairs. The result is a Gröbner basis of the combined ideal — equal,
+/// after [`interreduce`], to recomputing from scratch on the union (the
+/// reduced GB is unique). `known_gb` must be a reduced GB in `ring.order`.
+pub fn groebner_basis_incremental(
+    known_gb: Vec<SparsePolynomial>,
+    new_gens: Vec<SparsePolynomial>,
+    ring: &PolyRing,
+    cancel: Option<&CancelToken>,
+) -> Vec<SparsePolynomial> {
+    let mut b = Buchberger::new(ring, cancel);
+    b.seed_reduced_basis(known_gb);
+    b.add_generators(new_gens);
     b.run();
     b.into_basis()
 }
