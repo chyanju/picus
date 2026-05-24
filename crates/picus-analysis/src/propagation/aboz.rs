@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use num_traits::Zero;
 use picus_smt::poly_ir::PolyIR;
 use picus_solver::config;
-use picus_solver::poly::Poly;
+use picus_solver::poly::IrPoly as Poly;
 
 use super::lemma::{LemmaDescriptor, PropagationCtx, PropagationLemma};
 
@@ -157,9 +157,9 @@ impl AbozLemma {
 /// = 0`. Skips constraints that have any other terms beyond the
 /// single bilinear monomial.
 fn collect_bilinear_zero(ir: &PolyIR) -> Vec<(usize, usize)> {
-    let ring = &ir.ring.ring;
+    let ring = &ir.ring;
     let n_vars = ring.n_vars();
-    let field = &ir.ring.field;
+    let field = ir.ring.field();
     let mut out = Vec::new();
     for poly in &ir.equalities {
         if let Some((a, b)) = match_bilinear(ir, poly, ring, n_vars, field) {
@@ -172,7 +172,7 @@ fn collect_bilinear_zero(ir: &PolyIR) -> Vec<(usize, usize)> {
 fn match_bilinear(
     ir: &PolyIR,
     poly: &Poly,
-    ring: &picus_solver::poly::PolyRingType,
+    ring: &picus_solver::poly::IrPolyRing,
     n_vars: usize,
     field: &picus_solver::ff::field::PrimeField,
 ) -> Option<(usize, usize)> {
@@ -212,7 +212,7 @@ fn match_bilinear(
 /// Wire-index sets for every equality whose terms are all linear
 /// monomials (no quadratic terms). Constants are ignored.
 fn collect_linear_sums(ir: &PolyIR) -> Vec<HashSet<usize>> {
-    let ring = &ir.ring.ring;
+    let ring = &ir.ring;
     let n_vars = ring.n_vars();
     let mut out = Vec::new();
     'poly: for poly in &ir.equalities {

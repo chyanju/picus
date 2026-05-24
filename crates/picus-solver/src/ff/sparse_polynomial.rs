@@ -91,6 +91,13 @@ impl SparsePolynomial {
         self.terms.iter().map(|(m, c)| (m, c))
     }
 
+    /// The `idx`-th `(monomial, coeff)` term in descending ring order,
+    /// or `None` past the end. Lets a positional iterator walk the terms
+    /// without exposing the backing vector.
+    pub fn term_at(&self, idx: usize) -> Option<(&SparseMonomial, &FieldElem)> {
+        self.terms.get(idx).map(|(m, c)| (m, c))
+    }
+
     pub fn negate(&self, ring: &PolyRing) -> Self {
         SparsePolynomial {
             terms: self.terms.iter().map(|(m, c)| (m.clone(), ring.field.neg(c))).collect(),

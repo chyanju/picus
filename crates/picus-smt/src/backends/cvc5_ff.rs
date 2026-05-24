@@ -47,7 +47,7 @@ impl SolverBackend for Cvc5FfBackend {
         solver.set_option("produce-models", "true");
         solver.set_option("tlimit", &timeout_ms.to_string());
 
-        let prime = ir.ring.field.prime();
+        let prime = ir.ring.field().prime();
         let p_str = prime.to_string();
         let ff = tm.mk_ff_sort(&p_str, 10);
 
@@ -116,7 +116,7 @@ impl SolverBackend for Cvc5FfBackend {
     }
 
     fn dump_smt(&self, ir: &PolyIR) -> String {
-        let p = ir.ring.field.prime();
+        let p = ir.ring.field().prime();
         let mut lines = Vec::new();
         lines.push("(set-logic QF_FF)".to_string());
         lines.push(format!("(define-sort F () (_ FiniteField {}))", p));

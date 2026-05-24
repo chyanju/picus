@@ -16,6 +16,26 @@ use std::cell::RefCell;
 
 use crate::ideal::GbStrategy;
 
+/// Polynomial representation for the solver-agnostic IR layer
+/// (`PolyIR` equalities/disjunctions and the lemma `learned` buffers).
+///
+/// `Dense` stores each monomial as a full-length exponent vector
+/// (O(n_vars) per term); `Sparse` stores only the nonzero `(var, exp)`
+/// pairs (O(nnz) per term). On wide rings (e.g. a circuit with tens of
+/// thousands of wires → tens of thousands of ring variables) the dense
+/// form makes the IR's *resident* memory blow up, so `Sparse` is the
+/// representation that scales the lowering + cvc5 path. The choice is a
+/// runtime knob because both forms are kept permanently: `Dense` is the
+/// differential-test oracle and is the faster choice on small circuits.
+///
+/// This selects the representation of the IR poly type only; the
+/// Gröbner-basis engine keeps its own dense `Polynomial`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReprKind {
+    Dense,
+    Sparse,
+}
+
 #[derive(Clone, Debug)]
 pub struct RuntimeConfig {
     /// GB algorithm strategy.
@@ -51,6 +71,10 @@ pub struct RuntimeConfig {
     /// pipeline's disjunction path live. Set `PICUS_NO_ABOZ_DISJ` to
     /// disable (e.g. for an A/B perf comparison).
     pub aboz_emit_disjunctions: bool,
+    /// Representation of the IR poly type ([`ReprKind`]). Defaults to
+    /// `Dense`; set `PICUS_POLY_REPR=sparse` to build the IR sparsely so
+    /// lowering + the cvc5 path scale on wide rings.
+    pub poly_repr: ReprKind,
 }
 
 impl Default for RuntimeConfig {
@@ -66,6 +90,7 @@ impl Default for RuntimeConfig {
             profile_enabled: false,
             cache_enabled: true,
             aboz_emit_disjunctions: true,
+            poly_repr: ReprKind::Dense,
         }
     }
 }
@@ -105,6 +130,12 @@ impl RuntimeConfig {
         }
         if std::env::var_os("PICUS_NO_ABOZ_DISJ").is_some() {
             c.aboz_emit_disjunctions = false;
+        }
+        if let Ok(v) = std::env::var("PICUS_POLY_REPR") {
+            c.poly_repr = match v.as_str() {
+                "sparse" => ReprKind::Sparse,
+                _ => ReprKind::Dense,
+            };
         }
         c
     }

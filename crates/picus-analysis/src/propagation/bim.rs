@@ -24,7 +24,7 @@ impl PropagationLemma for BimLemma {
     }
 
     fn run(&mut self, ir: &PolyIR, ctx: &mut PropagationCtx) -> bool {
-        let p = ir.ring.field.prime();
+        let p = ir.ring.field().prime();
         let equations = collect_linear_homogeneous(ir);
         if equations.is_empty() {
             return false;
@@ -85,9 +85,9 @@ impl PropagationLemma for BimLemma {
 /// a non-zero coefficient. Returns `Vec<(wire, coeff)>` per equation.
 /// Constant terms are tolerated if and only if they are exactly zero.
 fn collect_linear_homogeneous(ir: &PolyIR) -> Vec<Vec<(usize, BigUint)>> {
-    let ring = &ir.ring.ring;
+    let ring = &ir.ring;
     let n_vars = ring.n_vars();
-    let field = &ir.ring.field;
+    let field = ir.ring.field();
 
     let mut out = Vec::new();
     'poly: for poly in &ir.equalities {

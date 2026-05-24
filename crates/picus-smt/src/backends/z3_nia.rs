@@ -40,7 +40,7 @@ impl SolverBackend for Z3NiaBackend {
         params.set_u32("timeout", timeout_ms.min(u32::MAX as u64) as u32);
         solver.set_params(&params);
 
-        let prime = ir.ring.field.prime();
+        let prime = ir.ring.field().prime();
         let p_ast = bigint(prime);
 
         // Declare every ring variable with a `[0, p)` range constraint.
@@ -84,7 +84,7 @@ impl SolverBackend for Z3NiaBackend {
     }
 
     fn dump_smt(&self, ir: &PolyIR) -> String {
-        let p = ir.ring.field.prime();
+        let p = ir.ring.field().prime();
         let mut lines = Vec::new();
         lines.push("(set-logic QF_NIA)".to_string());
         for name in ir.ring.ring.var_names() {

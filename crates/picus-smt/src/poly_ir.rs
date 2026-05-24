@@ -33,7 +33,7 @@ use picus_solver::encoder::{
     encode, ConstraintSystemBuilder, EncodedSystem, ConstraintSystem, PolyTerm,
 };
 use picus_solver::field::FfField;
-use picus_solver::poly::{FfPolyRing, Poly};
+use picus_solver::poly::{IrPoly as Poly, IrPolyRing};
 use thiserror::Error;
 
 /// Reasons the R1CS-to-PolyIR lowering can fail. Surfacing these as
@@ -53,7 +53,7 @@ pub enum LowerError {
 
 /// Picus uniqueness query in polynomial form.
 pub struct PolyIR {
-    pub ring: Arc<FfPolyRing>,
+    pub ring: Arc<IrPolyRing>,
     pub n_wires: usize,
     pub input_indices: HashSet<usize>,
     pub equalities: Vec<Poly>,
@@ -117,26 +117,26 @@ impl PolyIR {
     /// Canonical name for the original-copy variable of wire `wire`
     /// (e.g. `x5`).
     pub fn x_name(&self, wire: usize) -> &str {
-        &self.ring.var_names[wire]
+        &self.ring.var_names()[wire]
     }
 
     /// Canonical name for the alt-copy variable of wire `wire`
     /// (e.g. `y5`).
     pub fn y_name(&self, wire: usize) -> &str {
-        &self.ring.var_names[self.n_wires + wire]
+        &self.ring.var_names()[self.n_wires + wire]
     }
 
     /// Build a `Poly` representing the linear polynomial `coeff * x` for
     /// variable index `var`. Used by lemmas that need to emit a learned
     /// constraint from a `(var, value)` pair.
     pub fn linear_term(&self, coeff: &BigUint, var: usize) -> Poly {
-        let coeff_el = self.ring.field.from_biguint(coeff);
+        let coeff_el = self.ring.field().from_biguint(coeff);
         self.ring.scale(coeff_el, self.ring.var(var))
     }
 
     /// Build a `Poly` representing the constant `c`.
     pub fn constant(&self, c: &BigUint) -> Poly {
-        let el = self.ring.field.from_biguint(c);
+        let el = self.ring.field().from_biguint(c);
         self.ring.constant(el)
     }
 
@@ -176,19 +176,15 @@ impl PolyIR {
         &'a self,
         poly: &'a Poly,
     ) -> impl Iterator<Item = (BigUint, Vec<String>)> + 'a {
-        let ring = &self.ring.ring;
-        let n_vars = ring.n_vars();
-        let names = ring.var_names();
-        ring.terms(poly).map(move |(coeff_el, m)| {
-            let coeff = self.ring.field.to_biguint(coeff_el);
-            let mut vars = Vec::new();
-            for v in 0..n_vars {
-                let e = ring.exponent_at(&m, v);
+        let names = self.ring.var_names();
+        self.poly_terms_idx(poly).map(move |(coeff, vars)| {
+            let mut atoms = Vec::new();
+            for (v, e) in vars {
                 for _ in 0..e {
-                    vars.push(names[v].clone());
+                    atoms.push(names[v].clone());
                 }
             }
-            (coeff, vars)
+            (coeff, atoms)
         })
     }
 
@@ -200,9 +196,9 @@ impl PolyIR {
     /// `disequalities`, `assignments`, `bitsums`, and
     /// `add_field_polys` propagate as-is.
     pub fn to_constraint_system(&self) -> ConstraintSystem {
-        let prime = self.ring.field.prime().clone();
+        let prime = self.ring.field().prime().clone();
         let mut builder = ConstraintSystemBuilder::new(prime);
-        for name in self.ring.ring.var_names() {
+        for name in self.ring.var_names() {
             builder.var(name);
         }
         for poly in &self.equalities {
@@ -241,9 +237,9 @@ impl PolyIR {
     /// check re-runs `encode` (hence `auto_extract_bitsums`) on each
     /// branch's conjunctive system, so they are recovered there.
     pub fn to_boolean_query(&self) -> BooleanQuery {
-        let prime = self.ring.field.prime().clone();
+        let prime = self.ring.field().prime().clone();
         let mut builder = ConstraintSystemBuilder::new(prime);
-        for name in self.ring.ring.var_names() {
+        for name in self.ring.var_names() {
             builder.var(name);
         }
 
@@ -330,19 +326,10 @@ impl PolyIR {
         &'a self,
         poly: &'a Poly,
     ) -> impl Iterator<Item = (BigUint, Vec<(usize, u16)>)> + 'a {
-        let ring = &self.ring.ring;
-        let n_vars = ring.n_vars();
-        ring.terms(poly).map(move |(coeff_el, m)| {
-            let coeff = self.ring.field.to_biguint(coeff_el);
-            let mut vars = Vec::new();
-            for v in 0..n_vars {
-                let e = ring.exponent_at(&m, v);
-                if e > 0 {
-                    vars.push((v, e as u16));
-                }
-            }
-            (coeff, vars)
-        })
+        // Representation-native: the sparse arm yields nonzero `(var, exp)`
+        // pairs in O(nnz) without ever materialising a full-length
+        // exponent vector; the dense arm scans `n_vars` per term as before.
+        poly.collect_terms_idx(self.ring.ctx()).into_iter()
     }
 }
 
@@ -372,7 +359,7 @@ pub fn r1cs_to_poly_ir(
         var_names.push(format!("y{}", i));
     }
     let field = FfField::new(prime.clone());
-    let ring = Arc::new(FfPolyRing::new(field, var_names));
+    let ring = Arc::new(IrPolyRing::new(field, var_names));
 
     let mut equalities: Vec<Poly> = Vec::new();
 
@@ -395,7 +382,7 @@ pub fn r1cs_to_poly_ir(
     // and need an equality to pin it. Wire 0 is an input, so the
     // alt copy collapses onto `x_0` in `block_to_linear` and `y_0`
     // is never referenced.
-    let one_el = ring.field.one();
+    let one_el = ring.field().one();
     equalities.push(ring.sub(ring.var(0), ring.constant(one_el)));
 
     // Inputs share their value across copies. `block_to_linear` emits
@@ -433,7 +420,7 @@ pub fn r1cs_to_poly_ir(
 /// `Ok(None)` when the resulting polynomial is the zero polynomial,
 /// `Err` when any block references an out-of-bounds wire id.
 fn constraint_to_poly(
-    ring: &Arc<FfPolyRing>,
+    ring: &Arc<IrPolyRing>,
     a: &ConstraintBlock,
     b: &ConstraintBlock,
     c: &ConstraintBlock,
@@ -465,14 +452,14 @@ fn constraint_to_poly(
 /// pattern matchers like `binary01` don't need to track `x_0`
 /// separately.
 fn block_to_linear(
-    ring: &Arc<FfPolyRing>,
+    ring: &Arc<IrPolyRing>,
     block: &ConstraintBlock,
     input_indices: &HashSet<usize>,
     is_alt: bool,
     prime: &BigUint,
     ctx: &'static str,
 ) -> Result<Poly, LowerError> {
-    let n_wires = ring.n_vars / 2;
+    let n_wires = ring.n_vars() / 2;
     let mut acc = ring.zero();
     for (&wire_id, factor) in block.wire_ids.iter().zip(block.factors.iter()) {
         let wid = wire_id as usize;
@@ -484,7 +471,7 @@ fn block_to_linear(
             });
         }
         let coeff = field_reduce(factor, prime);
-        let coeff_el = ring.field.from_biguint(&coeff);
+        let coeff_el = ring.field().from_biguint(&coeff);
         let term = if wid == 0 {
             // x_0 = y_0 = 1 (R1CS one-wire); fold the coefficient
             // directly into the constant term so downstream

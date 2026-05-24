@@ -167,7 +167,7 @@ pub fn poly_to_smtlib_nia(ir: &PolyIR, poly: &picus_solver::poly::Poly) -> Strin
 /// by the ring's prime.
 #[cfg(feature = "cvc5")]
 pub fn poly_to_smtlib_ff(ir: &PolyIR, poly: &picus_solver::poly::Poly) -> String {
-    let p = ir.ring.field.prime();
+    let p = ir.ring.field().prime();
     let parts: Vec<String> = ir
         .poly_terms(poly)
         .map(|(coeff, vars)| {

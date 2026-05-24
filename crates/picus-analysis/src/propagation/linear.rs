@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 
 use inventory;
 use picus_smt::poly_ir::PolyIR;
-use picus_solver::poly::Poly;
+use picus_solver::poly::IrPoly as Poly;
 
 use super::lemma::{LemmaDescriptor, PropagationCtx, PropagationLemma};
 
@@ -103,7 +103,7 @@ fn classify_poly_vars(
     ir: &PolyIR,
     poly: &Poly,
 ) -> (HashSet<usize>, HashSet<usize>, HashSet<usize>) {
-    let ring = &ir.ring.ring;
+    let ring = &ir.ring;
     let n_vars = ring.n_vars();
     let mut linear = HashSet::new();
     let mut nonlinear = HashSet::new();
