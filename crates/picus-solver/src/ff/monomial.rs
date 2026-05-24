@@ -169,6 +169,64 @@ impl Monomial {
     }
 }
 
+impl super::repr::MonomialRepr for Monomial {
+    fn one(n_vars: usize) -> Self {
+        Monomial::one(n_vars)
+    }
+    fn from_exponents(exps: Vec<u16>) -> Self {
+        Monomial::from_exponents(exps)
+    }
+    fn single_var(n_vars: usize, var: usize, exp: u16) -> Self {
+        Monomial::single_var(n_vars, var, exp)
+    }
+    fn n_vars(&self) -> usize {
+        Monomial::n_vars(self)
+    }
+    fn total_degree(&self) -> u32 {
+        Monomial::total_degree(self)
+    }
+    fn is_one(&self) -> bool {
+        Monomial::is_one(self)
+    }
+    fn exponent(&self, var: usize) -> u16 {
+        Monomial::exponent(self, var)
+    }
+    fn to_dense(&self) -> Vec<u16> {
+        self.exponents().to_vec()
+    }
+    fn for_each_nonzero(&self, mut f: impl FnMut(usize, u16)) {
+        for (i, &e) in self.exponents().iter().enumerate() {
+            if e > 0 {
+                f(i, e);
+            }
+        }
+    }
+    fn mul(&self, other: &Self) -> Self {
+        Monomial::mul(self, other)
+    }
+    fn mul_assign(&mut self, other: &Self) {
+        Monomial::mul_assign(self, other)
+    }
+    fn divides(&self, other: &Self) -> bool {
+        Monomial::divides(self, other)
+    }
+    fn div(&self, divisor: &Self) -> Self {
+        Monomial::div(self, divisor)
+    }
+    fn lcm(&self, other: &Self) -> Self {
+        Monomial::lcm(self, other)
+    }
+    fn gcd(&self, other: &Self) -> Self {
+        Monomial::gcd(self, other)
+    }
+    fn is_coprime(&self, other: &Self) -> bool {
+        Monomial::is_coprime(self, other)
+    }
+    fn cmp_with_order(&self, other: &Self, order: MonomialOrder) -> Ordering {
+        Monomial::cmp_with_order(self, other, order)
+    }
+}
+
 impl PartialEq for Monomial {
     fn eq(&self, other: &Self) -> bool {
         self.total_deg == other.total_deg && self.exponents == other.exponents

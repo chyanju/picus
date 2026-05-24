@@ -1156,6 +1156,62 @@ impl Polynomial {
     }
 }
 
+impl super::repr::PolyRepr for Polynomial {
+    type Mono = Monomial;
+
+    fn zero() -> Self {
+        Polynomial::zero()
+    }
+    fn constant(c: FieldElem, ring: &PolyRing) -> Self {
+        Polynomial::constant(c, ring)
+    }
+    fn variable(var: usize, ring: &PolyRing) -> Self {
+        Polynomial::variable(var, ring)
+    }
+    fn from_terms(terms: Vec<(Monomial, FieldElem)>, ring: &PolyRing) -> Self {
+        Polynomial::from_terms(terms, ring)
+    }
+    fn is_zero(&self) -> bool {
+        Polynomial::is_zero(self)
+    }
+    fn num_terms(&self) -> usize {
+        Polynomial::num_terms(self)
+    }
+    fn add(&self, other: &Self, ring: &PolyRing) -> Self {
+        Polynomial::add(self, other, ring)
+    }
+    fn sub(&self, other: &Self, ring: &PolyRing) -> Self {
+        Polynomial::sub(self, other, ring)
+    }
+    fn mul(&self, other: &Self, ring: &PolyRing) -> Self {
+        Polynomial::mul(self, other, ring)
+    }
+    fn scale(&self, c: &FieldElem, ring: &PolyRing) -> Self {
+        Polynomial::scale(self, c, ring)
+    }
+    fn negate(&self, ring: &PolyRing) -> Self {
+        Polynomial::negate(self, ring)
+    }
+    fn evaluate(&self, values: &[FieldElem], ring: &PolyRing) -> FieldElem {
+        Polynomial::evaluate(self, values, ring)
+    }
+    fn collect_terms_idx(&self, ring: &PolyRing) -> Vec<(num_bigint::BigUint, Vec<(usize, u16)>)> {
+        self.terms(ring)
+            .map(|t| {
+                let coeff = ring.field.to_biguint(t.coefficient());
+                let vars: Vec<(usize, u16)> = t
+                    .exponents()
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &e)| e > 0)
+                    .map(|(i, &e)| (i, e))
+                    .collect();
+                (coeff, vars)
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
