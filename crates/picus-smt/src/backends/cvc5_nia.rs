@@ -40,7 +40,7 @@ impl SolverBackend for Cvc5NiaBackend {
         solver.set_option("tlimit", &timeout_ms.to_string());
 
         let int_sort = tm.integer_sort();
-        let prime = ir.ring.field.prime();
+        let prime = ir.ring.field().prime();
         let p_term = tm.mk_integer_from_str(&prime.to_string());
         let zero_term = tm.mk_integer(0);
 
@@ -93,7 +93,7 @@ impl SolverBackend for Cvc5NiaBackend {
     }
 
     fn dump_smt(&self, ir: &PolyIR) -> String {
-        let p = ir.ring.field.prime();
+        let p = ir.ring.field().prime();
         let mut lines = Vec::new();
         lines.push("(set-logic QF_NIA)".to_string());
         for name in ir.ring.ring.var_names() {

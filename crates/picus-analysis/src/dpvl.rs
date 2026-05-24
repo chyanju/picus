@@ -23,7 +23,7 @@ use picus_r1cs::grammar::*;
 use picus_smt::backends::{SolverBackend, SolverResult};
 use picus_smt::poly_ir::{r1cs_to_poly_ir, PolyIR};
 use picus_smt::{SolverKind, Theory};
-use picus_solver::poly::Poly;
+use picus_solver::poly::IrPoly as Poly;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 

@@ -27,7 +27,7 @@ pub fn wire_connectivity_score(ir: &PolyIR) -> HashMap<usize, usize> {
     let mut counter: HashMap<usize, usize> = HashMap::new();
     for poly in &ir.equalities {
         let mut wires_seen: HashSet<usize> = HashSet::new();
-        let vars = ir.ring.ring.appearing_indeterminates(poly);
+        let vars = ir.ring.appearing_indeterminates(poly);
         for v in vars.iter() {
             wires_seen.insert(ir.var_to_wire(v));
         }

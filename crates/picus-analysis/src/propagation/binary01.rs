@@ -27,7 +27,7 @@ impl PropagationLemma for Binary01Lemma {
     }
 
     fn run(&mut self, ir: &PolyIR, ctx: &mut PropagationCtx) -> bool {
-        let p = ir.ring.field.prime();
+        let p = ir.ring.field().prime();
         let p_minus_1 = p - BigUint::one();
         let binary_set: HashSet<BigUint> =
             [BigUint::zero(), BigUint::one()].into_iter().collect();
@@ -64,12 +64,12 @@ impl PropagationLemma for Binary01Lemma {
 /// index. Variables `y_i` (alt-copy) map back to wire `i`.
 fn match_x_squared_minus_x(
     ir: &PolyIR,
-    poly: &picus_solver::poly::Poly,
+    poly: &picus_solver::poly::IrPoly,
     p_minus_1: &BigUint,
 ) -> Option<usize> {
-    let ring = &ir.ring.ring;
+    let ring = &ir.ring;
     let n_vars = ring.n_vars();
-    let field = &ir.ring.field;
+    let field = ir.ring.field();
 
     // Two-term degree-2 polynomial: gather terms and check the shape.
     let mut terms: Vec<(BigUint, Vec<(usize, usize)>)> = Vec::new();
@@ -109,7 +109,7 @@ fn match_x_squared_minus_x(
 
     // x^2 - x has c1 = 1, c2 = p-1 (so c1 + c2 = 0 mod p). More
     // generally any non-zero c1 with c2 = -c1 works.
-    let p = ir.ring.field.prime();
+    let p = ir.ring.field().prime();
     let neg_sq_coeff = if sq_coeff.is_zero() {
         BigUint::zero()
     } else {

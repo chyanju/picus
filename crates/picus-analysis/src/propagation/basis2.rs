@@ -47,7 +47,7 @@ use std::collections::{HashMap, HashSet};
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
 use picus_smt::poly_ir::PolyIR;
-use picus_solver::poly::Poly;
+use picus_solver::poly::IrPoly as Poly;
 
 use super::lemma::{LemmaDescriptor, PropagationCtx, PropagationLemma};
 use super::range::RangeValue;
@@ -61,7 +61,7 @@ impl PropagationLemma for Basis2Lemma {
     }
 
     fn run(&mut self, ir: &PolyIR, ctx: &mut PropagationCtx) -> bool {
-        let p = ir.ring.field.prime();
+        let p = ir.ring.field().prime();
         let mut progress = false;
         for poly in &ir.equalities {
             let Some(decomp) = match_decomp(ir, poly) else {
@@ -109,7 +109,7 @@ struct Decomp {
 /// power-of-2 sequence covering `2^0 .. 2^{n-1}` exactly once. Returns
 /// the target and the bit variables indexed by weight.
 fn match_decomp(ir: &PolyIR, poly: &Poly) -> Option<Decomp> {
-    let p = ir.ring.field.prime();
+    let p = ir.ring.field().prime();
     let one = BigUint::one();
 
     // Collect linear-only terms; reject any non-linear monomial; any
@@ -218,7 +218,7 @@ fn companion_proves_below_prime(
     if bits.len() != COMPCONSTANT_BITS {
         return false;
     }
-    let p = ir.ring.field.prime();
+    let p = ir.ring.field().prime();
 
     let canon = build_canon(ir);
     let part_map = build_part_map(ir, &canon);
@@ -278,8 +278,8 @@ fn companion_proves_below_prime(
 /// the decomposition bits to the comparator inputs regardless of how
 /// the compiler renumbered wires.
 fn build_canon(ir: &PolyIR) -> Vec<usize> {
-    let p = ir.ring.field.prime();
-    let n = ir.ring.ring.n_vars();
+    let p = ir.ring.field().prime();
+    let n = ir.ring.n_vars();
     let mut parent: Vec<usize> = (0..n).collect();
     for poly in &ir.equalities {
         let mut lin: Vec<(BigUint, usize)> = Vec::with_capacity(2);
@@ -378,7 +378,7 @@ fn match_part(
     a: &BigUint,
     b: &BigUint,
 ) -> Option<(u8, usize)> {
-    let p = ir.ring.field.prime();
+    let p = ir.ring.field().prime();
     let mut prod: Option<BigUint> = None;
     let mut konst = BigUint::zero();
     let mut sl_c = BigUint::zero();
@@ -464,7 +464,7 @@ fn match_part(
 /// appears with one shared coefficient `−k`, `S` with `+k`, no other
 /// terms). Returns the canonical variable of `S`.
 fn find_sum_var(ir: &PolyIR, canon: &[usize], part_outs: &[usize]) -> Option<usize> {
-    let p = ir.ring.field.prime();
+    let p = ir.ring.field().prime();
     let targets: HashSet<usize> = part_outs.iter().copied().collect();
     for poly in &ir.equalities {
         let mut coeffs: HashMap<usize, BigUint> = HashMap::new();
@@ -523,7 +523,7 @@ fn find_inner_bit(
     bit: usize,
     ranges: &HashMap<usize, RangeValue>,
 ) -> Option<usize> {
-    let p = ir.ring.field.prime();
+    let p = ir.ring.field().prime();
     for poly in &ir.equalities {
         let Some(decomp) = match_decomp(ir, poly) else {
             continue;

@@ -78,12 +78,12 @@ fn poly_ir_lowering_honours_non_bn128_prime() {
 
     // Ring prime matches the R1CS header.
     assert_eq!(
-        ir.ring.field.prime(),
+        ir.ring.field().prime(),
         &BigUint::from(7u32),
         "ring prime should be 7, not BN128"
     );
     // Variable layout: 2 * n_wires = 6 (x0..x2, y0..y2).
-    assert_eq!(ir.ring.ring.var_names().len(), 6);
+    assert_eq!(ir.ring.var_names().len(), 6);
     // Equalities: 1 orig + 1 alt + x_0 = 1 pin = 3.
     assert_eq!(ir.equalities.len(), 3);
 }

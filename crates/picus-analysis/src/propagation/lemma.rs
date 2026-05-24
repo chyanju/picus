@@ -26,7 +26,7 @@
 use std::collections::{HashMap, HashSet};
 
 use picus_smt::poly_ir::PolyIR;
-use picus_solver::poly::Poly;
+use picus_solver::poly::IrPoly as Poly;
 
 use crate::propagation::range::RangeValue;
 
