@@ -422,6 +422,68 @@ fn sparse_reduce_matches_dense_naive_random() {
     }
 }
 
+/// The sparse Gröbner basis (`sparse_gb::groebner_basis` + `interreduce`)
+/// must equal the dense engine's reduced Gröbner basis on random
+/// generator sets. The reduced GB under a fixed order is unique, so the
+/// two representations must agree exactly (compared as monic,
+/// canonically-sorted term maps). Uses a small 3-variable, low-degree
+/// ring so the naive (criteria-free) sparse Buchberger stays fast.
+#[test]
+fn sparse_groebner_basis_matches_dense_random() {
+    use super::buchberger::{groebner_basis, interreduce, BuchbergerConfig};
+    const GV: usize = 3;
+    const GMAX: u64 = 2;
+    let arc_r = PolyRing::new(
+        PrimeField::new(BigUint::from(PRIME)),
+        (0..GV).map(|i| format!("v{i}")).collect(),
+        MonomialOrder::DegRevLex,
+    );
+    let r: &PolyRing = &arc_r;
+    let mut rng = Rng::new(91);
+
+    for _ in 0..200 {
+        let n_gen = 2 + rng.below(2) as usize; // 2–3 generators
+        let gen_terms: Vec<Vec<(Vec<u16>, u64)>> = (0..n_gen)
+            .map(|_| {
+                let n = 1 + rng.below(3) as usize;
+                (0..n)
+                    .map(|_| {
+                        let e: Vec<u16> = (0..GV).map(|_| rng.below(GMAX + 1) as u16).collect();
+                        (e, 1 + rng.below(PRIME - 1))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        // Dense reduced GB.
+        let gens_d: Vec<Polynomial> = gen_terms
+            .iter()
+            .map(|t| build_dense(t, r))
+            .filter(|p| !p.is_zero())
+            .collect();
+        if gens_d.is_empty() {
+            continue;
+        }
+        let gb_d = groebner_basis(gens_d, &arc_r, &BuchbergerConfig::default()).expect("dense gb");
+        let red_d = interreduce(gb_d.basis, &arc_r);
+        let mut canon_d: Vec<PolyMap> = red_d.iter().map(|p| dense_to_map(p, r)).collect();
+        canon_d.sort();
+
+        // Sparse reduced GB from the same generators.
+        let gens_s: Vec<SparsePolynomial> = gen_terms
+            .iter()
+            .map(|t| build_sparse(t, r))
+            .filter(|p| !p.is_zero())
+            .collect();
+        let gb_s = super::sparse_gb::groebner_basis(gens_s, r);
+        let red_s = super::sparse_gb::interreduce(gb_s, r);
+        let mut canon_s: Vec<PolyMap> = red_s.iter().map(|p| sparse_to_map(p, r)).collect();
+        canon_s.sort();
+
+        assert_eq!(canon_d, canon_s, "reduced GB mismatch for generators {:?}", gen_terms);
+    }
+}
+
 /// Exercise the `PolyRepr` trait generically: build via the trait,
 /// run add/mul through it, and check `collect_terms_idx` against the
 /// coefficient-map reference — for both representations.

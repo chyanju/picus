@@ -248,6 +248,21 @@ impl SparsePolynomial {
         }
         SparsePolynomial::from_terms(result, ring)
     }
+
+    /// Scale so the leading coefficient is 1; the zero polynomial stays zero.
+    pub fn make_monic(&self, ring: &PolyRing) -> SparsePolynomial {
+        match self.terms.first() {
+            None => SparsePolynomial::zero(),
+            Some((_, lc)) => {
+                if ring.field.is_one(lc) {
+                    self.clone()
+                } else {
+                    let lc_inv = ring.field.inv(lc).expect("nonzero leading coefficient");
+                    self.scale(&lc_inv, ring)
+                }
+            }
+        }
+    }
 }
 
 impl super::repr::PolyRepr for SparsePolynomial {
