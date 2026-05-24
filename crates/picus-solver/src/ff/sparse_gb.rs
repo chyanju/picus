@@ -15,6 +15,7 @@
 
 use crate::timeout::CancelToken;
 
+use super::divmask::DivMask;
 use super::polynomial::PolyRing;
 use super::repr::MonomialRepr;
 use super::sparse_monomial::SparseMonomial;
@@ -54,6 +55,9 @@ struct SPair {
     j: usize,
     sugar: u32,
     lcm: SparseMonomial,
+    /// Presence DivMask of `lcm`, for O(1) divisibility rejection in the
+    /// M / B criteria before the full monomial check.
+    lcm_divmask: DivMask,
     lcm_deg: u32,
     age: u64,
 }
@@ -78,12 +82,17 @@ fn gm_insert(list: &mut Vec<SPair>, pair: SPair) {
     while idx < list.len() {
         // Existing dominates the new pair iff LCM(existing) divides
         // LCM(pair) (this covers the equal-LCM case: keep existing).
-        if MonomialRepr::divides(&list[idx].lcm, &pair.lcm) {
+        // DivMask prefilter before the full monomial check.
+        if list[idx].lcm_divmask.divides_consistent_with(pair.lcm_divmask)
+            && MonomialRepr::divides(&list[idx].lcm, &pair.lcm)
+        {
             return;
         }
         // Else the new pair strictly dominates existing iff LCM(pair)
         // divides LCM(existing); erase existing without advancing.
-        if MonomialRepr::divides(&pair.lcm, &list[idx].lcm) {
+        if pair.lcm_divmask.divides_consistent_with(list[idx].lcm_divmask)
+            && MonomialRepr::divides(&pair.lcm, &list[idx].lcm)
+        {
             list.swap_remove(idx);
             continue;
         }
@@ -97,7 +106,12 @@ fn gm_insert(list: &mut Vec<SPair>, pair: SPair) {
 /// element's leading term `new_lt` makes redundant: `new_lt | lcm`,
 /// `lcm(LT_j, new_lt) != lcm`, and `lcm(LT_i, new_lt) != lcm`.
 fn b_criterion_kill(pairs: &mut Vec<SPair>, new_lt: &SparseMonomial, basis: &[BasisElement]) {
+    let new_lt_mask = new_lt.divmask();
     pairs.retain(|p| {
+        // new_lt must divide p.lcm to kill it (DivMask prefilter first).
+        if !new_lt_mask.divides_consistent_with(p.lcm_divmask) {
+            return true;
+        }
         if !MonomialRepr::divides(new_lt, &p.lcm) {
             return true;
         }
@@ -289,12 +303,13 @@ impl<'a> Buchberger<'a> {
             }
             let lcm = MonomialRepr::lcm(new_lt, basis_k_lt);
             let lcm_deg = lcm.total_degree();
+            let lcm_divmask = lcm.divmask();
             // Sugar = max over the two parents of deg(lcm/LT) + sugar(parent).
             let s_new = new_sugar + (lcm_deg - new_lt_deg);
             let s_k = self.basis[k].sugar + (lcm_deg - basis_k_lt.total_degree());
             let sugar = s_new.max(s_k);
             self.age_counter += 1;
-            let pair = SPair { i: k, j: new_idx, sugar, lcm, lcm_deg, age: self.age_counter };
+            let pair = SPair { i: k, j: new_idx, sugar, lcm, lcm_divmask, lcm_deg, age: self.age_counter };
             gm_insert(&mut new_pairs, pair);
         }
         b_criterion_kill(&mut self.open, new_lt, &self.basis);

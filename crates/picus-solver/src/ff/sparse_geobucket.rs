@@ -16,6 +16,7 @@
 
 use std::cmp::Ordering;
 
+use super::divmask::DivMask;
 use super::field::FieldElem;
 use super::polynomial::PolyRing;
 use super::repr::MonomialRepr;
@@ -243,18 +244,29 @@ pub(super) fn reduce(
     divisors: &[&SparsePolynomial],
     ring: &PolyRing,
 ) -> SparsePolynomial {
-    // Cache each divisor's leading (monomial, coeff).
+    // Cache each divisor's leading (monomial, coeff) and a presence
+    // DivMask of its leading monomial for O(1) divisibility rejection.
     let div_lt: Vec<Option<(&SparseMonomial, &FieldElem)>> =
         divisors.iter().map(|d| d.leading_term().map(|(m, c)| (m, c))).collect();
+    let div_mask: Vec<DivMask> = div_lt
+        .iter()
+        .map(|lt| lt.map_or(DivMask::empty(), |(m, _)| m.divmask()))
+        .collect();
 
     let mut gb = SparseGeobucket::new(ring);
     gb.add_terms(subject.terms_ref().to_vec());
 
     let mut result: Vec<Term> = Vec::new();
     while let Some((lm, lc)) = gb.pop_leading_term() {
+        let lm_mask = lm.divmask();
         let mut chosen: Option<usize> = None;
         for (di, lt) in div_lt.iter().enumerate() {
             if let Some((dlm, _)) = *lt {
+                // DivMask prefilter: a divisor LT with a variable absent
+                // from `lm` cannot divide it.
+                if !div_mask[di].divides_consistent_with(lm_mask) {
+                    continue;
+                }
                 if MonomialRepr::divides(dlm, &lm) {
                     chosen = Some(di);
                     break;

@@ -22,6 +22,28 @@ pub struct SparseMonomial {
 }
 
 impl SparseMonomial {
+    /// Presence-based 128-bit divisibility mask for fast rejection: for
+    /// every variable `v` with nonzero exponent, set bit `h(v)` where `h`
+    /// is a multiplicative hash into `0..128`. If a bit is set in `a`'s
+    /// mask but not `b`'s, some variable of `a` is absent from `b`, so
+    /// `a ∤ b` — checked via [`DivMask::divides_consistent_with`].
+    ///
+    /// Unlike the dense [`DivMaskScheme`](super::divmask::DivMaskScheme)
+    /// (thresholds over the first 128 variables only — useless on the wide
+    /// rings the sparse representation targets), this hashes *every*
+    /// variable into the 128 bits; collisions only yield false positives,
+    /// resolved by the full [`MonomialRepr::divides`] check. Exponent
+    /// magnitude is not encoded — the `divides` total-degree guard and the
+    /// full check cover that.
+    pub(crate) fn divmask(&self) -> super::divmask::DivMask {
+        let mut m: u128 = 0;
+        for &(v, _) in &self.vars {
+            let h = (v as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 57;
+            m |= 1u128 << (h & 127);
+        }
+        super::divmask::DivMask(m)
+    }
+
     /// Lex: lowest variable where the exponents differ decides; higher
     /// exponent there is the larger monomial.
     fn cmp_lex(&self, other: &Self) -> Ordering {
