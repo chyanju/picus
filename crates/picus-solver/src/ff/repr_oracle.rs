@@ -21,6 +21,7 @@ use super::monomial::{Monomial, MonomialOrder};
 use super::polynomial::{PolyRing, Polynomial};
 use super::repr::MonomialRepr;
 use super::sparse_monomial::SparseMonomial;
+use super::sparse_polynomial::SparsePolynomial;
 
 /// Deterministic xorshift64* PRNG — reproducible, no dependency.
 struct Rng(u64);
@@ -220,28 +221,58 @@ fn degrevlex_admissible_sparse() {
 // ── polynomial references over (exponent-vector → coeff) maps ────────
 type PolyMap = BTreeMap<Vec<u16>, u64>;
 
-fn rand_poly(rng: &mut Rng, r: &PolyRing, max_terms: usize) -> (Polynomial, PolyMap) {
-    let n_terms = 1 + rng.below(max_terms as u64) as usize;
-    let mut terms: Vec<(Monomial, _)> = Vec::new();
-    let mut map: PolyMap = BTreeMap::new();
-    for _ in 0..n_terms {
-        let e = rand_exps(rng);
-        let c = 1 + rng.below(PRIME - 1); // nonzero in [1, PRIME)
-        terms.push((Monomial::from_exponents(e.clone()), r.field.from_u64(c)));
-        let slot = map.entry(e).or_insert(0);
-        *slot = (*slot + c) % PRIME;
-    }
-    map.retain(|_, c| *c != 0);
-    (Polynomial::from_terms(terms, r), map)
+/// Random terms shared by both representations, so dense and sparse are
+/// built from identical input and can be compared directly.
+fn rand_terms(rng: &mut Rng, max_terms: usize) -> Vec<(Vec<u16>, u64)> {
+    let n = 1 + rng.below(max_terms as u64) as usize;
+    (0..n).map(|_| (rand_exps(rng), 1 + rng.below(PRIME - 1))).collect()
 }
 
-fn poly_to_map(p: &Polynomial, r: &PolyRing) -> PolyMap {
+fn build_dense(terms: &[(Vec<u16>, u64)], r: &PolyRing) -> Polynomial {
+    let ts = terms
+        .iter()
+        .map(|(e, c)| (Monomial::from_exponents(e.clone()), r.field.from_u64(*c)))
+        .collect();
+    Polynomial::from_terms(ts, r)
+}
+
+fn build_sparse(terms: &[(Vec<u16>, u64)], r: &PolyRing) -> SparsePolynomial {
+    let ts = terms
+        .iter()
+        .map(|(e, c)| (SparseMonomial::from_exponents(e.clone()), r.field.from_u64(*c)))
+        .collect();
+    SparsePolynomial::from_terms(ts, r)
+}
+
+/// Reference coefficient map: fold the raw terms (sum duplicates, drop
+/// zeros) mod PRIME.
+fn terms_ref_map(terms: &[(Vec<u16>, u64)]) -> PolyMap {
+    let mut m = PolyMap::new();
+    for (e, c) in terms {
+        let slot = m.entry(e.clone()).or_insert(0);
+        *slot = (*slot + c) % PRIME;
+    }
+    m.retain(|_, c| *c != 0);
+    m
+}
+
+fn dense_to_map(p: &Polynomial, r: &PolyRing) -> PolyMap {
     let mut m = PolyMap::new();
     for t in p.terms(r) {
-        let c: BigUint = r.field.to_biguint(t.coefficient());
-        let c = u64::try_from(c).expect("coeff fits u64 over GF(101)");
+        let c = u64::try_from(r.field.to_biguint(t.coefficient())).unwrap();
         if c != 0 {
             m.insert(t.exponents().to_vec(), c);
+        }
+    }
+    m
+}
+
+fn sparse_to_map(p: &SparsePolynomial, r: &PolyRing) -> PolyMap {
+    let mut m = PolyMap::new();
+    for (mono, c) in p.iter_terms() {
+        let c = u64::try_from(r.field.to_biguint(c)).unwrap();
+        if c != 0 {
+            m.insert(mono.to_dense(), c);
         }
     }
     m
@@ -262,36 +293,46 @@ fn map_add(a: &PolyMap, b: &PolyMap, neg_b: bool) -> PolyMap {
 }
 
 #[test]
-fn poly_add_sub_mul_match_textbook() {
+fn poly_add_sub_mul_both_reps() {
     let r = ring();
     let mut rng = Rng::new(13);
     for _ in 0..5_000 {
-        let (pa, ma) = rand_poly(&mut rng, &r, 8);
-        let (pb, mb) = rand_poly(&mut rng, &r, 8);
+        let ta = rand_terms(&mut rng, 8);
+        let tb = rand_terms(&mut rng, 8);
+        let (da, db) = (build_dense(&ta, &r), build_dense(&tb, &r));
+        let (sa, sb) = (build_sparse(&ta, &r), build_sparse(&tb, &r));
+        let (ma, mb) = (terms_ref_map(&ta), terms_ref_map(&tb));
 
-        assert_eq!(poly_to_map(&pa.add(&pb, &r), &r), map_add(&ma, &mb, false));
-        assert_eq!(poly_to_map(&pa.sub(&pb, &r), &r), map_add(&ma, &mb, true));
-
-        // schoolbook multiply reference
-        let mut mm: PolyMap = BTreeMap::new();
-        for (ea, &ca) in &ma {
-            for (eb, &cb) in &mb {
-                let e = ref_mul(ea, eb);
-                let slot = mm.entry(e).or_insert(0);
-                *slot = (*slot + ca * cb) % PRIME;
+        let add_ref = map_add(&ma, &mb, false);
+        let sub_ref = map_add(&ma, &mb, true);
+        let mul_ref = {
+            let mut mm = PolyMap::new();
+            for (ea, &ca) in &ma {
+                for (eb, &cb) in &mb {
+                    let slot = mm.entry(ref_mul(ea, eb)).or_insert(0);
+                    *slot = (*slot + ca * cb) % PRIME;
+                }
             }
-        }
-        mm.retain(|_, c| *c != 0);
-        assert_eq!(poly_to_map(&pa.mul(&pb, &r), &r), mm);
+            mm.retain(|_, c| *c != 0);
+            mm
+        };
+
+        assert_eq!(dense_to_map(&da.add(&db, &r), &r), add_ref);
+        assert_eq!(sparse_to_map(&sa.add(&sb, &r), &r), add_ref);
+        assert_eq!(dense_to_map(&da.sub(&db, &r), &r), sub_ref);
+        assert_eq!(sparse_to_map(&sa.sub(&sb, &r), &r), sub_ref);
+        assert_eq!(dense_to_map(&da.mul(&db, &r), &r), mul_ref);
+        assert_eq!(sparse_to_map(&sa.mul(&sb, &r), &r), mul_ref);
     }
 }
 
 #[test]
-fn poly_evaluate_matches_textbook() {
+fn poly_evaluate_both_reps() {
     let r = ring();
     let mut rng = Rng::new(29);
     for _ in 0..5_000 {
-        let (p, m) = rand_poly(&mut rng, &r, 8);
+        let t = rand_terms(&mut rng, 8);
+        let m = terms_ref_map(&t);
         let vals: Vec<u64> = (0..N_VARS).map(|_| rng.below(PRIME)).collect();
         // reference: Σ c · Π vals[v]^e[v]  (mod PRIME)
         let mut acc = 0u64;
@@ -305,8 +346,12 @@ fn poly_evaluate_matches_textbook() {
             acc = (acc + term) % PRIME;
         }
         let val_els: Vec<_> = vals.iter().map(|&v| r.field.from_u64(v)).collect();
-        let got: BigUint = r.field.to_biguint(&p.evaluate(&val_els, &r));
-        assert_eq!(got, BigUint::from(acc));
+        let dense_got =
+            u64::try_from(r.field.to_biguint(&build_dense(&t, &r).evaluate(&val_els, &r))).unwrap();
+        let sparse_got =
+            u64::try_from(r.field.to_biguint(&build_sparse(&t, &r).evaluate(&val_els, &r))).unwrap();
+        assert_eq!(dense_got, acc);
+        assert_eq!(sparse_got, acc);
     }
 }
 
@@ -318,10 +363,10 @@ fn reduce_geobucket_matches_naive_random() {
     let r = ring();
     let mut rng = Rng::new(31);
     for _ in 0..2_000 {
-        let (subject, _) = rand_poly(&mut rng, &r, 10);
+        let subject = build_dense(&rand_terms(&mut rng, 10), &r);
         let n_div = 1 + rng.below(3) as usize;
         let divisors: Vec<Polynomial> = (0..n_div)
-            .map(|_| rand_poly(&mut rng, &r, 5).0)
+            .map(|_| build_dense(&rand_terms(&mut rng, 5), &r))
             .filter(|d| !d.is_zero())
             .collect();
         if divisors.is_empty() {
@@ -330,6 +375,6 @@ fn reduce_geobucket_matches_naive_random() {
         let refs: Vec<&Polynomial> = divisors.iter().collect();
         let geo = subject.reduce_by_refs_geobucket(&refs, &r, None, None);
         let naive = subject.reduce_by_refs_naive(&refs, &r);
-        assert_eq!(poly_to_map(&geo, &r), poly_to_map(&naive, &r));
+        assert_eq!(dense_to_map(&geo, &r), dense_to_map(&naive, &r));
     }
 }

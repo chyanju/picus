@@ -24,6 +24,7 @@ pub mod hilbert;
 pub mod univariate;
 pub mod repr;
 pub mod sparse_monomial;
+pub mod sparse_polynomial;
 
 #[cfg(test)]
 mod repr_oracle;
