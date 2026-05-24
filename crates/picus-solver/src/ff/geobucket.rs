@@ -7,7 +7,7 @@
 //! O(N) for a naive single-vector accumulator — which is the dominant
 //! speedup during multi-step polynomial reduction.
 //!
-//! Each bucket is stored as a `Polynomial` plus a `head` cursor so that
+//! Each bucket is stored as a `DensePoly` plus a `head` cursor so that
 //! `pop_leading_term` can advance in O(1) without rebuilding the bucket.
 //! Cross-bucket merges materialize only the live tail of each bucket
 //! (terms at index `head..`).
@@ -15,7 +15,7 @@
 use std::cmp::Ordering;
 
 use super::field::FieldElem;
-use super::polynomial::{PolyRing, Polynomial};
+use super::polynomial::{PolyRing, DensePoly};
 
 /// Smallest bucket capacity (in terms). Larger first-bucket means
 /// fewer cascade events per `sub_scaled_tail` call.
@@ -26,7 +26,7 @@ const RATIO: usize = 4;
 const MAX_BUCKETS: usize = 20;
 
 pub struct Geobucket<'r> {
-    buckets: Vec<Polynomial>,
+    buckets: Vec<DensePoly>,
     heads: Vec<usize>,
     ring: &'r PolyRing,
     /// Scratch buffers for `sub_scaled_tail` — capacity is preserved
@@ -52,7 +52,7 @@ impl<'r> Geobucket<'r> {
         }
     }
 
-    pub fn from_poly(poly: Polynomial, ring: &'r PolyRing) -> Self {
+    pub fn from_poly(poly: DensePoly, ring: &'r PolyRing) -> Self {
         let mut gb = Self::new(ring);
         gb.add_poly(poly);
         gb
@@ -83,7 +83,7 @@ impl<'r> Geobucket<'r> {
 
     fn ensure_bucket(&mut self, idx: usize) {
         while self.buckets.len() <= idx {
-            self.buckets.push(Polynomial::zero());
+            self.buckets.push(DensePoly::zero());
             self.heads.push(0);
         }
     }
@@ -93,28 +93,28 @@ impl<'r> Geobucket<'r> {
     }
 
     /// Take ownership of the live tail of bucket `idx`, leaving the bucket empty.
-    fn take_bucket_live(&mut self, idx: usize) -> Polynomial {
+    fn take_bucket_live(&mut self, idx: usize) -> DensePoly {
         if idx >= self.buckets.len() {
-            return Polynomial::zero();
+            return DensePoly::zero();
         }
         let head = self.heads[idx];
         self.heads[idx] = 0;
-        let existing = std::mem::replace(&mut self.buckets[idx], Polynomial::zero());
+        let existing = std::mem::replace(&mut self.buckets[idx], DensePoly::zero());
         if head == 0 {
             return existing;
         }
         if head >= existing.num_terms() {
-            return Polynomial::zero();
+            return DensePoly::zero();
         }
         let n = self.ring.n_vars;
         let exps = existing.raw_exponents()[head * n..].to_vec();
         let coeffs = existing.raw_coeffs()[head..].to_vec();
         let degs = existing.raw_total_degs()[head..].to_vec();
-        Polynomial::from_raw_sorted(exps, coeffs, degs)
+        DensePoly::from_raw_sorted(exps, coeffs, degs)
     }
 
     /// Add a polynomial. Amortized O(L * log(N/L)) where L = len(p), N = total size.
-    pub fn add_poly(&mut self, p: Polynomial) {
+    pub fn add_poly(&mut self, p: DensePoly) {
         if p.is_zero() {
             return;
         }
@@ -154,7 +154,7 @@ impl<'r> Geobucket<'r> {
 
     /// Subtract `neg_coeff * x^mul_exps * divisor` from the geobucket.
     /// Internally materializes the scaled polynomial then routes via `add_poly`.
-    pub fn sub_scaled(&mut self, mul_exps: &[u16], neg_coeff: &FieldElem, divisor: &Polynomial) {
+    pub fn sub_scaled(&mut self, mul_exps: &[u16], neg_coeff: &FieldElem, divisor: &DensePoly) {
         if divisor.is_zero() || self.ring.field.is_zero(neg_coeff) {
             return;
         }
@@ -170,7 +170,7 @@ impl<'r> Geobucket<'r> {
         &mut self,
         mul_exps: &[u16],
         neg_coeff: &FieldElem,
-        divisor: &Polynomial,
+        divisor: &DensePoly,
     ) {
         let div_len = divisor.num_terms();
         if div_len <= 1 || self.ring.field.is_zero(neg_coeff) {
@@ -200,7 +200,7 @@ impl<'r> Geobucket<'r> {
             self.scratch_coeffs.push(self.ring.field.mul(&d_coeffs[i], neg_coeff));
             self.scratch_degs.push(d_degs[i] + mul_deg);
         }
-        let scaled_tail = Polynomial::from_raw_sorted(
+        let scaled_tail = DensePoly::from_raw_sorted(
             std::mem::take(&mut self.scratch_exps),
             std::mem::take(&mut self.scratch_coeffs),
             std::mem::take(&mut self.scratch_degs),
@@ -244,7 +244,7 @@ impl<'r> Geobucket<'r> {
                         let head_b = self.heads[b];
                         let b_exps = &self.buckets[b].raw_exponents()[head_b * n..(head_b + 1) * n];
                         let b_deg = self.buckets[b].raw_total_degs()[head_b];
-                        if Polynomial::cmp_term_at(i_exps, i_deg, b_exps, b_deg, order)
+                        if DensePoly::cmp_term_at(i_exps, i_deg, b_exps, b_deg, order)
                             == Ordering::Greater
                         {
                             best = Some(i);
@@ -291,16 +291,16 @@ impl<'r> Geobucket<'r> {
     /// resolves any pending cancellations, then re-inserts the surviving term.
     pub fn leading_term(&mut self) -> Option<(Vec<u16>, u32, FieldElem)> {
         let (exps, deg, coeff) = self.pop_leading_term()?;
-        let p = Polynomial::from_raw_sorted(exps.clone(), vec![coeff.clone()], vec![deg]);
+        let p = DensePoly::from_raw_sorted(exps.clone(), vec![coeff.clone()], vec![deg]);
         self.add_poly(p);
         Some((exps, deg, coeff))
     }
 
-    /// Consolidate every bucket into a single canonical `Polynomial`.
-    pub fn into_poly(self) -> Polynomial {
+    /// Consolidate every bucket into a single canonical `DensePoly`.
+    pub fn into_poly(self) -> DensePoly {
         let Geobucket { buckets, heads, ring, .. } = self;
         let n = ring.n_vars;
-        let mut out = Polynomial::zero();
+        let mut out = DensePoly::zero();
         for (i, b) in buckets.into_iter().enumerate() {
             let head = heads[i];
             if head >= b.num_terms() {
@@ -312,7 +312,7 @@ impl<'r> Geobucket<'r> {
                 let exps = b.raw_exponents()[head * n..].to_vec();
                 let coeffs = b.raw_coeffs()[head..].to_vec();
                 let degs = b.raw_total_degs()[head..].to_vec();
-                Polynomial::from_raw_sorted(exps, coeffs, degs)
+                DensePoly::from_raw_sorted(exps, coeffs, degs)
             };
             out = out.add(&live, ring);
         }
@@ -333,13 +333,13 @@ mod tests {
         PolyRing::new(f, vec!["x".into(), "y".into(), "z".into()], MonomialOrder::DegRevLex)
     }
 
-    fn mk(ring: &PolyRing, terms: Vec<(Vec<u16>, u64)>) -> Polynomial {
+    fn mk(ring: &PolyRing, terms: Vec<(Vec<u16>, u64)>) -> DensePoly {
         let f = &ring.field;
         let v: Vec<(Monomial, FieldElem)> = terms
             .into_iter()
             .map(|(e, c)| (Monomial::from_exponents(e), f.from_u64(c)))
             .collect();
-        Polynomial::from_terms(v, ring)
+        DensePoly::from_terms(v, ring)
     }
 
     #[test]
@@ -461,7 +461,7 @@ mod tests {
         let r = small_ring();
         // Add 200 small polynomials; result should equal sum.
         let mut gb = Geobucket::new(&r);
-        let mut expect = Polynomial::zero();
+        let mut expect = DensePoly::zero();
         for i in 0..200u64 {
             let p = mk(&r, vec![
                 (vec![(i % 5) as u16, ((i / 5) % 5) as u16, ((i / 25) % 5) as u16], (i % 97) + 1),
@@ -490,7 +490,7 @@ mod tests {
         let r = small_ring();
         let p = mk(&r, vec![(vec![1, 0, 0], 7)]);
         let mut gb = Geobucket::from_poly(p.clone(), &r);
-        gb.add_poly(Polynomial::zero());
+        gb.add_poly(DensePoly::zero());
         let got = gb.into_poly();
         assert_eq!(got.num_terms(), p.num_terms());
     }
