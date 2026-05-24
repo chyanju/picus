@@ -54,7 +54,7 @@ impl PolyRing {
 
 /// A multivariate polynomial in flat storage.
 #[derive(Clone, Debug)]
-pub struct Polynomial {
+pub struct DensePoly {
     /// Flat exponent storage, length `num_terms * ring.n_vars`.
     exponents: Vec<u16>,
     /// Coefficients, length `num_terms`. All nonzero.
@@ -63,10 +63,16 @@ pub struct Polynomial {
     total_degs: Vec<u32>,
 }
 
+/// The dense flat-storage polynomial is the default polynomial type.
+/// (Stage 3 will turn `Polynomial` into a runtime dense/sparse enum so
+/// the solve core can stay resident-sparse on wide rings; for now it is
+/// an alias so the rename is behaviour-preserving.)
+pub type Polynomial = DensePoly;
+
 /// A lightweight reference to a single term within a polynomial.
 #[derive(Copy, Clone, Debug)]
 pub struct TermRef<'a> {
-    poly: &'a Polynomial,
+    poly: &'a DensePoly,
     n_vars: usize,
     idx: usize,
 }
@@ -98,18 +104,18 @@ impl<'a> TermRef<'a> {
     }
 }
 
-impl Polynomial {
+impl DensePoly {
     /// The zero polynomial.
     pub fn zero() -> Self {
-        Polynomial { exponents: Vec::new(), coeffs: Vec::new(), total_degs: Vec::new() }
+        DensePoly { exponents: Vec::new(), coeffs: Vec::new(), total_degs: Vec::new() }
     }
 
     /// Construct a constant polynomial. Returns the zero polynomial if `c` is zero.
     pub fn constant(c: FieldElem, ring: &PolyRing) -> Self {
         if ring.field.is_zero(&c) {
-            return Polynomial::zero();
+            return DensePoly::zero();
         }
-        Polynomial {
+        DensePoly {
             exponents: vec![0u16; ring.n_vars],
             coeffs: vec![c],
             total_degs: vec![0],
@@ -150,7 +156,7 @@ impl Polynomial {
             out_coeffs.push(coeff);
             out_degs.push(mon.total_degree());
         }
-        Polynomial { exponents: out_exps, coeffs: out_coeffs, total_degs: out_degs }
+        DensePoly { exponents: out_exps, coeffs: out_coeffs, total_degs: out_degs }
     }
 
     /// Construct from already-sorted (descending) parallel arrays. UB if violated.
@@ -167,14 +173,14 @@ impl Polynomial {
             total_degs.windows(2).all(|w| w[0] >= w[1]),
             "from_raw_sorted: total_degs must be non-increasing (descending order)"
         );
-        Polynomial { exponents, coeffs, total_degs }
+        DensePoly { exponents, coeffs, total_degs }
     }
 
     /// `x_var` as a monomial polynomial with coefficient 1.
     pub fn variable(var: usize, ring: &PolyRing) -> Self {
         let mut exps = vec![0u16; ring.n_vars];
         exps[var] = 1;
-        Polynomial {
+        DensePoly {
             exponents: exps,
             coeffs: vec![ring.field.one()],
             total_degs: vec![1],
@@ -272,22 +278,22 @@ impl Polynomial {
         }
     }
 
-    pub fn negate(&self, ring: &PolyRing) -> Polynomial {
+    pub fn negate(&self, ring: &PolyRing) -> DensePoly {
         let mut out = self.clone();
         out.negate_in_place(ring);
         out
     }
 
     /// Multiply every coefficient by `c`. Returns zero if `c == 0`.
-    pub fn scale(&self, c: &FieldElem, ring: &PolyRing) -> Polynomial {
+    pub fn scale(&self, c: &FieldElem, ring: &PolyRing) -> DensePoly {
         if ring.field.is_zero(c) {
-            return Polynomial::zero();
+            return DensePoly::zero();
         }
         if ring.field.is_one(c) {
             return self.clone();
         }
         let coeffs: Vec<FieldElem> = self.coeffs.iter().map(|x| ring.field.mul(x, c)).collect();
-        Polynomial {
+        DensePoly {
             exponents: self.exponents.clone(),
             coeffs,
             total_degs: self.total_degs.clone(),
@@ -295,9 +301,9 @@ impl Polynomial {
     }
 
     /// Make polynomial monic (divide by leading coefficient). No-op for zero.
-    pub fn make_monic(&self, ring: &PolyRing) -> Polynomial {
+    pub fn make_monic(&self, ring: &PolyRing) -> DensePoly {
         if self.is_zero() {
-            return Polynomial::zero();
+            return DensePoly::zero();
         }
         let lc = self.coeffs[0].clone();
         if ring.field.is_one(&lc) {
@@ -341,7 +347,7 @@ impl Polynomial {
         }
     }
 
-    fn merge_sorted(&self, other: &Polynomial, ring: &PolyRing, negate_other: bool) -> Polynomial {
+    fn merge_sorted(&self, other: &DensePoly, ring: &PolyRing, negate_other: bool) -> DensePoly {
         let n = ring.n_vars;
         let mut out_exps: Vec<u16> = Vec::with_capacity(self.exponents.len() + other.exponents.len());
         let mut out_coeffs: Vec<FieldElem> = Vec::with_capacity(self.coeffs.len() + other.coeffs.len());
@@ -398,11 +404,11 @@ impl Polynomial {
             out_degs.push(other.total_degs[j]);
             j += 1;
         }
-        Polynomial { exponents: out_exps, coeffs: out_coeffs, total_degs: out_degs }
+        DensePoly { exponents: out_exps, coeffs: out_coeffs, total_degs: out_degs }
     }
 
     /// Merge-based addition. Both inputs are descending-sorted.
-    pub fn add(&self, other: &Polynomial, ring: &PolyRing) -> Polynomial {
+    pub fn add(&self, other: &DensePoly, ring: &PolyRing) -> DensePoly {
         self.merge_sorted(other, ring, false)
     }
 
@@ -410,7 +416,7 @@ impl Polynomial {
     /// each input's `FieldElem` allocations into the output rather than
     /// cloning them, eliminating O(M + N) GMP `Integer` allocations
     /// per merge.
-    pub fn merge_owned(self, other: Polynomial, ring: &PolyRing, negate_other: bool) -> Polynomial {
+    pub fn merge_owned(self, other: DensePoly, ring: &PolyRing, negate_other: bool) -> DensePoly {
         if self.is_zero() {
             return if negate_other { other.negate(ring) } else { other };
         }
@@ -486,20 +492,20 @@ impl Polynomial {
             out_degs.push(b_degs[j]);
             j += 1;
         }
-        Polynomial { exponents: out_exps, coeffs: out_coeffs, total_degs: out_degs }
+        DensePoly { exponents: out_exps, coeffs: out_coeffs, total_degs: out_degs }
     }
 
     /// Merge-based subtraction.
-    pub fn sub(&self, other: &Polynomial, ring: &PolyRing) -> Polynomial {
+    pub fn sub(&self, other: &DensePoly, ring: &PolyRing) -> DensePoly {
         self.merge_sorted(other, ring, true)
     }
 
     /// Multiply by a single (monomial, coefficient) term. Result preserves sorted order.
-    pub fn mul_term(&self, term_exps: &[u16], term_coeff: &FieldElem, ring: &PolyRing) -> Polynomial {
+    pub fn mul_term(&self, term_exps: &[u16], term_coeff: &FieldElem, ring: &PolyRing) -> DensePoly {
         let n = ring.n_vars;
         debug_assert_eq!(term_exps.len(), n);
         if self.is_zero() || ring.field.is_zero(term_coeff) {
-            return Polynomial::zero();
+            return DensePoly::zero();
         }
         let term_deg: u32 = term_exps.iter().map(|&e| e as u32).sum();
         let mut out_exps: Vec<u16> = Vec::with_capacity(self.exponents.len());
@@ -515,13 +521,13 @@ impl Polynomial {
             out_coeffs.push(ring.field.mul(&self.coeffs[i], term_coeff));
             out_degs.push(self.total_degs[i] + term_deg);
         }
-        Polynomial { exponents: out_exps, coeffs: out_coeffs, total_degs: out_degs }
+        DensePoly { exponents: out_exps, coeffs: out_coeffs, total_degs: out_degs }
     }
 
     /// Schoolbook polynomial multiplication.
-    pub fn mul(&self, other: &Polynomial, ring: &PolyRing) -> Polynomial {
+    pub fn mul(&self, other: &DensePoly, ring: &PolyRing) -> DensePoly {
         if self.is_zero() || other.is_zero() {
-            return Polynomial::zero();
+            return DensePoly::zero();
         }
         let n = ring.n_vars;
         // Accumulate as (Monomial, FieldElem) and let from_terms handle merge/sort.
@@ -540,7 +546,7 @@ impl Polynomial {
                 acc.push((Monomial::from_exponents(prod_exps), prod_coeff));
             }
         }
-        Polynomial::from_terms(acc, ring)
+        DensePoly::from_terms(acc, ring)
     }
 
     /// Evaluate at the given variable values.
@@ -567,9 +573,9 @@ impl Polynomial {
     }
 
     /// Substitute `x_var <- value`.
-    pub fn substitute_var(&self, var: usize, value: &FieldElem, ring: &PolyRing) -> Polynomial {
+    pub fn substitute_var(&self, var: usize, value: &FieldElem, ring: &PolyRing) -> DensePoly {
         if self.is_zero() {
-            return Polynomial::zero();
+            return DensePoly::zero();
         }
         let n = ring.n_vars;
         let mut acc: Vec<(Monomial, FieldElem)> = Vec::with_capacity(self.coeffs.len());
@@ -587,7 +593,7 @@ impl Polynomial {
                 acc.push((Monomial::from_exponents(new_exps), new_coeff));
             }
         }
-        Polynomial::from_terms(acc, ring)
+        DensePoly::from_terms(acc, ring)
     }
 
     /// Returns `(var, max_exponent)` for each variable that appears with a nonzero exponent.
@@ -621,17 +627,17 @@ impl Polynomial {
         }
     }
 
-    /// Polynomial division/remainder by a slice of divisors. Returns the normal form.
+    /// DensePoly division/remainder by a slice of divisors. Returns the normal form.
     ///
     /// Standard multivariate division: at each step, find a divisor whose leading
     /// monomial divides the leading monomial of the running remainder; subtract
     /// `(lc/lc_d) * (lt/lt_d) * d`. If no divisor matches the leading term, move
     /// it to the result and continue.
-    pub fn reduce_by(&self, divisors: &[Polynomial], ring: &PolyRing) -> Polynomial {
+    pub fn reduce_by(&self, divisors: &[DensePoly], ring: &PolyRing) -> DensePoly {
         // Forward to the by-reference variant so callers that already hold
-        // `&[Polynomial]` (e.g. `Ideal::reduce`) don't have to allocate a
+        // `&[DensePoly]` (e.g. `Ideal::reduce`) don't have to allocate a
         // ref vec themselves.
-        let refs: Vec<&Polynomial> = divisors.iter().collect();
+        let refs: Vec<&DensePoly> = divisors.iter().collect();
         self.reduce_by_refs(&refs, ring)
     }
 
@@ -647,11 +653,11 @@ impl Polynomial {
     fn merge_sub_scaled_tail(
         &self,
         cursor: usize,
-        divisor: &Polynomial,
+        divisor: &DensePoly,
         shift: &[u16],
         neg_coeff: &FieldElem,
         ring: &PolyRing,
-    ) -> Polynomial {
+    ) -> DensePoly {
         let n = ring.n_vars;
         let self_start = cursor + 1;
         let self_len = self.coeffs.len();
@@ -733,7 +739,7 @@ impl Polynomial {
             di += 1;
         }
 
-        Polynomial { exponents: out_exps, coeffs: out_coeffs, total_degs: out_degs }
+        DensePoly { exponents: out_exps, coeffs: out_coeffs, total_degs: out_degs }
     }
 
     /// Like `reduce_by` but takes references to divisors — avoids cloning
@@ -743,7 +749,7 @@ impl Polynomial {
     /// Geobucket-based accumulator (Yan 1998). Each reduction step is
     /// O(D · log(N / D)) where D is the divisor length and N is the
     /// running tail size.
-    pub fn reduce_by_refs(&self, divisors: &[&Polynomial], ring: &PolyRing) -> Polynomial {
+    pub fn reduce_by_refs(&self, divisors: &[&DensePoly], ring: &PolyRing) -> DensePoly {
         if self.is_zero() || divisors.is_empty() {
             return self.clone();
         }
@@ -758,10 +764,10 @@ impl Polynomial {
     /// dense polynomials.
     pub fn reduce_by_refs_cancel(
         &self,
-        divisors: &[&Polynomial],
+        divisors: &[&DensePoly],
         ring: &PolyRing,
         cancel: &crate::timeout::CancelToken,
-    ) -> Polynomial {
+    ) -> DensePoly {
         if self.is_zero() || divisors.is_empty() {
             return self.clone();
         }
@@ -774,11 +780,11 @@ impl Polynomial {
     /// `divisors.len()`; entries are incremented (not zeroed).
     pub fn reduce_by_refs_counted_cancel(
         &self,
-        divisors: &[&Polynomial],
+        divisors: &[&DensePoly],
         ring: &PolyRing,
         cancel: &crate::timeout::CancelToken,
         use_counts: &mut [u64],
-    ) -> Polynomial {
+    ) -> DensePoly {
         debug_assert_eq!(divisors.len(), use_counts.len());
         if self.is_zero() || divisors.is_empty() {
             return self.clone();
@@ -789,10 +795,10 @@ impl Polynomial {
     /// Non-cancel-aware version of [`reduce_by_refs_counted_cancel`].
     pub fn reduce_by_refs_counted(
         &self,
-        divisors: &[&Polynomial],
+        divisors: &[&DensePoly],
         ring: &PolyRing,
         use_counts: &mut [u64],
-    ) -> Polynomial {
+    ) -> DensePoly {
         debug_assert_eq!(divisors.len(), use_counts.len());
         if self.is_zero() || divisors.is_empty() {
             return self.clone();
@@ -808,11 +814,11 @@ impl Polynomial {
     /// index of the selected reducer is incremented every iteration.
     pub(crate) fn reduce_by_refs_geobucket(
         &self,
-        divisors: &[&Polynomial],
+        divisors: &[&DensePoly],
         ring: &PolyRing,
         cancel: Option<&crate::timeout::CancelToken>,
         mut use_counts: Option<&mut [u64]>,
-    ) -> Polynomial {
+    ) -> DensePoly {
         let n = ring.n_vars;
         let stats_on = crate::profile::gb_stats_enabled();
         if stats_on {
@@ -935,7 +941,7 @@ impl Polynomial {
                             g.time_div_lookup_ns.fetch_add(local_lookup_ns, std::sync::atomic::Ordering::Relaxed);
                             g.time_sub_scaled_ns.fetch_add(local_sub_ns, std::sync::atomic::Ordering::Relaxed);
                         }
-                        return Polynomial::from_raw_sorted(result_exps, result_coeffs, result_degs);
+                        return DensePoly::from_raw_sorted(result_exps, result_coeffs, result_degs);
                     }
                 }
             }
@@ -1057,7 +1063,7 @@ impl Polynomial {
         }
 
         let fin_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
-        let result = Polynomial::from_raw_sorted(result_exps, result_coeffs, result_degs);
+        let result = DensePoly::from_raw_sorted(result_exps, result_coeffs, result_degs);
         if let Some(t0) = fin_t0 {
             crate::profile::SPLIT_GB.time_finalize_ns
                 .fetch_add(t0.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
@@ -1078,7 +1084,7 @@ impl Polynomial {
     /// as the cross-validation reference for the geobucket-based
     /// `reduce_by_refs`; only compiled under `cfg(test)`.
     #[cfg(test)]
-    pub(crate) fn reduce_by_refs_naive(&self, divisors: &[&Polynomial], ring: &PolyRing) -> Polynomial {
+    pub(crate) fn reduce_by_refs_naive(&self, divisors: &[&DensePoly], ring: &PolyRing) -> DensePoly {
         if self.is_zero() || divisors.is_empty() {
             return self.clone();
         }
@@ -1152,48 +1158,48 @@ impl Polynomial {
             }
         }
 
-        Polynomial::from_raw_sorted(result_exps, result_coeffs, result_degs)
+        DensePoly::from_raw_sorted(result_exps, result_coeffs, result_degs)
     }
 }
 
-impl super::repr::PolyRepr for Polynomial {
+impl super::repr::PolyRepr for DensePoly {
     type Mono = Monomial;
 
     fn zero() -> Self {
-        Polynomial::zero()
+        DensePoly::zero()
     }
     fn constant(c: FieldElem, ring: &PolyRing) -> Self {
-        Polynomial::constant(c, ring)
+        DensePoly::constant(c, ring)
     }
     fn variable(var: usize, ring: &PolyRing) -> Self {
-        Polynomial::variable(var, ring)
+        DensePoly::variable(var, ring)
     }
     fn from_terms(terms: Vec<(Monomial, FieldElem)>, ring: &PolyRing) -> Self {
-        Polynomial::from_terms(terms, ring)
+        DensePoly::from_terms(terms, ring)
     }
     fn is_zero(&self) -> bool {
-        Polynomial::is_zero(self)
+        DensePoly::is_zero(self)
     }
     fn num_terms(&self) -> usize {
-        Polynomial::num_terms(self)
+        DensePoly::num_terms(self)
     }
     fn add(&self, other: &Self, ring: &PolyRing) -> Self {
-        Polynomial::add(self, other, ring)
+        DensePoly::add(self, other, ring)
     }
     fn sub(&self, other: &Self, ring: &PolyRing) -> Self {
-        Polynomial::sub(self, other, ring)
+        DensePoly::sub(self, other, ring)
     }
     fn mul(&self, other: &Self, ring: &PolyRing) -> Self {
-        Polynomial::mul(self, other, ring)
+        DensePoly::mul(self, other, ring)
     }
     fn scale(&self, c: &FieldElem, ring: &PolyRing) -> Self {
-        Polynomial::scale(self, c, ring)
+        DensePoly::scale(self, c, ring)
     }
     fn negate(&self, ring: &PolyRing) -> Self {
-        Polynomial::negate(self, ring)
+        DensePoly::negate(self, ring)
     }
     fn evaluate(&self, values: &[FieldElem], ring: &PolyRing) -> FieldElem {
-        Polynomial::evaluate(self, values, ring)
+        DensePoly::evaluate(self, values, ring)
     }
     fn collect_terms_idx(&self, ring: &PolyRing) -> Vec<(num_bigint::BigUint, Vec<(usize, u16)>)> {
         self.terms(ring)
@@ -1226,7 +1232,7 @@ mod tests {
     fn from_terms_sorts_and_dedupes() {
         let r = small_ring();
         let f = &r.field;
-        let p = Polynomial::from_terms(
+        let p = DensePoly::from_terms(
             vec![
                 (Monomial::from_exponents(vec![0, 0, 0]), f.from_u64(5)),
                 (Monomial::from_exponents(vec![2, 1, 0]), f.from_u64(3)),
@@ -1246,7 +1252,7 @@ mod tests {
     fn add_sub_cancellation() {
         let r = small_ring();
         let f = &r.field;
-        let a = Polynomial::from_terms(
+        let a = DensePoly::from_terms(
             vec![
                 (Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(3)),
                 (Monomial::from_exponents(vec![0, 1, 0]), f.from_u64(5)),
@@ -1266,14 +1272,14 @@ mod tests {
         let r = small_ring();
         let f = &r.field;
         // (x + 1)(x - 1) = x^2 - 1
-        let a = Polynomial::from_terms(
+        let a = DensePoly::from_terms(
             vec![
                 (Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1)),
                 (Monomial::from_exponents(vec![0, 0, 0]), f.from_u64(1)),
             ],
             &r,
         );
-        let b = Polynomial::from_terms(
+        let b = DensePoly::from_terms(
             vec![
                 (Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1)),
                 (Monomial::from_exponents(vec![0, 0, 0]), f.from_i64(-1)),
@@ -1296,14 +1302,14 @@ mod tests {
         let f = &r.field;
         // Divide x^2*y by (x*y - 1) over GF(101) DegRevLex.
         // Quotient: x; remainder: x.
-        let f1 = Polynomial::from_terms(
+        let f1 = DensePoly::from_terms(
             vec![
                 (Monomial::from_exponents(vec![1, 1, 0]), f.from_u64(1)),
                 (Monomial::from_exponents(vec![0, 0, 0]), f.from_i64(-1)),
             ],
             &r,
         );
-        let g = Polynomial::from_terms(
+        let g = DensePoly::from_terms(
             vec![(Monomial::from_exponents(vec![2, 1, 0]), f.from_u64(1))],
             &r,
         );
@@ -1322,21 +1328,21 @@ mod tests {
         let r = small_ring();
         let f = &r.field;
         // Divisors: x^3 - 2*y, x*y - z, y^2 - 1
-        let d1 = Polynomial::from_terms(
+        let d1 = DensePoly::from_terms(
             vec![
                 (Monomial::from_exponents(vec![3, 0, 0]), f.from_u64(1)),
                 (Monomial::from_exponents(vec![0, 1, 0]), f.from_i64(-2)),
             ],
             &r,
         );
-        let d2 = Polynomial::from_terms(
+        let d2 = DensePoly::from_terms(
             vec![
                 (Monomial::from_exponents(vec![1, 1, 0]), f.from_u64(1)),
                 (Monomial::from_exponents(vec![0, 0, 1]), f.from_i64(-1)),
             ],
             &r,
         );
-        let d3 = Polynomial::from_terms(
+        let d3 = DensePoly::from_terms(
             vec![
                 (Monomial::from_exponents(vec![0, 2, 0]), f.from_u64(1)),
                 (Monomial::from_exponents(vec![0, 0, 0]), f.from_i64(-1)),
@@ -1344,7 +1350,7 @@ mod tests {
             &r,
         );
         // Subject: x^4*y^2 + 5*x^3*y + 7*x*y^2 + z + 11
-        let p = Polynomial::from_terms(
+        let p = DensePoly::from_terms(
             vec![
                 (Monomial::from_exponents(vec![4, 2, 0]), f.from_u64(1)),
                 (Monomial::from_exponents(vec![3, 1, 0]), f.from_u64(5)),
@@ -1354,7 +1360,7 @@ mod tests {
             ],
             &r,
         );
-        let divs: Vec<&Polynomial> = vec![&d1, &d2, &d3];
+        let divs: Vec<&DensePoly> = vec![&d1, &d2, &d3];
         let geo = p.reduce_by_refs_geobucket(&divs, &r, None, None);
         let naive = p.reduce_by_refs_naive(&divs, &r);
         let dispatched = p.reduce_by_refs(&divs, &r);
@@ -1372,11 +1378,11 @@ mod tests {
 
     #[test]
     fn reduce_by_refs_geobucket_to_zero() {
-        // Polynomial that fully reduces to zero — exercises the cancellation
+        // DensePoly that fully reduces to zero — exercises the cancellation
         // path in pop_leading_term across many steps.
         let r = small_ring();
         let f = &r.field;
-        let d = Polynomial::from_terms(
+        let d = DensePoly::from_terms(
             vec![
                 (Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1)),
                 (Monomial::from_exponents(vec![0, 1, 0]), f.from_i64(-1)),
@@ -1384,7 +1390,7 @@ mod tests {
             &r,
         );
         // p = (x - y) * (x^2 + x*y + y^2) = x^3 - y^3
-        let p = Polynomial::from_terms(
+        let p = DensePoly::from_terms(
             vec![
                 (Monomial::from_exponents(vec![3, 0, 0]), f.from_u64(1)),
                 (Monomial::from_exponents(vec![0, 3, 0]), f.from_i64(-1)),
@@ -1403,7 +1409,7 @@ mod tests {
         let r = small_ring();
         let f = &r.field;
         // p = x*y + 2*z + 3
-        let p = Polynomial::from_terms(
+        let p = DensePoly::from_terms(
             vec![
                 (Monomial::from_exponents(vec![1, 1, 0]), f.from_u64(1)),
                 (Monomial::from_exponents(vec![0, 0, 1]), f.from_u64(2)),
@@ -1423,7 +1429,7 @@ mod tests {
     fn make_monic_works() {
         let r = small_ring();
         let f = &r.field;
-        let p = Polynomial::from_terms(
+        let p = DensePoly::from_terms(
             vec![
                 (Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(7)),
                 (Monomial::from_exponents(vec![0, 0, 0]), f.from_u64(14)),
