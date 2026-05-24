@@ -17,6 +17,7 @@ use std::sync::Arc;
 use super::field::{FieldElem, PrimeField};
 use super::monomial::{Monomial, MonomialOrder};
 use super::divmask::DivMaskScheme;
+use crate::config::ReprKind;
 
 /// Shared context describing the polynomial ring `GF(p)[x_0, ..., x_{n-1}]`.
 ///
@@ -29,6 +30,13 @@ pub struct PolyRing {
     pub order: MonomialOrder,
     pub var_names: Vec<String>,
     pub divmask: DivMaskScheme,
+    /// Storage representation for polynomials built over this ring,
+    /// seeded from [`crate::config::RuntimeConfig::poly_repr`] at
+    /// construction. `DensePoly` constructors consult it to build the
+    /// dense flat or the sparse arm; the dense Gröbner engine only ever
+    /// sees `Dense`-storage polynomials (the sparse path routes GB
+    /// through `ff::sparse_gb`).
+    pub repr: ReprKind,
 }
 
 impl PolyRing {
@@ -37,7 +45,8 @@ impl PolyRing {
         // Heuristic exponent cap: monomials beyond degree 16 in any
         // single variable are rare for the inputs the solver sees.
         let divmask = DivMaskScheme::build(n_vars, 16);
-        Arc::new(PolyRing { field, n_vars, order, var_names, divmask })
+        let repr = crate::config::with(|c| c.poly_repr);
+        Arc::new(PolyRing { field, n_vars, order, var_names, divmask, repr })
     }
 
     pub fn with_divmask(
@@ -48,7 +57,8 @@ impl PolyRing {
     ) -> Arc<Self> {
         let n_vars = var_names.len();
         let divmask = DivMaskScheme::build(n_vars, max_deg_hint);
-        Arc::new(PolyRing { field, n_vars, order, var_names, divmask })
+        let repr = crate::config::with(|c| c.poly_repr);
+        Arc::new(PolyRing { field, n_vars, order, var_names, divmask, repr })
     }
 }
 
