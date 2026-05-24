@@ -293,7 +293,10 @@ impl Polynomial {
 
     // ── dense-flavoured readers (sparse arm materialises) ───────────
     pub fn appearing_variables(&self, ring: &PolyRing) -> Vec<(usize, u16)> {
-        self.as_dense(ring).appearing_variables(ring)
+        match self {
+            Polynomial::Dense(d) => d.appearing_variables(ring),
+            Polynomial::Sparse(s) => s.appearing_variables(),
+        }
     }
     pub fn substitute_var(&self, var: usize, value: &FieldElem, ring: &PolyRing) -> Self {
         match self {
