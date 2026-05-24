@@ -209,9 +209,9 @@ fn basis2_does_not_overreport_when_bitwidth_exceeds_prime() {
 /// in-tree CDCL(T) engine, whose theory hands it conflict lemmas with
 /// several literals at the top decision level. Those must be resolved
 /// to a proper 1-UIP asserting clause (see
-/// `Solver::add_theory_lemma_with_trail`); learning them raw used to
-/// break conflict analysis. The native backend no longer has a DNF
-/// fallback, so this asserts CDCL(T) handles it on its own.
+/// `Solver::add_theory_lemma_with_trail`); learning them raw breaks
+/// conflict analysis. The native backend routes disjunctions solely
+/// through CDCL(T), so this asserts CDCL(T) handles it directly.
 #[test]
 fn aboz_native_ff_finds_counterexample() {
     let r1cs = aboz_trap_r1cs();

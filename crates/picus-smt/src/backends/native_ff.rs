@@ -44,10 +44,8 @@ impl NativeFfBackend {
     }
 }
 
-/// Thin wrapper around the cache module's
-/// `digest_constraint_side`. Used for the stats path's
-/// `last_cs_digest` tracking; the cache itself still keys on the
-/// legacy String-keyed digest until A9 unifies the two paths.
+/// Thin wrapper around the cache module's `digest_constraint_side`.
+/// Used for the stats path's `last_cs_digest` tracking.
 fn digest_native_constraint_side(ics: &ConstraintSystem) -> u64 {
     picus_solver::incremental_context::digest_constraint_side(ics)
 }
@@ -92,9 +90,7 @@ impl SolverBackend for NativeFfBackend {
         let cache = &mut self.cache;
         // Combine the external cancel (Ctrl-C / parent-process abort)
         // with the per-call timeout into a single token the GB engine
-        // polls. Either source fires → GB exits cooperatively. Pre-
-        // Phase-5b this only honoured external cancel at entry; the
-        // inner solve only saw the timeout.
+        // polls. Either source fires → GB exits cooperatively.
         let external = cancel.clone();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let timeout_tok = CancelToken::with_timeout(std::time::Duration::from_millis(timeout_ms));
@@ -109,14 +105,11 @@ impl SolverBackend for NativeFfBackend {
                 // (conjunctive constraints + `or` clauses + target
                 // diseq) through the in-tree CDCL(T) engine. Each theory
                 // check re-validates its model via `verify_model`, so
-                // this path inherits the same spurious-SAT immunity as
-                // the plain GB path below.
-                // Disjunction-aware path: route the whole query through
-                // the in-tree CDCL(T) engine (verify_model-backed). It
-                // resolves non-asserting theory conflicts via 1-UIP and
-                // `analyze` bails gracefully rather than panicking, so it
-                // stands on its own here — no DNF crutch. The outer
-                // `catch_unwind` remains the ultimate never-panic guard.
+                // this path has the same spurious-SAT immunity as the
+                // plain GB path below. Non-asserting theory conflicts are
+                // resolved via 1-UIP and `analyze` bails gracefully
+                // rather than panicking; the outer `catch_unwind` remains
+                // the ultimate never-panic guard.
                 log::debug!(
                     "native-ff: {} disjunction(s) → CDCL(T) path",
                     ir.disjunctions.len()
@@ -131,9 +124,7 @@ impl SolverBackend for NativeFfBackend {
                 } else {
                     None
                 };
-                // Stateless path: use the index-keyed encode
-                // directly via `PolyIR::encode`. No `to_legacy`
-                // round-trip; the cache path still uses `cs` above.
+                // Stateless path: encode directly via `PolyIR::encode`.
                 let encoded = ir.encode().map_err(|e| SolverError::Internal(e))?;
                 if let Some(t0) = enc_t0 {
                     use std::sync::atomic::Ordering::Relaxed;

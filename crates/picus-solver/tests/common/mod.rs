@@ -2,10 +2,9 @@
 //! readable name-keyed form that wraps the index-keyed
 //! `ConstraintSystemBuilder` underneath.
 //!
-//! These tests pre-date the index-keyed encoder. Rewriting each test
-//! to thread a builder explicitly would obscure what's being
-//! checked; the helper below lets the test stay in the
-//! "name-keyed fixture → encode → assert" shape it was written in.
+//! Threading a builder explicitly through each test would obscure
+//! what's being checked; the helper below lets a test stay in the
+//! "name-keyed fixture → encode → assert" shape.
 
 use std::collections::BTreeMap;
 

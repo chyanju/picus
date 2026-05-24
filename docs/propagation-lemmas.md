@@ -97,11 +97,24 @@ recoverable bit-by-bit and so move to `ctx.known`. Coefficients are
 checked against the power-of-2 set after both sign normalisations
 (coefficient or its field negation must be a power of 2).
 
-**Soundness gate**: only fires when `2^n ≤ p`, where `n` is the
-chain length. When `2^n > p`, two distinct bit patterns can sum to
-the same value modulo `p` (e.g. `0` and `(1,1,...,1)` with
-`2^n - 1 ≡ 0 mod p`), so target uniqueness no longer implies bit
-uniqueness and the lemma must skip.
+**Soundness gate**: when `2^n ≤ p` (where `n` is the chain length)
+the decomposition is injective and the lemma fires directly. When
+`2^n > p`, two distinct bit patterns can sum to the same value modulo
+`p` (e.g. `0` and `(1,1,...,1)` with `2^n - 1 ≡ 0 mod p`), so target
+uniqueness no longer implies bit uniqueness — the lemma fires only if
+a range-check companion proves the bit-vector value `< p`.
+
+**Companion recognition (`2^n > p`)**: the lemma matches circomlib's
+254-bit `CompConstant` comparator whose output is constrained to `0`
+(the `AliasCheck` gadget) over the decomposition bits — the 127
+quadratic `parts` (weight-aligned to the bit pairs by following the
+IR's linear identities), their sum, the inner bit-decomposition of
+that sum, and the forced-zero output bit — and decodes the
+comparator's constant `ct` from the `parts` coefficients, requiring
+`ct < p`. A complete match certifies `Σ 2^i · bit_i ≤ ct < p`, so the
+decomposition is injective and the gate is relaxed. The match is
+purely structural on the polynomial IR; any unmatched link leaves the
+conservative gate in place (a miss is slow, never unsound).
 
 ### `aboz`
 

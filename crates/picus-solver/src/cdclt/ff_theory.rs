@@ -6,9 +6,8 @@
 //! through [`ConstraintSystemBuilder`] to build a canonical
 //! [`ConstraintSystem`], runs the GB solver via
 //! [`encode`], and maps any returned UNSAT core indices
-//! back to atom variables. `AtomKey::to_poly_terms` still produces
-//! transient `Vec<LegacyPolyTerm>` lists that are interned to
-//! `Vec<PolyTerm>` at the builder boundary via `intern_poly_terms`.
+//! back to atom variables. Each `AtomKey` carries its terms and
+//! interns them into the builder via `AtomKey::intern_into`.
 
 use std::collections::HashMap;
 
