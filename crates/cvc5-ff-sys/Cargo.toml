@@ -11,7 +11,7 @@ description = "cvc5 FFI bindings with finite field (CoCoA) support, auto-compile
 # See cvc5's COPYING file for details.
 
 [package.metadata.cvc5]
-version = "1.3.1"
+version = "1.3.4"
 
 [features]
 default = ["static"]
