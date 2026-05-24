@@ -55,7 +55,7 @@ impl SolverBackend for Cvc5FfBackend {
         // input equalities will collapse `x_i = y_i` for inputs during
         // solving; we don't special-case them at declaration time.
         let mut vars: HashMap<String, cvc5_ff::Term> = HashMap::new();
-        for name in ir.ring.ring.var_names() {
+        for name in ir.ring.var_names() {
             let v = tm.mk_const(ff.clone(), name);
             vars.insert(name.clone(), v);
         }
@@ -120,7 +120,7 @@ impl SolverBackend for Cvc5FfBackend {
         let mut lines = Vec::new();
         lines.push("(set-logic QF_FF)".to_string());
         lines.push(format!("(define-sort F () (_ FiniteField {}))", p));
-        for name in ir.ring.ring.var_names() {
+        for name in ir.ring.var_names() {
             lines.push(format!("(declare-const {} F)", name));
         }
         for poly in &ir.equalities {
@@ -157,7 +157,7 @@ fn build_poly_term<'a>(
     tm: &'a cvc5_ff::TermManager,
     vars: &HashMap<String, cvc5_ff::Term<'a>>,
     ir: &PolyIR,
-    poly: &picus_solver::poly::Poly,
+    poly: &picus_solver::poly::IrPoly,
     ff: cvc5_ff::Sort<'a>,
 ) -> cvc5_ff::Term<'a> {
     let mut sum_parts: Vec<cvc5_ff::Term<'a>> = Vec::new();

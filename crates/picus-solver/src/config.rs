@@ -72,8 +72,9 @@ pub struct RuntimeConfig {
     /// disable (e.g. for an A/B perf comparison).
     pub aboz_emit_disjunctions: bool,
     /// Representation of the IR poly type ([`ReprKind`]). Defaults to
-    /// `Dense`; set `PICUS_POLY_REPR=sparse` to build the IR sparsely so
-    /// lowering + the cvc5 path scale on wide rings.
+    /// `Sparse` so lowering + the cvc5 path scale on wide rings (the dense
+    /// form OOMs there); set `PICUS_POLY_REPR=dense` to force the dense
+    /// representation (the differential-test oracle, faster on small rings).
     pub poly_repr: ReprKind,
 }
 
@@ -90,7 +91,7 @@ impl Default for RuntimeConfig {
             profile_enabled: false,
             cache_enabled: true,
             aboz_emit_disjunctions: true,
-            poly_repr: ReprKind::Dense,
+            poly_repr: ReprKind::Sparse,
         }
     }
 }
@@ -132,10 +133,11 @@ impl RuntimeConfig {
             c.aboz_emit_disjunctions = false;
         }
         if let Ok(v) = std::env::var("PICUS_POLY_REPR") {
-            c.poly_repr = match v.as_str() {
-                "sparse" => ReprKind::Sparse,
-                _ => ReprKind::Dense,
-            };
+            match v.as_str() {
+                "dense" => c.poly_repr = ReprKind::Dense,
+                "sparse" => c.poly_repr = ReprKind::Sparse,
+                _ => {}
+            }
         }
         c
     }

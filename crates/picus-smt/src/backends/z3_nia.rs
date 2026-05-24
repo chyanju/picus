@@ -45,7 +45,7 @@ impl SolverBackend for Z3NiaBackend {
 
         // Declare every ring variable with a `[0, p)` range constraint.
         let mut vars: HashMap<String, Int> = HashMap::new();
-        for name in ir.ring.ring.var_names() {
+        for name in ir.ring.var_names() {
             let v = Int::new_const(name.as_str());
             solver.assert(v.ge(Int::from_u64(0)));
             solver.assert(v.lt(&p_ast));
@@ -87,7 +87,7 @@ impl SolverBackend for Z3NiaBackend {
         let p = ir.ring.field().prime();
         let mut lines = Vec::new();
         lines.push("(set-logic QF_NIA)".to_string());
-        for name in ir.ring.ring.var_names() {
+        for name in ir.ring.var_names() {
             lines.push(format!("(declare-const {} Int)", name));
             lines.push(format!("(assert (and (>= {0} 0) (< {0} {1})))", name, p));
         }
@@ -116,7 +116,7 @@ fn bigint(val: &BigUint) -> Int {
         .expect("BigUint should produce valid z3 Int")
 }
 
-fn build_poly_z3(vars: &HashMap<String, Int>, ir: &PolyIR, poly: &picus_solver::poly::Poly) -> Int {
+fn build_poly_z3(vars: &HashMap<String, Int>, ir: &PolyIR, poly: &picus_solver::poly::IrPoly) -> Int {
     let mut sum = Int::from_u64(0);
     for (coeff, var_names) in ir.poly_terms(poly) {
         let c = bigint(&coeff);
