@@ -255,3 +255,41 @@ fn basis2_cvc5_ff_finds_counterexample() {
         result
     );
 }
+
+/// Positive companion case (real fixture). `Num2Bits_strict` is a
+/// 254-bit decomposition with `2^254 > p`, so basis2's bare soundness
+/// gate blocks and the native backend would have to settle 254-bit
+/// uniqueness directly (a timeout). The circuit also carries an
+/// `AliasCheck` — a 254-bit `CompConstant` with `out === 0` — which the
+/// basis2 companion recogniser matches purely from PolyIR structure,
+/// proving the bit-vector value `< p`. That relaxes the gate, lets
+/// propagation mark the bits known, and yields `Safe` in well under a
+/// second.
+///
+/// This is the counterpart to
+/// `basis2_does_not_overreport_when_bitwidth_exceeds_prime`: that test
+/// guarantees the gate stays closed when no companion is present; this
+/// one guarantees it opens when a genuine companion is. Without the
+/// recogniser the native backend returns `Unknown` (timeout), so the
+/// `Safe` assertion is a direct regression guard for the relaxation.
+/// Skips if the benchmark fixture is unavailable.
+#[test]
+fn basis2_relaxes_with_compconstant_companion() {
+    let path = std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../benchmarks/circom/circomlib-cff5ab6/Num2Bits_strict@bitify.r1cs"
+    ));
+    let Ok(r1cs) = picus_r1cs::parser::read_r1cs_file(path) else {
+        eprintln!("skipping: fixture not found at {}", path.display());
+        return;
+    };
+    let mut cfg = native_ff_config();
+    cfg.timeout_ms = 20000;
+    let result = run_dpvl(&r1cs, &cfg).expect("DPVL should not error");
+    assert!(
+        matches!(result, DpvlResult::Safe),
+        "Num2Bits_strict must be Safe via the CompConstant companion relaxation \
+         (without it the native backend times out → Unknown); got {:?}",
+        result
+    );
+}
