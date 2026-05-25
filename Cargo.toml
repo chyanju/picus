@@ -19,6 +19,11 @@ license = "MIT"
 repository = "https://github.com/chyanju/Picus"
 edition = "2024"
 
+[profile.release]
+# Thin LTO restores cross-crate inlining of the picus-core hot paths
+# (field arithmetic, polynomial term access/reduction) into picus-solver.
+lto = "thin"
+
 [workspace.dependencies]
 num-bigint = "0.4"
 num-traits = "0.2"
