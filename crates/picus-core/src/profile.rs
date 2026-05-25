@@ -1,6 +1,6 @@
 //! Lightweight, zero-external-deps phase profiler.
 //!
-//! Enabled by setting the `PICUS_PROFILE` environment variable to any value.
+//! Enabled via the `profile_enabled` config flag (CLI `--profile wall`).
 //! When disabled, all `ScopedTimer` operations are reduced to a single atomic
 //! load (the global enabled flag), so leaving the calls in production code
 //! has negligible cost.
@@ -16,7 +16,7 @@
 //!
 //! Call [`dump_to_stderr`] (or [`take`]) before process exit to print the
 //! accumulated table.  `picus-cli` calls `dump_to_stderr` automatically when
-//! `PICUS_PROFILE` is set.
+//! profiling is enabled (CLI `--profile wall`).
 //!
 //! The profiler is intentionally *coarse* — it accumulates wall-clock time per
 //! named site, with reentrancy support (nested calls to the same site are
@@ -31,8 +31,8 @@ use std::time::{Duration, Instant};
 /// Monotonic id for active timers.
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-// Global counters for the split-GB driver and DFS, gated by
-// `PICUS_GB_STATS=1`. Independent of the `ScopedTimer` table. All counters
+// Global counters for the split-GB driver and DFS, gated by the
+// `gb_stats` config flag. Independent of the `ScopedTimer` table. All counters
 // are `AtomicU64` so updates are wait-free and thread-safe.
 
 #[derive(Default)]
@@ -92,8 +92,8 @@ pub struct SplitGbCounters {
 pub static SPLIT_DFS: SplitDfsCounters = SplitDfsCounters::new_const();
 pub static SPLIT_GB: SplitGbCounters = SplitGbCounters::new_const();
 
-/// Counters for the native-ff SMT backend, surfaced via
-/// `PICUS_GB_STATS=1`. Reports per-call encoding vs. solving time and
+/// Counters for the native-ff SMT backend, surfaced when `gb_stats` is
+/// enabled. Reports per-call encoding vs. solving time and
 /// constraint-side digest stability across consecutive calls.
 #[derive(Default)]
 pub struct NativeFfBackendCounters {
@@ -237,7 +237,7 @@ pub fn gb_trace_enabled() -> bool {
 }
 
 /// Print SplitDfs/SplitGb counters to stderr. Called from the top-level
-/// `solve_encoded` (or `picus-cli`) at termination when `PICUS_GB_STATS=1`.
+/// `solve_encoded` (or `picus-cli`) at termination when `gb_stats` is enabled.
 pub fn dump_split_stats_to_stderr() {
     // No-op when nothing has been recorded — i.e. when
     // `gb_stats_enabled` was false (or the relevant solver paths

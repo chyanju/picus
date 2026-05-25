@@ -8,20 +8,20 @@
 //! (O(nnz) per term), so the same IR fits in megabytes.
 //!
 //! Ignored by default (loads a ~3 MB benchmark and builds a 42k-variable
-//! IR). Run it with the sparse representation:
+//! IR). The default `poly_repr` is `Sparse`, which is what this circuit
+//! needs:
 //!
 //! ```text
-//! PICUS_POLY_REPR=sparse \
-//!   cargo test -p picus-smt --test sparse_lowering -- --ignored --nocapture
+//! cargo test -p picus-smt --test sparse_lowering -- --ignored --nocapture
 //! ```
 //!
-//! Do NOT run it under the dense representation on this circuit; that is
-//! the resident-memory blow-up the sparse representation avoids.
+//! Do NOT force the dense representation on this circuit; that is the
+//! resident-memory blow-up the sparse representation avoids.
 
 use std::collections::HashSet;
 
 #[test]
-#[ignore = "loads a large benchmark; run with PICUS_POLY_REPR=sparse -- --ignored --nocapture"]
+#[ignore = "loads a large benchmark; run with -- --ignored --nocapture"]
 fn eddsa_poseidon_lowering_footprint() {
     let path = std::path::Path::new(concat!(
         env!("CARGO_MANIFEST_DIR"),

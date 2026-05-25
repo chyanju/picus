@@ -42,8 +42,8 @@
 //!   call entry and assigned back at exit so allocator capacity
 //!   persists across batches in the same Buchberger run.
 //!
-//! Performance. Opt-in via `PICUS_USE_F4=1`. F4 / per-pair median
-//! ratios at `F4_MIN_BATCH = 12`
+//! Performance. Opt-in via the `use_f4` config key (CLI `--use-f4`).
+//! F4 / per-pair median ratios at `F4_MIN_BATCH = 12`
 //! (`tests/bench_perf.rs::bench_f4_vs_per_pair_large` +
 //! `bench_f4_non_cyclic_workloads`):
 //!
@@ -57,9 +57,10 @@
 //! | katsura-4 | 0.92–1.02× |
 //! | diffuse-4vars | 0.92–1.15× |
 //!
-//! Default is per-pair (`use_f4_default()` returns `true` iff
-//! `PICUS_USE_F4=1`). `PICUS_GB_STATS=1` emits per-run cache hits /
-//! misses / stales and the F4 batch-size distribution.
+//! Default is per-pair (`use_f4_default()` returns the `use_f4` config
+//! value, compiled default `false`). Enabling `gb_stats` (CLI
+//! `--gb-stats`) emits per-run cache hits / misses / stales and the F4
+//! batch-size distribution.
 //!
 //! [`super::hilbert::hilbert_numerator`] is available as a building
 //! block for monomial-ideal heuristics. F4 batch dispatch does not

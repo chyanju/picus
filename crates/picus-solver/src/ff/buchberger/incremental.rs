@@ -170,7 +170,7 @@ impl IncrementalGB {
 
     /// Engine-level counters accumulated across every
     /// `add_generators` / `run_only` call. Same data emitted on
-    /// stderr under `PICUS_GB_STATS=1`, exposed here for tests.
+    /// stderr when `gb_stats` is enabled, exposed here for tests.
     pub fn engine_stats(&self) -> &super::GbEngineStats {
         &self.state.stats
     }

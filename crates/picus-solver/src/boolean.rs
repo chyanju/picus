@@ -402,8 +402,8 @@ pub fn rewrite_disjunctive_bit(f: Formula, prime: &BigUint) -> Formula {
 ///
 /// Default path: CDCL(T) over the original formula via
 /// [`crate::cdclt::solve_formula`]. The DNF-enumeration path is
-/// retained as a baseline and is selected by setting the environment
-/// variable `PICUS_BOOLEAN=dnf` (used for cross-validation tests).
+/// retained as a baseline and is selected by the `dnf_enabled` config
+/// flag (CLI `--dnf`; used for cross-validation tests).
 pub fn solve_boolean_query(query: &BooleanQuery, cancel: &CancelToken) -> SolveOutcome {
     if crate::config::with(|c| c.dnf_enabled) {
         solve_boolean_query_dnf(query, cancel)

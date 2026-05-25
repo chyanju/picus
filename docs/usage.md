@@ -57,13 +57,12 @@ picus info --r1cs circuit.r1cs --constraints   # also print every constraint
 ## Configuration
 
 Every knob has a built-in default, so no configuration is required. When you
-do want to pin settings, Picus resolves them in four layers, each overriding
+do want to pin settings, Picus resolves them in three layers, each overriding
 only the keys it sets (later wins):
 
 1. **Built-in defaults** — compiled in; what a library import (`Config::default()`) and a flagless CLI run get. No file is read.
 2. **Config file** — the TOML passed to `--config <FILE>`, or `./picus.toml` in the working directory when present. A missing *explicit* `--config` file is an error; a missing `./picus.toml` is skipped silently.
-3. **`PICUS_*` environment variables** — engine knobs (e.g. `PICUS_POLY_REPR`, `PICUS_USE_F4`).
-4. **CLI flags** — highest precedence.
+3. **CLI flags** — highest precedence.
 
 [`picus.default.toml`](../picus.default.toml) at the repo root documents every
 key at its default value — copy it and edit. Keys are split into two tables:
