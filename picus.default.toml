@@ -58,9 +58,9 @@ cache_enabled = true
 # conjunctive circuits.
 linear_elim = false
 # Track inter-reduction reducer deps in the single-GB UNSAT-core tracer for
-# precise (cvc5/CoCoA-style) cores. Off by default (small per-reduce cost;
-# only affects the non-default SingleGb path).
-track_inter_reduce_deps = false
+# precise (cvc5/CoCoA-style) cores. On by default: only affects the
+# non-default SingleGb path (no cost on the main/PLDI workload).
+track_inter_reduce_deps = true
 
 # --- IR / lemma layer (also affects the cvc5 path) ---
 # Polynomial representation: "sparse" (scales on wide rings) | "dense"
