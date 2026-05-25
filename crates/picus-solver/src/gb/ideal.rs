@@ -18,7 +18,7 @@ use crate::ff::monomial::MonomialOrder as FfOrder;
 use crate::ff::field::FieldElem;
 use crate::poly::{FfPolyRing, Mono, Poly, PolyRingType};
 use crate::timeout::{CancelToken, Cancelled};
-use crate::tracer::GbTracer;
+use crate::gb::tracer::GbTracer;
 use crate::SolverError;
 use crate::config::GbStrategy;
 
@@ -130,7 +130,7 @@ impl GbAlgorithm for BuchbergerByHomog {
         order: FfOrder,
     ) -> Result<Vec<Poly>, SolverError> {
         if order == FfOrder::DegRevLex {
-            Ok(crate::gb_homog::compute_gb_by_homog(pr, gens, cancel))
+            Ok(crate::gb::gb_homog::compute_gb_by_homog(pr, gens, cancel))
         } else {
             // ByHomog only makes sense for DegRevLex; for Lex etc.
             // route through plain Buchberger so the contract of
@@ -346,7 +346,7 @@ impl<'r> Ideal<'r> {
         self,
         new_polys: Vec<Poly>,
         cancel: &CancelToken,
-        tracer: &mut crate::tracer::GbTracer,
+        tracer: &mut crate::gb::tracer::GbTracer,
     ) -> Result<Self, Cancelled> {
         if cancel.is_cancelled() { return Err(Cancelled); }
         let new_polys: Vec<Poly> = new_polys.into_iter()
@@ -815,7 +815,7 @@ pub fn compute_gb_with_order_traced(
     generators: Vec<Poly>,
     cancel: &CancelToken,
     order: FfOrder,
-    tracer: &mut crate::tracer::GbTracer,
+    tracer: &mut crate::gb::tracer::GbTracer,
 ) -> Vec<Poly> {
     let _t = crate::profile::ScopedTimer::new("compute_gb_with_order_traced");
     if generators.is_empty() {
@@ -840,7 +840,7 @@ pub(crate) fn compute_gb_buchberger_traced(
     generators: Vec<Poly>,
     cancel: &CancelToken,
     order: FfOrder,
-    tracer: &mut crate::tracer::GbTracer,
+    tracer: &mut crate::gb::tracer::GbTracer,
 ) -> Result<Vec<Poly>, SolverError> {
     let _t = crate::profile::ScopedTimer::new("compute_gb_buchberger_traced");
     if generators.is_empty() {
@@ -881,7 +881,7 @@ pub fn compute_gb_incremental_with_order_traced(
     new_polys: Vec<Poly>,
     cancel: &CancelToken,
     order: FfOrder,
-    tracer: &mut crate::tracer::GbTracer,
+    tracer: &mut crate::gb::tracer::GbTracer,
 ) -> Vec<Poly> {
     let _t = crate::profile::ScopedTimer::new("compute_gb_incremental_with_order_traced");
     if new_polys.is_empty() {

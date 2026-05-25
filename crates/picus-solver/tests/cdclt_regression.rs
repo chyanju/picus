@@ -731,7 +731,7 @@ fn cvc5_ff_xor_unsound_sat() {
 
 // ──────────────── Programmatic shape matrix (parameter sweeps) ─────────────
 
-use picus_solver::bench_fixtures::{
+use picus_solver::frontend::bench_fixtures::{
     and_of_ors_sat as build_and_of_ors_sat, and_of_ors_unsat as build_and_of_ors_unsat,
     bit_sum as build_bit_sum, conjunction as build_conjunction, disj_bit as build_disj_bit_n,
     implies_chain_unsat as build_implies_chain_unsat, or_of_ands as build_or_of_ands,

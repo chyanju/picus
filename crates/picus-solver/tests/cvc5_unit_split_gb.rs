@@ -14,8 +14,8 @@
 
 use picus_core::ff::field::{FieldElem, PrimeField};
 use picus_core::poly::{FfPolyRing, Poly};
-use picus_solver::ideal::Ideal;
-use picus_solver::bitprop::BitProp;
+use picus_solver::gb::ideal::Ideal;
+use picus_solver::frontend::bitprop::BitProp;
 use picus_solver::split_gb::{split_gb, split_find_zero, SplitFindZeroOutcome};
 use num_bigint::BigUint;
 use oorandom::Rand64;

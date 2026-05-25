@@ -456,7 +456,7 @@ impl ConstraintSystemBuilder {
 pub fn encode(system: &ConstraintSystem) -> Result<EncodedSystem, String> {
     let compacted = compact_used_vars(system);
     let mut rewritten = compacted;
-    crate::rewriter::rewrite_system(&mut rewritten);
+    crate::frontend::rewriter::rewrite_system(&mut rewritten);
     let extracted = auto_extract_bitsums(&rewritten);
     encode_impl(&extracted, true)
 }
@@ -469,7 +469,7 @@ pub fn encode_constraint_side(
 ) -> Result<EncodedSystem, String> {
     let compacted = compact_used_vars(system);
     let mut rewritten = compacted;
-    crate::rewriter::rewrite_system(&mut rewritten);
+    crate::frontend::rewriter::rewrite_system(&mut rewritten);
     let extracted = auto_extract_bitsums(&rewritten);
     encode_impl(&extracted, false)
 }

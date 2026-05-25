@@ -1,8 +1,8 @@
-//! Pattern-detection tests for [`picus_solver::parse`]: `bit_constraint`,
+//! Pattern-detection tests for [`picus_solver::frontend::parse`]: `bit_constraint`,
 //! `linear_monomial`, `extract_linear_monomials`, and `bit_sums`.
 
 use picus_core::ff::field::PrimeField;
-use picus_solver::parse::*;
+use picus_solver::frontend::parse::*;
 use picus_core::poly::FfPolyRing;
 use num_bigint::BigUint;
 use std::collections::HashSet;

@@ -1,10 +1,10 @@
 //! CDCL(T) vs DNF wall-time comparison on the
 //! `bench_fixtures::corpus` workloads. Workload families and sizes
-//! are defined in `picus_solver::bench_fixtures`.
+//! are defined in `picus_solver::frontend::bench_fixtures`.
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use picus_solver::bench_fixtures::corpus;
+use picus_solver::frontend::bench_fixtures::corpus;
 use picus_solver::boolean::{solve_boolean_query_dnf, BooleanQuery};
 use picus_solver::cdclt::solve_formula;
 use picus_solver::smt2::parse_boolean;

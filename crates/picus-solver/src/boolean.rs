@@ -21,7 +21,7 @@ use num_bigint::BigUint;
 use num_traits::Zero;
 
 use crate::core::{solve_encoded_with_cancel, SolveOutcome};
-use crate::encoder::{
+use crate::frontend::encoder::{
     encode, ConstraintSystemBuilder, ConstraintSystem, PolyTerm, VarIdx,
 };
 use crate::timeout::CancelToken;
@@ -291,7 +291,7 @@ fn eq_normalized_poly(lit: &Literal, prime: &BigUint) -> Option<Vec<PolyTerm>> {
                 vars: t.vars.clone(),
             });
         }
-        crate::rewriter::normalize_term_list(&mut poly, prime);
+        crate::frontend::rewriter::normalize_term_list(&mut poly, prime);
         Some(poly)
     } else {
         None

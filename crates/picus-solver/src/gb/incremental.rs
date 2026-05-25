@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use num_bigint::BigUint;
 
 use crate::core::{solve_encoded_with_cancel, SolveOutcome};
-use crate::encoder::{encode, ConstraintSystemBuilder, PolyTerm, VarIdx};
+use crate::frontend::encoder::{encode, ConstraintSystemBuilder, PolyTerm, VarIdx};
 use crate::timeout::CancelToken;
 
 /// AST scratch term: `coeff * prod(vars)` with `vars` carrying

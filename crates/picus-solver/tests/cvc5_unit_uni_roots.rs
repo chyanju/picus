@@ -1,10 +1,10 @@
 //! Univariate root-finding tests.
 //!
-//! Exercise [`picus_solver::roots::find_roots`] on small primes,
+//! Exercise [`picus_solver::gb::roots::find_roots`] on small primes,
 //! checking the observable root set of polynomials over GF(p).
 
 use picus_core::ff::field::PrimeField;
-use picus_solver::roots::find_roots;
+use picus_solver::gb::roots::find_roots;
 use num_bigint::BigUint;
 
 /// Sort roots as BigUint for stable comparison.

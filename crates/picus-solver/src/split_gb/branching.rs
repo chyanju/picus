@@ -13,9 +13,9 @@
 
 use std::collections::HashMap;
 
-use crate::brancher::Brancher;
+use crate::gb::brancher::Brancher;
 use crate::ff::field::FieldElem;
-use crate::ideal::Ideal;
+use crate::gb::ideal::Ideal;
 use crate::poly::{FfPolyRing, Poly};
 
 use super::PartialPoint;
@@ -43,7 +43,7 @@ pub fn apply_rule<'r>(
             let (var_idx, _) = appearing[0];
             if r[var_idx].is_none() {
                 if let Some(coeffs) = univariate_coeffs(poly_ring, p, var_idx) {
-                    let roots = crate::roots::find_roots(field, &coeffs);
+                    let roots = crate::gb::roots::find_roots(field, &coeffs);
                     return Brancher::Roots(
                         roots.into_iter().map(|v| (var_idx, v)).collect()
                     );
@@ -57,7 +57,7 @@ pub fn apply_rule<'r>(
         for v in 0..poly_ring.n_vars {
             if r[v].is_none() {
                 if let Some(coeffs) = gb.min_poly(v) {
-                    let roots = crate::roots::find_roots(field, &coeffs);
+                    let roots = crate::gb::roots::find_roots(field, &coeffs);
                     // If roots is empty, the ideal is inconsistent under
                     // any assignment to this variable — return empty to
                     // trigger backtracking.
@@ -117,7 +117,7 @@ pub(super) fn apply_rule_multi<'r>(
                 let (var_idx, _) = appearing[0];
                 if r[var_idx].is_none() {
                     if let Some(coeffs) = univariate_coeffs(poly_ring, p, var_idx) {
-                        let roots = crate::roots::find_roots(field, &coeffs);
+                        let roots = crate::gb::roots::find_roots(field, &coeffs);
                         return Brancher::Roots(
                             roots.into_iter().map(|v| (var_idx, v)).collect()
                         );
@@ -133,7 +133,7 @@ pub(super) fn apply_rule_multi<'r>(
             for v in 0..poly_ring.n_vars {
                 if r[v].is_none() {
                     if let Some(coeffs) = gb.min_poly(v) {
-                        let roots = crate::roots::find_roots(field, &coeffs);
+                        let roots = crate::gb::roots::find_roots(field, &coeffs);
                         return Brancher::Roots(
                             roots.into_iter().map(|val| (v, val)).collect()
                         );

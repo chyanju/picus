@@ -125,7 +125,7 @@ fn test_bigff_is_zero_unsound() {
 // 2nd check (adds c*c=c, c*c=b):              → SAT (c = 1, b = 1)
 #[test]
 fn test_multicheck() {
-    use picus_solver::incremental::IncrementalSolver;
+    use picus_solver::gb::incremental::IncrementalSolver;
 
     let mut s = IncrementalSolver::new(BigUint::from(17u32), false);
     // a*a - b = 0
@@ -156,7 +156,7 @@ fn test_multicheck() {
 //   pop
 #[test]
 fn test_ctx_incremental() {
-    use picus_solver::incremental::IncrementalSolver;
+    use picus_solver::gb::incremental::IncrementalSolver;
 
     let mut s = IncrementalSolver::new(BigUint::from(17u32), false);
     s.assert_equality(vec![pt(1, &["a", "a"]), svt(16, "b")]);

@@ -11,14 +11,14 @@ use std::collections::BTreeMap;
 use num_bigint::BigUint;
 
 use picus_solver::core::{solve_encoded, SolveOutcome};
-use picus_solver::encoder::{
+use picus_solver::frontend::encoder::{
     encode, ConstraintSystem, ConstraintSystemBuilder, EncodedSystem, PolyTerm, VarIdx,
 };
 
 /// Name-keyed AST scratch term. Re-exported from
-/// [`picus_solver::incremental`] so the `pt(..)` helper here and
+/// [`picus_solver::gb::incremental`] so the `pt(..)` helper here and
 /// `IncrementalSolver::assert_equality` agree on one struct.
-pub use picus_solver::incremental::NamedTerm;
+pub use picus_solver::gb::incremental::NamedTerm;
 
 #[allow(dead_code)]
 fn intern_named_term(t: &NamedTerm, builder: &mut ConstraintSystemBuilder) -> PolyTerm {

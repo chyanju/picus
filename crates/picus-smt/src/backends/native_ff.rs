@@ -3,7 +3,7 @@
 //!
 //! Consumes a [`PolyIR`] snapshot directly: `PolyIR::to_constraint_system`
 //! lowers it to the canonical index-keyed
-//! `picus_solver::encoder::ConstraintSystem` (each equality a
+//! `picus_solver::frontend::encoder::ConstraintSystem` (each equality a
 //! `Vec<PolyTerm>` summed to zero), and the target disequality
 //! `x_target ≠ y_target` is handed to the GB solver via the
 //! Rabinowitsch trick wired into [`IncrementalSolverContext`].
@@ -13,7 +13,7 @@ use crate::poly_ir::PolyIR;
 use crate::Theory;
 
 use picus_solver::core::{solve_encoded_with_cancel, SolveOutcome};
-use picus_solver::encoder::ConstraintSystem;
+use picus_solver::frontend::encoder::ConstraintSystem;
 use picus_solver::incremental_context::IncrementalSolverContext;
 use picus_core::timeout::CancelToken;
 

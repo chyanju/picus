@@ -19,7 +19,7 @@ use super::{
     VarSort,
 };
 use crate::boolean::{Formula, Literal};
-use crate::encoder::{ConstraintSystemBuilder, PolyTerm};
+use crate::frontend::encoder::{ConstraintSystemBuilder, PolyTerm};
 
 /// Verdict returned by `(check-sat)`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

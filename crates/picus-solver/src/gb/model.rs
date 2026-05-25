@@ -12,11 +12,11 @@
 use std::collections::HashMap;
 use num_bigint::BigUint;
 
-use crate::brancher::Brancher;
+use crate::gb::brancher::Brancher;
 use crate::ff::field::{PrimeField, FieldElem};
-use crate::ideal::Ideal;
+use crate::gb::ideal::Ideal;
 use crate::poly::{FfPolyRing, Poly};
-use crate::roots::find_roots;
+use crate::gb::roots::find_roots;
 use crate::timeout::CancelToken;
 
 /// Three-valued outcome of a model search.

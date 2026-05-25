@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use picus_solver::bench_fixtures::corpus;
+use picus_solver::frontend::bench_fixtures::corpus;
 use picus_solver::cdclt::solve_formula;
 use picus_solver::core::SolveOutcome;
 use picus_solver::smt2::parse_boolean;

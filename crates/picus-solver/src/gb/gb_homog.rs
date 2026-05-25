@@ -2,11 +2,11 @@
 //!
 //! Mirrors CoCoA's `myGBasisByHomog` (`SparsePolyOps-ideal.C:819-862`):
 //!
-//! 1. Build extended ring `Ph = P[h]` ([`crate::homog_ring::HomogRing`]).
+//! 1. Build extended ring `Ph = P[h]` ([`crate::gb::homog_ring::HomogRing`]).
 //! 2. Lift every input `f_i ∈ P` into `Ph`, then homogenize to its top
 //!    total degree (so every generator is `d_i`-homogeneous in `Ph`).
 //! 3. Run plain DegRevLex Buchberger on `Ph` (via the existing
-//!    [`crate::ideal::compute_gb_buchberger`] path — same Buchberger,
+//!    [`crate::gb::ideal::compute_gb_buchberger`] path — same Buchberger,
 //!    same observers, same cancellation). Calling the raw Buchberger
 //!    entry rather than the dispatching `compute_gb_with_order` is
 //!    deliberate: otherwise dispatch would recurse back into ByHomog
@@ -22,8 +22,8 @@
 //! 5–50× speedups on the bit-cube + bitsum + chunked-add shape.
 
 use crate::ff::monomial::MonomialOrder;
-use crate::homog_ring::HomogRing;
-use crate::ideal::{compute_gb_buchberger, interreduce_basis};
+use crate::gb::homog_ring::HomogRing;
+use crate::gb::ideal::{compute_gb_buchberger, interreduce_basis};
 use crate::poly::{FfPolyRing, Poly};
 use crate::timeout::CancelToken;
 
@@ -108,7 +108,7 @@ mod tests {
     use super::*;
     use crate::ff::field::PrimeField;
     use crate::ff::monomial::MonomialOrder;
-    use crate::ideal::compute_gb_with_order;
+    use crate::gb::ideal::compute_gb_with_order;
     use crate::poly::FfPolyRing;
     use num_bigint::BigUint;
     use std::collections::BTreeSet;

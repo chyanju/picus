@@ -29,7 +29,7 @@ use num_traits::Zero;
 use picus_r1cs::field_reduce;
 use picus_r1cs::grammar::{ConstraintBlock, R1csFile};
 use picus_solver::boolean::{BooleanQuery, Formula, Literal};
-use picus_solver::encoder::{
+use picus_solver::frontend::encoder::{
     encode, ConstraintSystemBuilder, EncodedSystem, ConstraintSystem, PolyTerm,
 };
 use picus_core::ff::field::PrimeField;
@@ -305,7 +305,7 @@ impl PolyIR {
     /// Encode this `PolyIR` into an [`EncodedSystem`] ready for the
     /// GB engine. Internally builds an `ConstraintSystem` via
     /// [`Self::to_constraint_system`] and routes through
-    /// [`picus_solver::encoder::encode`] (which runs
+    /// [`picus_solver::frontend::encoder::encode`] (which runs
     /// `rewriter::rewrite_system` and
     /// `auto_extract_bitsums`).
     pub fn encode(&self) -> Result<EncodedSystem, String> {

@@ -1211,7 +1211,7 @@ pub use incremental::IncrementalGB;
 
 /// Look up the coefficient at a specific monomial within a polynomial,
 /// using binary search over the polynomial's descending term order.
-/// Used by `crate::ideal::Ideal::min_poly_cancel`'s Gaussian elimination.
+/// Used by `crate::gb::ideal::Ideal::min_poly_cancel`'s Gaussian elimination.
 pub(crate) fn poly_coefficient_at(p: &DensePoly, mon: &Monomial, ring: &PolyRing) -> FieldElem {
     let n = ring.n_vars;
     let target_deg = mon.total_degree();
