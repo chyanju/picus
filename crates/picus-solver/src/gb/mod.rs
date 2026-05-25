@@ -200,6 +200,7 @@ mod tests {
 // pipeline, model construction, branching, and UNSAT-core tracing.
 pub mod ideal;
 pub mod incremental;
+pub mod linsolve;
 pub mod roots;
 pub(crate) mod gb_homog;
 pub(crate) mod homog_ring;

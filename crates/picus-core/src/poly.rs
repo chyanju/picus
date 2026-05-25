@@ -280,6 +280,11 @@ impl IrPolyRing {
     }
 
     pub fn repr(&self) -> ReprKind { self.repr }
+    /// The underlying [`FfPolyRing`]. `IrPoly` is the same `Polynomial`
+    /// type the solver engine consumes, so callers that need an
+    /// `&FfPolyRing` (e.g. to run a Gröbner-basis routine over the IR
+    /// polynomials) borrow it here.
+    pub fn as_ff(&self) -> &FfPolyRing { &self.inner }
     pub fn n_vars(&self) -> usize { self.inner.n_vars }
     pub fn var_names(&self) -> &[String] { &self.inner.var_names }
     pub fn field(&self) -> &PrimeField { &self.inner.field }

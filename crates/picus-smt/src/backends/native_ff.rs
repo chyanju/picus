@@ -60,6 +60,16 @@ impl SolverBackend for NativeFfBackend {
         if cancel.is_cancelled() {
             return Ok(SolverResult::Unknown(UnknownReason::Timeout));
         }
+        // Opt-in linear (Gaussian) pre-elimination (off by default; see
+        // `RuntimeConfig::linear_elim`). When enabled, reduce the equality
+        // system once here so both the conjunctive and CDCL(T) per-check
+        // paths see the eliminated generators.
+        let reduced_ir = if picus_core::config::with(|c| c.linear_elim) {
+            ir.pre_eliminate_linear(cancel)
+        } else {
+            None
+        };
+        let ir: &PolyIR = reduced_ir.as_ref().unwrap_or(ir);
         let indexed = ir.to_constraint_system();
         let stats_on = picus_core::profile::gb_stats_enabled();
         let cs_digest = if stats_on {
