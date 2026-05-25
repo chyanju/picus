@@ -51,6 +51,17 @@ pub fn find_zero_cancel(
     initial_gb: &[Poly],
     cancel: &CancelToken,
 ) -> FindZeroOutcome {
+    // Fast path (cvc5 `multi_roots` style): for a zero-dimensional ideal
+    // the Lex GB is triangular, so a model can be built by univariate
+    // root-finding + substitution + backtracking, without recomputing a
+    // Gröbner basis at every branch (the general loop below does). The
+    // fast path is self-verifying — it returns only a model it has
+    // checked against the GB — so a miss is sound: fall through to the
+    // general augmentation search.
+    if let Some(model) = try_triangular_solve(poly_ring, initial_gb, cancel) {
+        return FindZeroOutcome::Sat(model);
+    }
+
     // Build initial ideal from the provided GB
     let initial_gens: Vec<Poly> = initial_gb.iter()
         .map(|p| poly_ring.ring.clone_el(p))
@@ -116,6 +127,104 @@ pub fn find_zero_cancel(
     } else {
         FindZeroOutcome::Unsat
     }
+}
+
+/// Triangular model construction for a zero-dimensional ideal (cvc5
+/// `multi_roots` style): solve variable-by-variable using univariate roots
+/// of the substituted GB, backtracking on infeasible roots, **without**
+/// recomputing a Gröbner basis per branch. Returns a model already
+/// verified against `gb`, or `None` if the ideal is not zero-dimensional,
+/// no triangular structure is found, or the search exhausts without a
+/// model — in which case the caller runs the general augmentation search.
+fn try_triangular_solve(
+    poly_ring: &FfPolyRing,
+    gb: &[Poly],
+    cancel: &CancelToken,
+) -> Option<HashMap<String, BigUint>> {
+    let ideal = Ideal::from_gb(
+        poly_ring,
+        gb.iter().map(|p| poly_ring.ring.clone_el(p)).collect(),
+    );
+    if !ideal.is_zero_dim() {
+        return None;
+    }
+    let gb_polys: Vec<Poly> = gb.iter().map(|p| poly_ring.ring.clone_el(p)).collect();
+    let mut assignment: HashMap<usize, FieldElem> = HashMap::new();
+    if tri_dfs(poly_ring, &gb_polys, &mut assignment, cancel) {
+        let model = build_model(&poly_ring.field, poly_ring, &assignment);
+        if verify_model(poly_ring, gb, &model) {
+            return Some(model);
+        }
+    }
+    None
+}
+
+/// Depth-first triangular search: substitute the partial assignment into
+/// the GB (reduce by `{x_i − v_i}`), pick an unassigned variable that has
+/// become univariate, try each of its roots, recurse. A nonzero-constant
+/// residue means the branch is infeasible.
+fn tri_dfs(
+    poly_ring: &FfPolyRing,
+    gb_polys: &[Poly],
+    assignment: &mut HashMap<usize, FieldElem>,
+    cancel: &CancelToken,
+) -> bool {
+    if cancel.is_cancelled() {
+        return false;
+    }
+    if assignment.len() == poly_ring.n_vars {
+        return true;
+    }
+    let assign_polys: Vec<Poly> = assignment
+        .iter()
+        .map(|(&v, val)| {
+            poly_ring.sub(poly_ring.var(v), poly_ring.constant(poly_ring.field.clone_el(val)))
+        })
+        .collect();
+    let ctx = poly_ring.ctx();
+    let subst: Vec<Poly> = gb_polys
+        .iter()
+        .map(|p| {
+            if assign_polys.is_empty() {
+                poly_ring.ring.clone_el(p)
+            } else {
+                p.reduce_by(&assign_polys, ctx)
+            }
+        })
+        .collect();
+    let mut chosen: Option<(usize, Vec<FieldElem>)> = None;
+    for p in &subst {
+        if poly_ring.is_zero(p) {
+            continue;
+        }
+        let appearing = poly_ring.ring.appearing_indeterminates(p);
+        if appearing.is_empty() {
+            return false; // nonzero constant ⇒ infeasible branch
+        }
+        if appearing.len() == 1 {
+            let (v, _) = appearing.get(0);
+            if !assignment.contains_key(&v) {
+                if let Some(coeffs) =
+                    extract_univariate_coeffs(&poly_ring.ring, &poly_ring.field, p, v)
+                {
+                    chosen = Some((v, coeffs));
+                    break;
+                }
+            }
+        }
+    }
+    let (v, coeffs) = match chosen {
+        Some(c) => c,
+        None => return false, // no triangular structure → caller falls back
+    };
+    for r in find_roots(&poly_ring.field, &coeffs) {
+        assignment.insert(v, r);
+        if tri_dfs(poly_ring, gb_polys, assignment, cancel) {
+            return true;
+        }
+        assignment.remove(&v);
+    }
+    false
 }
 
 /// Try to extract a complete assignment from the GB.
@@ -358,6 +467,33 @@ mod tests {
         let p2 = pr.sub(pr.var(0), pr.one());
 
         assert!(matches!(find_zero(&pr, &[p1, p2]), FindZeroOutcome::Unsat));
+    }
+
+    #[test]
+    fn test_find_zero_triangular_three_vars() {
+        // GF(13), zero-dimensional: x^2 - 1, y - x*?, z - ...; use a
+        // triangular shape <z^2 - 3, y - z, x - z - 1>. find_zero's
+        // triangular fast path must produce a model satisfying all polys.
+        let ff = PrimeField::new(BigUint::from(13u32));
+        let pr = FfPolyRing::new(ff, vec!["x".into(), "y".into(), "z".into()]);
+        let three = pr.field.from_int(3);
+        let z2 = pr.mul(pr.var(2), pr.var(2));
+        let p0 = pr.sub(z2, pr.constant(three)); // z^2 = 3
+        let p1 = pr.sub(pr.var(1), pr.var(2)); // y = z
+        let p2 = pr.sub(pr.sub(pr.var(0), pr.var(2)), pr.one()); // x = z + 1
+        let model = match find_zero(&pr, &[p0, p1, p2]) {
+            FindZeroOutcome::Sat(m) => m,
+            other => panic!("expected Sat, got {:?}", other),
+        };
+        // Verify against the original system.
+        assert!(verify_model(&pr, &[
+            pr.sub(pr.mul(pr.var(2), pr.var(2)), pr.constant(pr.field.from_int(3))),
+            pr.sub(pr.var(1), pr.var(2)),
+            pr.sub(pr.sub(pr.var(0), pr.var(2)), pr.one()),
+        ], &model));
+        let z = &model["z"];
+        assert_eq!((z * z) % BigUint::from(13u32), BigUint::from(3u32));
+        assert_eq!(model["y"], *z);
     }
 
     #[test]
