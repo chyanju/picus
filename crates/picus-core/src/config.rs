@@ -97,6 +97,14 @@ pub struct RuntimeConfig {
     /// the general workload. Exposed as a knob for linear-heavy
     /// conjunctive circuits where it may pay off.
     pub linear_elim: bool,
+    /// Track inter-reduction reducer dependencies in the single-GB UNSAT-core
+    /// tracer (`GbTracer`), so a trivial core reflects the basis elements that
+    /// actually reduced the contradiction — matching cvc5/CoCoA's precise
+    /// cores. Off by default: it makes `tail_reduce_active` use a counted
+    /// reduction (a small per-reduce cost) and only affects the non-default
+    /// SingleGb path, whose current cores are sound where used. Turn on for
+    /// tight cores.
+    pub track_inter_reduce_deps: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -114,6 +122,7 @@ impl Default for RuntimeConfig {
             aboz_emit_disjunctions: true,
             poly_repr: ReprKind::Sparse,
             linear_elim: false,
+            track_inter_reduce_deps: false,
         }
     }
 }
@@ -135,6 +144,7 @@ impl RuntimeConfig {
         if let Some(v) = o.aboz_emit_disjunctions { self.aboz_emit_disjunctions = v; }
         if let Some(v) = o.poly_repr { self.poly_repr = v; }
         if let Some(v) = o.linear_elim { self.linear_elim = v; }
+        if let Some(v) = o.track_inter_reduce_deps { self.track_inter_reduce_deps = v; }
     }
 }
 
@@ -162,6 +172,7 @@ pub struct EngineOverlay {
     pub aboz_emit_disjunctions: Option<bool>,
     pub poly_repr: Option<ReprKind>,
     pub linear_elim: Option<bool>,
+    pub track_inter_reduce_deps: Option<bool>,
 }
 
 thread_local! {

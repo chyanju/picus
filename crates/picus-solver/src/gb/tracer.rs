@@ -209,24 +209,29 @@ impl BuchbergerObserver for GbTracer {
         self.deps.push(combined);
     }
 
-    fn on_inter_reduce(&mut self, old_idx: usize, new_idx: usize) {
-        // Inter-reduce replaces basis[old_idx] with a new reduced form
-        // (recorded under new_idx by Buchberger).  The new form depends
-        // on at least everything the old one did.  Without observing the
-        // exact reducers used we under-approximate by carrying the old
-        // deps forward; this is sufficient for trivial-core extraction
-        // because the trivial element's parents are tracked precisely
-        // via on_new_poly.
-        let combined = if old_idx < self.deps.len() {
-            self.deps[old_idx].clone()
-        } else {
-            (0..self.n_inputs).collect()
-        };
-        // Pad deps so deps[new_idx] is well-defined.
-        while self.deps.len() <= new_idx {
-            self.deps.push(BTreeSet::new());
+    fn wants_inter_reduce_deps(&self) -> bool {
+        crate::config::with(|c| c.track_inter_reduce_deps)
+    }
+
+    fn on_inter_reduce(&mut self, affected: usize, reducers: &[usize]) {
+        // `affected` (a basis position == this tracer's deps index, since
+        // every basis element is reported in order via on_initial_basis /
+        // on_new_poly) was tail-reduced by `reducers`. Its reduced form is
+        // a combination of itself and those reducers, so it now transitively
+        // depends on every input the reducers depend on — fold them in. This
+        // is the precise inter-reduce accounting (gated on
+        // `track_inter_reduce_deps`): without it the element kept only its
+        // pre-reduction deps, which can under-approximate the UNSAT core.
+        if affected >= self.deps.len() {
+            return;
         }
-        self.deps[new_idx] = combined;
+        let mut extra: BTreeSet<usize> = BTreeSet::new();
+        for &r in reducers {
+            if let Some(set) = self.deps.get(r) {
+                extra.extend(set.iter().copied());
+            }
+        }
+        self.deps[affected].extend(extra);
     }
 }
 
@@ -288,5 +293,24 @@ mod tests {
         // should not inherit them.
         tracer.on_new_poly(5, &p, (0, 1));
         assert_eq!(tracer.unsat_core_for(5), vec![0, 1]);
+    }
+
+    #[test]
+    fn inter_reduce_unions_reducer_deps() {
+        // Five inputs on the basis: deps[i] = {i}. Element 0 is then
+        // tail-reduced using elements 2 and 3, so its core must grow to
+        // {0, 2, 3} (its own dep plus the reducers'). Inputs 1, 4 stay out.
+        let mut tracer = GbTracer::new(5);
+        let p = DensePoly::zero();
+        for _ in 0..5 {
+            tracer.on_initial_basis(0, &p);
+        }
+        tracer.on_inter_reduce(0, &[2, 3]);
+        assert_eq!(tracer.unsat_core_for(0), vec![0, 2, 3]);
+        // Other elements are untouched.
+        assert_eq!(tracer.unsat_core_for(1), vec![1]);
+        assert_eq!(tracer.unsat_core_for(4), vec![4]);
+        // Out-of-range affected index is a no-op (no panic).
+        tracer.on_inter_reduce(999, &[0]);
     }
 }

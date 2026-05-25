@@ -226,6 +226,9 @@ fn main() {
                     aboz_emit_disjunctions: no_aboz_disj.then_some(false),
                     profile_enabled: profile.as_deref().map(|s| s == "wall"),
                     linear_elim: linear_elim.then_some(true),
+                    // Config-file only (no CLI flag): precise inter-reduce
+                    // core tracking is a niche knob; set it via picus.toml.
+                    track_inter_reduce_deps: None,
                 },
             };
             let resolved = resolve_config(config.as_deref(), &overlay)
