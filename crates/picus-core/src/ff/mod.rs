@@ -11,6 +11,7 @@ pub mod monomial;
 pub mod divmask;
 pub mod polynomial;
 pub mod geobucket;
+pub mod linalg;
 pub mod repr;
 pub mod sparse_monomial;
 pub mod sparse_polynomial;
