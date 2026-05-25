@@ -62,12 +62,15 @@ impl SparsePolynomial {
         SparsePolynomial { terms: out }
     }
 
+    #[inline]
     pub fn is_zero(&self) -> bool {
         self.terms.is_empty()
     }
+    #[inline]
     pub fn num_terms(&self) -> usize {
         self.terms.len()
     }
+    #[inline]
     pub fn total_degree(&self) -> u32 {
         self.terms.first().map(|(m, _)| m.total_degree()).unwrap_or(0)
     }
@@ -78,12 +81,15 @@ impl SparsePolynomial {
             _ => false,
         }
     }
+    #[inline]
     pub fn leading_term(&self) -> Option<&(SparseMonomial, FieldElem)> {
         self.terms.first()
     }
+    #[inline]
     pub fn leading_monomial(&self) -> Option<&SparseMonomial> {
         self.terms.first().map(|(m, _)| m)
     }
+    #[inline]
     pub fn leading_coefficient(&self) -> Option<&FieldElem> {
         self.terms.first().map(|(_, c)| c)
     }
@@ -110,6 +116,7 @@ impl SparsePolynomial {
     /// Content fingerprint for incremental-GB caching (matches the role
     /// of `DensePoly::content_hash`; need not agree across arms since a
     /// run uses a single representation).
+    #[inline]
     pub fn content_hash(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -130,6 +137,7 @@ impl SparsePolynomial {
 
     /// The backing term list (descending ring order, nonzero coeffs).
     /// For the sparse geobucket: seed the subject and read divisor tails.
+    #[inline]
     pub fn terms_ref(&self) -> &[(SparseMonomial, FieldElem)] {
         &self.terms
     }
@@ -139,6 +147,7 @@ impl SparsePolynomial {
     /// duplicate monomials) — e.g. the descending stream of irreducible
     /// terms the geobucket reducer collects. Skips the `from_terms`
     /// sort/combine pass.
+    #[inline]
     pub fn from_sorted_terms(terms: Vec<(SparseMonomial, FieldElem)>) -> Self {
         SparsePolynomial { terms }
     }
@@ -361,9 +370,11 @@ impl super::repr::PolyRepr for SparsePolynomial {
     fn from_terms(terms: Vec<(SparseMonomial, FieldElem)>, ring: &PolyRing) -> Self {
         SparsePolynomial::from_terms(terms, ring)
     }
+    #[inline]
     fn is_zero(&self) -> bool {
         SparsePolynomial::is_zero(self)
     }
+    #[inline]
     fn num_terms(&self) -> usize {
         SparsePolynomial::num_terms(self)
     }

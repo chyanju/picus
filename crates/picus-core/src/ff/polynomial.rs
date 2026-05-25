@@ -151,6 +151,7 @@ impl Polynomial {
     }
 
     // ── queries ─────────────────────────────────────────────────────
+    #[inline]
     pub fn is_zero(&self) -> bool {
         match self {
             Polynomial::Dense(d) => d.is_zero(),
@@ -169,18 +170,21 @@ impl Polynomial {
             Polynomial::Sparse(s) => s.is_constant(),
         }
     }
+    #[inline]
     pub fn total_degree(&self) -> u32 {
         match self {
             Polynomial::Dense(d) => d.total_degree(),
             Polynomial::Sparse(s) => s.total_degree(),
         }
     }
+    #[inline]
     pub fn leading_coefficient(&self) -> Option<&FieldElem> {
         match self {
             Polynomial::Dense(d) => d.leading_coefficient(),
             Polynomial::Sparse(s) => s.leading_coefficient(),
         }
     }
+    #[inline]
     pub fn leading_monomial(&self, ring: &PolyRing) -> Option<Monomial> {
         match self {
             Polynomial::Dense(d) => d.leading_monomial(ring),
@@ -481,15 +485,18 @@ impl DensePoly {
         }
     }
 
+    #[inline]
     pub fn leading_coefficient(&self) -> Option<&FieldElem> {
         self.coeffs.first()
     }
 
+    #[inline]
     pub fn leading_monomial(&self, ring: &PolyRing) -> Option<Monomial> {
         self.leading_term(ring).map(|t| t.monomial())
     }
 
     /// Maximum total degree across all terms.
+    #[inline]
     pub fn total_degree(&self) -> u32 {
         self.total_degs.first().copied().unwrap_or(0)
     }
@@ -578,6 +585,7 @@ impl DensePoly {
     }
 
     /// Comparison helper between term `i` of `self` and term `j` of `other` under the ring order.
+    #[inline]
     pub fn cmp_term_at(
         a_exps: &[u16],
         a_deg: u32,
@@ -1438,6 +1446,7 @@ impl super::repr::PolyRepr for DensePoly {
     fn from_terms(terms: Vec<(Monomial, FieldElem)>, ring: &PolyRing) -> Self {
         DensePoly::from_terms(terms, ring)
     }
+    #[inline]
     fn is_zero(&self) -> bool {
         DensePoly::is_zero(self)
     }
