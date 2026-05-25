@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use num_bigint::BigUint;
 use num_traits::Zero;
 
-use crate::field::FfEl;
+use crate::ff::field::FieldElem;
 use crate::ideal::Ideal;
 use crate::poly::{FfPolyRing, Poly};
 use crate::timeout::CancelToken;
@@ -223,7 +223,7 @@ fn bitsum_poly(pr: &FfPolyRing, bits: &[usize]) -> Poly {
 }
 
 /// Get the constant term of a polynomial (assumes it's already a constant).
-fn constant_term_value(pr: &FfPolyRing, p: &Poly) -> FfEl {
+fn constant_term_value(pr: &FfPolyRing, p: &Poly) -> FieldElem {
     let ring = &pr.ring;
     let fp = &pr.field;
     let mut acc = fp.zero();
@@ -243,10 +243,10 @@ fn constant_term_value(pr: &FfPolyRing, p: &Poly) -> FfEl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::field::FfField;
+    use crate::ff::field::PrimeField;
     use num_bigint::BigUint;
 
-    fn ff(p: u32) -> FfField { FfField::new(BigUint::from(p)) }
+    fn ff(p: u32) -> PrimeField { PrimeField::new(BigUint::from(p)) }
 
     #[test]
     fn test_bitprop_constant_bitsum() {

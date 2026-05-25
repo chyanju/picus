@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use crate::config::{self, ReprKind};
-use crate::field::{FfEl, FfField};
+use crate::ff::field::{FieldElem, PrimeField};
 use crate::ff::monomial::{Monomial, MonomialOrder};
 use crate::ff::polynomial::{DensePoly, PolyRing as FfPolyRingCtx, Polynomial};
 use crate::ff::repr::MonomialRepr;
@@ -28,7 +28,7 @@ pub type PolyRingType = PolyRingFacade;
 /// `pr.ring` is a thin facade around the underlying [`ff::PolyRing`]
 /// context, exposing `terms`, `create_term`, `exponent_at`, etc.
 pub struct FfPolyRing {
-    pub field: FfField,
+    pub field: PrimeField,
     pub ring: PolyRingFacade,
     pub n_vars: usize,
     pub var_names: Vec<String>,
@@ -36,7 +36,7 @@ pub struct FfPolyRing {
 
 impl FfPolyRing {
     /// Create a new polynomial ring with degrevlex term order.
-    pub fn new(field: FfField, var_names: Vec<String>) -> Self {
+    pub fn new(field: PrimeField, var_names: Vec<String>) -> Self {
         let n_vars = var_names.len();
         let ctx = FfPolyRingCtx::new(
             field.clone(),
@@ -53,7 +53,7 @@ impl FfPolyRing {
     }
 
     /// Constant polynomial from a field element.
-    pub fn constant(&self, el: FfEl) -> Poly {
+    pub fn constant(&self, el: FieldElem) -> Poly {
         Polynomial::constant(el, &self.ring.ctx)
     }
 
@@ -68,7 +68,7 @@ impl FfPolyRing {
     pub fn is_zero(&self, p: &Poly) -> bool { p.is_zero() }
 
     /// Multiply polynomial by a scalar.
-    pub fn scale(&self, coeff: FfEl, poly: Poly) -> Poly {
+    pub fn scale(&self, coeff: FieldElem, poly: Poly) -> Poly {
         poly.scale(&coeff, &self.ring.ctx)
     }
 
@@ -96,16 +96,16 @@ impl PolyRingFacade {
     pub fn field(&self) -> &crate::ff::field::PrimeField { &self.ctx.field }
 
     /// Build a polynomial holding a single term `coeff * monomial`.
-    pub fn create_term(&self, coeff: FfEl, mono: Monomial) -> Poly {
+    pub fn create_term(&self, coeff: FieldElem, mono: Monomial) -> Poly {
         Polynomial::from_terms(vec![(mono, coeff)], &self.ctx)
     }
 
     /// Build a polynomial from an iterator of `(coeff, monomial)` pairs.
     /// The resulting polynomial is canonicalised (terms summed/sorted).
     pub fn from_terms<I>(&self, terms: I) -> Poly
-    where I: IntoIterator<Item = (FfEl, Monomial)>,
+    where I: IntoIterator<Item = (FieldElem, Monomial)>,
     {
-        let v: Vec<(Monomial, FfEl)> = terms.into_iter().map(|(c, m)| (m, c)).collect();
+        let v: Vec<(Monomial, FieldElem)> = terms.into_iter().map(|(c, m)| (m, c)).collect();
         Polynomial::from_terms(v, &self.ctx)
     }
 
@@ -186,7 +186,7 @@ pub enum TermsIter<'a> {
 }
 
 impl<'a> Iterator for TermsIter<'a> {
-    type Item = (&'a FfEl, Monomial);
+    type Item = (&'a FieldElem, Monomial);
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             TermsIter::Dense { poly, ctx, idx } => {
@@ -266,7 +266,7 @@ pub struct IrPolyRing {
 
 impl IrPolyRing {
     /// New ring; representation taken from the current thread config.
-    pub fn new(field: FfField, var_names: Vec<String>) -> Self {
+    pub fn new(field: PrimeField, var_names: Vec<String>) -> Self {
         let repr = config::with(|c| c.poly_repr);
         IrPolyRing { inner: FfPolyRing::new(field, var_names), repr }
     }
@@ -274,7 +274,7 @@ impl IrPolyRing {
     /// New ring with an explicit representation (tests / oracle). The
     /// inner ring's `ctx.repr` is seeded from config at construction, so
     /// we install `repr` for that construction.
-    pub fn new_with_repr(field: FfField, var_names: Vec<String>, repr: ReprKind) -> Self {
+    pub fn new_with_repr(field: PrimeField, var_names: Vec<String>, repr: ReprKind) -> Self {
         let _g = config::ConfigGuard::with_override(|c| c.poly_repr = repr);
         IrPolyRing { inner: FfPolyRing::new(field, var_names), repr }
     }
@@ -282,12 +282,12 @@ impl IrPolyRing {
     pub fn repr(&self) -> ReprKind { self.repr }
     pub fn n_vars(&self) -> usize { self.inner.n_vars }
     pub fn var_names(&self) -> &[String] { &self.inner.var_names }
-    pub fn field(&self) -> &FfField { &self.inner.field }
+    pub fn field(&self) -> &PrimeField { &self.inner.field }
     pub fn ctx(&self) -> &Arc<FfPolyRingCtx> { &self.inner.ring.ctx }
     pub fn var_index(&self, name: &str) -> Option<usize> { self.inner.var_index(name) }
 
     pub fn var(&self, index: usize) -> IrPoly { self.inner.var(index) }
-    pub fn constant(&self, el: FfEl) -> IrPoly { self.inner.constant(el) }
+    pub fn constant(&self, el: FieldElem) -> IrPoly { self.inner.constant(el) }
     pub fn zero(&self) -> IrPoly { self.inner.zero() }
     pub fn one(&self) -> IrPoly { self.inner.one() }
 
@@ -295,7 +295,7 @@ impl IrPolyRing {
     pub fn sub(&self, a: IrPoly, b: IrPoly) -> IrPoly { a.sub(&b, &self.inner.ring.ctx) }
     pub fn mul(&self, a: IrPoly, b: IrPoly) -> IrPoly { a.mul(&b, &self.inner.ring.ctx) }
     pub fn neg(&self, a: IrPoly) -> IrPoly { a.negate(&self.inner.ring.ctx) }
-    pub fn scale(&self, coeff: FfEl, poly: IrPoly) -> IrPoly {
+    pub fn scale(&self, coeff: FieldElem, poly: IrPoly) -> IrPoly {
         poly.scale(&coeff, &self.inner.ring.ctx)
     }
 
@@ -320,7 +320,7 @@ mod tests {
 
     #[test]
     fn test_poly_basic() {
-        let field = FfField::new(BigUint::from(17u32));
+        let field = PrimeField::new(BigUint::from(17u32));
         let pr = FfPolyRing::new(field, vec!["x".into(), "y".into()]);
 
         let x = pr.var(0);
@@ -338,7 +338,7 @@ mod tests {
     /// this is a facade-dispatch smoke test).
     #[test]
     fn irpoly_dense_sparse_arms_agree() {
-        let field = FfField::new(BigUint::from(101u32));
+        let field = PrimeField::new(BigUint::from(101u32));
         let names: Vec<String> = (0..5).map(|i| format!("x{}", i)).collect();
 
         let build = |repr| -> Vec<(BigUint, Vec<(usize, u16)>)> {

@@ -15,7 +15,7 @@
 //! The `ext` ring is a regular [`FfPolyRing`] with `n + 1` variables;
 //! the extra variable `h` lives at index `n` (= `base.n_vars`).
 
-use crate::field::FfField;
+use crate::ff::field::PrimeField;
 use crate::poly::{FfPolyRing, Poly};
 
 /// Wraps a base polynomial ring `P` and exposes a fresh ring `Ph = P[h]`
@@ -36,7 +36,7 @@ impl<'r> HomogRing<'r> {
     /// The extra variable is named `__h` (chosen to avoid collisions with
     /// circuit signal names which never start with `__`).
     ///
-    /// `Ph` constructs a fresh `FfField` over the same prime as
+    /// `Ph` constructs a fresh `PrimeField` over the same prime as
     /// `base.field`. Coefficient moves between `base.ring` and
     /// `ext.ring` are sound because `FieldElem` arithmetic dispatches
     /// on the `PrimeField` passed to each op — the field identity
@@ -45,7 +45,7 @@ impl<'r> HomogRing<'r> {
         let n = base.n_vars;
         let mut var_names = base.var_names.clone();
         var_names.push("__h".to_string());
-        let ext_field = FfField::new(base.field.prime().clone());
+        let ext_field = PrimeField::new(base.field.prime().clone());
         let ext = FfPolyRing::new(ext_field, var_names);
         debug_assert_eq!(ext.n_vars, n + 1);
         HomogRing { base, ext, h_idx: n }
@@ -58,7 +58,7 @@ impl<'r> HomogRing<'r> {
     /// `ext.create_monomial(iter)` where the iterator yields the same `n`
     /// exponents followed by `0`.  Coefficients are transported via
     /// `to_biguint`/`from_biguint` so the lift is independent of the
-    /// `FfFieldType` instance identity (the two rings carry distinct but
+    /// `PrimeField` instance identity (the two rings carry distinct but
     /// structurally-equal `Zn` rings over the same prime — see
     /// [`Self::new`]).
     pub fn lift(&self, p: &Poly) -> Poly {
@@ -151,11 +151,11 @@ impl<'r> HomogRing<'r> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::field::FfField;
+    use crate::ff::field::PrimeField;
     use num_bigint::BigUint;
 
     fn pr_xy() -> FfPolyRing {
-        let field = FfField::new(BigUint::from(17u32));
+        let field = PrimeField::new(BigUint::from(17u32));
         FfPolyRing::new(field, vec!["x".into(), "y".into()])
     }
 

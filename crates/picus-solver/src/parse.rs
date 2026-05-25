@@ -25,7 +25,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::field::FfEl;
+use crate::ff::field::FieldElem;
 use crate::poly::{FfPolyRing, Poly};
 
 /// Information about a detected bit constraint:  `var * (var - 1) == 0`
@@ -39,7 +39,7 @@ pub struct BitConstraint {
 #[derive(Debug, Clone)]
 pub struct LinearMonomial {
     pub var: usize,
-    pub coeff: FfEl,
+    pub coeff: FieldElem,
 }
 
 /// A bitsum `coeff * (2^0 * b_0 + 2^1 * b_1 + ... + 2^k * b_k)`.
@@ -48,7 +48,7 @@ pub struct LinearMonomial {
 /// is `coeff * 2^i`.
 #[derive(Debug, Clone)]
 pub struct BitSum {
-    pub coeff: FfEl,
+    pub coeff: FieldElem,
     pub bits: Vec<usize>,
 }
 
@@ -59,7 +59,7 @@ pub fn linear_monomial(pr: &FfPolyRing, p: &Poly) -> Option<LinearMonomial> {
     let fp = &pr.field;
     let n_vars = pr.n_vars;
 
-    let mut found: Option<(usize, FfEl)> = None;
+    let mut found: Option<(usize, FieldElem)> = None;
     for (c, m) in ring.terms(p) {
         if fp.is_zero(c) {
             continue;
@@ -101,8 +101,8 @@ pub fn one_constraint(pr: &FfPolyRing, p: &Poly) -> Option<usize> {
     let fp = &pr.field;
     let n_vars = pr.n_vars;
 
-    let mut linear_term: Option<(usize, FfEl)> = None;
-    let mut const_term: Option<FfEl> = None;
+    let mut linear_term: Option<(usize, FieldElem)> = None;
+    let mut const_term: Option<FieldElem> = None;
 
     for (c, m) in ring.terms(p) {
         if fp.is_zero(c) { continue; }
@@ -151,8 +151,8 @@ pub fn bit_constraint(pr: &FfPolyRing, p: &Poly) -> Option<BitConstraint> {
 
     // Collect the (degree, var, coeff) triples.
     // Expect exactly two terms: c*x^2 and -c*x for the same var.
-    let mut quad: Option<(usize, FfEl)> = None;
-    let mut lin: Option<(usize, FfEl)> = None;
+    let mut quad: Option<(usize, FieldElem)> = None;
+    let mut lin: Option<(usize, FieldElem)> = None;
 
     for (c, m) in ring.terms(p) {
         if fp.is_zero(c) { continue; }
@@ -367,11 +367,11 @@ pub fn bit_sums(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::field::FfField;
+    use crate::ff::field::PrimeField;
     use num_bigint::BigUint;
 
-    fn ff(p: u32) -> FfField {
-        FfField::new(BigUint::from(p))
+    fn ff(p: u32) -> PrimeField {
+        PrimeField::new(BigUint::from(p))
     }
 
     #[test]

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use num_bigint::BigUint;
 
 use crate::brancher::Brancher;
-use crate::field::{FfField, FfEl};
+use crate::ff::field::{PrimeField, FieldElem};
 use crate::ideal::Ideal;
 use crate::poly::{FfPolyRing, Poly};
 use crate::roots::find_roots;
@@ -128,7 +128,7 @@ fn try_extract_full_assignment(
     let ring = &poly_ring.ring;
     let fp = &poly_ring.field;
     let n_vars = poly_ring.n_vars;
-    let mut assignment: HashMap<usize, FfEl> = HashMap::new();
+    let mut assignment: HashMap<usize, FieldElem> = HashMap::new();
 
     for p in &ideal.basis {
         let appearing = ring.appearing_indeterminates(p);
@@ -234,16 +234,16 @@ fn compute_candidates(
 /// Extract univariate coefficients w.r.t. `var_idx`.
 fn extract_univariate_coeffs(
     ring: &crate::poly::PolyRingType,
-    fp: &crate::field::FfFieldType,
+    fp: &crate::ff::field::PrimeField,
     poly: &Poly,
     var_idx: usize,
-) -> Option<Vec<FfEl>> {
+) -> Option<Vec<FieldElem>> {
     let appearing = ring.appearing_indeterminates(poly);
     for &(v, _) in &appearing {
         if v != var_idx { return None; }
     }
     let mut max_deg: usize = 0;
-    let mut coeff_map: HashMap<usize, FfEl> = HashMap::new();
+    let mut coeff_map: HashMap<usize, FieldElem> = HashMap::new();
     for (coeff, monomial) in ring.terms(poly) {
         let deg = ring.exponent_at(&monomial, var_idx);
         if deg > max_deg { max_deg = deg; }
@@ -259,9 +259,9 @@ fn extract_univariate_coeffs(
 
 /// Build output model from assignment.
 fn build_model(
-    field: &FfField,
+    field: &PrimeField,
     poly_ring: &FfPolyRing,
-    assignment: &HashMap<usize, FfEl>,
+    assignment: &HashMap<usize, FieldElem>,
 ) -> HashMap<String, BigUint> {
     let mut model = HashMap::new();
     for (&idx, val) in assignment {
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn test_find_zero_linear() {
         // GB: [x - 3, y - 5] over GF(17)
-        let ff = FfField::new(BigUint::from(17u32));
+        let ff = PrimeField::new(BigUint::from(17u32));
         let pr = FfPolyRing::new(ff, vec!["x".into(), "y".into()]);
 
         let three = pr.field.from_biguint(&BigUint::from(3u32));
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn test_find_zero_quadratic() {
         // x^2 - 1 = 0 over GF(17) → roots 1, 16
-        let ff = FfField::new(BigUint::from(17u32));
+        let ff = PrimeField::new(BigUint::from(17u32));
         let pr = FfPolyRing::new(ff, vec!["x".into()]);
 
         let x2 = pr.mul(pr.var(0), pr.var(0));
@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn test_find_zero_unsat() {
         // x = 0 ∧ x = 1 over GF(17) → UNSAT
-        let ff = FfField::new(BigUint::from(17u32));
+        let ff = PrimeField::new(BigUint::from(17u32));
         let pr = FfPolyRing::new(ff, vec!["x".into()]);
 
         let p1 = pr.var(0);
@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn test_find_zero_inverse() {
         // x*y = 1 over GF(7) → model where x*y ≡ 1 mod 7
-        let ff = FfField::new(BigUint::from(7u32));
+        let ff = PrimeField::new(BigUint::from(7u32));
         let pr = FfPolyRing::new(ff, vec!["x".into(), "y".into()]);
 
         let xy = pr.mul(pr.var(0), pr.var(1));

@@ -15,7 +15,7 @@ use crate::ff::buchberger::{
 use crate::ff::polynomial::Polynomial;
 use crate::ff::monomial::Monomial;
 use crate::ff::monomial::MonomialOrder as FfOrder;
-use crate::field::FfEl;
+use crate::ff::field::FieldElem;
 use crate::poly::{FfPolyRing, Mono, Poly, PolyRingType};
 use crate::timeout::{CancelToken, Cancelled};
 use crate::tracer::GbTracer;
@@ -459,7 +459,7 @@ impl<'r> Ideal<'r> {
     }
 
     /// Compute the minimal polynomial of `var_idx` in `R/I`.
-    pub fn min_poly(&self, var_idx: usize) -> Option<Vec<FfEl>> {
+    pub fn min_poly(&self, var_idx: usize) -> Option<Vec<FieldElem>> {
         self.min_poly_cancel(var_idx, &CancelToken::none())
     }
 
@@ -469,7 +469,7 @@ impl<'r> Ideal<'r> {
     /// via Gaussian elimination on the normal forms of `1, x, x^2, ...`.
     /// Returns `None` if the ideal is not zero-dimensional or the search
     /// hits the degree cap.
-    pub fn min_poly_cancel(&self, var_idx: usize, cancel: &CancelToken) -> Option<Vec<FfEl>> {
+    pub fn min_poly_cancel(&self, var_idx: usize, cancel: &CancelToken) -> Option<Vec<FieldElem>> {
         let _t = crate::profile::ScopedTimer::new("ideal::min_poly");
         let ring = self.poly_ring.ctx();
         let f = &ring.field;
@@ -485,7 +485,7 @@ impl<'r> Ideal<'r> {
 
         // Echelon form: each row is (normal_form, dependency vector).
         let mut nfs: Vec<Polynomial> = Vec::new();
-        let mut deps: Vec<Vec<FfEl>> = Vec::new();
+        let mut deps: Vec<Vec<FieldElem>> = Vec::new();
         let mut pivot_monos: Vec<Monomial> = Vec::new();
 
         for d in 0..=MIN_POLY_DEG_CAP {
@@ -503,7 +503,7 @@ impl<'r> Ideal<'r> {
 
             // Build a row: (nf, e_d).
             let mut row_poly = nf.clone();
-            let mut row_dep: Vec<FfEl> = vec![f.zero(); d + 1];
+            let mut row_dep: Vec<FieldElem> = vec![f.zero(); d + 1];
             row_dep[d] = f.one();
 
             // Reduce row against existing echelon rows.
@@ -533,7 +533,7 @@ impl<'r> Ideal<'r> {
                 while top > 0 && f.is_zero(&row_dep[top - 1]) { top -= 1; }
                 if top == 0 { return Some(vec![f.one()]); }
                 let lead = row_dep[top - 1].clone();
-                let mut coeffs: Vec<FfEl> = Vec::with_capacity(top);
+                let mut coeffs: Vec<FieldElem> = Vec::with_capacity(top);
                 for k in 0..top {
                     coeffs.push(f.div(&row_dep[k], &lead).unwrap());
                 }
@@ -578,7 +578,7 @@ pub fn leading_coefficient(
     ring: &PolyRingType,
     p: &Poly,
     _order: FfOrder,
-) -> FfEl {
+) -> FieldElem {
     match p.leading_coefficient() {
         Some(c) => ring.field().clone_el(c),
         None => ring.field().zero(),
@@ -932,16 +932,16 @@ pub fn compute_gb_incremental_with_order_traced(
 
 // Silence dead-code warnings on shim type alias.
 #[allow(dead_code)]
-type _GbBaseRing<'r> = &'r crate::field::FfFieldType;
+type _GbBaseRing<'r> = &'r crate::ff::field::PrimeField;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::field::FfField;
+    use crate::ff::field::PrimeField;
     use num_bigint::BigUint;
 
-    fn ff(p: u32) -> FfField {
-        FfField::new(BigUint::from(p))
+    fn ff(p: u32) -> PrimeField {
+        PrimeField::new(BigUint::from(p))
     }
 
     #[test]

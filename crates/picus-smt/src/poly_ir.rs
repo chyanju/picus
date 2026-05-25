@@ -32,7 +32,7 @@ use picus_solver::boolean::{BooleanQuery, Formula, Literal};
 use picus_solver::encoder::{
     encode, ConstraintSystemBuilder, EncodedSystem, ConstraintSystem, PolyTerm,
 };
-use picus_solver::field::FfField;
+use picus_solver::ff::field::PrimeField;
 use picus_solver::poly::{IrPoly as Poly, IrPolyRing};
 use thiserror::Error;
 
@@ -358,7 +358,7 @@ pub fn r1cs_to_poly_ir(
     for i in 0..n_wires {
         var_names.push(format!("y{}", i));
     }
-    let field = FfField::new(prime.clone());
+    let field = PrimeField::new(prime.clone());
     let ring = Arc::new(IrPolyRing::new(field, var_names));
 
     let mut equalities: Vec<Poly> = Vec::new();
