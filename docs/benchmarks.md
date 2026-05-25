@@ -8,7 +8,7 @@ recorded per fixture:
    outputs uniquely determined / `unsafe` = under-constrained), a
    property of the circuit itself, independent of any tool. Best-effort:
    the 8 `unsafe` rows were independently confirmed by substituting both
-   witnesses back into the raw R1CS (checker at `chat/check_r1cs.py`);
+   witnesses back into the raw R1CS;
    the `safe` rows are inherited from the baseline's resolved verdicts
    (trusted, not each independently re-proven); `unknown` = true verdict
    not yet established (no version below resolves it).
@@ -21,9 +21,7 @@ The baseline build is the regression reference; a future build whose
 verdict contradicts a *known* ground truth (or flips a settled baseline
 verdict) needs investigation.
 
-- **Baseline version**: `main` branch, commit `7cb6d45` ("Merge PR #10
-  from chyanju/yanju/rust", v1.7.0 era) — predates all `feat/solver`
-  rewriting.
+- **Baseline version**: commit `7cb6d45` on `main`.
 - **Baseline backend**: cvc5 (`--solver cvc5 --theory ff`). This commit
   has no native solver.
 - **Limits**: `--timeout 10000` (per-SMT-query, 10 s); outer wall-clock

@@ -87,7 +87,7 @@ See `crates/picus/src/lib.rs` for the full API, including `check_r1cs_bytes()`, 
 | [Usage](docs/usage.md) | CLI flags, configuration, result interpretation, solver differences, troubleshooting |
 | [Building cvc5 / z3](docs/building.md) | Optional external backends: build requirements and licensing |
 | [Architecture](docs/architecture.md) | Crate structure, data flow, solver backends |
-| [Propagation Lemmas](docs/propagation-lemmas.md) | Deduction rules and their implementation |
+| [Propagation Lemmas](docs/lemmas.md) | Deduction rules and their implementation |
 | [Changelog](CHANGELOG.md) | Version history |
 
 ## Citation

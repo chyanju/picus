@@ -395,7 +395,7 @@ impl PrimeField {
         }
     }
 
-    /// Kept for symmetry / clarity — equivalent to `add_assign(a, b)`.
+    /// By-value `b` variant of [`Self::add_assign`].
     pub fn add_assign_owned(&self, a: &mut FieldElem, b: FieldElem) {
         self.add_assign(a, &b)
     }

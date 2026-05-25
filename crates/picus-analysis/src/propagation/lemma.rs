@@ -63,9 +63,8 @@ pub type LemmaFactory = fn() -> Box<dyn PropagationLemma>;
 
 /// Inventory entry for a lemma. Submitted via `inventory::submit!`
 /// from each lemma's module; collected at link time so a downstream
-/// crate can ship its own lemma simply by linking against
-/// picus-analysis and calling `inventory::submit!` on its own
-/// descriptor.
+/// crate can ship its own lemma by linking against picus-analysis and
+/// calling `inventory::submit!` on its own descriptor.
 pub struct LemmaDescriptor {
     pub name: &'static str,
     pub factory: LemmaFactory,
