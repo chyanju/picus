@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.2] - 2026-05-25
+- `ff::hilbert::quotient_dimension` + `Ideal::quotient_dimension`: `dim_k(R/I)` (the standard-monomial count, i.e. the solution count with multiplicity) read from a finished basis' leading terms via the graded Hilbert function. Cross-checks the FGLM staircase size in `fglm_to_lex` (debug assertion).
+- Geobucket reducer reads each divisor's leading coefficient lazily — only for the divisor actually selected — instead of cloning it for every divisor on every reduce call (a heap `FieldElem` clone over large primes).
+- Incremental Gröbner-basis extends always run the per-pair engine; F4 (`use_f4`) is used only for from-scratch GB, where its degree-batched matrix amortises.
+- New config keys / CLI flags, both default off: `split_triangular` (`--split-triangular on|off`) — triangular model construction (univariate roots + back-substitution) for a zero-dimensional combined system on the split-GB path, in place of the brancher DFS; `reducer_index_cache` (`--reducer-index-cache on|off`) — cache the reducer's DivMask/degree divisor index across reductions with an unchanged active basis.
+
 ## [1.8.1] - 2026-05-25
 - Removed the `PICUS_*` runtime environment overrides (`PICUS_USE_F4`, `PICUS_POLY_REPR`, `PICUS_BOOLEAN`, `PICUS_DNF_CAP`, `PICUS_CDCLT_ITER_CAP`, `PICUS_GB_STATS`, `PICUS_GB_TRACE`, `PICUS_PROFILE`, `PICUS_NO_INCREMENTAL_CACHE`, `PICUS_NO_ABOZ_DISJ`). Every engine knob is now set through the config file (`--config` / `./picus.toml`) or a CLI flag only; config resolves as built-in defaults < file < CLI. Build-time locators (`CVC5_LIB_DIR`, …) are unaffected.
 
