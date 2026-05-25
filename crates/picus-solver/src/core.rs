@@ -171,6 +171,11 @@ pub fn solve_split_gb_cancel<'r>(
     bitsum_polys: &[Poly],
     cancel: &CancelToken,
 ) -> SolveOutcome {
+    // Linear (Gaussian) pre-elimination is applied once at the top level
+    // (`PolyIR::pre_eliminate_linear` in the backend), so the generators
+    // reaching this conjunctive core — on both the direct and the CDCL(T)
+    // per-check paths — are already reduced. This function does not
+    // re-eliminate.
     let nl_gens: Vec<Poly> = original_polys.iter().map(|p| poly_ring.ring.clone_el(p)).collect();
     let mut nl_deps: Vec<std::collections::BTreeSet<usize>> = Vec::with_capacity(original_polys.len());
     for i in 0..original_polys.len() {

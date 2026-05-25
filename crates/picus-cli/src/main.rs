@@ -137,6 +137,13 @@ enum Commands {
         /// (native FF backend only). Default: enabled.
         #[arg(long)]
         no_aboz_disj: bool,
+
+        /// Enable linear (Gaussian) pre-elimination before solving (native
+        /// FF backend only). Off by default; may help linear-heavy
+        /// conjunctive circuits, but densifies the nonlinear part on the
+        /// general workload.
+        #[arg(long)]
+        linear_elim: bool,
     },
 
     /// Print R1CS circuit information
@@ -182,6 +189,7 @@ fn main() {
             gb_trace,
             no_cache,
             no_aboz_disj,
+            linear_elim,
         } => {
             // CLI overlay — the highest-precedence config layer. Only the
             // flags the user actually passed become `Some`; everything
@@ -217,6 +225,7 @@ fn main() {
                     cache_enabled: no_cache.then_some(false),
                     aboz_emit_disjunctions: no_aboz_disj.then_some(false),
                     profile_enabled: profile.as_deref().map(|s| s == "wall"),
+                    linear_elim: linear_elim.then_some(true),
                 },
             };
             let resolved = resolve_config(config.as_deref(), &overlay)

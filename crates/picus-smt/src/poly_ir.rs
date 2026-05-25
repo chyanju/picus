@@ -34,6 +34,7 @@ use picus_solver::frontend::encoder::{
 };
 use picus_core::ff::field::PrimeField;
 use picus_core::poly::{IrPoly as Poly, IrPolyRing};
+use picus_core::timeout::CancelToken;
 use thiserror::Error;
 
 /// Reasons the R1CS-to-PolyIR lowering can fail. Surfacing these as
@@ -132,6 +133,48 @@ impl PolyIR {
     pub fn linear_term(&self, coeff: &BigUint, var: usize) -> Poly {
         let coeff_el = self.ring.field().from_biguint(coeff);
         self.ring.scale(coeff_el, self.ring.var(var))
+    }
+
+    /// Linear (Gaussian) pre-elimination — the in-tree analogue of cvc5's
+    /// `theory/ff/gauss.cpp`. Computes a Gröbner basis of the linear
+    /// equality subsystem (for a linear ideal this is Gaussian
+    /// elimination) and reduces every nonlinear equality modulo it,
+    /// substituting out the pivot variables. Applied once per top-level
+    /// solve so both the conjunctive and CDCL(T) per-check paths consume
+    /// the reduced generators (split-GB's `admit` predicate otherwise
+    /// strands multi-term linear relations in basis 0).
+    ///
+    /// Returns `Some(reduced_ir)` when elimination changed the equality
+    /// set, else `None` (the caller keeps `self`). Variety-preserving, so
+    /// disjunctions / disequalities / metadata carry over unchanged and a
+    /// SAT model still verifies against the original system. A linear
+    /// subsystem that is itself unsatisfiable collapses the equalities to
+    /// a single `1 = 0`, which the solver rejects immediately.
+    pub fn pre_eliminate_linear(&self, cancel: &CancelToken) -> Option<PolyIR> {
+        let elim =
+            picus_solver::gb::linsolve::eliminate_linear(self.ring.as_ff(), &self.equalities, cancel)
+                .ok()?;
+        if !elim.applied {
+            return None;
+        }
+        let equalities = if elim.unsat {
+            vec![self.ring.one()]
+        } else {
+            elim.reduced
+        };
+        Some(PolyIR {
+            ring: Arc::clone(&self.ring),
+            n_wires: self.n_wires,
+            input_indices: self.input_indices.clone(),
+            equalities,
+            disjunctions: self.disjunctions.clone(),
+            known_signals: self.known_signals.clone(),
+            target_signal: self.target_signal,
+            disequalities: self.disequalities.clone(),
+            assignments: self.assignments.clone(),
+            bitsums: self.bitsums.clone(),
+            add_field_polys: self.add_field_polys,
+        })
     }
 
     /// Build a `Poly` representing the constant `c`.

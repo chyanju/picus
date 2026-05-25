@@ -88,6 +88,15 @@ pub struct RuntimeConfig {
     /// `--poly-repr dense`) to force the dense representation (the
     /// differential-test oracle, faster on small rings).
     pub poly_repr: ReprKind,
+    /// Opt-in linear (Gaussian) pre-elimination (cvc5 `gauss.cpp`
+    /// analogue): before solving, reduce the nonlinear constraints modulo
+    /// a Gröbner basis of the linear subsystem, substituting out pivot
+    /// variables. Off by default — split-GB already handles linear
+    /// constraints in basis 0, and the substitution can densify the
+    /// nonlinear part and add per-`solve` overhead, so it is a net loss on
+    /// the general workload. Exposed as a knob for linear-heavy
+    /// conjunctive circuits where it may pay off.
+    pub linear_elim: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -104,6 +113,7 @@ impl Default for RuntimeConfig {
             cache_enabled: true,
             aboz_emit_disjunctions: true,
             poly_repr: ReprKind::Sparse,
+            linear_elim: false,
         }
     }
 }
@@ -124,6 +134,7 @@ impl RuntimeConfig {
         if let Some(v) = o.cache_enabled { self.cache_enabled = v; }
         if let Some(v) = o.aboz_emit_disjunctions { self.aboz_emit_disjunctions = v; }
         if let Some(v) = o.poly_repr { self.poly_repr = v; }
+        if let Some(v) = o.linear_elim { self.linear_elim = v; }
     }
 }
 
@@ -150,6 +161,7 @@ pub struct EngineOverlay {
     pub cache_enabled: Option<bool>,
     pub aboz_emit_disjunctions: Option<bool>,
     pub poly_repr: Option<ReprKind>,
+    pub linear_elim: Option<bool>,
 }
 
 thread_local! {

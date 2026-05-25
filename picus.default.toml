@@ -50,6 +50,13 @@ dnf_cap = 100000
 cdclt_iter_cap = 1000000
 # Reuse the incremental Buchberger cache between successive solve() calls.
 cache_enabled = true
+# Opt-in linear (Gaussian) pre-elimination before solving: reduce the
+# nonlinear constraints modulo a Groebner basis of the linear subsystem.
+# Off by default — split-GB already handles linear constraints in basis 0,
+# and the substitution densifies the nonlinear part / adds per-solve
+# overhead (net loss on the general workload). May help linear-heavy
+# conjunctive circuits.
+linear_elim = false
 
 # --- IR / lemma layer (also affects the cvc5 path) ---
 # Polynomial representation: "sparse" (scales on wide rings) | "dense"
