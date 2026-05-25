@@ -8,10 +8,27 @@ members = [
     "crates/picus-analysis",
     "crates/picus",
     "crates/picus-cli",
+    "crates/picus-solver",
+    "crates/picus-core",
+]
+# Default build set: native crates only. The cvc5 / z3 backend crates are
+# excluded here so the default commands (`cargo build`, `cargo test`,
+# `cargo install --path crates/picus-cli`) compile only the pure-Rust native
+# solver. cvc5 / z3 build solely on explicit opt-in: `--features cvc5` / `z3`
+# (which pull `cvc5-ff` / `z3` as optional deps), or an explicit
+# `cargo build --workspace` / `-p cvc5-ff`.
+default-members = [
+    "crates/picus-r1cs",
+    "crates/picus-smt",
+    "crates/picus-analysis",
+    "crates/picus",
+    "crates/picus-cli",
+    "crates/picus-solver",
+    "crates/picus-core",
 ]
 
 [workspace.package]
-version = "1.7.0"
+version = "1.8.0"
 authors = ["Yanju Chen <chyanju@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/chyanju/Picus"
@@ -21,8 +38,12 @@ edition = "2024"
 num-bigint = "0.4"
 num-traits = "0.2"
 num-integer = "0.1"
+rug = { version = "1.27", default-features = false, features = ["integer", "std"] }
 byteorder = "1.5"
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
 log = "0.4"
 env_logger = "0.11"
+inventory = "0.3"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

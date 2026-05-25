@@ -7,10 +7,22 @@ license.workspace = true
 repository.workspace = true
 edition.workspace = true
 
+[features]
+# Forwards picus-smt's backend features. Default = `native` only;
+# `cvc5` / `z3` are opt-in. Tests that need a specific backend
+# enable the corresponding feature on this crate.
+default = ["native"]
+native = ["picus-smt/native"]
+cvc5 = ["picus-smt/cvc5"]
+z3 = ["picus-smt/z3"]
+
 [dependencies]
 picus-r1cs = { path = "../picus-r1cs" }
-picus-smt = { path = "../picus-smt" }
+picus-smt = { path = "../picus-smt", default-features = false }
+picus-core = { path = "../picus-core" }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
 num-integer = { workspace = true }
 log = { workspace = true }
+inventory = { workspace = true }
+serde = { workspace = true }

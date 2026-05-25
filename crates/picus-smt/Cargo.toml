@@ -7,13 +7,27 @@ license.workspace = true
 repository.workspace = true
 edition.workspace = true
 
+[features]
+# Default is `native` only — pure-Rust in-tree FF solver, no
+# external build chains. The cvc5 (~15-20 min vendored build) and z3
+# (vendored build) backends are opt-in via `--features cvc5` /
+# `--features z3` (combine as needed). Top-level crates (picus,
+# picus-cli) forward these feature names verbatim.
+default = ["native"]
+native = []
+cvc5 = ["dep:cvc5-ff"]
+z3 = ["dep:z3"]
+
 [dependencies]
 picus-r1cs = { path = "../picus-r1cs" }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
+inventory = { workspace = true }
 
 # Solver backends
-z3 = { version = "0.20", features = ["vendored"] }
-cvc5-ff = { path = "../cvc5-ff" }
+z3 = { version = "0.20", features = ["vendored"], optional = true }
+cvc5-ff = { path = "../cvc5-ff", optional = true }
+picus-solver = { path = "../picus-solver" }
+picus-core = { path = "../picus-core" }

@@ -1,57 +1,110 @@
-# Benchmarks
+# PLDI circomlib benchmark — baseline
 
-The `benchmarks/` directory is a [git submodule](https://github.com/chyanju/picus-benchmarks) containing Circom circuit sources from real-world and synthetic ZK projects, pinned to specific git commits. These are the same benchmarks used in the PLDI 2023 paper evaluation.
+Reference table for the full PLDI 68-fixture circomlib subset
+(`benchmarks/circom/circomlib-cff5ab6/*.r1cs`). Two distinct things are
+recorded per fixture:
 
-## Projects
+1. **ground truth** — the *true* verdict of the circuit (`safe` =
+   outputs uniquely determined / `unsafe` = under-constrained), a
+   property of the circuit itself, independent of any tool. Best-effort:
+   the 8 `unsafe` rows were independently confirmed by substituting both
+   witnesses back into the raw R1CS;
+   the `safe` rows are inherited from the baseline's resolved verdicts
+   (trusted, not each independently re-proven); `unknown` = true verdict
+   not yet established (no version below resolves it).
+2. **baseline verdict** — what the baseline build actually *output*. This
+   can differ from ground truth when the solver hits a bug or the time
+   budget is too small (e.g. `Pedersen@pedersen` is truly `unsafe` but
+   the baseline times out before deciding).
 
-| Directory | Project | Circuits |
-|-----------|---------|----------|
-| `circomlib-cff5ab6` | [circomlib](https://github.com/iden3/circomlib) | 73 (gates, comparators, MiMC, EdDSA, Pedersen, ...) |
-| `circomlibex-cff5ab6` | circomlib parameterized | Bit-width variants (1, 8, 16, 32, 64, 128, 253, 254, 256) |
-| `semaphore-0f0fc95` | [Semaphore](https://github.com/semaphore-protocol/semaphore) | Identity proofs |
-| `darkforest-eth-9033eaf-fixed` | [Dark Forest](https://github.com/darkforest-eth/darkforest-v0.6) | Game circuits |
-| `hermez-network-9a696e3-fixed` | [Hermez](https://github.com/hermeznetwork/circuits) | Rollup circuits |
-| `maci-9b1b1a6-fixed` | [MACI](https://github.com/privacy-scaling-explorations/maci) | Voting |
-| `circom-ecdsa-d87eb70` | [circom-ecdsa](https://github.com/0xPARC/circom-ecdsa) | ECDSA verification |
-| `circom-bigint-7505e5c` | [circom-bigint](https://github.com/0xPARC/circom-bigint) | Big integer arithmetic |
-| `circom-pairing-743d761` | [circom-pairing](https://github.com/yi-sun/circom-pairing) | Pairing operations |
-| `ed25519-099d19c-fixed` | ed25519 circuits | EdDSA over Curve25519 |
-| `keccak256-circom-af3e898` | Keccak-256 | Hash function |
-| `aes-circom-0784f74` | AES | Symmetric encryption |
-| `circomlib-ml-adb9edd` | [circomlib-ml](https://github.com/socathie/circomlib-ml) | Machine learning |
-| `circomlib-matrix-d41bae3` | Matrix operations | Linear algebra |
-| `hydra-2010a65` | Hydra | Proving scheme |
-| `iden3-core-56a08f9` | iden3 core | Identity |
-| `motivating` | Toy examples | adder, ValidateDecoding (buggy + fixed) |
-| `buggy-mix` | Known bugs | Circuits with known under-constrained signals |
+The baseline build is the regression reference; a future build whose
+verdict contradicts a *known* ground truth (or flips a settled baseline
+verdict) needs investigation.
 
-## Compiling Circuits
+- **Baseline version**: commit `7cb6d45` on `main`.
+- **Baseline backend**: cvc5 (`--solver cvc5 --theory ff`). This commit
+  has no native solver.
+- **Limits**: `--timeout 10000` (per-SMT-query, 10 s); outer wall-clock
+  hard-capped at 30 s via GNU `timeout(1)`. A `timeout` verdict means the
+  30 s cap fired before a result. Times in ms.
+- Captured 2026-05-23 on a 16-core Linux box, release build.
 
-Circuits require [circom](https://docs.circom.io/) 2.0+ to compile. The `libs/` directory contains shared dependencies.
+| fixture | ground truth | baseline verdict | baseline time (ms) |
+|---|---|---|---:|
+| AliasCheck@aliascheck | safe | safe | 18 |
+| AND@gates | safe | safe | 7 |
+| BabyAdd@babyjub | unknown | timeout | 30007 |
+| BabyCheck@babyjub | safe | safe | 7 |
+| BabyDbl@babyjub | safe | safe | 20 |
+| BabyPbk@babyjub | unknown | timeout | 30615 |
+| BinSub@binsub | safe | safe | 17 |
+| BinSum@binsum | safe | safe | 16 |
+| BitElementMulAny@escalarmulany | unknown | timeout | 30038 |
+| Bits2Num@bitify | safe | safe | 7 |
+| Bits2Num_strict@bitify | safe | safe | 36 |
+| Bits2Point@pointbits | unsafe | unsafe | 10 |
+| Bits2Point_Strict@pointbits | unknown | timeout | 30173 |
+| CompConstant@compconstant | safe | safe | 17 |
+| Decoder@multiplexer | unsafe | unsafe | 14 |
+| EdDSAMiMCSpongeVerifier@eddsamimcsponge | safe | safe | 2257 |
+| EdDSAMiMCVerifier@eddsamimc | safe | safe | 1169 |
+| EdDSAPoseidonVerifier@eddsaposeidon | safe | safe | 569 |
+| EdDSAVerifier@eddsa | safe | safe | 828 |
+| Edwards2Montgomery@montgomery | unsafe | unsafe | 12 |
+| EscalarMulAny@escalarmulany | unknown | timeout | 30034 |
+| EscalarProduct@multiplexer | safe | safe | 8 |
+| ForceEqualIfEnabled@comparators | safe | safe | 7 |
+| GreaterEqThan@comparators | safe | safe | 8 |
+| GreaterThan@comparators | safe | safe | 7 |
+| IsEqual@comparators | safe | safe | 14 |
+| IsZero@comparators | safe | safe | 13 |
+| LessEqThan@comparators | safe | safe | 8 |
+| LessThan@comparators | safe | safe | 8 |
+| MiMC7@mimc | safe | safe | 8 |
+| MiMCFeistel@mimcsponge | safe | safe | 8 |
+| MiMCSponge@mimcsponge | safe | safe | 8 |
+| Montgomery2Edwards@montgomery | unsafe | unsafe | 12 |
+| MontgomeryAdd@montgomery | unsafe | unsafe | 32 |
+| MontgomeryDouble@montgomery | unsafe | unsafe | 56 |
+| MultiAND@gates | safe | safe | 10 |
+| MultiMiMC7@mimc | safe | safe | 8 |
+| MultiMux1@mux1 | safe | safe | 7 |
+| MultiMux2@mux2 | safe | safe | 7 |
+| MultiMux3@mux3 | safe | safe | 7 |
+| MultiMux4@mux4 | safe | safe | 11 |
+| Multiplexer@multiplexer | safe | safe | 23 |
+| Multiplexor2@escalarmulany | safe | safe | 9 |
+| Mux1@mux1 | safe | safe | 8 |
+| Mux2@mux2 | safe | safe | 7 |
+| Mux3@mux3 | safe | safe | 8 |
+| Mux4@mux4 | safe | safe | 8 |
+| NAND@gates | safe | safe | 7 |
+| NOR@gates | safe | safe | 7 |
+| NOT@gates | safe | safe | 8 |
+| Num2Bits@bitify | safe | safe | 7 |
+| Num2BitsNeg@bitify | safe | safe | 16 |
+| Num2Bits_strict@bitify | safe | safe | 38 |
+| OR@gates | safe | safe | 7 |
+| Pedersen@pedersen_old | safe | safe | 56 |
+| Pedersen@pedersen | unsafe | timeout | 30030 |
+| Point2Bits@pointbits | unsafe | unsafe | 13 |
+| Point2Bits_Strict@pointbits | safe | safe | 80 |
+| Poseidon@poseidon | safe | safe | 23 |
+| SegmentMulAny@escalarmulany | unknown | timeout | 30032 |
+| SegmentMulFix@escalarmulfix | unknown | timeout | 30032 |
+| Segment@pedersen | unknown | timeout | 30030 |
+| Sigma@poseidon | safe | safe | 11 |
+| Sign@sign | safe | safe | 22 |
+| Switcher@switcher | safe | safe | 8 |
+| Window4@pedersen | unknown | timeout | 30026 |
+| WindowMulFix@escalarmulfix | unknown | timeout | 30029 |
+| XOR@gates | safe | safe | 8 |
 
-```bash
-cd benchmarks/circom
-./compile.sh build circomlib-cff5ab6
+**Tally**
+- ground truth: 50 safe / 8 unsafe / 10 unknown
+- baseline verdict: 50 safe / 7 unsafe / 11 timeout
 
-picus check --r1cs benchmarks/circom/circomlib-cff5ab6/AND@gates.r1cs
-```
-
-> Use `--O0` (no optimization) to preserve the original constraint structure.
-
-## Expected Results (circomlib-cff5ab6)
-
-Circuits that Picus identifies as **unsafe** (under-constrained outputs):
-
-| Circuit | Status |
-|---------|--------|
-| Bits2Point | unsafe |
-| Point2Bits | unsafe |
-| Edwards2Montgomery | unsafe |
-| Montgomery2Edwards | unsafe |
-| MontgomeryAdd | unsafe |
-| MontgomeryDouble | unsafe |
-| Decoder | unsafe |
-
-All 112 solvable benchmarks from the PLDI 2023 paper (cvc5-bcp column, < 100s) have been verified to produce identical results with Picus v1.7.0.
-
-> **Note**: cvc5 requires the GPL build (with CoCoA) for QF_FF finite field support. The non-GPL builds will report "not configured with --cocoa".
+The single row where ground truth and the baseline verdict disagree is
+`Pedersen@pedersen` (truly `unsafe`, baseline times out). The 10
+`unknown` rows are the fixtures the baseline never resolves, so their
+true verdict is not yet established here.

@@ -7,9 +7,22 @@ license.workspace = true
 repository.workspace = true
 edition.workspace = true
 
+[features]
+# Default = `native` only (pure-Rust in-tree FF solver, no external
+# build chains). cvc5 and z3 are opt-in — enable with
+# `--features cvc5` / `--features z3`.
+default = ["native"]
+native = ["picus-smt/native", "picus-analysis/native"]
+cvc5 = ["picus-smt/cvc5", "picus-analysis/cvc5"]
+z3 = ["picus-smt/z3", "picus-analysis/z3"]
+
 [dependencies]
 picus-r1cs = { path = "../picus-r1cs" }
-picus-smt = { path = "../picus-smt" }
-picus-analysis = { path = "../picus-analysis" }
+picus-smt = { path = "../picus-smt", default-features = false }
+picus-analysis = { path = "../picus-analysis", default-features = false }
+picus-solver = { path = "../picus-solver" }
+picus-core = { path = "../picus-core" }
 num-bigint = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }

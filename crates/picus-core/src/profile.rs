@@ -1,0 +1,497 @@
+//! Lightweight, zero-external-deps phase profiler.
+//!
+//! Enabled by setting the `PICUS_PROFILE` environment variable to any value.
+//! When disabled, all `ScopedTimer` operations are reduced to a single atomic
+//! load (the global enabled flag), so leaving the calls in production code
+//! has negligible cost.
+//!
+//! Usage:
+//! ```ignore
+//! use crate::profile::ScopedTimer;
+//! fn hot_function() {
+//!     let _t = ScopedTimer::new("hot_function");
+//!     // work...
+//! }
+//! ```
+//!
+//! Call [`dump_to_stderr`] (or [`take`]) before process exit to print the
+//! accumulated table.  `picus-cli` calls `dump_to_stderr` automatically when
+//! `PICUS_PROFILE` is set.
+//!
+//! The profiler is intentionally *coarse* — it accumulates wall-clock time per
+//! named site, with reentrancy support (nested calls to the same site are
+//! credited to the inner timer; outer-only time is `outer - inner`).  Use it
+//! to find which phases dominate, then drop in finer-grained timers as needed.
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+/// Monotonic id for active timers.
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+// Global counters for the split-GB driver and DFS, gated by
+// `PICUS_GB_STATS=1`. Independent of the `ScopedTimer` table. All counters
+// are `AtomicU64` so updates are wait-free and thread-safe.
+
+#[derive(Default)]
+pub struct SplitDfsCounters {
+    pub branches_tried: AtomicU64,
+    pub quick_eval_unsat_hits: AtomicU64,
+    pub linear_quick_unsat_hits: AtomicU64,
+    pub nogood_subsumption_hits: AtomicU64,
+    pub branches_to_full_extend: AtomicU64,
+    pub conflicts_returned: AtomicU64,
+    pub max_dfs_depth: AtomicU64,
+    pub time_in_basis_clone_ns: AtomicU64,
+    pub time_in_split_gb_extend_ns: AtomicU64,
+    pub time_in_quick_eval_unsat_ns: AtomicU64,
+    pub time_in_linear_quick_unsat_ns: AtomicU64,
+    pub points_returned: AtomicU64,
+    pub split_zero_extend_calls: AtomicU64,
+}
+
+#[derive(Default)]
+pub struct SplitGbCounters {
+    pub split_gb_extend_calls: AtomicU64,
+    pub fixpoint_iters_total: AtomicU64,
+    pub fixpoint_iters_per_call_max: AtomicU64,
+    pub propagate_candidates_total: AtomicU64,
+    pub propagate_admit_passes: AtomicU64,
+    pub propagate_contains_calls: AtomicU64,
+    pub propagate_contains_true: AtomicU64,
+    pub propagate_contains_false: AtomicU64,
+    pub propagate_memo_hits: AtomicU64,
+    pub new_polys_added_total: AtomicU64,
+    pub new_polys_per_iter_max: AtomicU64,
+    pub bit_eq_emitted_total: AtomicU64,
+    pub time_in_extend_with_cancel_ns: AtomicU64,
+    pub time_in_contains_ns: AtomicU64,
+    pub time_in_bit_eq_ns: AtomicU64,
+    pub basis_size_max: AtomicU64,
+    pub basis_size_total_terms_max: AtomicU64,
+    pub extend_with_cancel_calls: AtomicU64,
+    pub extend_no_op_skips: AtomicU64,
+    /// Fine-grained reducer timers.
+    pub reduce_calls: AtomicU64,
+    pub reduce_lt_pops: AtomicU64,
+    pub reduce_div_lookups: AtomicU64,
+    pub reduce_sub_scaled_calls: AtomicU64,
+    pub time_div_lt_setup_ns: AtomicU64,
+    pub time_pop_lt_ns: AtomicU64,
+    pub time_div_lookup_ns: AtomicU64,
+    pub time_sub_scaled_ns: AtomicU64,
+    pub time_sub_scaled_setup_ns: AtomicU64,
+    pub time_sub_scaled_addpoly_ns: AtomicU64,
+    pub time_finalize_ns: AtomicU64,
+    pub merge_owned_calls: AtomicU64,
+    pub merge_owned_terms_total: AtomicU64,
+}
+
+pub static SPLIT_DFS: SplitDfsCounters = SplitDfsCounters::new_const();
+pub static SPLIT_GB: SplitGbCounters = SplitGbCounters::new_const();
+
+/// Counters for the native-ff SMT backend, surfaced via
+/// `PICUS_GB_STATS=1`. Reports per-call encoding vs. solving time and
+/// constraint-side digest stability across consecutive calls.
+#[derive(Default)]
+pub struct NativeFfBackendCounters {
+    pub solve_calls: AtomicU64,
+    pub encode_time_ns: AtomicU64,
+    pub solve_inner_time_ns: AtomicU64,
+    pub encoded_polys_total: AtomicU64,
+    pub encoded_polys_max: AtomicU64,
+    pub encoded_vars_max: AtomicU64,
+    /// Number of distinct constraint-side digests observed.
+    pub distinct_cs_digests: AtomicU64,
+    /// Number of solve calls whose constraint-side digest equaled the
+    /// immediately-previous call's.
+    pub repeated_cs_digest_streak: AtomicU64,
+    /// Cache hit / rebuild stats.
+    pub cache_hits: AtomicU64,
+    pub cache_rebuild_time_ns: AtomicU64,
+    pub cache_query_diff_time_ns: AtomicU64,
+    /// Number of solve calls that resumed an in-progress GB build saved
+    /// from a prior cancelled call.
+    pub cache_partial_resumes: AtomicU64,
+    /// Number of partial builds that completed (`partial_build`
+    /// → `cached_base`).
+    pub cache_partial_completions: AtomicU64,
+}
+
+pub static NATIVE_FF: NativeFfBackendCounters = NativeFfBackendCounters::new_const();
+
+impl NativeFfBackendCounters {
+    pub const fn new_const() -> Self {
+        Self {
+            solve_calls: AtomicU64::new(0),
+            encode_time_ns: AtomicU64::new(0),
+            solve_inner_time_ns: AtomicU64::new(0),
+            encoded_polys_total: AtomicU64::new(0),
+            encoded_polys_max: AtomicU64::new(0),
+            encoded_vars_max: AtomicU64::new(0),
+            distinct_cs_digests: AtomicU64::new(0),
+            repeated_cs_digest_streak: AtomicU64::new(0),
+            cache_hits: AtomicU64::new(0),
+            cache_rebuild_time_ns: AtomicU64::new(0),
+            cache_query_diff_time_ns: AtomicU64::new(0),
+            cache_partial_resumes: AtomicU64::new(0),
+            cache_partial_completions: AtomicU64::new(0),
+        }
+    }
+    pub fn observe_polys_max(&self, v: u64) { observe_max(&self.encoded_polys_max, v); }
+    pub fn observe_vars_max(&self, v: u64) { observe_max(&self.encoded_vars_max, v); }
+}
+
+impl SplitDfsCounters {
+    pub const fn new_const() -> Self {
+        Self {
+            branches_tried: AtomicU64::new(0),
+            quick_eval_unsat_hits: AtomicU64::new(0),
+            linear_quick_unsat_hits: AtomicU64::new(0),
+            nogood_subsumption_hits: AtomicU64::new(0),
+            branches_to_full_extend: AtomicU64::new(0),
+            conflicts_returned: AtomicU64::new(0),
+            max_dfs_depth: AtomicU64::new(0),
+            time_in_basis_clone_ns: AtomicU64::new(0),
+            time_in_split_gb_extend_ns: AtomicU64::new(0),
+            time_in_quick_eval_unsat_ns: AtomicU64::new(0),
+            time_in_linear_quick_unsat_ns: AtomicU64::new(0),
+            points_returned: AtomicU64::new(0),
+            split_zero_extend_calls: AtomicU64::new(0),
+        }
+    }
+    pub fn observe_max_depth(&self, d: u64) {
+        let mut cur = self.max_dfs_depth.load(Ordering::Relaxed);
+        while d > cur {
+            match self.max_dfs_depth.compare_exchange_weak(cur, d, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(now) => cur = now,
+            }
+        }
+    }
+}
+
+impl SplitGbCounters {
+    pub const fn new_const() -> Self {
+        Self {
+            split_gb_extend_calls: AtomicU64::new(0),
+            fixpoint_iters_total: AtomicU64::new(0),
+            fixpoint_iters_per_call_max: AtomicU64::new(0),
+            propagate_candidates_total: AtomicU64::new(0),
+            propagate_admit_passes: AtomicU64::new(0),
+            propagate_contains_calls: AtomicU64::new(0),
+            propagate_contains_true: AtomicU64::new(0),
+            propagate_contains_false: AtomicU64::new(0),
+            propagate_memo_hits: AtomicU64::new(0),
+            new_polys_added_total: AtomicU64::new(0),
+            new_polys_per_iter_max: AtomicU64::new(0),
+            bit_eq_emitted_total: AtomicU64::new(0),
+            time_in_extend_with_cancel_ns: AtomicU64::new(0),
+            time_in_contains_ns: AtomicU64::new(0),
+            time_in_bit_eq_ns: AtomicU64::new(0),
+            basis_size_max: AtomicU64::new(0),
+            basis_size_total_terms_max: AtomicU64::new(0),
+            extend_with_cancel_calls: AtomicU64::new(0),
+            extend_no_op_skips: AtomicU64::new(0),
+            reduce_calls: AtomicU64::new(0),
+            reduce_lt_pops: AtomicU64::new(0),
+            reduce_div_lookups: AtomicU64::new(0),
+            reduce_sub_scaled_calls: AtomicU64::new(0),
+            time_div_lt_setup_ns: AtomicU64::new(0),
+            time_pop_lt_ns: AtomicU64::new(0),
+            time_div_lookup_ns: AtomicU64::new(0),
+            time_sub_scaled_ns: AtomicU64::new(0),
+            time_sub_scaled_setup_ns: AtomicU64::new(0),
+            time_sub_scaled_addpoly_ns: AtomicU64::new(0),
+            time_finalize_ns: AtomicU64::new(0),
+            merge_owned_calls: AtomicU64::new(0),
+            merge_owned_terms_total: AtomicU64::new(0),
+        }
+    }
+    pub fn observe_iters_max(&self, v: u64) { observe_max(&self.fixpoint_iters_per_call_max, v); }
+    pub fn observe_polys_per_iter_max(&self, v: u64) { observe_max(&self.new_polys_per_iter_max, v); }
+    pub fn observe_basis_size_max(&self, v: u64) { observe_max(&self.basis_size_max, v); }
+    pub fn observe_basis_terms_max(&self, v: u64) { observe_max(&self.basis_size_total_terms_max, v); }
+}
+
+fn observe_max(slot: &AtomicU64, v: u64) {
+    let mut cur = slot.load(Ordering::Relaxed);
+    while v > cur {
+        match slot.compare_exchange_weak(cur, v, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(now) => cur = now,
+        }
+    }
+}
+
+#[inline]
+pub fn gb_stats_enabled() -> bool {
+    crate::config::with(|c| c.gb_stats_enabled)
+}
+
+#[inline]
+pub fn gb_trace_enabled() -> bool {
+    crate::config::with(|c| c.gb_trace_enabled)
+}
+
+/// Print SplitDfs/SplitGb counters to stderr. Called from the top-level
+/// `solve_encoded` (or `picus-cli`) at termination when `PICUS_GB_STATS=1`.
+pub fn dump_split_stats_to_stderr() {
+    // No-op when nothing has been recorded — i.e. when
+    // `gb_stats_enabled` was false (or the relevant solver paths
+    // were never exercised) for the entire run.
+    let nothing_recorded = SPLIT_DFS.branches_tried.load(Ordering::Relaxed) == 0
+        && SPLIT_GB.split_gb_extend_calls.load(Ordering::Relaxed) == 0
+        && NATIVE_FF.solve_calls.load(Ordering::Relaxed) == 0;
+    if nothing_recorded {
+        return;
+    }
+    let d = &SPLIT_DFS;
+    let g = &SPLIT_GB;
+    let load = |a: &AtomicU64| a.load(Ordering::Relaxed);
+    eprintln!("\n=== picus split-GB driver stats ===");
+    eprintln!("[split-dfs] split_zero_extend_calls={} branches_tried={} quick_eval_unsat={} lin_quick_unsat={} nogood_hits={} branches_to_full_extend={} conflicts={} points={} max_depth={}",
+        load(&d.split_zero_extend_calls),
+        load(&d.branches_tried),
+        load(&d.quick_eval_unsat_hits),
+        load(&d.linear_quick_unsat_hits),
+        load(&d.nogood_subsumption_hits),
+        load(&d.branches_to_full_extend),
+        load(&d.conflicts_returned),
+        load(&d.points_returned),
+        load(&d.max_dfs_depth),
+    );
+    eprintln!("[split-dfs-time-ms] basis_clone={:.2} split_gb_extend={:.2} quick_eval_unsat={:.2} lin_quick_unsat={:.2}",
+        load(&d.time_in_basis_clone_ns) as f64 / 1e6,
+        load(&d.time_in_split_gb_extend_ns) as f64 / 1e6,
+        load(&d.time_in_quick_eval_unsat_ns) as f64 / 1e6,
+        load(&d.time_in_linear_quick_unsat_ns) as f64 / 1e6,
+    );
+    eprintln!("[split-gb] calls={} fixpoint_iters_total={} fixpoint_iters_per_call_max={} new_polys_added_total={} new_polys_per_iter_max={} bit_eqs_total={} basis_size_max={} basis_terms_max={}",
+        load(&g.split_gb_extend_calls),
+        load(&g.fixpoint_iters_total),
+        load(&g.fixpoint_iters_per_call_max),
+        load(&g.new_polys_added_total),
+        load(&g.new_polys_per_iter_max),
+        load(&g.bit_eq_emitted_total),
+        load(&g.basis_size_max),
+        load(&g.basis_size_total_terms_max),
+    );
+    let calls = load(&g.propagate_contains_calls);
+    let trues = load(&g.propagate_contains_true);
+    let falses = load(&g.propagate_contains_false);
+    let true_pct = if calls > 0 { (trues as f64 * 100.0) / calls as f64 } else { 0.0 };
+    let memo_hits = load(&g.propagate_memo_hits);
+    let admit = load(&g.propagate_admit_passes);
+    let memo_hit_pct = if admit > 0 { (memo_hits as f64 * 100.0) / admit as f64 } else { 0.0 };
+    eprintln!("[split-gb-propagate] candidates={} admit_passes={} memo_hits={} memo_hit_rate={:.1}% contains_calls={} contains_true={} contains_false={} contains_true_rate={:.1}%",
+        load(&g.propagate_candidates_total),
+        admit,
+        memo_hits,
+        memo_hit_pct,
+        calls,
+        trues,
+        falses,
+        true_pct,
+    );
+    eprintln!("[split-gb-time-ms] extend_with_cancel={:.2} contains={:.2} bit_eq={:.2}",
+        load(&g.time_in_extend_with_cancel_ns) as f64 / 1e6,
+        load(&g.time_in_contains_ns) as f64 / 1e6,
+        load(&g.time_in_bit_eq_ns) as f64 / 1e6,
+    );
+    eprintln!("[split-gb-extend] calls={} no_op_skips={}",
+        load(&g.extend_with_cancel_calls),
+        load(&g.extend_no_op_skips),
+    );
+    let r_calls = load(&g.reduce_calls);
+    if r_calls > 0 {
+        let avg_pops = load(&g.reduce_lt_pops) as f64 / r_calls as f64;
+        let avg_lookups = load(&g.reduce_div_lookups) as f64 / r_calls as f64;
+        eprintln!(
+            "[reducer] calls={} avg_lt_pops={:.1} avg_div_lookups={:.1} sub_scaled_calls={}",
+            r_calls, avg_pops, avg_lookups,
+            load(&g.reduce_sub_scaled_calls),
+        );
+        eprintln!(
+            "[reducer-time-ms] div_lt_setup={:.2} pop_lt={:.2} div_lookup={:.2} sub_scaled={:.2} (setup={:.2} addpoly={:.2}) finalize={:.2}",
+            load(&g.time_div_lt_setup_ns) as f64 / 1e6,
+            load(&g.time_pop_lt_ns) as f64 / 1e6,
+            load(&g.time_div_lookup_ns) as f64 / 1e6,
+            load(&g.time_sub_scaled_ns) as f64 / 1e6,
+            load(&g.time_sub_scaled_setup_ns) as f64 / 1e6,
+            load(&g.time_sub_scaled_addpoly_ns) as f64 / 1e6,
+            load(&g.time_finalize_ns) as f64 / 1e6,
+        );
+    }
+    let mo_calls = load(&g.merge_owned_calls);
+    if mo_calls > 0 {
+        eprintln!(
+            "[merge-owned] calls={} terms_total={} avg_terms={:.1}",
+            mo_calls,
+            load(&g.merge_owned_terms_total),
+            load(&g.merge_owned_terms_total) as f64 / mo_calls as f64,
+        );
+    }
+    let nf = &NATIVE_FF;
+    let nf_calls = load(&nf.solve_calls);
+    if nf_calls > 0 {
+        let enc_ms = load(&nf.encode_time_ns) as f64 / 1e6;
+        let solve_ms = load(&nf.solve_inner_time_ns) as f64 / 1e6;
+        let total_ms = enc_ms + solve_ms;
+        let enc_pct = if total_ms > 0.0 { enc_ms / total_ms * 100.0 } else { 0.0 };
+        eprintln!(
+            "[native-ff] solve_calls={} encoded_polys_max={} encoded_vars_max={} polys_total={} distinct_cs_digests={} repeated_streak={}",
+            nf_calls,
+            load(&nf.encoded_polys_max),
+            load(&nf.encoded_vars_max),
+            load(&nf.encoded_polys_total),
+            load(&nf.distinct_cs_digests),
+            load(&nf.repeated_cs_digest_streak),
+        );
+        eprintln!(
+            "[native-ff-time-ms] encode={:.2} solve_inner={:.2} total={:.2} encode_pct={:.1}%",
+            enc_ms, solve_ms, total_ms, enc_pct,
+        );
+        let hits = load(&nf.cache_hits);
+        let rebuild_ms = load(&nf.cache_rebuild_time_ns) as f64 / 1e6;
+        let diff_ms = load(&nf.cache_query_diff_time_ns) as f64 / 1e6;
+        let resumes = load(&nf.cache_partial_resumes);
+        let completions = load(&nf.cache_partial_completions);
+        if hits > 0 || rebuild_ms > 0.0 || resumes > 0 {
+            let total = hits + load(&nf.distinct_cs_digests);
+            let hit_pct = if total > 0 { hits as f64 * 100.0 / total as f64 } else { 0.0 };
+            eprintln!(
+                "[native-ff-cache] hits={} rebuilds={} hit_rate={:.1}% rebuild_ms={:.2} query_diff_ms={:.2} partial_resumes={} partial_completions={}",
+                hits,
+                load(&nf.distinct_cs_digests),
+                hit_pct, rebuild_ms, diff_ms, resumes, completions,
+            );
+        }
+    }
+    eprintln!("=== end split-GB stats ===\n");
+}
+
+
+/// Per-site stats: total time, call count.
+#[derive(Default, Clone, Copy)]
+struct SiteStats {
+    total: Duration,
+    count: u64,
+}
+
+fn table() -> &'static Mutex<HashMap<&'static str, SiteStats>> {
+    static TABLE: OnceLock<Mutex<HashMap<&'static str, SiteStats>>> = OnceLock::new();
+    TABLE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// In-flight timers (id -> (label, start_instant)).  Used so a SIGTERM dump
+/// can include time spent in calls that haven't returned yet.
+fn active() -> &'static Mutex<HashMap<u64, (&'static str, Instant)>> {
+    static ACTIVE: OnceLock<Mutex<HashMap<u64, (&'static str, Instant)>>> = OnceLock::new();
+    ACTIVE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Returns true when profiling is active. Reads
+/// [`crate::config::RuntimeConfig::profile_enabled`] on each call so
+/// callers (the picus facade, library users) can flip the knob at
+/// runtime via [`crate::config::ConfigGuard`].
+#[inline]
+pub fn is_enabled() -> bool {
+    crate::config::with(|c| c.profile_enabled)
+}
+
+/// RAII timer for a named code site.  Cheap when profiling is disabled.
+pub struct ScopedTimer {
+    label: &'static str,
+    start: Option<Instant>,
+    id: u64,
+}
+
+impl ScopedTimer {
+    #[inline]
+    pub fn new(label: &'static str) -> Self {
+        if is_enabled() {
+            let now = Instant::now();
+            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            if let Ok(mut a) = active().lock() {
+                a.insert(id, (label, now));
+            }
+            Self { label, start: Some(now), id }
+        } else {
+            Self { label, start: None, id: 0 }
+        }
+    }
+}
+
+impl Drop for ScopedTimer {
+    #[inline]
+    fn drop(&mut self) {
+        if let Some(start) = self.start {
+            let elapsed = start.elapsed();
+            if let Ok(mut t) = table().lock() {
+                let s = t.entry(self.label).or_default();
+                s.total += elapsed;
+                s.count += 1;
+            }
+            if let Ok(mut a) = active().lock() {
+                a.remove(&self.id);
+            }
+        }
+    }
+}
+
+/// Take the current accumulated profile, clearing the table.  Returns rows
+/// sorted by total time descending.
+pub fn take() -> Vec<(&'static str, Duration, u64)> {
+    let mut rows: Vec<(&'static str, Duration, u64)> = if let Ok(mut t) = table().lock() {
+        let snapshot: Vec<_> = t.iter().map(|(&k, &v)| (k, v.total, v.count)).collect();
+        t.clear();
+        snapshot
+    } else {
+        Vec::new()
+    };
+    rows.sort_by(|a, b| b.1.cmp(&a.1));
+    rows
+}
+
+/// Dump the accumulated profile to stderr in a fixed-width table.  No-op
+/// when the accumulated table and in-flight set are both empty (which is
+/// the case whenever profiling was never enabled for the current thread).
+pub fn dump_to_stderr(header: &str) {
+    // Snapshot in-flight timers so we can show where we are right now.
+    let in_flight: Vec<(&'static str, Duration)> = if let Ok(a) = active().lock() {
+        a.values().map(|(label, start)| (*label, start.elapsed())).collect()
+    } else {
+        Vec::new()
+    };
+    let rows = take();
+    if rows.is_empty() && in_flight.is_empty() {
+        return;
+    }
+    let total: Duration = rows.iter().map(|r| r.1).sum();
+    eprintln!("\n=== picus-solver profile: {} ===", header);
+    eprintln!(
+        "{:<40} {:>12} {:>10} {:>10}",
+        "site", "total_ms", "count", "share"
+    );
+    for (label, dur, count) in rows {
+        let ms = dur.as_secs_f64() * 1e3;
+        let share = if total.is_zero() {
+            0.0
+        } else {
+            dur.as_secs_f64() / total.as_secs_f64() * 100.0
+        };
+        eprintln!("{:<40} {:>12.2} {:>10} {:>9.1}%", label, ms, count, share);
+    }
+    if !in_flight.is_empty() {
+        eprintln!("--- in-flight (not yet returned) ---");
+        let mut sorted = in_flight;
+        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        for (label, dur) in sorted {
+            eprintln!("{:<40} {:>12.2} ms (running)", label, dur.as_secs_f64() * 1e3);
+        }
+    }
+    eprintln!("=== end profile ({:.2}ms completed wall) ===", total.as_secs_f64() * 1e3);
+}
