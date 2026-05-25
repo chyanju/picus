@@ -6,8 +6,8 @@
 # copied-and-edited config.
 #
 # Resolution order (later wins): built-in defaults < this file (the file
-# passed to `--config`, else `./picus.toml` when present) < `PICUS_*`
-# environment variables < CLI flags. Every key is optional — omit a key
+# passed to `--config`, else `./picus.toml` when present) < CLI flags.
+# Every key is optional — omit a key
 # to keep the value from a lower layer. Keys mirror the struct field
 # names exactly; an unknown key is an error.
 

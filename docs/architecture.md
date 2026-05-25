@@ -71,8 +71,7 @@ dependencies.
   `aboz_emit_disjunctions`, `poly_repr`), plus `ReprKind` and `GbStrategy`.
   Thread-local storage with `ConfigGuard` for RAII overrides; the
   `picus::check_r1cs` driver installs the resolved engine config per call.
-  `EngineOverlay` is the all-optional partial used for config layering;
-  `from_env()` seeds the thread-local from the `PICUS_*` environment.
+  `EngineOverlay` is the all-optional partial used for config layering.
 - **`poly.rs`** — `FfPolyRing` (multivariate polynomial ring over
   `PrimeField`), `Poly` / `Mono` aliases, `PolyRingFacade` (`terms`,
   `exponent_at`, `appearing_indeterminates`, owned-`Poly` `add` / `sub` /
@@ -278,8 +277,7 @@ R1CS-to-PolyIR lowering and solver-backend trait.
     primes; prohibitive for cryptographic primes). The
     `IncrementalSolverContext` cache is enabled by default;
     `RuntimeConfig::cache_enabled = false` (`--no-cache` on the
-    CLI, or `PICUS_NO_INCREMENTAL_CACHE=1` at process start) opts
-    out.
+    CLI, or `cache_enabled = false` in config) opts out.
   - `mod.rs` defines the `SolverBackend` trait
     (`solve(&PolyIR, timeout_ms, &CancelToken)` + `dump_smt(&PolyIR)`),
     the `SolverResult { Unsat, Sat(model), Unknown(UnknownReason) }`
@@ -358,8 +356,8 @@ Public library facade.
   the remaining toggles off). `default()` is zero-I/O.
 - **`resolve_config(path, cli_overlay)`** — layers, in increasing
   precedence, built-in defaults < config file (`--config`, else
-  `./picus.toml`) < `PICUS_*` environment < CLI overlay, into one
-  `PicusConfig`. `PicusConfig::from_file` / `from_env` are library shortcuts.
+  `./picus.toml`) < CLI overlay, into one `PicusConfig`.
+  `PicusConfig::from_file` is a library shortcut.
 - **`CheckResult`** — `Safe`, `Unsafe { witness_1, witness_2 }`,
   or `Unknown`.
 - **`dump_profile(tag)`** / **`dump_gb_stats()`** — facade for the
@@ -374,9 +372,9 @@ Thin CLI entry point:
   TOML config (else `./picus.toml` when present); the flags (`--solver`,
   `--timeout`, `--profile wall`, `--gb-by-homog`, `--poly-repr`, `--use-f4`,
   `--dnf`, `--gb-stats`, `--gb-trace`, `--no-cache`, `--no-aboz-disj`, …)
-  form the highest-precedence overlay over the file, the `PICUS_*`
-  environment, and the built-in defaults (`picus::resolve_config`). Depends
-  only on `picus`; does not import `picus_solver::*`.
+  form the highest-precedence overlay over the file and the built-in
+  defaults (`picus::resolve_config`). Depends only on `picus`; does not
+  import `picus_solver::*`.
 - **`picus info`** — Prints R1CS metadata and optionally all
   constraints in human-readable form.
 

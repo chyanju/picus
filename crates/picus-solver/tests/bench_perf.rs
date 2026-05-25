@@ -387,11 +387,11 @@ fn bench_f4_vs_per_pair_large() {
 /// substructure. Coverage for the medium-batch regime that the
 /// cyclic-N corpus does not exercise.
 ///
-/// Run with `PICUS_GB_STATS=1` to print per-run F4 batch counters:
+/// Prints per-run F4 batch counters (the test enables `gb_stats`
+/// internally via `ConfigGuard`):
 ///
 /// ```bash
-/// PICUS_USE_F4=1 PICUS_GB_STATS=1 cargo test -p picus-solver \
-///   --test bench_perf --release \
+/// cargo test -p picus-solver --test bench_perf --release \
 ///   bench_f4_non_cyclic_workloads -- --ignored --nocapture
 /// ```
 #[test]
@@ -403,6 +403,9 @@ fn bench_f4_non_cyclic_workloads() {
     use picus_core::ff::field::PrimeField;
     use std::sync::Arc;
     use std::time::Instant;
+
+    // Emit the per-run GB-engine counters for the duration of this bench.
+    let _stats = picus_core::config::ConfigGuard::with_override(|c| c.gb_stats_enabled = true);
 
     /// Katsura(n) in `n+1` variables `u_0, …, u_n` (degrevlex):
     /// ```text
@@ -556,8 +559,8 @@ fn bench_f4_non_cyclic_workloads() {
 
 /// F4 vs per-pair geobucket: run the same workloads on both engines
 /// in-process (via `IncrementalGB` with different `BuchbergerConfig`s)
-/// and report median timings. Reads the default from `PICUS_USE_F4`
-/// but overrides per-config; the env var is ignored here.
+/// and report median timings. Each arm builds its own `BuchbergerConfig`
+/// with an explicit `use_f4`, independent of any global config.
 ///
 /// Run manually:
 /// ```bash

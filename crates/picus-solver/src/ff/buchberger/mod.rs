@@ -38,7 +38,7 @@ pub struct BuchbergerConfig {
     pub abort_on_trivial: bool,
     /// Dispatch the inner loop to F4-lite (degree-batched matrix
     /// reduction) instead of one-S-pair-at-a-time geobucket reduction.
-    /// Default: enabled iff `PICUS_USE_F4=1` is set in the environment.
+    /// Default: the `use_f4` config value (compiled default `false`).
     pub use_f4: bool,
 }
 
@@ -253,7 +253,7 @@ use spair_criteria::{b_criterion_kill, gm_insert, merge_sorted_descending};
 
 /// Per-run engine counters. Filled unconditionally during a GB run;
 /// printed to stderr at the end of [`BuchbergerState::run`] only when
-/// the `PICUS_GB_STATS` environment variable is set.
+/// `gb_stats` is enabled (CLI `--gb-stats`).
 #[derive(Clone, Debug, Default)]
 pub struct GbEngineStats {
     pub pairs_generated: u64,
@@ -283,8 +283,8 @@ pub(super) struct BuchbergerState {
     pub(super) generation: u32,
     /// True once a constant (nonzero) has entered the basis.
     pub(super) trivial: bool,
-    /// GB-engine counters; written unconditionally, printed only on
-    /// `PICUS_GB_STATS=1`.
+    /// GB-engine counters; written unconditionally, printed only when
+    /// `gb_stats` is enabled.
     stats: GbEngineStats,
     /// Set when every initial generator shares the same total degree.
     /// Enables periodic in-loop tail-reduction. Set by

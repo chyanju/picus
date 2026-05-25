@@ -36,9 +36,9 @@ enum Commands {
         r1cs: PathBuf,
 
         /// Config file (TOML). Layered under the flags below, over the
-        /// `PICUS_*` environment, over the built-in defaults. If omitted,
-        /// `./picus.toml` is used when present. See `picus.default.toml`
-        /// for the full schema and defaults.
+        /// built-in defaults. If omitted, `./picus.toml` is used when
+        /// present. See `picus.default.toml` for the full schema and
+        /// defaults.
         #[arg(long)]
         config: Option<PathBuf>,
 
@@ -186,9 +186,9 @@ fn main() {
             // CLI overlay — the highest-precedence config layer. Only the
             // flags the user actually passed become `Some`; everything
             // else stays `None` and falls through to the config file,
-            // environment, then built-in defaults (see `resolve_config`).
-            // On/off bool flags can only turn a knob *on* (or, for the
-            // `no_*` flags, off), mirroring the `PICUS_*` env vars.
+            // then built-in defaults (see `resolve_config`). On/off bool
+            // flags can only turn a knob *on* (or, for the `no_*` flags,
+            // off).
             let overlay = PicusConfigOverlay {
                 analysis: AnalysisOverlay {
                     solver,

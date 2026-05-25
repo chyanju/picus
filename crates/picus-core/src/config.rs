@@ -8,9 +8,9 @@
 //! [`set`] (one-shot) or [`ConfigGuard`] (RAII scope); per-thread
 //! storage keeps concurrent solves on different threads independent.
 //!
-//! [`RuntimeConfig::from_env`] seeds the defaults from the
-//! `PICUS_*` environment variables so existing benchmark scripts
-//! and CLI invocations keep their behaviour without code changes.
+//! The thread-local seed is the compiled [`RuntimeConfig::default`];
+//! file and CLI layers are merged on top by the `picus` facade
+//! (`resolve_config`) via [`RuntimeConfig::apply_overlay`].
 
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -78,13 +78,15 @@ pub struct RuntimeConfig {
     /// proved non-zero, feeding the disjunction-aware solver path. On by
     /// default: each clause follows from an `s * o = 0` equality already
     /// in the IR, so it is sound and verdict-neutral; this keeps the
-    /// pipeline's disjunction path live. Set `PICUS_NO_ABOZ_DISJ` to
-    /// disable (e.g. for an A/B perf comparison).
+    /// pipeline's disjunction path live. Set `aboz_emit_disjunctions =
+    /// false` in config (CLI `--no-aboz-disj`) to disable (e.g. for an
+    /// A/B perf comparison).
     pub aboz_emit_disjunctions: bool,
     /// Representation of the IR poly type ([`ReprKind`]). Defaults to
     /// `Sparse` so lowering + the cvc5 path scale on wide rings (the dense
-    /// form OOMs there); set `PICUS_POLY_REPR=dense` to force the dense
-    /// representation (the differential-test oracle, faster on small rings).
+    /// form OOMs there); set `poly_repr = "dense"` in config (CLI
+    /// `--poly-repr dense`) to force the dense representation (the
+    /// differential-test oracle, faster on small rings).
     pub poly_repr: ReprKind,
 }
 
@@ -107,16 +109,6 @@ impl Default for RuntimeConfig {
 }
 
 impl RuntimeConfig {
-    /// Seed the compiled defaults, then apply any `PICUS_*` environment
-    /// overrides. Used to initialise the thread-local config the first
-    /// time a thread asks for it, so existing benchmark scripts and CLI
-    /// invocations keep their behaviour.
-    pub fn from_env() -> Self {
-        let mut c = Self::default();
-        c.apply_overlay(&EngineOverlay::from_env());
-        c
-    }
-
     /// Merge the `Some` fields of `o` onto `self`; `None` fields are
     /// left untouched. This is the overlay/merge step that layers a
     /// config file, environment, or CLI flags onto a base config.
@@ -160,55 +152,8 @@ pub struct EngineOverlay {
     pub poly_repr: Option<ReprKind>,
 }
 
-impl EngineOverlay {
-    /// Read the `PICUS_*` environment variables into an overlay. Absent
-    /// variables stay `None` so they don't clobber lower config layers.
-    pub fn from_env() -> Self {
-        let mut o = Self::default();
-        if std::env::var_os("PICUS_USE_F4").is_some() {
-            o.use_f4 = Some(true);
-        }
-        if let Ok(v) = std::env::var("PICUS_BOOLEAN") {
-            o.dnf_enabled = Some(v == "dnf");
-        }
-        if let Ok(v) = std::env::var("PICUS_DNF_CAP") {
-            if let Ok(n) = v.parse::<u64>() {
-                o.dnf_cap = Some(n);
-            }
-        }
-        if let Ok(v) = std::env::var("PICUS_CDCLT_ITER_CAP") {
-            if let Ok(n) = v.parse::<u64>() {
-                o.cdclt_iter_cap = Some(n);
-            }
-        }
-        if std::env::var_os("PICUS_GB_STATS").is_some() {
-            o.gb_stats_enabled = Some(true);
-        }
-        if std::env::var_os("PICUS_GB_TRACE").is_some() {
-            o.gb_trace_enabled = Some(true);
-        }
-        if std::env::var_os("PICUS_PROFILE").is_some() {
-            o.profile_enabled = Some(true);
-        }
-        if std::env::var_os("PICUS_NO_INCREMENTAL_CACHE").is_some() {
-            o.cache_enabled = Some(false);
-        }
-        if std::env::var_os("PICUS_NO_ABOZ_DISJ").is_some() {
-            o.aboz_emit_disjunctions = Some(false);
-        }
-        if let Ok(v) = std::env::var("PICUS_POLY_REPR") {
-            match v.as_str() {
-                "dense" => o.poly_repr = Some(ReprKind::Dense),
-                "sparse" => o.poly_repr = Some(ReprKind::Sparse),
-                _ => {}
-            }
-        }
-        o
-    }
-}
-
 thread_local! {
-    static THREAD_CONFIG: RefCell<RuntimeConfig> = RefCell::new(RuntimeConfig::from_env());
+    static THREAD_CONFIG: RefCell<RuntimeConfig> = RefCell::new(RuntimeConfig::default());
 }
 
 /// Read a snapshot of the current thread's config.

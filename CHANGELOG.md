@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.1] - 2026-05-25
+- Removed the `PICUS_*` runtime environment overrides (`PICUS_USE_F4`, `PICUS_POLY_REPR`, `PICUS_BOOLEAN`, `PICUS_DNF_CAP`, `PICUS_CDCLT_ITER_CAP`, `PICUS_GB_STATS`, `PICUS_GB_TRACE`, `PICUS_PROFILE`, `PICUS_NO_INCREMENTAL_CACHE`, `PICUS_NO_ABOZ_DISJ`). Every engine knob is now set through the config file (`--config` / `./picus.toml`) or a CLI flag only; config resolves as built-in defaults < file < CLI. Build-time locators (`CVC5_LIB_DIR`, …) are unaffected.
+
 ## [1.8.0] - 2026-05-25
 - Default solver is now `native` (was `cvc5`), matching the default `native`-only build — a bare `picus check` / `Config::default()` now works without opt-in Cargo features. `cvc5` / `z3` need their features and an explicit `--solver`.
 - Workspace `default-members` excludes the `cvc5-ff` / `cvc5-ff-sys` / `z3` crates: the default commands (`cargo build`, `cargo test`, `cargo install --path crates/picus-cli`) compile only the native solver. cvc5 / z3 build solely on opt-in (`--features cvc5` / `z3`, or an explicit `cargo build --workspace`).

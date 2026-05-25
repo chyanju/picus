@@ -117,8 +117,8 @@ pub enum PicusError {
 ///
 /// `PicusConfig::default()` is the compiled-in default (zero I/O — what
 /// a library import gets with no config). The CLI builds its config by
-/// layering, in increasing precedence: defaults → config file →
-/// `PICUS_*` environment → CLI flags (see [`resolve_config`]).
+/// layering, in increasing precedence: defaults → config file → CLI
+/// flags (see [`resolve_config`]).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PicusConfig {
     /// Analysis-layer configuration.
@@ -149,15 +149,6 @@ pub struct PicusConfigOverlay {
 }
 
 impl PicusConfig {
-    /// Defaults plus `PICUS_*` environment overrides (engine knobs).
-    /// Use this instead of [`PicusConfig::default`] when a library
-    /// caller wants the environment honoured the way the CLI does.
-    pub fn from_env() -> Self {
-        let mut c = Self::default();
-        c.engine.apply_overlay(&EngineOverlay::from_env());
-        c
-    }
-
     /// Merge an overlay (one config layer) onto this config; only the
     /// overlay's `Some` fields override. A bad enum string in the
     /// analysis layer surfaces as [`PicusError::Config`].
@@ -187,9 +178,8 @@ impl PicusConfig {
 }
 
 /// Build the effective configuration by layering, in increasing
-/// precedence: compiled defaults → config file → `PICUS_*` environment
-/// → CLI overlay. Each layer overrides only the fields it sets; later
-/// layers win.
+/// precedence: compiled defaults → config file → CLI overlay. Each
+/// layer overrides only the fields it sets; later layers win.
 ///
 /// File selection: the explicit `config_path` (`--config`) if given;
 /// otherwise `./picus.toml` in the current directory when it exists;
@@ -208,10 +198,7 @@ pub fn resolve_config(
         cfg.apply_overlay(&overlay)?;
     }
 
-    // Layer 2: PICUS_* environment (engine knobs only).
-    cfg.engine.apply_overlay(&EngineOverlay::from_env());
-
-    // Layer 3: CLI flags (highest precedence).
+    // Layer 2: CLI flags (highest precedence).
     cfg.apply_overlay(cli)?;
 
     Ok(cfg)
