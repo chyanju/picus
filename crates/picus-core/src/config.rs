@@ -100,10 +100,11 @@ pub struct RuntimeConfig {
     /// Track inter-reduction reducer dependencies in the single-GB UNSAT-core
     /// tracer (`GbTracer`), so a trivial core reflects the basis elements that
     /// actually reduced the contradiction — matching cvc5/CoCoA's precise
-    /// cores. Off by default: it makes `tail_reduce_active` use a counted
-    /// reduction (a small per-reduce cost) and only affects the non-default
-    /// SingleGb path, whose current cores are sound where used. Turn on for
-    /// tight cores.
+    /// cores. On by default: it only affects the non-default SingleGb path
+    /// (the default split-GB path uses a separate tracer with `NoObserver`,
+    /// so there is no cost on the PLDI/main workload), and gives precise
+    /// cores there. Set false to drop the small per-reduce counting cost on
+    /// the SingleGb path.
     pub track_inter_reduce_deps: bool,
 }
 
@@ -122,7 +123,7 @@ impl Default for RuntimeConfig {
             aboz_emit_disjunctions: true,
             poly_repr: ReprKind::Sparse,
             linear_elim: false,
-            track_inter_reduce_deps: false,
+            track_inter_reduce_deps: true,
         }
     }
 }
