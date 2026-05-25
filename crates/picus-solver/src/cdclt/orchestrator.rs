@@ -265,7 +265,7 @@ fn sync_theory_after_backtrack(
 mod tests {
     use super::*;
     use crate::boolean::{Formula, Literal};
-    use crate::encoder::PolyTerm;
+    use crate::frontend::encoder::PolyTerm;
     use num_bigint::BigUint;
 
     /// `coeff * <var idx> = rhs_const`.

@@ -2,7 +2,7 @@
 //!
 //! An UNSAT core is a list of input fact indices that are jointly
 //! unsatisfiable. The single-GB solver uses Buchberger observer hooks
-//! (via [`crate::tracer::GbTracer`]) to track which input polynomials
+//! (via [`crate::gb::tracer::GbTracer`]) to track which input polynomials
 //! contribute to the UNSAT proof. The split-GB solver returns trivial
 //! (all-input) cores.
 
@@ -10,11 +10,11 @@ use std::collections::{HashMap, HashSet};
 
 use num_bigint::BigUint;
 
-use crate::bitprop::BitProp;
-use crate::encoder::EncodedSystem;
+use crate::frontend::bitprop::BitProp;
+use crate::frontend::encoder::EncodedSystem;
 use crate::gb::{compute_gb_with_timeout_traced, GbResultTraced};
-use crate::model;
-use crate::parse;
+use crate::gb::model;
+use crate::frontend::parse;
 use crate::poly::{FfPolyRing, Poly};
 use crate::split_gb::{admit, split_find_zero_cancel};
 use crate::timeout::CancelToken;

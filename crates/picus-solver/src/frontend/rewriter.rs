@@ -20,7 +20,7 @@
 use num_bigint::BigUint;
 use num_traits::Zero;
 
-use crate::encoder::{ConstraintSystem, PolyTerm};
+use crate::frontend::encoder::{ConstraintSystem, PolyTerm};
 
 /// Normalize an `PolyTerm` list in place. Each term's
 /// `vars: Vec<(VarIdx, u16)>` is sorted by index and entries with the

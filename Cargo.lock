@@ -631,6 +631,7 @@ version = "1.7.34"
 dependencies = [
  "num-bigint",
  "picus-analysis",
+ "picus-core",
  "picus-r1cs",
  "picus-smt",
  "picus-solver",
@@ -646,9 +647,9 @@ dependencies = [
  "num-bigint",
  "num-integer",
  "num-traits",
+ "picus-core",
  "picus-r1cs",
  "picus-smt",
- "picus-solver",
 ]
 
 [[package]]
@@ -664,6 +665,17 @@ dependencies = [
  "serde",
  "serde_json",
  "signal-hook",
+]
+
+[[package]]
+name = "picus-core"
+version = "1.7.34"
+dependencies = [
+ "log",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "rug",
 ]
 
 [[package]]
@@ -684,6 +696,7 @@ dependencies = [
  "log",
  "num-bigint",
  "num-traits",
+ "picus-core",
  "picus-r1cs",
  "picus-solver",
  "thiserror",
@@ -701,6 +714,7 @@ dependencies = [
  "num-integer",
  "num-traits",
  "oorandom",
+ "picus-core",
  "rug",
  "thiserror",
 ]

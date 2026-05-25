@@ -1,7 +1,7 @@
 //! Homogenization helpers for GB computation.
 //!
 //! Provides the lift / homogenize / dehomogenize primitives used by
-//! [`crate::gb_homog::compute_gb_by_homog`].
+//! [`crate::gb::gb_homog::compute_gb_by_homog`].
 //!
 //! Background. Plain Buchberger on a non-homogeneous input in
 //! `P = GF(p)[x_1, ..., x_n]` suffers from sugar mis-prediction: S-pairs

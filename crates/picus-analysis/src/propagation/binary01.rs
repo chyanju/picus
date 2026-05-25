@@ -64,7 +64,7 @@ impl PropagationLemma for Binary01Lemma {
 /// index. Variables `y_i` (alt-copy) map back to wire `i`.
 fn match_x_squared_minus_x(
     ir: &PolyIR,
-    poly: &picus_solver::poly::IrPoly,
+    poly: &picus_core::poly::IrPoly,
     p_minus_1: &BigUint,
 ) -> Option<usize> {
     // Two-term degree-2 polynomial: gather terms sparse-natively as

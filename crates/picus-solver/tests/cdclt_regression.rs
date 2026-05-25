@@ -14,7 +14,7 @@ use picus_solver::boolean::solve_boolean_query_dnf;
 use picus_solver::cdclt::solve_formula;
 use picus_solver::core::SolveOutcome;
 use picus_solver::smt2::parse_boolean;
-use picus_solver::timeout::CancelToken;
+use picus_core::timeout::CancelToken;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 enum Verdict {
@@ -731,7 +731,7 @@ fn cvc5_ff_xor_unsound_sat() {
 
 // ──────────────── Programmatic shape matrix (parameter sweeps) ─────────────
 
-use picus_solver::bench_fixtures::{
+use picus_solver::frontend::bench_fixtures::{
     and_of_ors_sat as build_and_of_ors_sat, and_of_ors_unsat as build_and_of_ors_unsat,
     bit_sum as build_bit_sum, conjunction as build_conjunction, disj_bit as build_disj_bit_n,
     implies_chain_unsat as build_implies_chain_unsat, or_of_ands as build_or_of_ands,
@@ -949,11 +949,11 @@ fn cross_validate_agreement(name: &str, src: &str) {
         q.prime.clone(),
         q.var_names(),
         &q.formula,
-        &picus_solver::timeout::CancelToken::none(),
+        &picus_core::timeout::CancelToken::none(),
     );
     let dnf = picus_solver::boolean::solve_boolean_query_dnf(
         &q,
-        &picus_solver::timeout::CancelToken::none(),
+        &picus_core::timeout::CancelToken::none(),
     );
     let cv = verdict(&cdclt);
     let dv = verdict(&dnf);

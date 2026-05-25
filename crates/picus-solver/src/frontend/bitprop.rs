@@ -19,7 +19,7 @@ use num_bigint::BigUint;
 use num_traits::Zero;
 
 use crate::ff::field::FieldElem;
-use crate::ideal::Ideal;
+use crate::gb::ideal::Ideal;
 use crate::poly::{FfPolyRing, Poly};
 use crate::timeout::CancelToken;
 

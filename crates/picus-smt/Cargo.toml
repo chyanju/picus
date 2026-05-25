@@ -30,3 +30,4 @@ inventory = { workspace = true }
 z3 = { version = "0.20", features = ["vendored"], optional = true }
 cvc5-ff = { path = "../cvc5-ff", optional = true }
 picus-solver = { path = "../picus-solver" }
+picus-core = { path = "../picus-core" }

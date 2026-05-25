@@ -35,7 +35,8 @@ impl SparseMonomial {
     /// resolved by the full [`MonomialRepr::divides`] check. Exponent
     /// magnitude is not encoded — the `divides` total-degree guard and the
     /// full check cover that.
-    pub(crate) fn divmask(&self) -> super::divmask::DivMask {
+    #[inline]
+    pub fn divmask(&self) -> super::divmask::DivMask {
         let mut m: u128 = 0;
         for &(v, _) in &self.vars {
             let h = (v as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 57;
@@ -46,6 +47,7 @@ impl SparseMonomial {
 
     /// Lex: lowest variable where the exponents differ decides; higher
     /// exponent there is the larger monomial.
+    #[inline]
     fn cmp_lex(&self, other: &Self) -> Ordering {
         let (mut i, mut j) = (0usize, 0usize);
         while i < self.vars.len() && j < other.vars.len() {
@@ -77,6 +79,7 @@ impl SparseMonomial {
     /// Reverse-lex tiebreak (used by DegRevLex at equal total degree):
     /// the highest variable where the exponents differ decides; the
     /// SMALLER exponent there is the larger monomial.
+    #[inline]
     fn cmp_revlex(&self, other: &Self) -> Ordering {
         let mut i = self.vars.len();
         let mut j = other.vars.len();
@@ -111,10 +114,12 @@ impl SparseMonomial {
 }
 
 impl MonomialRepr for SparseMonomial {
+    #[inline]
     fn one(n_vars: usize) -> Self {
         SparseMonomial { n_vars, vars: Vec::new(), total_deg: 0 }
     }
 
+    #[inline]
     fn from_exponents(exps: Vec<u16>) -> Self {
         let n_vars = exps.len();
         let mut vars = Vec::new();
@@ -128,6 +133,7 @@ impl MonomialRepr for SparseMonomial {
         SparseMonomial { n_vars, vars, total_deg: total }
     }
 
+    #[inline]
     fn single_var(n_vars: usize, var: usize, exp: u16) -> Self {
         let (vars, total) = if exp > 0 {
             (vec![(var as u32, exp)], exp as u32)
@@ -137,16 +143,20 @@ impl MonomialRepr for SparseMonomial {
         SparseMonomial { n_vars, vars, total_deg: total }
     }
 
+    #[inline]
     fn n_vars(&self) -> usize {
         self.n_vars
     }
+    #[inline]
     fn total_degree(&self) -> u32 {
         self.total_deg
     }
+    #[inline]
     fn is_one(&self) -> bool {
         self.vars.is_empty()
     }
 
+    #[inline]
     fn exponent(&self, var: usize) -> u16 {
         let v = var as u32;
         match self.vars.binary_search_by_key(&v, |&(vv, _)| vv) {
@@ -155,6 +165,7 @@ impl MonomialRepr for SparseMonomial {
         }
     }
 
+    #[inline]
     fn to_dense(&self) -> Vec<u16> {
         let mut d = vec![0u16; self.n_vars];
         for &(v, e) in &self.vars {
@@ -163,12 +174,14 @@ impl MonomialRepr for SparseMonomial {
         d
     }
 
+    #[inline]
     fn for_each_nonzero(&self, mut f: impl FnMut(usize, u16)) {
         for &(v, e) in &self.vars {
             f(v as usize, e);
         }
     }
 
+    #[inline]
     fn mul(&self, other: &Self) -> Self {
         let mut out = Vec::with_capacity(self.vars.len() + other.vars.len());
         let (mut i, mut j) = (0usize, 0usize);
@@ -203,10 +216,12 @@ impl MonomialRepr for SparseMonomial {
         }
     }
 
+    #[inline]
     fn mul_assign(&mut self, other: &Self) {
         *self = MonomialRepr::mul(self, other);
     }
 
+    #[inline]
     fn divides(&self, other: &Self) -> bool {
         if self.total_deg > other.total_deg {
             return false;
@@ -223,6 +238,7 @@ impl MonomialRepr for SparseMonomial {
         true
     }
 
+    #[inline]
     fn div(&self, divisor: &Self) -> Self {
         debug_assert!(MonomialRepr::divides(divisor, self));
         let mut out = Vec::with_capacity(self.vars.len());
@@ -239,6 +255,7 @@ impl MonomialRepr for SparseMonomial {
         }
     }
 
+    #[inline]
     fn lcm(&self, other: &Self) -> Self {
         let mut out = Vec::with_capacity(self.vars.len() + other.vars.len());
         let (mut i, mut j) = (0usize, 0usize);
@@ -267,6 +284,7 @@ impl MonomialRepr for SparseMonomial {
         SparseMonomial { n_vars: self.n_vars, total_deg: total, vars: out }
     }
 
+    #[inline]
     fn gcd(&self, other: &Self) -> Self {
         let mut out = Vec::new();
         let (mut i, mut j) = (0usize, 0usize);
@@ -287,6 +305,7 @@ impl MonomialRepr for SparseMonomial {
         SparseMonomial { n_vars: self.n_vars, total_deg: total, vars: out }
     }
 
+    #[inline]
     fn is_coprime(&self, other: &Self) -> bool {
         let (mut i, mut j) = (0usize, 0usize);
         while i < self.vars.len() && j < other.vars.len() {
@@ -299,6 +318,7 @@ impl MonomialRepr for SparseMonomial {
         true
     }
 
+    #[inline]
     fn cmp_with_order(&self, other: &Self, order: MonomialOrder) -> Ordering {
         match order {
             MonomialOrder::Lex => self.cmp_lex(other),

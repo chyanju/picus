@@ -4,29 +4,27 @@ Picus is organized as a Cargo workspace. Each layer depends only on
 the one below it.
 
 ```
-┌─────────────┐
-│  picus-cli  │   CLI entry point (clap subcommands)
-└──────┬──────┘
-       │
-┌──────▼──────┐
-│    picus    │   Public library API (facade crate)
-└──────┬──────┘
-       │
-┌──────▼──────┐
-│picus-analysis│  DPVL algorithm, propagation lemma plugins, selectors
-└──────┬──────┘
-       │
-┌──────▼──────┐
-│  picus-smt  │   PolyIR + R1CS lowering + solver backends
-└──────┬──────┘
-       │
-┌──────▼──────┐
-│ picus-solver│   Pure-Rust QF_FF solver (in-tree GB engine, Poly types)
-└──────┬──────┘
-       │
-┌──────▼──────┐
-│  picus-r1cs │   Binary R1CS parser, R1csFile struct
-└─────────────┘
+          ┌─────────────┐
+          │  picus-cli  │   CLI entry point (clap subcommands)
+          └──────┬──────┘
+          ┌──────▼──────┐
+          │    picus    │   Public library API (facade crate)
+          └──────┬──────┘
+        ┌────────┴────────┐
+┌───────▼──────┐   ┌──────▼──────┐
+│picus-analysis│   │  picus-smt  │   PolyIR + R1CS lowering + solver backends
+│ DPVL, lemmas │   └──────┬──────┘
+└───────┬──────┘          │
+        │          ┌──────▼──────┐
+        │          │ picus-solver│   QF_FF GB / CDCL(T) engine
+        │          └──────┬──────┘
+        └────────┬────────┘
+          ┌───────▼──────┐   ┌─────────────┐
+          │  picus-core  │   │  picus-r1cs │   Binary R1CS parser
+          │ GF(p) algebra│   └─────────────┘
+          │ poly·config· │
+          │ cancel·prof  │
+          └──────────────┘
 
 ┌──────────────┐   ┌────────────┐
 │  cvc5-ff-sys │   │  cvc5-ff   │   Local fork of cvc5 Rust bindings.
@@ -34,9 +32,13 @@ the one below it.
 └──────────────┘   └────────────┘
 ```
 
-`picus-analysis` and `picus-smt` both depend on `picus-solver` because
-`PolyIR` is built on `picus_solver::poly::Poly` and the propagation
-lemmas pattern-match against `Poly` directly.
+`picus-core` holds the shared GF(p) algebra (`Poly` / `FfPolyRing`, field,
+dense/sparse polynomials and reduction), the runtime config, the cancellation
+token, and the profiler. `picus-solver` builds the GB / CDCL(T) engine on it;
+`picus-smt` depends on both (`PolyIR` is built on `picus_core::poly::Poly`, and
+the `native_ff` backend drives `picus-solver`). `picus-analysis` depends on
+`picus-core` (its lemmas pattern-match against `Poly`) and `picus-smt`, not on
+the solver engine.
 
 ## Crates
 
@@ -57,31 +59,44 @@ Binary-file parser. No internal Picus dependencies.
   convenience helper. `parse_var_index("x5")` / `"y3"` for callers
   that need to sort a witness map by wire index.
 
+### `picus-core`
+
+Shared substrate every other crate builds on: the GF(p) algebra plus the
+runtime config, cancellation token, and profiler. No internal Picus
+dependencies.
+
+- **`config.rs`** — `RuntimeConfig` (`gb_strategy`, `use_f4`, `dnf_cap`,
+  `dnf_enabled`, `cdclt_iter_cap`, `gb_stats_enabled`, `gb_trace_enabled`,
+  `profile_enabled`, `cache_enabled`), plus `ReprKind` and `GbStrategy`.
+  Thread-local storage with `ConfigGuard::with_override` for RAII overrides;
+  the `picus::check_r1cs` driver installs a guard per call. `from_env()` seeds
+  defaults from the `PICUS_*` environment variables.
+- **`poly.rs`** — `FfPolyRing` (multivariate polynomial ring over
+  `PrimeField`), `Poly` / `Mono` aliases, `PolyRingFacade` (`terms`,
+  `exponent_at`, `appearing_indeterminates`, owned-`Poly` `add` / `sub` /
+  `mul`). `Poly` is the runtime dense/sparse `ff::Polynomial` enum, selected by
+  `ReprKind` (`PolyRing::repr`).
+- **`ff/`** — GF(p) algebra: `field` (`PrimeField` / `FieldElem`, dispatching
+  between a `u64`/`u128` small-prime backend and a `rug::Integer` GMP backend
+  by `bits(prime)`), `monomial`, `polynomial` (`DensePoly` + the dense/sparse
+  `Polynomial` enum + `PolyRing`), `sparse_monomial` / `sparse_polynomial` /
+  `sparse_geobucket`, `repr` (the `MonomialRepr` / `PolyRepr` interface),
+  `divmask`, `geobucket`. The Gröbner-basis and root-finding engines that
+  consume these live in `picus-solver`.
+- **`timeout.rs`** — `CancelToken` (atomic cancellation threaded through the
+  engine). `CancelToken::either(a, b)` fires when either source fires.
+- **`profile.rs`** — Per-site wall-clock profiler (`ScopedTimer`,
+  `dump_to_stderr`) plus the `SPLIT_DFS` / `SPLIT_GB` / `NATIVE_FF` counters.
+
 ### `picus-solver`
 
-Pure-Rust finite-field (QF_FF) solver. The in-tree Buchberger engine
-lives in `src/ff/`. The crate also owns the `Poly` / `FfPolyRing`
-types that the rest of the workspace builds on, plus the
-`PropagationLemma`-free pieces of the solving pipeline.
-
-- **`config.rs`** — `RuntimeConfig` (`gb_strategy`, `use_f4`,
-  `dnf_cap`, `dnf_enabled`, `cdclt_iter_cap`, `gb_stats_enabled`,
-  `gb_trace_enabled`, `profile_enabled`, `cache_enabled`).
-  Thread-local storage with `ConfigGuard::with_override` for RAII
-  overrides. The `picus::check_r1cs` driver installs a guard for
-  each call, mirroring every field of `picus::Config` into the
-  active thread's `RuntimeConfig`. `from_env()` seeds defaults from
-  the `PICUS_*` environment variables for benchmark-script
-  compatibility.
-- **`poly.rs`** — `FfPolyRing` (multivariate polynomial ring over
-  `FfField`), `Poly` / `Mono` aliases, `PolyRingFacade`
-  (`terms`, `exponent_at`, `appearing_indeterminates`, owned-Poly
-  `add` / `sub` / `mul`). `Poly` is the runtime dense/sparse
-  `ff::Polynomial` enum, selected by `ReprKind` (`PolyRing::repr`).
-- **`field.rs`** — `FfField` is a re-export of
-  `crate::ff::field::PrimeField`, which dispatches between a
-  `u64`/`u128` small-prime backend and a `rug::Integer` (GMP)
-  backend based on `bits(prime)` at construction time.
+The QF_FF solving engine built on `picus-core`. Modules are grouped into
+`gb/` (Gröbner-basis computation, ideals, models, root finding,
+homogenisation, tracing), `frontend/` (encoding and IO: `encoder`, `parse`,
+`rewriter`, `bitprop`, `bench_fixtures`), `sat/` + `cdclt/` (the SAT and
+CDCL(T) layers), `ff/` (the GB / root-finding engine over the `picus-core`
+algebra), `smt2/`, and `split_gb/`, with `core.rs`, `boolean.rs`, and
+`incremental_context.rs` at the root.
 - **`ideal.rs`** — `Ideal` + `compute_gb_with_order`
   (`_traced`, `_incremental`) + `interreduce_basis`. Every public
   GB entry point routes through `compute_gb_dispatch`, which reads
@@ -173,14 +188,8 @@ types that the rest of the workspace builds on, plus the
 - **`incremental.rs`** + **`incremental_context.rs`** — Push/pop API
   + `IncrementalSolverContext` (split-GB cache keyed on the
   constraint side; resumable mid-build state).
-- **`roots.rs`** — Univariate root finding (Cantor-Zassenhaus, see
+- **`gb/roots.rs`** — Univariate root finding (Cantor-Zassenhaus, see
   `ff/univariate.rs`).
-- **`timeout.rs`** — `CancelToken` (atomic cancellation threaded
-  through the GB engine). `CancelToken::either(a, b)` combines two
-  sources into a single token that fires when either fires; the
-  `native_ff` backend uses it to merge the caller's external cancel
-  with its internal `with_timeout` token so mid-solve external
-  cancellation is observed within ≤ 1 ms (initial polling delay).
 - **`smt2/`** — QF_FF SMT-LIB v2 parser
   (`smt2/{mod, tokenizer, session, tests}.rs`).
   `parse(&str) -> Result<ConstraintSystem, ParseError>` handles the
@@ -201,25 +210,13 @@ types that the rest of the workspace builds on, plus the
   through an external cvc5 process (`--ff-solver split`); prints a
   side-by-side wall-time table. Flags: `--cvc5 <path>`,
   `--timeout-ms <N>`, `--iters <K>`.
-- **`profile.rs`** — Per-site wall-clock profiler
-  (`ScopedTimer`, `dump_to_stderr`) plus the `SPLIT_DFS` / `SPLIT_GB`
-  / `NATIVE_FF` counter blocks (`dump_split_stats_to_stderr`).
-  Reads `RuntimeConfig::profile_enabled` /
-  `gb_stats_enabled` at the call site; dumps no-op when nothing
-  has accumulated.
-- **`ff/`** — In-tree GB engine: `field` (`PrimeField` /
-  `FieldElem`), `monomial`, `polynomial` (`DensePoly` dense flat
-  storage + the runtime dense/sparse `Polynomial` enum + `PolyRing`,
-  whose `repr` fixes the arm), `sparse_monomial` / `sparse_polynomial` /
-  `sparse_geobucket` / `sparse_gb` (the sparse representation, its
-  geobucket reducer, and a Buchberger with the same product / M / B
-  criteria, sugar selection, and incremental seeding as the dense
-  engine), `repr`
-  (the `MonomialRepr` / `PolyRepr` shared interface; `repr_oracle`
-  cross-checks sparse against dense), `divmask`, `geobucket`, `spair`,
-  `hilbert`, `univariate`, `buchberger/` (engine, GM-criterion
-  incremental path, S-pair criteria), `f4/` (matrix layer, workspace,
-  symbolic preprocessing).
+- **`ff/`** — Gröbner-basis / root-finding engine over the `picus-core`
+  algebra: `buchberger/` (Buchberger with the GM-criterion incremental path
+  and S-pair criteria), `f4/` (matrix layer, workspace, symbolic
+  preprocessing), `sparse_gb` (Buchberger on the sparse representation with the
+  same product / M / B criteria, sugar selection, and incremental seeding),
+  `hilbert`, `spair`, `univariate` (Cantor-Zassenhaus), and `repr_oracle`
+  (cross-checks the sparse GB against the dense engine).
 
 ### `picus-smt`
 
@@ -358,7 +355,7 @@ Public library facade.
 - **`CheckResult`** — `Safe`, `Unsafe { witness_1, witness_2 }`,
   or `Unknown`.
 - **`dump_profile(tag)`** / **`dump_gb_stats()`** — facade for the
-  `picus_solver::profile` dump helpers, used by `picus-cli`.
+  `picus_core::profile` dump helpers, used by `picus-cli`.
 
 ### `picus-cli`
 
@@ -408,5 +405,5 @@ pattern-match on polynomial structure via `appearing_indeterminates`
 and `poly_terms` / `poly_terms_idx`; SMT backends translate each
 `Poly` into their solver-native term tree via `poly_to_smtlib_ff` /
 `poly_to_smtlib_nia`, and the `native_ff` backend lowers each `Poly`
-into `picus_solver::encoder::ConstraintSystem` for the in-tree GB
+into `picus_solver::frontend::encoder::ConstraintSystem` for the in-tree GB
 engine.

@@ -15,7 +15,7 @@ use num_bigint::BigUint;
 use num_traits::Zero;
 
 use crate::core::{solve_encoded_with_cancel, SolveOutcome};
-use crate::encoder::{encode, ConstraintSystemBuilder, PolyTerm};
+use crate::frontend::encoder::{encode, ConstraintSystemBuilder, PolyTerm};
 use crate::sat::Var;
 use crate::timeout::CancelToken;
 

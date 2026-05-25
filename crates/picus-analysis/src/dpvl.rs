@@ -23,7 +23,7 @@ use picus_r1cs::grammar::*;
 use picus_smt::backends::{SolverBackend, SolverResult};
 use picus_smt::poly_ir::{r1cs_to_poly_ir, PolyIR};
 use picus_smt::{SolverKind, Theory};
-use picus_solver::poly::IrPoly as Poly;
+use picus_core::poly::IrPoly as Poly;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -363,7 +363,7 @@ impl DpvlContext {
         // never-firing token so per-call `timeout_ms` is the only
         // budget. Callers wanting interruptible analysis would plumb
         // their own token through `DpvlConfig`.
-        let cancel = picus_solver::timeout::CancelToken::none();
+        let cancel = picus_core::timeout::CancelToken::none();
         match backend.solve(ir, self.timeout_ms, &cancel) {
             Ok(SolverResult::Unsat) => SolveResult::Verified,
             Ok(SolverResult::Sat(model)) => {

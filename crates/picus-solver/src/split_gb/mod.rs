@@ -34,9 +34,9 @@ pub use fixpoint::{split_gb, split_gb_cancel, split_gb_cancel_traced, TracedSpli
 pub(crate) use fixpoint::split_gb_extend_cancel;
 pub use search::{split_zero_extend, split_zero_extend_cancel};
 
-use crate::bitprop::BitProp;
+use crate::frontend::bitprop::BitProp;
 use crate::ff::field::FieldElem;
-use crate::ideal::Ideal;
+use crate::gb::ideal::Ideal;
 use crate::poly::{FfPolyRing, Poly};
 use crate::timeout::{CancelToken, Cancelled};
 

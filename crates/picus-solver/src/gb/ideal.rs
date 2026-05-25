@@ -18,7 +18,7 @@ use crate::ff::monomial::MonomialOrder as FfOrder;
 use crate::ff::field::FieldElem;
 use crate::poly::{FfPolyRing, Mono, Poly, PolyRingType};
 use crate::timeout::{CancelToken, Cancelled};
-use crate::tracer::GbTracer;
+use crate::gb::tracer::GbTracer;
 use crate::SolverError;
 use crate::config::GbStrategy;
 
@@ -130,7 +130,7 @@ impl GbAlgorithm for BuchbergerByHomog {
         order: FfOrder,
     ) -> Result<Vec<Poly>, SolverError> {
         if order == FfOrder::DegRevLex {
-            Ok(crate::gb_homog::compute_gb_by_homog(pr, gens, cancel))
+            Ok(crate::gb::gb_homog::compute_gb_by_homog(pr, gens, cancel))
         } else {
             // ByHomog only makes sense for DegRevLex; for Lex etc.
             // route through plain Buchberger so the contract of
@@ -167,9 +167,10 @@ thread_local! {
     static LAST_DISPATCHED: RefCell<Option<&'static str>> = const { RefCell::new(None) };
 }
 
-/// Name of the algorithm that last serviced a GB request on the
-/// current thread, or `None` if no GB call has run yet. Updated by
-/// [`compute_gb_dispatch`] on every non-empty call.
+/// Name of the algorithm that last serviced a GB request on the current
+/// thread, or `None` if no GB call has run yet. The dense path records the
+/// dispatched [`GbAlgorithm`] (`"buchberger-direct"` / `"buchberger-by-homog"`);
+/// the sparse path records `"sparse-buchberger"` / `"sparse-by-homog"`.
 pub fn last_dispatched_algorithm() -> Option<&'static str> {
     LAST_DISPATCHED.with(|c| *c.borrow())
 }
@@ -346,7 +347,7 @@ impl<'r> Ideal<'r> {
         self,
         new_polys: Vec<Poly>,
         cancel: &CancelToken,
-        tracer: &mut crate::tracer::GbTracer,
+        tracer: &mut crate::gb::tracer::GbTracer,
     ) -> Result<Self, Cancelled> {
         if cancel.is_cancelled() { return Err(Cancelled); }
         let new_polys: Vec<Poly> = new_polys.into_iter()
@@ -670,6 +671,19 @@ pub fn compute_gb_with_order(
         return Vec::new();
     }
     if use_sparse_gb() {
+        // Honour the configured strategy on the sparse path too: ByHomog
+        // (DegRevLex only, mirroring BuchbergerByHomog) runs the
+        // homogenize → GB → dehomogenize pipeline with a sparse inner GB;
+        // everything else is plain sparse Buchberger.
+        let strat = match crate::config::with(|c| c.gb_strategy) {
+            GbStrategy::Auto => resolve_auto(poly_ring, &generators),
+            s => s,
+        };
+        if strat == GbStrategy::ByHomog && order == FfOrder::DegRevLex {
+            record_dispatched("sparse-by-homog");
+            return crate::gb::gb_homog::compute_gb_by_homog(poly_ring, generators, cancel);
+        }
+        record_dispatched("sparse-buchberger");
         return sparse_gb_route(poly_ring, generators, order, cancel);
     }
     let n_gens = generators.len();
@@ -725,6 +739,30 @@ pub(crate) fn compute_gb_buchberger(
             Err(SolverError::Internal("Buchberger panicked".into()))
         }
     }
+}
+
+/// Raw *direct* Gröbner basis (plain Buchberger, no strategy dispatch) on
+/// `poly_ring`, routed to the sparse or dense engine per the active
+/// representation. The inner homogeneous-GB step of the by-homog pipeline
+/// uses this so it never re-enters strategy dispatch. Empty input → empty;
+/// on a dense-engine error, falls back to the unreduced generators.
+pub(crate) fn compute_gb_direct(
+    poly_ring: &FfPolyRing,
+    generators: Vec<Poly>,
+    cancel: &CancelToken,
+    order: FfOrder,
+) -> Vec<Poly> {
+    if generators.is_empty() {
+        return Vec::new();
+    }
+    if use_sparse_gb() {
+        return sparse_gb_route(poly_ring, generators, order, cancel);
+    }
+    let backup: Vec<Poly> = generators.iter().map(|p| p.clone()).collect();
+    compute_gb_buchberger(poly_ring, generators, cancel, order).unwrap_or_else(|e| {
+        log::debug!("inner direct GB returned {:?}; falling back to unreduced", e);
+        backup
+    })
 }
 
 /// Incremental GB extension. Computes GB of `<known_gb> + <new_polys>`
@@ -815,7 +853,7 @@ pub fn compute_gb_with_order_traced(
     generators: Vec<Poly>,
     cancel: &CancelToken,
     order: FfOrder,
-    tracer: &mut crate::tracer::GbTracer,
+    tracer: &mut crate::gb::tracer::GbTracer,
 ) -> Vec<Poly> {
     let _t = crate::profile::ScopedTimer::new("compute_gb_with_order_traced");
     if generators.is_empty() {
@@ -840,7 +878,7 @@ pub(crate) fn compute_gb_buchberger_traced(
     generators: Vec<Poly>,
     cancel: &CancelToken,
     order: FfOrder,
-    tracer: &mut crate::tracer::GbTracer,
+    tracer: &mut crate::gb::tracer::GbTracer,
 ) -> Result<Vec<Poly>, SolverError> {
     let _t = crate::profile::ScopedTimer::new("compute_gb_buchberger_traced");
     if generators.is_empty() {
@@ -881,7 +919,7 @@ pub fn compute_gb_incremental_with_order_traced(
     new_polys: Vec<Poly>,
     cancel: &CancelToken,
     order: FfOrder,
-    tracer: &mut crate::tracer::GbTracer,
+    tracer: &mut crate::gb::tracer::GbTracer,
 ) -> Vec<Poly> {
     let _t = crate::profile::ScopedTimer::new("compute_gb_incremental_with_order_traced");
     if new_polys.is_empty() {
@@ -923,100 +961,4 @@ pub fn compute_gb_incremental_with_order_traced(
 type _GbBaseRing<'r> = &'r crate::ff::field::PrimeField;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ff::field::PrimeField;
-    use num_bigint::BigUint;
-
-    fn ff(p: u32) -> PrimeField {
-        PrimeField::new(BigUint::from(p))
-    }
-
-    #[test]
-    fn test_contains_simple() {
-        // I = (x - 3) over GF(17). Then (x^2 - 9) ∈ I, but x ∉ I.
-        let pr = FfPolyRing::new(ff(17), vec!["x".into()]);
-        let three = pr.field.from_int(3);
-        let nine = pr.field.from_int(9);
-        let p1 = pr.sub(pr.var(0), pr.constant(three));
-        let ideal = Ideal::new(&pr, vec![p1]);
-
-        let x = pr.var(0);
-        let x2 = pr.mul(pr.clone_poly(&x), pr.clone_poly(&x));
-        let x2_minus_9 = pr.sub(x2, pr.constant(nine));
-        assert!(ideal.contains(&x2_minus_9));
-        assert!(!ideal.contains(&x));
-    }
-
-    #[test]
-    fn test_whole_ring() {
-        let pr = FfPolyRing::new(ff(17), vec!["x".into()]);
-        let one = pr.one();
-        let ideal = Ideal::new(&pr, vec![one]);
-        assert!(ideal.is_whole_ring());
-        assert!(ideal.is_zero_dim());
-    }
-
-    #[test]
-    fn test_is_zero_dim_yes() {
-        let pr = FfPolyRing::new(ff(17), vec!["x".into(), "y".into()]);
-        let one = pr.field.from_int(1);
-        let two = pr.field.from_int(2);
-        let p1 = pr.sub(pr.var(0), pr.constant(one));
-        let p2 = pr.sub(pr.var(1), pr.constant(two));
-        let ideal = Ideal::new(&pr, vec![p1, p2]);
-        assert!(ideal.is_zero_dim());
-    }
-
-    #[test]
-    fn test_is_zero_dim_no() {
-        let pr = FfPolyRing::new(ff(17), vec!["x".into(), "y".into()]);
-        let xy = pr.mul(pr.var(0), pr.var(1));
-        let ideal = Ideal::new(&pr, vec![xy]);
-        assert!(!ideal.is_zero_dim());
-    }
-
-    #[test]
-    fn test_min_poly_constant_var() {
-        let pr = FfPolyRing::new(ff(17), vec!["x".into()]);
-        let five = pr.field.from_int(5);
-        let p1 = pr.sub(pr.var(0), pr.constant(five));
-        let ideal = Ideal::new(&pr, vec![p1]);
-        let mp = ideal.min_poly(0).expect("zero-dim, should have minpoly");
-        assert_eq!(mp.len(), 2);
-        let fp = &pr.field;
-        let neg_five = fp.neg(&pr.field.from_int(5));
-        assert!(fp.eq_el(&mp[0], &neg_five));
-        assert!(fp.is_one(&mp[1]));
-    }
-
-    #[test]
-    fn test_min_poly_quadratic() {
-        let pr = FfPolyRing::new(ff(17), vec!["x".into()]);
-        let x = pr.var(0);
-        let x2 = pr.mul(pr.clone_poly(&x), pr.clone_poly(&x));
-        let one = pr.one();
-        let p = pr.sub(x2, one);
-        let ideal = Ideal::new(&pr, vec![p]);
-        let mp = ideal.min_poly(0).expect("zero-dim, should have minpoly");
-        assert_eq!(mp.len(), 3);
-        let fp = &pr.field;
-        let neg_one = fp.neg(&fp.one());
-        assert!(fp.eq_el(&mp[0], &neg_one));
-        assert!(fp.is_zero(&mp[1]));
-        assert!(fp.is_one(&mp[2]));
-    }
-
-    #[test]
-    fn test_normalize() {
-        let pr = FfPolyRing::new(ff(17), vec!["x".into()]);
-        let three = pr.field.from_int(3);
-        let six = pr.field.from_int(6);
-        let term1 = pr.scale(three, pr.var(0));
-        let p = pr.add(term1, pr.constant(six));
-        let ideal = Ideal::new(&pr, vec![]);
-        let normalized = ideal.normalize(&p);
-        let lc = leading_coefficient(&pr.ring, &normalized, FfOrder::DegRevLex);
-        assert!(pr.field.is_one(&lc));
-    }
-}
+mod tests;

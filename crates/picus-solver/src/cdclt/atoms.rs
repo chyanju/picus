@@ -19,12 +19,12 @@ use std::collections::{BTreeMap, HashMap};
 use num_bigint::BigUint;
 use num_traits::Zero;
 
-use crate::encoder::{ConstraintSystemBuilder, PolyTerm, VarIdx};
+use crate::frontend::encoder::{ConstraintSystemBuilder, PolyTerm, VarIdx};
 use crate::sat::{Lit, Solver, Var};
 
 /// Normalize a name-keyed term list in place. Within-term `vars`
 /// sort, like-term coefficient sum mod `prime`, drop of zero-coeff
-/// terms. Mirrors [`crate::rewriter::normalize_term_list`]
+/// terms. Mirrors [`crate::frontend::rewriter::normalize_term_list`]
 /// for the AST-scratch form `AtomKey` uses internally.
 fn normalize_named_terms(terms: &mut Vec<(BigUint, Vec<String>)>, prime: &BigUint) {
     for (coeff, vars) in terms.iter_mut() {
@@ -383,7 +383,7 @@ pub enum InternLit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::encoder::VarIdx;
+    use crate::frontend::encoder::VarIdx;
 
     /// Index-keyed term constructor for tests. `idx_vars` is a list
     /// of `(VarIdx, exp)` pairs.

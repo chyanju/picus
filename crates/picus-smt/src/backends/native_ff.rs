@@ -3,7 +3,7 @@
 //!
 //! Consumes a [`PolyIR`] snapshot directly: `PolyIR::to_constraint_system`
 //! lowers it to the canonical index-keyed
-//! `picus_solver::encoder::ConstraintSystem` (each equality a
+//! `picus_solver::frontend::encoder::ConstraintSystem` (each equality a
 //! `Vec<PolyTerm>` summed to zero), and the target disequality
 //! `x_target ≠ y_target` is handed to the GB solver via the
 //! Rabinowitsch trick wired into [`IncrementalSolverContext`].
@@ -13,9 +13,9 @@ use crate::poly_ir::PolyIR;
 use crate::Theory;
 
 use picus_solver::core::{solve_encoded_with_cancel, SolveOutcome};
-use picus_solver::encoder::ConstraintSystem;
+use picus_solver::frontend::encoder::ConstraintSystem;
 use picus_solver::incremental_context::IncrementalSolverContext;
-use picus_solver::timeout::CancelToken;
+use picus_core::timeout::CancelToken;
 
 pub struct NativeFfBackend {
     /// Constraint-side digest of the most recent `solve` call. Used to
@@ -61,7 +61,7 @@ impl SolverBackend for NativeFfBackend {
             return Ok(SolverResult::Unknown(UnknownReason::Timeout));
         }
         let indexed = ir.to_constraint_system();
-        let stats_on = picus_solver::profile::gb_stats_enabled();
+        let stats_on = picus_core::profile::gb_stats_enabled();
         let cs_digest = if stats_on {
             Some(digest_native_constraint_side(&indexed))
         } else {
@@ -69,7 +69,7 @@ impl SolverBackend for NativeFfBackend {
         };
         if stats_on {
             use std::sync::atomic::Ordering::Relaxed;
-            let nf = &picus_solver::profile::NATIVE_FF;
+            let nf = &picus_core::profile::NATIVE_FF;
             nf.solve_calls.fetch_add(1, Relaxed);
             if let Some(d) = cs_digest {
                 if self.last_cs_digest == Some(d) {
@@ -86,7 +86,7 @@ impl SolverBackend for NativeFfBackend {
         // unexpected panics inside the solver (e.g., degree overflow).
         let prev_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {})); // silence repeated panics
-        let cache_enabled = picus_solver::config::with(|c| c.cache_enabled);
+        let cache_enabled = picus_core::config::with(|c| c.cache_enabled);
         let cache = &mut self.cache;
         // Combine the external cancel (Ctrl-C / parent-process abort)
         // with the per-call timeout into a single token the GB engine
@@ -129,7 +129,7 @@ impl SolverBackend for NativeFfBackend {
                 if let Some(t0) = enc_t0 {
                     use std::sync::atomic::Ordering::Relaxed;
                     let dt = t0.elapsed().as_nanos() as u64;
-                    let nf = &picus_solver::profile::NATIVE_FF;
+                    let nf = &picus_core::profile::NATIVE_FF;
                     nf.encode_time_ns.fetch_add(dt, Relaxed);
                     nf.encoded_polys_total
                         .fetch_add(encoded.polynomials.len() as u64, Relaxed);
@@ -146,7 +146,7 @@ impl SolverBackend for NativeFfBackend {
             if let Some(t0) = solve_t0 {
                 use std::sync::atomic::Ordering::Relaxed;
                 let dt = t0.elapsed().as_nanos() as u64;
-                picus_solver::profile::NATIVE_FF
+                picus_core::profile::NATIVE_FF
                     .solve_inner_time_ns
                     .fetch_add(dt, Relaxed);
             }

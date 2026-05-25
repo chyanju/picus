@@ -61,12 +61,12 @@ enum ElemRepr {
 
 impl FieldElem {
     #[inline]
-    pub(crate) fn from_integer_unchecked(value: Integer) -> Self {
+    pub fn from_integer_unchecked(value: Integer) -> Self {
         FieldElem { repr: ElemRepr::Gmp(value) }
     }
 
     #[inline]
-    pub(crate) fn from_u64_unchecked(value: u64) -> Self {
+    pub fn from_u64_unchecked(value: u64) -> Self {
         FieldElem { repr: ElemRepr::Small(value) }
     }
 

@@ -32,7 +32,7 @@ use std::fmt;
 use num_bigint::BigUint;
 use num_traits::Zero;
 
-use crate::encoder::{ConstraintSystemBuilder, ConstraintSystem, PolyTerm, VarIdx};
+use crate::frontend::encoder::{ConstraintSystemBuilder, ConstraintSystem, PolyTerm, VarIdx};
 use tokenizer::{parse_sexprs, tokenize, Sexpr};
 
 // ─────────────────────── Errors ──────────────────────────────────────────
@@ -501,7 +501,7 @@ pub fn parse(src: &str) -> Result<ConstraintSystem, ParseError> {
     }
 
     let mut indexed = builder.build();
-    crate::rewriter::rewrite_system(&mut indexed);
+    crate::frontend::rewriter::rewrite_system(&mut indexed);
     Ok(indexed)
 }
 

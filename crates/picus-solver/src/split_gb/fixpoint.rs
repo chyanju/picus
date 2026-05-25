@@ -23,11 +23,11 @@
 
 use std::collections::BTreeSet;
 
-use crate::bitprop::BitProp;
-use crate::ideal::Ideal;
+use crate::frontend::bitprop::BitProp;
+use crate::gb::ideal::Ideal;
 use crate::poly::{FfPolyRing, Poly};
 use crate::timeout::{CancelToken, Cancelled};
-use crate::tracer::GbTracer;
+use crate::gb::tracer::GbTracer;
 
 use super::{admit, SplitGb};
 

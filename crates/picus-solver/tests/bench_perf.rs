@@ -205,16 +205,16 @@ fn bench_bitdecomp_auto_extract() {
 #[ignore]
 fn bench_f4_vs_per_pair_large() {
     use picus_solver::ff::buchberger::{BuchbergerConfig, IncrementalGB};
-    use picus_solver::ff::monomial::MonomialOrder;
-    use picus_solver::ff::polynomial::PolyRing;
-    use picus_solver::ff::field::PrimeField;
+    use picus_core::ff::monomial::MonomialOrder;
+    use picus_core::ff::polynomial::PolyRing;
+    use picus_core::ff::field::PrimeField;
     use std::sync::Arc;
     use std::time::Instant;
 
     /// `cyclic-N`: the N-variable cyclic ideal. Classical GB benchmark
     /// known to produce many same-sugar batches and a large basis.
-    fn cyclic_n(n: usize, ring: &Arc<PolyRing>) -> Vec<picus_solver::ff::polynomial::Polynomial> {
-        use picus_solver::ff::polynomial::Polynomial;
+    fn cyclic_n(n: usize, ring: &Arc<PolyRing>) -> Vec<picus_core::ff::polynomial::Polynomial> {
+        use picus_core::ff::polynomial::Polynomial;
         let xs: Vec<Polynomial> = (0..n).map(|i| Polynomial::variable(i, ring)).collect();
         let mut polys: Vec<Polynomial> = Vec::new();
         // f_d = sum over rotation r of (product x_{(r+0)..r+d})  for d = 1..n
@@ -241,7 +241,7 @@ fn bench_f4_vs_per_pair_large() {
     }
 
     fn run_one(
-        polys: &[picus_solver::ff::polynomial::Polynomial],
+        polys: &[picus_core::ff::polynomial::Polynomial],
         ring: &Arc<PolyRing>,
         use_f4: bool,
     ) -> u128 {
@@ -253,7 +253,7 @@ fn bench_f4_vs_per_pair_large() {
         };
         let mut igb = IncrementalGB::new(Arc::clone(ring), cfg);
         let t = Instant::now();
-        igb.add_generators(polys.to_vec())
+        igb.add_generators(polys.iter().map(|p| p.as_dense(ring).into_owned()).collect())
             .expect("add_generators");
         t.elapsed().as_micros()
     }
@@ -329,23 +329,23 @@ fn bench_f4_vs_per_pair_large() {
         for &n_polys in &[10usize, 20, 30] {
             let mut polys = Vec::new();
             for _ in 0..n_polys {
-                let mut acc = picus_solver::ff::polynomial::Polynomial::zero();
+                let mut acc = picus_core::ff::polynomial::Polynomial::zero();
                 for _ in 0..6 {
                     let coeff = ((rand() % 7000) + 1) as i64;
                     let c = ring.field.from_int(coeff);
                     let i = (rand() as usize) % n_vars;
                     let j = (rand() as usize) % n_vars;
-                    let xi = picus_solver::ff::polynomial::Polynomial::variable(i, &ring);
-                    let xj = picus_solver::ff::polynomial::Polynomial::variable(j, &ring);
+                    let xi = picus_core::ff::polynomial::Polynomial::variable(i, &ring);
+                    let xj = picus_core::ff::polynomial::Polynomial::variable(j, &ring);
                     let term = xi.mul(&xj, &ring);
                     let scaled = term.mul(
-                        &picus_solver::ff::polynomial::Polynomial::constant(c, &ring),
+                        &picus_core::ff::polynomial::Polynomial::constant(c, &ring),
                         &ring,
                     );
                     acc = acc.add(&scaled, &ring);
                 }
                 let cc = ring.field.from_int(((rand() % 7) + 1) as i64);
-                let cp = picus_solver::ff::polynomial::Polynomial::constant(cc, &ring);
+                let cp = picus_core::ff::polynomial::Polynomial::constant(cc, &ring);
                 acc = acc.add(&cp, &ring);
                 if !acc.is_zero() {
                     polys.push(acc);
@@ -398,9 +398,9 @@ fn bench_f4_vs_per_pair_large() {
 #[ignore]
 fn bench_f4_non_cyclic_workloads() {
     use picus_solver::ff::buchberger::{BuchbergerConfig, IncrementalGB};
-    use picus_solver::ff::monomial::MonomialOrder;
-    use picus_solver::ff::polynomial::{PolyRing, Polynomial};
-    use picus_solver::ff::field::PrimeField;
+    use picus_core::ff::monomial::MonomialOrder;
+    use picus_core::ff::polynomial::{PolyRing, Polynomial};
+    use picus_core::ff::field::PrimeField;
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -475,7 +475,7 @@ fn bench_f4_non_cyclic_workloads() {
         };
         let mut igb = IncrementalGB::new(Arc::clone(ring), cfg);
         let t = Instant::now();
-        igb.add_generators(polys.to_vec()).expect("add_generators");
+        igb.add_generators(polys.iter().map(|p| p.as_dense(ring).into_owned()).collect()).expect("add_generators");
         t.elapsed().as_micros()
     }
 
@@ -568,9 +568,9 @@ fn bench_f4_non_cyclic_workloads() {
 #[ignore]
 fn bench_f4_vs_per_pair() {
     use picus_solver::ff::buchberger::{BuchbergerConfig, IncrementalGB};
-    use picus_solver::ff::monomial::MonomialOrder;
-    use picus_solver::ff::polynomial::PolyRing;
-    use picus_solver::ff::field::PrimeField;
+    use picus_core::ff::monomial::MonomialOrder;
+    use picus_core::ff::polynomial::PolyRing;
+    use picus_core::ff::field::PrimeField;
     use std::sync::Arc;
     use std::time::Instant;
 
@@ -581,7 +581,7 @@ fn bench_f4_vs_per_pair() {
         n_polys: usize,
         seed: u64,
         ring: &Arc<PolyRing>,
-    ) -> Vec<picus_solver::ff::polynomial::Polynomial> {
+    ) -> Vec<picus_core::ff::polynomial::Polynomial> {
         let mut s = seed;
         let mut rand = || {
             s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
@@ -589,23 +589,23 @@ fn bench_f4_vs_per_pair() {
         };
         let mut out = Vec::new();
         for _ in 0..n_polys {
-            let mut acc = picus_solver::ff::polynomial::Polynomial::zero();
+            let mut acc = picus_core::ff::polynomial::Polynomial::zero();
             for _ in 0..6 {
                 let coeff = ((rand() % 7000) + 1) as i64;
                 let c = ring.field.from_int(coeff);
                 let i = (rand() as usize) % n_vars;
                 let j = (rand() as usize) % n_vars;
-                let xi = picus_solver::ff::polynomial::Polynomial::variable(i, ring);
-                let xj = picus_solver::ff::polynomial::Polynomial::variable(j, ring);
+                let xi = picus_core::ff::polynomial::Polynomial::variable(i, ring);
+                let xj = picus_core::ff::polynomial::Polynomial::variable(j, ring);
                 let term = xi.mul(&xj, ring);
                 let scaled = term.mul(
-                    &picus_solver::ff::polynomial::Polynomial::constant(c, ring),
+                    &picus_core::ff::polynomial::Polynomial::constant(c, ring),
                     ring,
                 );
                 acc = acc.add(&scaled, ring);
             }
             let cc = ring.field.from_int(((rand() % 7) + 1) as i64);
-            let cp = picus_solver::ff::polynomial::Polynomial::constant(cc, ring);
+            let cp = picus_core::ff::polynomial::Polynomial::constant(cc, ring);
             acc = acc.add(&cp, ring);
             if !acc.is_zero() {
                 out.push(acc);
@@ -615,7 +615,7 @@ fn bench_f4_vs_per_pair() {
     }
 
     fn time_one(
-        polys: &[picus_solver::ff::polynomial::Polynomial],
+        polys: &[picus_core::ff::polynomial::Polynomial],
         ring: &Arc<PolyRing>,
         use_f4: bool,
         iters: usize,
@@ -632,7 +632,7 @@ fn bench_f4_vs_per_pair() {
             let mut igb = IncrementalGB::new(Arc::clone(ring), cfg);
             let t = Instant::now();
             trivial = igb
-                .add_generators(polys.to_vec())
+                .add_generators(polys.iter().map(|p| p.as_dense(ring).into_owned()).collect())
                 .expect("add_generators");
             times.push(t.elapsed().as_micros());
         }

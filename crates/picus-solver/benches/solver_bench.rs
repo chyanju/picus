@@ -24,12 +24,12 @@ use num_bigint::BigUint;
 use num_traits::One;
 
 use picus_solver::core::{solve_encoded, SolveOutcome};
-use picus_solver::encoder::{
+use picus_solver::frontend::encoder::{
     encode, ConstraintSystem, ConstraintSystemBuilder, EncodedSystem, PolyTerm, VarIdx,
 };
 use picus_solver::field::FfField;
-use picus_solver::incremental::NamedTerm;
-use picus_solver::roots::find_roots;
+use picus_solver::gb::incremental::NamedTerm;
+use picus_solver::gb::roots::find_roots;
 
 // ── Bench-local helpers ─────────────────────────────────────────────────────
 

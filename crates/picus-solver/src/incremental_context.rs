@@ -15,15 +15,15 @@ use std::sync::Arc;
 
 use num_bigint::BigUint;
 
-use crate::bitprop::{BitProp, BitPropState};
+use crate::frontend::bitprop::{BitProp, BitPropState};
 use crate::core::{populate_bitprop, SolveOutcome};
-use crate::encoder::{
+use crate::frontend::encoder::{
     encode, encode_constraint_side, ConstraintSystem,
 };
 use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
 use crate::ff::monomial::MonomialOrder;
-use crate::ideal::{interreduce_basis, ring_for_order, unwrap_dense_vec, wrap_dense_vec, Ideal};
-use crate::model;
+use crate::gb::ideal::{interreduce_basis, ring_for_order, unwrap_dense_vec, wrap_dense_vec, Ideal};
+use crate::gb::model;
 use crate::poly::{FfPolyRing, Poly};
 use crate::split_gb::{
     admit, split_find_zero_cancel, split_gb_cancel, split_gb_extend_cancel, SplitFindZeroOutcome,
@@ -639,7 +639,7 @@ fn stateless_solve(cs: &ConstraintSystem, cancel: &CancelToken) -> SolveOutcome 
 /// except `disequalities`) into a `u64` cache key. Self-consistent:
 /// two systems agreeing on `(prime, var_names, equalities,
 /// assignments, bitsums, add_field_polys)` produce the same digest.
-pub fn digest_constraint_side(cs: &crate::encoder::ConstraintSystem) -> u64 {
+pub fn digest_constraint_side(cs: &crate::frontend::encoder::ConstraintSystem) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     cs.prime.hash(&mut h);

@@ -32,7 +32,7 @@ fn eddsa_poseidon_lowering_footprint() {
         return;
     };
 
-    let repr = picus_solver::config::with(|c| c.poly_repr);
+    let repr = picus_core::config::with(|c| c.poly_repr);
 
     // Lowering only — no backend, no Gröbner solve.
     let known = HashSet::new();

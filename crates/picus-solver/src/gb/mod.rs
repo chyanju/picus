@@ -1,5 +1,5 @@
 //! Groebner Basis computation over GF(p) using the in-tree Buchberger
-//! algorithm (`crate::ff::buchberger`, exposed via `crate::ideal`).
+//! algorithm (`crate::ff::buchberger`, exposed via `crate::gb::ideal`).
 //!
 //! Provides a single-GB solver mode (DegRevLex → Lex) with cooperative
 //! timeout. Thin wrapper over `ideal::compute_gb_with_order{,_traced}`.
@@ -7,10 +7,10 @@
 use std::time::Duration;
 
 use crate::ff::monomial::MonomialOrder;
-use crate::ideal::{compute_gb_with_order, compute_gb_with_order_traced};
+use crate::gb::ideal::{compute_gb_with_order, compute_gb_with_order_traced};
 use crate::poly::{FfPolyRing, Poly};
 use crate::timeout::CancelToken;
-use crate::tracer::GbTracer;
+use crate::gb::tracer::GbTracer;
 
 /// Result of a Groebner basis computation.
 pub enum GbResult {
@@ -195,3 +195,14 @@ mod tests {
         }
     }
 }
+
+// Submodules: ideal operations, incremental GB, root finding, homogenization
+// pipeline, model construction, branching, and UNSAT-core tracing.
+pub mod ideal;
+pub mod incremental;
+pub mod roots;
+pub(crate) mod gb_homog;
+pub(crate) mod homog_ring;
+pub(crate) mod model;
+pub(crate) mod brancher;
+pub(crate) mod tracer;

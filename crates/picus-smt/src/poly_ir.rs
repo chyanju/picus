@@ -29,11 +29,11 @@ use num_traits::Zero;
 use picus_r1cs::field_reduce;
 use picus_r1cs::grammar::{ConstraintBlock, R1csFile};
 use picus_solver::boolean::{BooleanQuery, Formula, Literal};
-use picus_solver::encoder::{
+use picus_solver::frontend::encoder::{
     encode, ConstraintSystemBuilder, EncodedSystem, ConstraintSystem, PolyTerm,
 };
-use picus_solver::ff::field::PrimeField;
-use picus_solver::poly::{IrPoly as Poly, IrPolyRing};
+use picus_core::ff::field::PrimeField;
+use picus_core::poly::{IrPoly as Poly, IrPolyRing};
 use thiserror::Error;
 
 /// Reasons the R1CS-to-PolyIR lowering can fail. Surfacing these as
@@ -305,7 +305,7 @@ impl PolyIR {
     /// Encode this `PolyIR` into an [`EncodedSystem`] ready for the
     /// GB engine. Internally builds an `ConstraintSystem` via
     /// [`Self::to_constraint_system`] and routes through
-    /// [`picus_solver::encoder::encode`] (which runs
+    /// [`picus_solver::frontend::encoder::encode`] (which runs
     /// `rewriter::rewrite_system` and
     /// `auto_extract_bitsums`).
     pub fn encode(&self) -> Result<EncodedSystem, String> {

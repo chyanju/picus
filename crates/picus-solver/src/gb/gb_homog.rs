@@ -2,15 +2,15 @@
 //!
 //! Mirrors CoCoA's `myGBasisByHomog` (`SparsePolyOps-ideal.C:819-862`):
 //!
-//! 1. Build extended ring `Ph = P[h]` ([`crate::homog_ring::HomogRing`]).
+//! 1. Build extended ring `Ph = P[h]` ([`crate::gb::homog_ring::HomogRing`]).
 //! 2. Lift every input `f_i ∈ P` into `Ph`, then homogenize to its top
 //!    total degree (so every generator is `d_i`-homogeneous in `Ph`).
-//! 3. Run plain DegRevLex Buchberger on `Ph` (via the existing
-//!    [`crate::ideal::compute_gb_buchberger`] path — same Buchberger,
-//!    same observers, same cancellation). Calling the raw Buchberger
-//!    entry rather than the dispatching `compute_gb_with_order` is
-//!    deliberate: otherwise dispatch would recurse back into ByHomog
-//!    on the homogenised ring.
+//! 3. Run plain DegRevLex Buchberger on `Ph` via the repr-aware raw entry
+//!    [`crate::gb::ideal::compute_gb_direct`] (sparse or dense engine per the
+//!    active representation — so by-homog stays sparse under the sparse repr).
+//!    Calling the raw direct entry rather than the dispatching
+//!    `compute_gb_with_order` is deliberate: otherwise dispatch would recurse
+//!    back into ByHomog on the homogenised ring.
 //! 4. Dehomogenize each basis element back to `P` (`h := 1`).
 //! 5. Interreduce in `P` (drop LM-divisible duplicates, normal-form survivors).
 //!
@@ -22,8 +22,8 @@
 //! 5–50× speedups on the bit-cube + bitsum + chunked-add shape.
 
 use crate::ff::monomial::MonomialOrder;
-use crate::homog_ring::HomogRing;
-use crate::ideal::{compute_gb_buchberger, interreduce_basis};
+use crate::gb::homog_ring::HomogRing;
+use crate::gb::ideal::{compute_gb_direct, interreduce_basis};
 use crate::poly::{FfPolyRing, Poly};
 use crate::timeout::CancelToken;
 
@@ -66,18 +66,11 @@ pub fn compute_gb_by_homog(
         return Vec::new();
     }
 
-    // Step 3: plain DegRevLex Buchberger on Ph. Use the raw entry
-    // (not the dispatching `compute_gb_with_order`) so the chosen
+    // Step 3: plain DegRevLex Buchberger on Ph, routed to the sparse or
+    // dense engine per the active representation. Using the raw direct
+    // entry (not the dispatching `compute_gb_with_order`) so the chosen
     // strategy doesn't bounce back into this routine.
-    let gb_h_backup: Vec<Poly> = gh.iter().map(|p| h.ext.clone_poly(p)).collect();
-    let gb_h = compute_gb_buchberger(&h.ext, gh, cancel, MonomialOrder::DegRevLex)
-        .unwrap_or_else(|e| {
-            log::debug!(
-                "homogenised GB returned {:?}; falling back to unreduced generators",
-                e
-            );
-            gb_h_backup
-        });
+    let gb_h = compute_gb_direct(&h.ext, gh, cancel, MonomialOrder::DegRevLex);
 
     if cancel.is_cancelled() {
         // Best-effort: dehom + interreduce what we have; consumers will
@@ -108,7 +101,7 @@ mod tests {
     use super::*;
     use crate::ff::field::PrimeField;
     use crate::ff::monomial::MonomialOrder;
-    use crate::ideal::compute_gb_with_order;
+    use crate::gb::ideal::compute_gb_with_order;
     use crate::poly::FfPolyRing;
     use num_bigint::BigUint;
     use std::collections::BTreeSet;

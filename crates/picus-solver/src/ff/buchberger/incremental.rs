@@ -107,7 +107,7 @@ impl IncrementalGB {
     /// Observed variant of [`Self::add_generators`]: the supplied
     /// observer receives `on_initial_basis` / `on_new_poly` /
     /// `on_inter_reduce` callbacks during the GB extension. Used by
-    /// [`crate::tracer::GbTracer`] for UNSAT-core extraction.
+    /// [`crate::gb::tracer::GbTracer`] for UNSAT-core extraction.
     pub fn add_generators_observed<O: BuchbergerObserver>(
         &mut self,
         polys: Vec<DensePoly>,

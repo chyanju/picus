@@ -8,35 +8,22 @@
 
 // Public modules: used by external crates (picus-smt backends, picus-cli)
 // and/or integration tests under `tests/` / `src/bin/`.
-pub mod bench_fixtures;
-pub mod bitprop;
 pub mod boolean;
 pub mod cdclt;
-pub mod config;
 pub mod core;
-pub mod encoder;
 pub mod ff;
+pub mod frontend;
 pub mod gb;
-pub mod ideal;
-pub mod incremental;
 pub mod incremental_context;
-pub mod parse;
-pub mod poly;
-pub mod profile;
-pub mod roots;
 pub mod smt2;
 pub mod split_gb;
-pub mod timeout;
 
-// Internal modules: only referenced from within the crate. Kept private to
-// keep the surface area focused.
-pub(crate) mod brancher;
-pub(crate) mod gb_homog;
-pub(crate) mod homog_ring;
-pub(crate) mod model;
-pub(crate) mod rewriter;
 pub(crate) mod sat;
-pub(crate) mod tracer;
+
+// Shared substrate (runtime config, polynomial ring, profiler, cancellation)
+// lives in picus-core; re-bound so in-crate paths stay
+// `crate::{config, poly, profile, timeout}`.
+pub(crate) use picus_core::{config, poly, profile, timeout};
 
 use thiserror::Error;
 

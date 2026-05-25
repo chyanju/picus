@@ -10,7 +10,7 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 
 use picus_solver::cdclt::solve_formula;
 use picus_solver::smt2::parse_boolean;
-use picus_solver::timeout::CancelToken;
+use picus_core::timeout::CancelToken;
 
 const FIXTURES: &[(&str, &str)] = &[
     (

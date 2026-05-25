@@ -16,10 +16,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::bitprop::BitProp;
-use crate::brancher::Brancher;
+use crate::frontend::bitprop::BitProp;
+use crate::gb::brancher::Brancher;
 use crate::ff::field::{FieldElem, PrimeField};
-use crate::ideal::Ideal;
+use crate::gb::ideal::Ideal;
 use crate::poly::{FfPolyRing, Poly};
 use crate::timeout::CancelToken;
 

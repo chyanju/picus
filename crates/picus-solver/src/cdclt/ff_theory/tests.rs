@@ -2,7 +2,7 @@ use super::*;
 use std::collections::BTreeMap;
 
 use crate::cdclt::atoms::{AtomTable, InternResult};
-use crate::encoder::PolyTerm;
+use crate::frontend::encoder::PolyTerm;
 use crate::sat::Solver;
 use num_bigint::BigUint;
 

@@ -21,5 +21,6 @@ picus-r1cs = { path = "../picus-r1cs" }
 picus-smt = { path = "../picus-smt", default-features = false }
 picus-analysis = { path = "../picus-analysis", default-features = false }
 picus-solver = { path = "../picus-solver" }
+picus-core = { path = "../picus-core" }
 num-bigint = { workspace = true }
 thiserror = { workspace = true }

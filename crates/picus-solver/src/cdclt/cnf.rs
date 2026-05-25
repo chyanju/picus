@@ -69,8 +69,8 @@ fn transform(
 }
 
 fn atom_to_node(
-    lhs: &[crate::encoder::PolyTerm],
-    rhs: &[crate::encoder::PolyTerm],
+    lhs: &[crate::frontend::encoder::PolyTerm],
+    rhs: &[crate::frontend::encoder::PolyTerm],
     var_names: &[String],
     positive: bool,
     atoms: &mut AtomTable,
@@ -167,7 +167,7 @@ fn transform_or(
 mod tests {
     use super::*;
     use crate::boolean::{Formula, Literal};
-    use crate::encoder::PolyTerm;
+    use crate::frontend::encoder::PolyTerm;
     use crate::sat::solver::SolveResult;
     use crate::sat::LBool;
     use num_bigint::BigUint;

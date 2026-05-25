@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use crate::backends::{poly_to_smtlib_ff, SolverBackend, SolverBackendDescriptor, SolverError, SolverResult, UnknownReason};
 use crate::Theory;
-use picus_solver::timeout::CancelToken;
+use picus_core::timeout::CancelToken;
 use crate::poly_ir::PolyIR;
 
 pub struct Cvc5FfBackend;
@@ -157,7 +157,7 @@ fn build_poly_term<'a>(
     tm: &'a cvc5_ff::TermManager,
     vars: &HashMap<String, cvc5_ff::Term<'a>>,
     ir: &PolyIR,
-    poly: &picus_solver::poly::IrPoly,
+    poly: &picus_core::poly::IrPoly,
     ff: cvc5_ff::Sort<'a>,
 ) -> cvc5_ff::Term<'a> {
     let mut sum_parts: Vec<cvc5_ff::Term<'a>> = Vec::new();
