@@ -447,6 +447,40 @@ impl<'r> Ideal<'r> {
         covered.len() == n_vars
     }
 
+    /// `dim_k(R/I)` — the number of standard monomials, equivalently the
+    /// number of solutions of `I` with multiplicity over the algebraic
+    /// closure — read off the leading monomials of this (already-computed)
+    /// basis via the Hilbert function ([`crate::ff::hilbert::quotient_dimension`]).
+    ///
+    /// `Some(0)` for the whole ring, `Some(d)` for a zero-dimensional
+    /// ideal, and `None` when `R/I` is not finite-dimensional (positive-
+    /// dimensional) or the dimension is declined for a pathologically
+    /// large ideal. Sound and verdict-neutral: a pure combinatorial read
+    /// of the finished basis, with no caller on the default solve path.
+    /// Its live use is an independent cross-check of the FGLM staircase
+    /// size (a differential-test guard on `fglm_to_lex`, in the spirit of
+    /// `repr_oracle`); otherwise a reusable utility, not a solver feature.
+    pub fn quotient_dimension(&self) -> Option<u128> {
+        if self.is_whole_ring() {
+            return Some(0);
+        }
+        if self.basis.is_empty() {
+            return None;
+        }
+        let ring = self.poly_ring.ctx();
+        let n_vars = self.poly_ring.n_vars;
+        let mut lead: Vec<Monomial> = Vec::with_capacity(self.basis.len());
+        for p in &self.basis {
+            if p.is_zero() {
+                continue;
+            }
+            if let Some(lm) = p.leading_monomial(ring) {
+                lead.push(lm);
+            }
+        }
+        crate::ff::hilbert::quotient_dimension(&lead, n_vars)
+    }
+
     /// Compute the minimal polynomial of `var_idx` in `R/I`.
     pub fn min_poly(&self, var_idx: usize) -> Option<Vec<FieldElem>> {
         self.min_poly_cancel(var_idx, &CancelToken::none())
