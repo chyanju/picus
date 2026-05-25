@@ -17,64 +17,49 @@ The techniques underlying Picus are described in the PLDI 2023 paper *"Automated
 
 > Looking for the original PLDI 2023 research artifact? See the [artifact branch](https://github.com/chyanju/Picus/tree/pldi23-research-artifact).
 
-## Prerequisites
-
-Both z3 and cvc5 (with finite field support) are automatically compiled from source during `cargo build` with the default features. No manual solver installation is required.
-
-**Build dependencies (default build):** cmake, python3, python3-venv, C++ compiler (gcc or clang), make, bison, git, libclang-dev, pkg-config.
-
-> First build with both external SMT backends takes ~15-20 minutes (z3 + cvc5 compilation). Subsequent builds are incremental.
-
-> **Faster builds with pre-installed solvers:** If you already have solver libraries installed, you can skip compilation:
-> ```bash
-> # Skip cvc5 compilation (requires cvc5 GPL build with CoCoA)
-> CVC5_LIB_DIR=/path/to/cvc5/lib cargo build --release
->
-> # Skip z3 compilation
-> Z3_LIBRARY_PATH_OVERRIDE=/path/to/z3/lib cargo build --release
-> ```
-> For `CVC5_LIB_DIR`, headers should be at `../include/` relative to the lib directory (or set `CVC5_INCLUDE_DIR` separately).
-
-### Build without cvc5 / z3 (native-only)
-
-The in-tree Rust solver (`--solver native --theory ff`) does not require either external SMT backend. To skip the cvc5 and z3 build chains entirely:
-
-```bash
-cargo build --release -p picus-cli --no-default-features --features native
-```
-
-The resulting binary supports `--solver native` and `--solver none`. Picking `--solver cvc5` or `--solver z3` returns an error because those backends were not compiled in. The Cargo features `cvc5` and `z3` are also available individually if only one of the two external backends is wanted.
-
-> **Note on licensing:** cvc5 is compiled with CoCoA (GPLv3) for finite field support. Picus source code is MIT-licensed. With the default build, the compiled binary is a combined work under GPLv3 when distributed. The `--no-default-features --features native` build does not link cvc5 and is MIT-only. See cvc5's [COPYING](https://github.com/cvc5/cvc5/blob/main/COPYING) for details.
-
 ## Installation
 
+Default builds are pure Rust: the in-tree `native` finite-field solver needs no external solver and no extra system dependencies. cvc5 / z3 are never compiled unless you opt in (see below).
+
 ```bash
-# Option 1: Install to PATH
+# Install to PATH
 cargo install --path crates/picus-cli
 
-# Option 2: Build and run locally
+# Or build and run locally
 cargo build --release
 ./target/release/picus check --r1cs circuit.r1cs
 
-# Option 3: Build and run in one step
-cargo run --release -p picus-cli -- check --r1cs circuit.r1cs
-
-# Option 4: Docker
+# Or via Docker
 docker build -t picus .
 docker run --rm -v $(pwd):/data picus check --r1cs /data/circuit.r1cs
 ```
 
-## Use as a Rust Library
+> The optional **cvc5** and **z3** backends are compiled only on explicit opt-in (`--features cvc5` / `z3`) and carry extra build requirements (and, for cvc5, GPLv3 licensing) — see [docs/building.md](docs/building.md).
 
-Picus can also be used as a library crate in other Rust projects:
+## Usage
+
+```bash
+picus check --r1cs circuit.r1cs                   # verify uniqueness (native + ff)
+picus check --r1cs circuit.r1cs --solver none     # propagation only, no solver
+picus check --r1cs circuit.r1cs --lemmas all-bim  # tune propagation lemmas
+picus check --r1cs circuit.r1cs --format json     # machine-readable output
+picus check --r1cs circuit.r1cs --config my.toml  # load settings from a config file
+
+picus info --r1cs circuit.r1cs --constraints      # inspect R1CS metadata
+```
+
+**Configuration.** No config is required — every setting has a built-in default. To customise, copy [`picus.default.toml`](picus.default.toml) (it documents every key), edit it, and pass it with `--config <file>`; or drop a `./picus.toml` in the working directory and it is picked up automatically. Sources layer, with later winning: built-in defaults < config file < `PICUS_*` environment < individual CLI flags. Full flag and configuration reference: [docs/usage.md](docs/usage.md).
+
+## Use as a Rust Library
 
 ```toml
 [dependencies]
-picus = { git = "https://github.com/chyanju/Picus", tag = "v1.7.35" }
+# Tracks the main branch (the stable branch); default features = native
+# solver only, no external build chain.
+picus = { git = "https://github.com/chyanju/Picus", branch = "main" }
 
-# Native-only (no cvc5 / z3 build chain):
-# picus = { git = "...", tag = "v1.7.35", default-features = false, features = ["native"] }
+# To also build the cvc5 / z3 backends:
+# picus = { git = "https://github.com/chyanju/Picus", branch = "main", features = ["cvc5"] }
 ```
 
 ```rust
@@ -93,90 +78,16 @@ match result {
 }
 ```
 
-See `crates/picus/src/lib.rs` for the full API, including `check_r1cs_bytes()`, `check_r1cs()`, and re-exported types.
-
-## Usage
-
-### `picus check` — verify circuit uniqueness
-
-```bash
-picus check --r1cs circuit.r1cs                              # default: native + ff
-picus check --r1cs circuit.r1cs --solver cvc5 --theory ff    # cvc5 (build with --features cvc5)
-picus check --r1cs circuit.r1cs --solver z3 --theory nia     # z3 with integer arithmetic (--features z3)
-picus check --r1cs circuit.r1cs --solver none                # propagation only
-picus check --r1cs circuit.r1cs --lemmas all-bim             # all lemmas except bim
-picus check --r1cs circuit.r1cs --format json                # JSON output
-picus check --r1cs circuit.r1cs --dump-smt /tmp/smt/         # dump SMT queries
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--r1cs <path>` | *required* | R1CS binary file |
-| `--config <path>` | `./picus.toml` if present | TOML config file (see [Configuration](#configuration)). Flags below override it |
-| `--solver <name>` | `native` | Solver backend name. Built-in: `native`, `cvc5`, `z3`, `none` (`cvc5`/`z3` require their Cargo features). Names resolve against the inventory of registered backends |
-| `--theory <ff\|nia>` | `ff` | Theory: `ff` (finite field) or `nia` (integer mod) |
-| `--timeout <ms>` | `5000` | Per-query solver timeout |
-| `--selector <first\|counter>` | `counter` | Signal selection heuristic |
-| `--lemmas <spec>` | `all` | Lemmas: `all`, `none`, `all-X,Y` (exclude), `none+X,Y` (include). Names: `linear`, `binary01`, `basis2`, `aboz`, `bim` |
-| `--format <human\|json>` | `human` | Output format |
-| `--dump-smt <dir>` | — | Dump SMT-LIB queries to directory |
-| `--profile <none\|wall>` | `none` | Emit per-site wall-clock profile to stderr |
-| `--gb-by-homog <off\|on\|auto>` | `off` | GB algorithm: direct Buchberger / homogenisation pipeline / auto-pick by homogeneity test (`native` backend only) |
-
-#### Advanced / research flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--poly-repr <sparse\|dense>` | `sparse` | Polynomial representation (`native` backend): `sparse` scales on wide rings, `dense` is faster on narrow rings |
-| `--use-f4` | off | Use F4 matrix reduction for batched same-sugar S-pairs (`native` backend) |
-| `--dnf` | off | Pick DNF instead of CNF for the boolean layer (`native` backend) |
-| `--dnf-cap <N>` | `100000` | DNF expansion cap; returns `unknown` beyond this disjunct count |
-| `--cdclt-iter-cap <N>` | `1000000` | CDCL(T) outer-iteration cap |
-| `--gb-stats` | off | Emit per-run GB statistics to stderr (`native` backend) |
-| `--gb-trace` | off | Emit GB trace events to stderr (`native` backend) |
-| `--no-cache` | off | Disable the native FF backend's incremental Buchberger cache between successive `solve()` calls |
-| `--no-aboz-disj` | off | Disable the `aboz` lemma's entailed zero-product disjunctions (`native` backend) |
-
-> **Note**: `z3 + ff` is not supported (z3 has no finite field theory). Picus will reject this combination. `native + nia` is also rejected — the native backend only implements QF_FF.
-
-### `picus info` — inspect R1CS metadata
-
-```bash
-picus info --r1cs circuit.r1cs
-picus info --r1cs circuit.r1cs --constraints
-```
-
-## Configuration
-
-Every knob has a built-in default, so no configuration is required. When you do want to pin settings, Picus resolves them in four layers, each overriding only the keys it sets (later wins):
-
-1. **Built-in defaults** — compiled in; what a library import (`Config::default()`) and a flagless CLI run get. No file is read.
-2. **Config file** — the TOML passed to `--config <FILE>`, or `./picus.toml` in the working directory when present.
-3. **`PICUS_*` environment variables** — engine knobs (e.g. `PICUS_POLY_REPR`, `PICUS_USE_F4`).
-4. **CLI flags** — highest precedence.
-
-[`picus.default.toml`](picus.default.toml) at the repo root documents every key at its default value — copy it and edit. Keys mirror the two config layers, `[analysis]` (solver, theory, lemmas, selector, timeout) and `[engine]` (GB strategy, polynomial representation, caps, diagnostics):
-
-```toml
-[analysis]
-solver = "native"
-timeout_ms = 10000
-
-[engine]
-poly_repr = "sparse"
-gb_strategy = "auto"
-```
-
-An unknown key is a hard error. As a library, `PicusConfig::from_file("picus.toml")` applies a file over the defaults, while `PicusConfig::default()` stays zero-I/O.
+See `crates/picus/src/lib.rs` for the full API, including `check_r1cs_bytes()`, `check_r1cs()`, `PicusConfig::from_file()`, and re-exported types.
 
 ## Documentation
 
 | | |
 |---|---|
-| [Usage Guide](docs/usage-guide.md) | Result interpretation, solver differences, troubleshooting, large circuit strategies |
+| [Usage](docs/usage.md) | CLI flags, configuration, result interpretation, solver differences, troubleshooting |
+| [Building cvc5 / z3](docs/building.md) | Optional external backends: build requirements and licensing |
 | [Architecture](docs/architecture.md) | Crate structure, data flow, solver backends |
 | [Propagation Lemmas](docs/propagation-lemmas.md) | Deduction rules and their implementation |
-| [Future Work](docs/TODO.md) | Planned features and removed components |
 | [Changelog](CHANGELOG.md) | Version history |
 
 ## Citation

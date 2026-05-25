@@ -305,12 +305,14 @@ R1CS-to-PolyIR lowering and solver-backend trait.
 
 | Feature | Effect |
 |---|---|
-| `cvc5` (default) | Enable `cvc5_ff` and `cvc5_nia` backends; build cvc5 from source via `cvc5-ff-sys` |
-| `z3` (default) | Enable `z3_nia` backend; build z3 from source via the vendored `z3-sys` |
-| `native` (nominal) | Always available; explicit name for `--no-default-features --features native` |
+| `native` (default) | In-tree pure-Rust FF solver; no external build chain |
+| `cvc5` (opt-in) | Enable `cvc5_ff` and `cvc5_nia` backends; build cvc5 from source via `cvc5-ff-sys` |
+| `z3` (opt-in) | Enable `z3_nia` backend; build z3 from source via the vendored `z3-sys` |
 
-A `--no-default-features --features native` build skips both
-external SMT chains entirely.
+The default build is `native` only. `cvc5` / `z3` are opt-in
+(`--features cvc5` / `z3`) and pull their vendored build chains; the workspace
+`default-members` also excludes the cvc5 / z3 crates, so no default command
+compiles them.
 
 ### `picus-analysis`
 
