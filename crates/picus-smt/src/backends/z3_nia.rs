@@ -7,7 +7,7 @@ use z3::{Params, SatResult, Solver};
 
 use crate::backends::{poly_to_smtlib_nia, SolverBackend, SolverBackendDescriptor, SolverError, SolverResult, UnknownReason};
 use crate::Theory;
-use picus_solver::timeout::CancelToken;
+use picus_core::timeout::CancelToken;
 use crate::poly_ir::PolyIR;
 
 pub struct Z3NiaBackend;
@@ -116,7 +116,7 @@ fn bigint(val: &BigUint) -> Int {
         .expect("BigUint should produce valid z3 Int")
 }
 
-fn build_poly_z3(vars: &HashMap<String, Int>, ir: &PolyIR, poly: &picus_solver::poly::IrPoly) -> Int {
+fn build_poly_z3(vars: &HashMap<String, Int>, ir: &PolyIR, poly: &picus_core::poly::IrPoly) -> Int {
     let mut sum = Int::from_u64(0);
     for (coeff, var_names) in ir.poly_terms(poly) {
         let c = bigint(&coeff);

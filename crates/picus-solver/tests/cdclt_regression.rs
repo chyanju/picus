@@ -14,7 +14,7 @@ use picus_solver::boolean::solve_boolean_query_dnf;
 use picus_solver::cdclt::solve_formula;
 use picus_solver::core::SolveOutcome;
 use picus_solver::smt2::parse_boolean;
-use picus_solver::timeout::CancelToken;
+use picus_core::timeout::CancelToken;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 enum Verdict {
@@ -949,11 +949,11 @@ fn cross_validate_agreement(name: &str, src: &str) {
         q.prime.clone(),
         q.var_names(),
         &q.formula,
-        &picus_solver::timeout::CancelToken::none(),
+        &picus_core::timeout::CancelToken::none(),
     );
     let dnf = picus_solver::boolean::solve_boolean_query_dnf(
         &q,
-        &picus_solver::timeout::CancelToken::none(),
+        &picus_core::timeout::CancelToken::none(),
     );
     let cv = verdict(&cdclt);
     let dv = verdict(&dnf);

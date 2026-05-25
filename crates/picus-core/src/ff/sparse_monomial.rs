@@ -35,7 +35,7 @@ impl SparseMonomial {
     /// resolved by the full [`MonomialRepr::divides`] check. Exponent
     /// magnitude is not encoded — the `divides` total-degree guard and the
     /// full check cover that.
-    pub(crate) fn divmask(&self) -> super::divmask::DivMask {
+    pub fn divmask(&self) -> super::divmask::DivMask {
         let mut m: u128 = 0;
         for &(v, _) in &self.vars {
             let h = (v as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 57;

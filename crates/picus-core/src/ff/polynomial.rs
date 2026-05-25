@@ -112,7 +112,7 @@ impl Polynomial {
 
     /// View as the dense arm, materialising the sparse arm if needed.
     /// For the rare dense-flavoured readers.
-    pub(crate) fn as_dense(&self, ring: &PolyRing) -> std::borrow::Cow<'_, DensePoly> {
+    pub fn as_dense(&self, ring: &PolyRing) -> std::borrow::Cow<'_, DensePoly> {
         match self {
             Polynomial::Dense(d) => std::borrow::Cow::Borrowed(d),
             Polynomial::Sparse(s) => std::borrow::Cow::Owned(s.to_dense(ring)),
@@ -284,7 +284,7 @@ impl Polynomial {
     }
 
     /// Convert to the sparse representation (boundary helper).
-    pub(crate) fn to_sparse(&self, ring: &PolyRing) -> SparsePolynomial {
+    pub fn to_sparse(&self, ring: &PolyRing) -> SparsePolynomial {
         match self {
             Polynomial::Sparse(s) => s.clone(),
             Polynomial::Dense(d) => SparsePolynomial::from_dense(d, ring),
@@ -529,11 +529,11 @@ impl DensePoly {
     }
 
     #[inline]
-    pub(crate) fn raw_exponents(&self) -> &[u16] { &self.exponents }
+    pub fn raw_exponents(&self) -> &[u16] { &self.exponents }
     #[inline]
-    pub(crate) fn raw_coeffs(&self) -> &[FieldElem] { &self.coeffs }
+    pub fn raw_coeffs(&self) -> &[FieldElem] { &self.coeffs }
     #[inline]
-    pub(crate) fn raw_total_degs(&self) -> &[u32] { &self.total_degs }
+    pub fn raw_total_degs(&self) -> &[u32] { &self.total_degs }
 
     /// Negate every coefficient in place.
     pub fn negate_in_place(&mut self, ring: &PolyRing) {
@@ -578,7 +578,7 @@ impl DensePoly {
     }
 
     /// Comparison helper between term `i` of `self` and term `j` of `other` under the ring order.
-    pub(crate) fn cmp_term_at(
+    pub fn cmp_term_at(
         a_exps: &[u16],
         a_deg: u32,
         b_exps: &[u16],
@@ -913,7 +913,6 @@ impl DensePoly {
     /// reference for the geobucket-based `reduce_by_refs`.
     ///
     /// `shift[k] = lt_exps[k] - d_lt_exps[k]` (the monomial multiplier).
-    #[cfg(test)]
     fn merge_sub_scaled_tail(
         &self,
         cursor: usize,
@@ -1076,7 +1075,7 @@ impl DensePoly {
     ///
     /// When `use_counts` is provided, the per-divisor counter at the
     /// index of the selected reducer is incremented every iteration.
-    pub(crate) fn reduce_by_refs_geobucket(
+    pub fn reduce_by_refs_geobucket(
         &self,
         divisors: &[&DensePoly],
         ring: &PolyRing,
@@ -1344,11 +1343,9 @@ impl DensePoly {
         result
     }
 
-    /// Single-vector reduction with fused `merge_sub_scaled_tail`. Retained
-    /// as the cross-validation reference for the geobucket-based
-    /// `reduce_by_refs`; only compiled under `cfg(test)`.
-    #[cfg(test)]
-    pub(crate) fn reduce_by_refs_naive(&self, divisors: &[&DensePoly], ring: &PolyRing) -> DensePoly {
+    /// Single-vector reduction with fused `merge_sub_scaled_tail`. The
+    /// cross-validation reference for the geobucket-based `reduce_by_refs`.
+    pub fn reduce_by_refs_naive(&self, divisors: &[&DensePoly], ring: &PolyRing) -> DensePoly {
         if self.is_zero() || divisors.is_empty() {
             return self.clone();
         }

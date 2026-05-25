@@ -96,7 +96,7 @@ fn native_ff_solves_over_gf7() {
     ir.set_target(2);
 
     let mut backend = picus_smt::backends::native_ff::NativeFfBackend::new();
-    let cancel = picus_solver::timeout::CancelToken::none();
+    let cancel = picus_core::timeout::CancelToken::none();
     let outcome = backend
         .solve(&ir, 5000, &cancel)
         .expect("native_ff backend should not error on GF(7)");
@@ -134,7 +134,7 @@ fn ir_with_benign_disjunction() -> picus_smt::poly_ir::PolyIR {
 fn native_ff_disjunction_path_agrees_with_gb() {
     let ir = ir_with_benign_disjunction();
     let mut backend = picus_smt::backends::native_ff::NativeFfBackend::new();
-    let cancel = picus_solver::timeout::CancelToken::none();
+    let cancel = picus_core::timeout::CancelToken::none();
     let outcome = backend
         .solve(&ir, 5000, &cancel)
         .expect("native_ff CDCL(T) path should not error");
@@ -150,7 +150,7 @@ fn native_ff_disjunction_path_agrees_with_gb() {
 fn cvc5_ff_consumes_disjunction() {
     let ir = ir_with_benign_disjunction();
     let mut backend = picus_smt::backends::cvc5_ff::Cvc5FfBackend::new();
-    let cancel = picus_solver::timeout::CancelToken::none();
+    let cancel = picus_core::timeout::CancelToken::none();
     let outcome = backend
         .solve(&ir, 5000, &cancel)
         .expect("cvc5_ff should accept the (or ...) assertion");

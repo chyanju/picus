@@ -32,8 +32,8 @@ use picus_solver::boolean::{BooleanQuery, Formula, Literal};
 use picus_solver::encoder::{
     encode, ConstraintSystemBuilder, EncodedSystem, ConstraintSystem, PolyTerm,
 };
-use picus_solver::ff::field::PrimeField;
-use picus_solver::poly::{IrPoly as Poly, IrPolyRing};
+use picus_core::ff::field::PrimeField;
+use picus_core::poly::{IrPoly as Poly, IrPolyRing};
 use thiserror::Error;
 
 /// Reasons the R1CS-to-PolyIR lowering can fail. Surfacing these as

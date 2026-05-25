@@ -130,7 +130,7 @@ impl SparsePolynomial {
 
     /// The backing term list (descending ring order, nonzero coeffs).
     /// For the sparse geobucket: seed the subject and read divisor tails.
-    pub(crate) fn terms_ref(&self) -> &[(SparseMonomial, FieldElem)] {
+    pub fn terms_ref(&self) -> &[(SparseMonomial, FieldElem)] {
         &self.terms
     }
 
@@ -139,7 +139,7 @@ impl SparsePolynomial {
     /// duplicate monomials) — e.g. the descending stream of irreducible
     /// terms the geobucket reducer collects. Skips the `from_terms`
     /// sort/combine pass.
-    pub(crate) fn from_sorted_terms(terms: Vec<(SparseMonomial, FieldElem)>) -> Self {
+    pub fn from_sorted_terms(terms: Vec<(SparseMonomial, FieldElem)>) -> Self {
         SparsePolynomial { terms }
     }
 

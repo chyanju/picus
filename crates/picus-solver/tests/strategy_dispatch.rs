@@ -15,21 +15,19 @@
 
 use num_bigint::BigUint;
 
-use picus_solver::config::{ConfigGuard, RuntimeConfig};
-use picus_solver::field::FfField;
-use picus_solver::ff::monomial::MonomialOrder;
+use picus_core::config::{ConfigGuard, GbStrategy, RuntimeConfig};
+use picus_core::ff::field::PrimeField;
+use picus_core::ff::monomial::MonomialOrder;
 use picus_solver::gb::compute_gb_with_timeout_traced;
-use picus_solver::ideal::{
-    compute_gb_with_order, last_dispatched_algorithm, GbStrategy, Ideal,
-};
-use picus_solver::poly::FfPolyRing;
-use picus_solver::timeout::CancelToken;
+use picus_solver::ideal::{compute_gb_with_order, last_dispatched_algorithm, Ideal};
+use picus_core::poly::FfPolyRing;
+use picus_core::timeout::CancelToken;
 
 /// `x*y - 1 = 0` over GF(7) — non-homogeneous, so the Auto resolver
 /// would pick `ByHomog` and the two strategies take different
 /// intermediate paths (final basis is identical).
-fn gens_xy_minus_1() -> (FfPolyRing, Vec<picus_solver::poly::Poly>) {
-    let field = FfField::new(BigUint::from(7u32));
+fn gens_xy_minus_1() -> (FfPolyRing, Vec<picus_core::poly::Poly>) {
+    let field = PrimeField::new(BigUint::from(7u32));
     let pr = FfPolyRing::new(field, vec!["x".into(), "y".into()]);
     let xy = pr.mul(pr.var(0), pr.var(1));
     let g = pr.sub(xy, pr.one());

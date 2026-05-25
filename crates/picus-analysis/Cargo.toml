@@ -19,7 +19,7 @@ z3 = ["picus-smt/z3"]
 [dependencies]
 picus-r1cs = { path = "../picus-r1cs" }
 picus-smt = { path = "../picus-smt", default-features = false }
-picus-solver = { path = "../picus-solver" }
+picus-core = { path = "../picus-core" }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
 num-integer = { workspace = true }

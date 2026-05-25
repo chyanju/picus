@@ -1,13 +1,13 @@
 //! Pattern-detection tests for [`picus_solver::parse`]: `bit_constraint`,
 //! `linear_monomial`, `extract_linear_monomials`, and `bit_sums`.
 
-use picus_solver::field::FfField;
+use picus_core::ff::field::PrimeField;
 use picus_solver::parse::*;
-use picus_solver::poly::FfPolyRing;
+use picus_core::poly::FfPolyRing;
 use num_bigint::BigUint;
 use std::collections::HashSet;
 
-fn ff(p: u32) -> FfField { FfField::new(BigUint::from(p)) }
+fn ff(p: u32) -> PrimeField { PrimeField::new(BigUint::from(p)) }
 
 // =============================================================================
 // bitConstraint  (GF(7))

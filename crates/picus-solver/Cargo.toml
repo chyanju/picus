@@ -15,6 +15,7 @@ rug.workspace = true
 log.workspace = true
 thiserror.workspace = true
 oorandom = "11.1"
+picus-core = { path = "../picus-core" }
 
 [dev-dependencies]
 env_logger = "0.11"

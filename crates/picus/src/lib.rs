@@ -53,7 +53,7 @@ pub use picus_analysis::dpvl::LemmaSet;
 pub use picus_analysis::selector::SelectorKind;
 
 /// Groebner basis algorithm strategy used by the native FF backend.
-pub use picus_solver::config::GbStrategy;
+pub use picus_core::config::GbStrategy;
 
 // Sub-crates exposed for advanced usage (e.g., dump_smt, custom pipelines).
 pub use picus_r1cs;
@@ -247,7 +247,7 @@ pub fn check_r1cs(
     // the prior settings when this function returns, so concurrent
     // callers on other threads are unaffected and overlapping calls on
     // the same thread can't leak settings into siblings.
-    let _solver_cfg = picus_solver::config::ConfigGuard::with_override(|c| {
+    let _solver_cfg = picus_core::config::ConfigGuard::with_override(|c| {
         c.gb_strategy = config.gb_strategy;
         c.profile_enabled = config.profile;
         c.gb_stats_enabled = config.gb_stats;
@@ -299,13 +299,13 @@ pub fn check_r1cs(
 /// `Config::profile` was set during a previous `check_r1cs` call).
 /// `tag` is a free-form label printed alongside the table.
 pub fn dump_profile(tag: &str) {
-    picus_solver::profile::dump_to_stderr(tag);
+    picus_core::profile::dump_to_stderr(tag);
 }
 
 /// Write the accumulated split-GB / DFS counters to stderr (if
 /// `Config::gb_stats` was set during a previous `check_r1cs` call).
 pub fn dump_gb_stats() {
-    picus_solver::profile::dump_split_stats_to_stderr();
+    picus_core::profile::dump_split_stats_to_stderr();
 }
 
 // ============================================================

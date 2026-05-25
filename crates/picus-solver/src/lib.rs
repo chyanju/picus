@@ -12,7 +12,6 @@ pub mod bench_fixtures;
 pub mod bitprop;
 pub mod boolean;
 pub mod cdclt;
-pub mod config;
 pub mod core;
 pub mod encoder;
 pub mod ff;
@@ -21,12 +20,14 @@ pub mod ideal;
 pub mod incremental;
 pub mod incremental_context;
 pub mod parse;
-pub mod poly;
-pub mod profile;
 pub mod roots;
 pub mod smt2;
 pub mod split_gb;
-pub mod timeout;
+
+// Shared substrate (runtime config, polynomial ring, profiler, cancellation)
+// lives in picus-core; re-bound so in-crate paths stay
+// `crate::{config, poly, profile, timeout}`.
+pub(crate) use picus_core::{config, poly, profile, timeout};
 
 // Internal modules: only referenced from within the crate. Kept private to
 // keep the surface area focused.

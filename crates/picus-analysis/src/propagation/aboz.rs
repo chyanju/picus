@@ -16,8 +16,8 @@ use std::collections::HashSet;
 
 use num_traits::Zero;
 use picus_smt::poly_ir::PolyIR;
-use picus_solver::config;
-use picus_solver::poly::IrPoly as Poly;
+use picus_core::config;
+use picus_core::poly::IrPoly as Poly;
 
 use super::lemma::{LemmaDescriptor, PropagationCtx, PropagationLemma};
 

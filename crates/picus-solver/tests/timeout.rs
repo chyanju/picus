@@ -12,7 +12,7 @@ use picus_solver::core::{solve_encoded_with_cancel, SolveOutcome};
 mod common;
 use common::{NamedSystem, NamedTerm};
 use picus_solver::incremental::IncrementalSolver;
-use picus_solver::timeout::CancelToken;
+use picus_core::timeout::CancelToken;
 use num_bigint::BigUint;
 use num_traits::One;
 

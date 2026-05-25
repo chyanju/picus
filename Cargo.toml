@@ -9,6 +9,7 @@ members = [
     "crates/picus",
     "crates/picus-cli",
     "crates/picus-solver",
+    "crates/picus-core",
 ]
 
 [workspace.package]
