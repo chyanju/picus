@@ -838,7 +838,13 @@ pub fn compute_gb_incremental_with_order(
         order,
         cancel_token: Some(cancel.clone()),
         abort_on_trivial: true,
-        use_f4: crate::ff::buchberger::use_f4_default(),
+        // Incremental extends are inherently tiny-batch (a handful of new
+        // S-pairs per call), so F4's degree-batched matrix never amortizes —
+        // its per-batch overhead made `--use-f4` 10-20x slower here with the
+        // matrix path firing zero times. Always run the per-pair engine on the
+        // incremental path; F4 (when enabled) is used only for from-scratch GB.
+        // Result-identical (F4 ≡ per-pair); this is a routing/perf choice.
+        use_f4: false,
     };
 
     // Backup for panic / error fallback (matches compute_gb_with_order behavior).
@@ -967,7 +973,9 @@ pub fn compute_gb_incremental_with_order_traced(
         order,
         cancel_token: Some(cancel.clone()),
         abort_on_trivial: true,
-        use_f4: crate::ff::buchberger::use_f4_default(),
+        // See `compute_gb_incremental_with_order`: incremental extends are
+        // tiny-batch, so F4 never amortizes — always per-pair here.
+        use_f4: false,
     };
     let backup: Vec<Poly> = known_gb.iter().chain(new_polys.iter())
         .map(|p| p.clone())
