@@ -12,10 +12,15 @@
 //! the dispatch chose on this thread, so the assertions don't depend
 //! on observable basis differences (Direct and ByHomog return the
 //! same final ideal — just via different intermediate steps).
+//!
+//! These tests pin `ReprKind::Dense`: `GbAlgorithm` dispatch is the dense
+//! path. Under the sparse representation `compute_gb_with_order` routes to
+//! `ff::sparse_gb`, which has its own Buchberger and does not consult the
+//! strategy or record a dispatched algorithm.
 
 use num_bigint::BigUint;
 
-use picus_core::config::{ConfigGuard, GbStrategy, RuntimeConfig};
+use picus_core::config::{ConfigGuard, GbStrategy, ReprKind, RuntimeConfig};
 use picus_core::ff::field::PrimeField;
 use picus_core::ff::monomial::MonomialOrder;
 use picus_solver::gb::compute_gb_with_timeout_traced;
@@ -36,7 +41,10 @@ fn gens_xy_minus_1() -> (FfPolyRing, Vec<picus_core::poly::Poly>) {
 
 #[test]
 fn compute_gb_with_order_honours_direct() {
-    let _guard = ConfigGuard::with_override(|c| c.gb_strategy = GbStrategy::Direct);
+    let _guard = ConfigGuard::with_override(|c| {
+        c.gb_strategy = GbStrategy::Direct;
+        c.poly_repr = ReprKind::Dense;
+    });
     let (pr, gens) = gens_xy_minus_1();
     let _ = compute_gb_with_order(&pr, gens, &CancelToken::none(), MonomialOrder::DegRevLex);
     assert_eq!(
@@ -48,7 +56,10 @@ fn compute_gb_with_order_honours_direct() {
 
 #[test]
 fn compute_gb_with_order_honours_by_homog() {
-    let _guard = ConfigGuard::with_override(|c| c.gb_strategy = GbStrategy::ByHomog);
+    let _guard = ConfigGuard::with_override(|c| {
+        c.gb_strategy = GbStrategy::ByHomog;
+        c.poly_repr = ReprKind::Dense;
+    });
     let (pr, gens) = gens_xy_minus_1();
     let _ = compute_gb_with_order(&pr, gens, &CancelToken::none(), MonomialOrder::DegRevLex);
     assert_eq!(
@@ -61,7 +72,10 @@ fn compute_gb_with_order_honours_by_homog() {
 
 #[test]
 fn by_homog_falls_back_to_direct_for_lex() {
-    let _guard = ConfigGuard::with_override(|c| c.gb_strategy = GbStrategy::ByHomog);
+    let _guard = ConfigGuard::with_override(|c| {
+        c.gb_strategy = GbStrategy::ByHomog;
+        c.poly_repr = ReprKind::Dense;
+    });
     let (pr, gens) = gens_xy_minus_1();
     let _ = compute_gb_with_order(&pr, gens, &CancelToken::none(), MonomialOrder::Lex);
     // ByHomog only handles DegRevLex; its `compute` delegates to
@@ -77,7 +91,10 @@ fn by_homog_falls_back_to_direct_for_lex() {
 
 #[test]
 fn traced_path_falls_back_to_direct_when_strategy_lacks_tracing() {
-    let _guard = ConfigGuard::with_override(|c| c.gb_strategy = GbStrategy::ByHomog);
+    let _guard = ConfigGuard::with_override(|c| {
+        c.gb_strategy = GbStrategy::ByHomog;
+        c.poly_repr = ReprKind::Dense;
+    });
     let (pr, gens) = gens_xy_minus_1();
     // `compute_gb_with_timeout_traced` is the main production traced
     // entry; it dispatches twice (DegRevLex traced, Lex untraced) so
@@ -99,7 +116,10 @@ fn traced_path_falls_back_to_direct_when_strategy_lacks_tracing() {
 
 #[test]
 fn ideal_new_routes_through_dispatch() {
-    let _guard = ConfigGuard::with_override(|c| c.gb_strategy = GbStrategy::ByHomog);
+    let _guard = ConfigGuard::with_override(|c| {
+        c.gb_strategy = GbStrategy::ByHomog;
+        c.poly_repr = ReprKind::Dense;
+    });
     let (pr, gens) = gens_xy_minus_1();
     let _ideal = Ideal::new(&pr, gens);
     assert_eq!(last_dispatched_algorithm(), Some("buchberger-by-homog"));
@@ -108,8 +128,12 @@ fn ideal_new_routes_through_dispatch() {
 #[test]
 fn default_strategy_is_direct() {
     // Ensure the test runs with a default config (no leaked override
-    // from a sibling thread).
-    let _guard = ConfigGuard::install(RuntimeConfig::default());
+    // from a sibling thread); pin Dense so dispatch is exercised.
+    let _guard = ConfigGuard::install({
+        let mut c = RuntimeConfig::default();
+        c.poly_repr = ReprKind::Dense;
+        c
+    });
     let (pr, gens) = gens_xy_minus_1();
     let _ = compute_gb_with_order(&pr, gens, &CancelToken::none(), MonomialOrder::DegRevLex);
     assert_eq!(last_dispatched_algorithm(), Some("buchberger-direct"));

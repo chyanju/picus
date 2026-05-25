@@ -169,7 +169,9 @@ thread_local! {
 
 /// Name of the algorithm that last serviced a GB request on the
 /// current thread, or `None` if no GB call has run yet. Updated by
-/// [`compute_gb_dispatch`] on every non-empty call.
+/// [`compute_gb_dispatch`] on every non-empty call. Stays `None` under the
+/// sparse representation: `compute_gb_with_order` routes to `ff::sparse_gb`,
+/// which has its own Buchberger and does not consult the strategy dispatch.
 pub fn last_dispatched_algorithm() -> Option<&'static str> {
     LAST_DISPATCHED.with(|c| *c.borrow())
 }
