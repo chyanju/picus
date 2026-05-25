@@ -1,6 +1,6 @@
 //! Theory plug-in interface for CDCL(T).
 //!
-//! Shape matches cvc5's `Theory` virtual class (`theory/ff/theory_ff.{h,cpp}`):
+//! Shape matches cvc5's `Theory` virtual class:
 //! the SAT engine calls [`Theory::notify_fact`] on every committed literal
 //! and [`Theory::post_check`] at a candidate full assignment. The theory
 //! returns `Sat` / `Unsat(core)` / `Unknown`; the orchestrator turns the

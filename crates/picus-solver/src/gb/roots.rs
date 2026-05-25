@@ -6,7 +6,7 @@
 //!    distinct linear factors.
 //! 2. Cantor–Zassenhaus factorisation of the squarefree part.
 //!
-//! Semantics match cvc5's `theory/ff/uni_roots.cpp`.
+//! Semantics match cvc5's univariate root finding.
 
 use crate::ff::univariate::{self, UnivariatePoly};
 use crate::ff::field::{FieldElem, PrimeField};

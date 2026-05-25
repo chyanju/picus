@@ -21,7 +21,7 @@ pub mod split_gb;
 pub(crate) mod sat;
 
 // Shared substrate (runtime config, polynomial ring, profiler, cancellation)
-// lives in picus-core; re-bound so in-crate paths stay
+// lives in picus-core; re-bound so in-crate code uses
 // `crate::{config, poly, profile, timeout}`.
 pub(crate) use picus_core::{config, poly, profile, timeout};
 

@@ -1,6 +1,6 @@
 //! `compute_gb_by_homog`: GB-by-homogenization driver.
 //!
-//! Mirrors CoCoA's `myGBasisByHomog` (`SparsePolyOps-ideal.C:819-862`):
+//! Mirrors CoCoA's GB-by-homogenisation (`myGBasisByHomog`):
 //!
 //! 1. Build extended ring `Ph = P[h]` ([`crate::gb::homog_ring::HomogRing`]).
 //! 2. Lift every input `f_i ∈ P` into `Ph`, then homogenize to its top
@@ -18,8 +18,7 @@
 //! in-tree sugar-degree S-pair selector ([`ff::buchberger`]) has
 //! `sugar = wdeg` without mispredictions; pairs are processed in
 //! strict ascending degree, avoiding the "intermediate expression
-//! swell" that kills bit-decomposition ideals (R3 §5). CoCoA reports
-//! 5–50× speedups on the bit-cube + bitsum + chunked-add shape.
+//! swell" that stalls bit-decomposition ideals.
 
 use crate::ff::monomial::MonomialOrder;
 use crate::gb::homog_ring::HomogRing;
@@ -90,8 +89,7 @@ pub fn compute_gb_by_homog(
 
     // Step 5: interreduce in P.  This (a) drops LM-divisible duplicates
     // produced by the dehom collapse (e.g. `h^2·m` and `h·m` both → `m`),
-    // (b) normal-forms survivors, (c) monic-normalizes.  Mirrors CoCoA
-    // myGBasisByHomog lines 845–858.
+    // (b) normal-forms survivors, (c) monic-normalizes.
     gb_p = interreduce_basis(pr, gb_p, cancel);
     gb_p
 }
@@ -107,7 +105,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     /// Compare two GBs by their *leading-monomial sets* in DegRevLex on `P`.
-    /// This is the standard equivalence check (R3 §4 T6): two reduced,
+    /// This is the standard equivalence check: two reduced,
     /// monic, DegRevLex GBs of the same ideal must have identical LM sets.
     fn lm_set(pr: &FfPolyRing, gb: &[Poly]) -> BTreeSet<Vec<usize>> {
         let ctx = pr.ctx();

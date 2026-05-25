@@ -74,7 +74,7 @@ enum Commands {
 
         /// GB strategy:
         ///   off  — direct DegRevLex Buchberger on P (default, baseline);
-        ///   on   — homogenize → GB on P[h] → dehom → interreduce (CoCoA myGBasisByHomog);
+        ///   on   — homogenize → GB on P[h] → dehom → interreduce;
         ///   auto — pick `on` iff at least one input is non-homogeneous (cheap test).
         /// Targets the bit-decomp benchmark family where sugar mis-prediction
         /// causes intermediate expression swell.
