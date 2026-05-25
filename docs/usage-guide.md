@@ -45,7 +45,7 @@ If the solver does not return within the timeout, Picus reports `unknown`. Commo
 
 Options:
 - Increase `--timeout` (e.g., `--timeout 60000` for 60 seconds)
-- Try a different solver (`--solver z3 --theory nia`, `--solver native --theory ff`, or the default `--solver cvc5 --theory ff`)
+- Try a different solver (`--solver z3 --theory nia`, or `--solver cvc5 --theory ff` if built with `--features cvc5`); the default is `--solver native --theory ff`
 - Use `--solver none` to see how much propagation alone can resolve
 - Try `--gb-by-homog auto` on `native + ff`: routes through a homogenisation-based GB pipeline that wins on bit-decomposition-shaped ideals
 - Enable the F4 matrix path with `--use-f4` (research flag; native FF only)

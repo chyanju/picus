@@ -100,9 +100,9 @@ See `crates/picus/src/lib.rs` for the full API, including `check_r1cs_bytes()`, 
 ### `picus check` — verify circuit uniqueness
 
 ```bash
-picus check --r1cs circuit.r1cs                              # default: cvc5 + ff
-picus check --r1cs circuit.r1cs --solver native --theory ff  # pure Rust solver (no cvc5)
-picus check --r1cs circuit.r1cs --solver z3 --theory nia     # z3 with integer arithmetic
+picus check --r1cs circuit.r1cs                              # default: native + ff
+picus check --r1cs circuit.r1cs --solver cvc5 --theory ff    # cvc5 (build with --features cvc5)
+picus check --r1cs circuit.r1cs --solver z3 --theory nia     # z3 with integer arithmetic (--features z3)
 picus check --r1cs circuit.r1cs --solver none                # propagation only
 picus check --r1cs circuit.r1cs --lemmas all-bim             # all lemmas except bim
 picus check --r1cs circuit.r1cs --format json                # JSON output
@@ -112,7 +112,8 @@ picus check --r1cs circuit.r1cs --dump-smt /tmp/smt/         # dump SMT queries
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--r1cs <path>` | *required* | R1CS binary file |
-| `--solver <name>` | `cvc5` | Solver backend name. Built-in: `cvc5`, `z3`, `native`, `none`. Names resolve against the inventory of registered backends |
+| `--config <path>` | `./picus.toml` if present | TOML config file (see [Configuration](#configuration)). Flags below override it |
+| `--solver <name>` | `native` | Solver backend name. Built-in: `native`, `cvc5`, `z3`, `none` (`cvc5`/`z3` require their Cargo features). Names resolve against the inventory of registered backends |
 | `--theory <ff\|nia>` | `ff` | Theory: `ff` (finite field) or `nia` (integer mod) |
 | `--timeout <ms>` | `5000` | Per-query solver timeout |
 | `--selector <first\|counter>` | `counter` | Signal selection heuristic |
@@ -126,12 +127,15 @@ picus check --r1cs circuit.r1cs --dump-smt /tmp/smt/         # dump SMT queries
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--poly-repr <sparse\|dense>` | `sparse` | Polynomial representation (`native` backend): `sparse` scales on wide rings, `dense` is faster on narrow rings |
 | `--use-f4` | off | Use F4 matrix reduction for batched same-sugar S-pairs (`native` backend) |
 | `--dnf` | off | Pick DNF instead of CNF for the boolean layer (`native` backend) |
 | `--dnf-cap <N>` | `100000` | DNF expansion cap; returns `unknown` beyond this disjunct count |
 | `--cdclt-iter-cap <N>` | `1000000` | CDCL(T) outer-iteration cap |
+| `--gb-stats` | off | Emit per-run GB statistics to stderr (`native` backend) |
 | `--gb-trace` | off | Emit GB trace events to stderr (`native` backend) |
 | `--no-cache` | off | Disable the native FF backend's incremental Buchberger cache between successive `solve()` calls |
+| `--no-aboz-disj` | off | Disable the `aboz` lemma's entailed zero-product disjunctions (`native` backend) |
 
 > **Note**: `z3 + ff` is not supported (z3 has no finite field theory). Picus will reject this combination. `native + nia` is also rejected — the native backend only implements QF_FF.
 
@@ -141,6 +145,29 @@ picus check --r1cs circuit.r1cs --dump-smt /tmp/smt/         # dump SMT queries
 picus info --r1cs circuit.r1cs
 picus info --r1cs circuit.r1cs --constraints
 ```
+
+## Configuration
+
+Every knob has a built-in default, so no configuration is required. When you do want to pin settings, Picus resolves them in four layers, each overriding only the keys it sets (later wins):
+
+1. **Built-in defaults** — compiled in; what a library import (`Config::default()`) and a flagless CLI run get. No file is read.
+2. **Config file** — the TOML passed to `--config <FILE>`, or `./picus.toml` in the working directory when present.
+3. **`PICUS_*` environment variables** — engine knobs (e.g. `PICUS_POLY_REPR`, `PICUS_USE_F4`).
+4. **CLI flags** — highest precedence.
+
+[`picus.default.toml`](picus.default.toml) at the repo root documents every key at its default value — copy it and edit. Keys mirror the two config layers, `[analysis]` (solver, theory, lemmas, selector, timeout) and `[engine]` (GB strategy, polynomial representation, caps, diagnostics):
+
+```toml
+[analysis]
+solver = "native"
+timeout_ms = 10000
+
+[engine]
+poly_repr = "sparse"
+gb_strategy = "auto"
+```
+
+An unknown key is a hard error. As a library, `PicusConfig::from_file("picus.toml")` applies a file over the defaults, while `PicusConfig::default()` stays zero-I/O.
 
 ## Documentation
 

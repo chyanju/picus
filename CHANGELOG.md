@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+- Default solver is now `native` (was `cvc5`), matching the default `native`-only build — a bare `picus check` / `Config::default()` now works without opt-in Cargo features. `cvc5` / `z3` need their features and an explicit `--solver`.
+- Layered configuration: built-in defaults < config file < `PICUS_*` environment < CLI flags, each layer overriding only the keys it sets. `picus check` gains `--config <FILE>` (TOML); `./picus.toml` in the working directory is auto-loaded when present. A commented [`picus.default.toml`](picus.default.toml) documents every knob at its default value, with a test asserting it matches the compiled defaults.
+- Config types unified: the public `Config` is now `PicusConfig { analysis, engine }` — `analysis` (solver/theory/lemmas/selector/timeout/dump) and `engine` (the native-FF knobs). Each knob is declared once; `picus::Config` stays as an alias. `EngineOverlay` / `DpvlOverlay` carry the partial (all-optional) config layers, parsed via serde + TOML.
+- `poly_repr` and the `aboz` zero-product disjunction toggle — previously settable only through `PICUS_*` — are now first-class config keys and CLI flags (`--poly-repr`, `--no-aboz-disj`); `--gb-stats` added.
+
 ## [1.7.35] - 2026-05-25
 - New `picus-core` crate holding the shared GF(p) algebra (`ff` field / monomial / dense+sparse polynomials / reduction, the `poly` ring facade), runtime `config`, `timeout::CancelToken`, and `profile`, extracted from `picus-solver`. `picus-solver` keeps the Gröbner / CDCL(T) engine and depends on `picus-core`; `picus-analysis` depends on `picus-core` instead of `picus-solver`.
 - `picus-solver` modules grouped into `gb/` (ideal, GB drivers, model, brancher, tracer, roots, homogenisation) and `frontend/` (encoder, parse, rewriter, bitprop, bench_fixtures); large inline test modules externalised to sibling `tests.rs` files.

@@ -65,12 +65,14 @@ Shared substrate every other crate builds on: the GF(p) algebra plus the
 runtime config, cancellation token, and profiler. No internal Picus
 dependencies.
 
-- **`config.rs`** — `RuntimeConfig` (`gb_strategy`, `use_f4`, `dnf_cap`,
-  `dnf_enabled`, `cdclt_iter_cap`, `gb_stats_enabled`, `gb_trace_enabled`,
-  `profile_enabled`, `cache_enabled`), plus `ReprKind` and `GbStrategy`.
-  Thread-local storage with `ConfigGuard::with_override` for RAII overrides;
-  the `picus::check_r1cs` driver installs a guard per call. `from_env()` seeds
-  defaults from the `PICUS_*` environment variables.
+- **`config.rs`** — `RuntimeConfig`, the engine-layer knobs (`gb_strategy`,
+  `use_f4`, `dnf_cap`, `dnf_enabled`, `cdclt_iter_cap`, `gb_stats_enabled`,
+  `gb_trace_enabled`, `profile_enabled`, `cache_enabled`,
+  `aboz_emit_disjunctions`, `poly_repr`), plus `ReprKind` and `GbStrategy`.
+  Thread-local storage with `ConfigGuard` for RAII overrides; the
+  `picus::check_r1cs` driver installs the resolved engine config per call.
+  `EngineOverlay` is the all-optional partial used for config layering;
+  `from_env()` seeds the thread-local from the `PICUS_*` environment.
 - **`poly.rs`** — `FfPolyRing` (multivariate polynomial ring over
   `PrimeField`), `Poly` / `Mono` aliases, `PolyRingFacade` (`terms`,
   `exponent_at`, `appearing_indeterminates`, owned-`Poly` `add` / `sub` /
@@ -345,13 +347,17 @@ Public library facade.
   full analysis pipeline.
 - **`check_r1cs_bytes(data, config)`** — Analyse from raw bytes.
 - **`check_r1cs(r1cs, config)`** — Analyse a pre-parsed `R1csFile`.
-- **`Config`** — Analysis configuration. Defaults:
-  `solver = Cvc5`, `theory = Ff`, `timeout_ms = 5000`,
-  `lemmas = LemmaSet::all()`, `selector = Counter`,
-  `gb_strategy = Direct`, `profile = false`, `gb_stats = false`,
-  `use_f4 = false`, `dnf_enabled = false`, `dnf_cap = 100_000`,
-  `cdclt_iter_cap = 1_000_000`, `gb_trace = false`,
-  `cache_enabled = true`.
+- **`PicusConfig { analysis, engine }`** (aliased `Config`) — the resolved
+  configuration. `analysis` (`AnalysisConfig`: `solver = Native`,
+  `theory = Ff`, `timeout_ms = 5000`, `lemmas = all`, `selector = Counter`,
+  `dump_smt = None`) plus `engine` (`EngineConfig` = `RuntimeConfig`:
+  `gb_strategy = Direct`, `poly_repr = Sparse`, `cache_enabled = true`,
+  `aboz_emit_disjunctions = true`, the caps at `100_000` / `1_000_000`, and
+  the remaining toggles off). `default()` is zero-I/O.
+- **`resolve_config(path, cli_overlay)`** — layers, in increasing
+  precedence, built-in defaults < config file (`--config`, else
+  `./picus.toml`) < `PICUS_*` environment < CLI overlay, into one
+  `PicusConfig`. `PicusConfig::from_file` / `from_env` are library shortcuts.
 - **`CheckResult`** — `Safe`, `Unsafe { witness_1, witness_2 }`,
   or `Unknown`.
 - **`dump_profile(tag)`** / **`dump_gb_stats()`** — facade for the
@@ -362,12 +368,13 @@ Public library facade.
 Thin CLI entry point:
 
 - **`picus check`** — Runs DPVL on an R1CS file and prints `safe`,
-  `unsafe` (with counter-example), or `unknown`. `--profile wall`,
-  `--gb-by-homog {on,auto}`, `--use-f4`, `--dnf`, `--dnf-cap`,
-  `--cdclt-iter-cap`, `--gb-trace`, `--no-cache` set fields on
-  `picus::Config`; `PICUS_PROFILE` and `PICUS_GB_STATS` env vars
-  are honoured as fallbacks. Depends only on `picus`; does not
-  import `picus_solver::*`.
+  `unsafe` (with counter-example), or `unknown`. `--config <FILE>` loads a
+  TOML config (else `./picus.toml` when present); the flags (`--solver`,
+  `--timeout`, `--profile wall`, `--gb-by-homog`, `--poly-repr`, `--use-f4`,
+  `--dnf`, `--gb-stats`, `--gb-trace`, `--no-cache`, `--no-aboz-disj`, …)
+  form the highest-precedence overlay over the file, the `PICUS_*`
+  environment, and the built-in defaults (`picus::resolve_config`). Depends
+  only on `picus`; does not import `picus_solver::*`.
 - **`picus info`** — Prints R1CS metadata and optionally all
   constraints in human-readable form.
 

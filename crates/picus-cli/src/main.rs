@@ -2,8 +2,9 @@ use anstream::println as aprintln;
 use clap::{Parser, Subcommand, ValueEnum};
 use owo_colors::OwoColorize;
 use picus::{
-    check_r1cs, dump_gb_stats, dump_profile, read_r1cs_file, BigUint, CheckResult, Config,
-    GbStrategy, LemmaSet, SelectorKind, SolverKind, Theory,
+    check_r1cs, dump_gb_stats, dump_profile, read_r1cs_file, resolve_config, AnalysisOverlay,
+    BigUint, CheckResult, EngineOverlay, GbStrategy, PicusConfig, PicusConfigOverlay, ReprKind,
+    SolverKind, Theory,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -34,30 +35,38 @@ enum Commands {
         #[arg(long)]
         r1cs: PathBuf,
 
+        /// Config file (TOML). Layered under the flags below, over the
+        /// `PICUS_*` environment, over the built-in defaults. If omitted,
+        /// `./picus.toml` is used when present. See `picus.default.toml`
+        /// for the full schema and defaults.
+        #[arg(long)]
+        config: Option<PathBuf>,
+
         /// Solver backend. Names are looked up against the inventory of
         /// registered `SolverBackendDescriptor`s, so a downstream crate
         /// can ship a new backend without touching the CLI. Built-in
-        /// names: cvc5, z3, native, none.
-        #[arg(long, default_value = "cvc5")]
-        solver: String,
+        /// names: native, cvc5, z3, none. [default: native]
+        #[arg(long)]
+        solver: Option<String>,
 
-        /// SMT theory: ff (finite field) or nia (nonlinear integer arithmetic).
-        #[arg(long, default_value = "ff")]
-        theory: String,
+        /// SMT theory: ff (finite field) or nia (nonlinear integer
+        /// arithmetic). [default: ff]
+        #[arg(long)]
+        theory: Option<String>,
 
-        /// Per-query solver timeout in milliseconds
-        #[arg(long, default_value = "5000")]
-        timeout: u64,
+        /// Per-query solver timeout in milliseconds. [default: 5000]
+        #[arg(long)]
+        timeout: Option<u64>,
 
-        /// Signal selection strategy
-        #[arg(long, default_value = "counter", value_parser = ["first", "counter"])]
-        selector: String,
+        /// Signal selection strategy. [default: counter]
+        #[arg(long, value_parser = ["first", "counter"])]
+        selector: Option<String>,
 
         /// Propagation lemmas to enable.
         /// Formats: all, none, all-X,Y (exclude), none+X,Y (include).
-        /// Names: linear, binary01, basis2, aboz, bim
-        #[arg(long, default_value = "all")]
-        lemmas: String,
+        /// Names: linear, binary01, basis2, aboz, bim. [default: all]
+        #[arg(long)]
+        lemmas: Option<String>,
 
         /// Dump SMT queries to a directory for debugging
         #[arg(long, name = "dump-smt")]
@@ -67,19 +76,25 @@ enum Commands {
         #[arg(long, default_value = "human", value_enum)]
         format: OutputFormat,
 
-        /// Profile output: none (default), wall (per-site wall-clock).
-        /// Stats are written to stderr.
-        #[arg(long, default_value = "none", value_parser = ["none", "wall"])]
-        profile: String,
+        /// Profile output: none, wall (per-site wall-clock). Stats are
+        /// written to stderr. [default: none]
+        #[arg(long, value_parser = ["none", "wall"])]
+        profile: Option<String>,
 
         /// GB strategy:
         ///   off  — direct DegRevLex Buchberger on P (default, baseline);
         ///   on   — homogenize → GB on P[h] → dehom → interreduce;
         ///   auto — pick `on` iff at least one input is non-homogeneous (cheap test).
         /// Targets the bit-decomp benchmark family where sugar mis-prediction
-        /// causes intermediate expression swell.
-        #[arg(long, default_value = "off", value_parser = ["off", "on", "auto"])]
-        gb_by_homog: String,
+        /// causes intermediate expression swell. [default: off]
+        #[arg(long, value_parser = ["off", "on", "auto"])]
+        gb_by_homog: Option<String>,
+
+        /// Polynomial representation for the native FF backend:
+        /// sparse (scales on wide rings) or dense (faster on narrow
+        /// rings). [default: sparse]
+        #[arg(long, value_parser = ["sparse", "dense"])]
+        poly_repr: Option<String>,
 
         /// Use F4 matrix reduction for batched same-sugar S-pairs
         /// (native FF backend only). Research flag.
@@ -92,14 +107,20 @@ enum Commands {
         dnf: bool,
 
         /// DNF expansion cap; native FF returns Unknown beyond this
-        /// disjunct count.
-        #[arg(long, default_value = "100000")]
-        dnf_cap: u64,
+        /// disjunct count. [default: 100000]
+        #[arg(long)]
+        dnf_cap: Option<u64>,
 
         /// CDCL(T) outer-iteration cap. `0` = immediate Unknown
         /// (test helper); large values = effectively unbounded.
-        #[arg(long, default_value = "1000000")]
-        cdclt_iter_cap: u64,
+        /// [default: 1000000]
+        #[arg(long)]
+        cdclt_iter_cap: Option<u64>,
+
+        /// Emit per-run GB statistics (basis size, S-pair counts) to
+        /// stderr (native FF backend only).
+        #[arg(long)]
+        gb_stats: bool,
 
         /// Emit GB trace events for the in-flight basis to stderr
         /// (native FF backend only).
@@ -111,6 +132,11 @@ enum Commands {
         /// benchmarking or for diagnosing cache bugs.
         #[arg(long)]
         no_cache: bool,
+
+        /// Disable the aboz lemma's entailed zero-product disjunctions
+        /// (native FF backend only). Default: enabled.
+        #[arg(long)]
+        no_aboz_disj: bool,
     },
 
     /// Print R1CS circuit information
@@ -137,6 +163,7 @@ fn main() {
     match cli.command {
         Commands::Check {
             r1cs,
+            config,
             solver,
             theory,
             timeout,
@@ -146,37 +173,55 @@ fn main() {
             format,
             profile,
             gb_by_homog,
+            poly_repr,
             use_f4,
             dnf,
             dnf_cap,
             cdclt_iter_cap,
+            gb_stats,
             gb_trace,
             no_cache,
+            no_aboz_disj,
         } => {
-            // Env-var fallbacks: `PICUS_PROFILE` and `PICUS_GB_STATS`
-            // enable the respective dump even when the corresponding
-            // CLI flag is absent — supports benchmark scripts that
-            // drive picus via environment variables.
-            let profile_on = profile.as_str() == "wall"
-                || std::env::var_os("PICUS_PROFILE").is_some();
-            let gb_stats_on = std::env::var_os("PICUS_GB_STATS").is_some();
-            let gb_strategy = match gb_by_homog.as_str() {
-                "on" => GbStrategy::ByHomog,
-                "auto" => GbStrategy::Auto,
-                _ => GbStrategy::Direct,
+            // CLI overlay — the highest-precedence config layer. Only the
+            // flags the user actually passed become `Some`; everything
+            // else stays `None` and falls through to the config file,
+            // environment, then built-in defaults (see `resolve_config`).
+            // On/off bool flags can only turn a knob *on* (or, for the
+            // `no_*` flags, off), mirroring the `PICUS_*` env vars.
+            let overlay = PicusConfigOverlay {
+                analysis: AnalysisOverlay {
+                    solver,
+                    theory,
+                    selector,
+                    timeout_ms: timeout,
+                    lemmas,
+                    dump_smt,
+                },
+                engine: EngineOverlay {
+                    gb_strategy: gb_by_homog.as_deref().map(|s| match s {
+                        "on" => GbStrategy::ByHomog,
+                        "auto" => GbStrategy::Auto,
+                        _ => GbStrategy::Direct,
+                    }),
+                    poly_repr: poly_repr.as_deref().map(|s| match s {
+                        "dense" => ReprKind::Dense,
+                        _ => ReprKind::Sparse,
+                    }),
+                    use_f4: use_f4.then_some(true),
+                    dnf_enabled: dnf.then_some(true),
+                    dnf_cap,
+                    cdclt_iter_cap,
+                    gb_stats_enabled: gb_stats.then_some(true),
+                    gb_trace_enabled: gb_trace.then_some(true),
+                    cache_enabled: no_cache.then_some(false),
+                    aboz_emit_disjunctions: no_aboz_disj.then_some(false),
+                    profile_enabled: profile.as_deref().map(|s| s == "wall"),
+                },
             };
-            let extras = CheckExtras {
-                use_f4,
-                dnf_enabled: dnf,
-                dnf_cap,
-                cdclt_iter_cap,
-                gb_trace,
-                cache_enabled: !no_cache,
-            };
-            cmd_check(
-                r1cs, &solver, &theory, timeout, &selector, &lemmas, dump_smt, format,
-                profile_on, gb_stats_on, gb_strategy, extras,
-            )
+            let resolved = resolve_config(config.as_deref(), &overlay)
+                .unwrap_or_else(|e| exit_error(&e.to_string()));
+            cmd_check(r1cs, resolved, format);
         }
         Commands::Info {
             r1cs,
@@ -300,63 +345,26 @@ fn install_profile_signal_handler() {
 // check command
 // ============================================================
 
-/// Advanced / research flags grouped together so `cmd_check`'s
-/// signature doesn't grow past one screen.
-struct CheckExtras {
-    use_f4: bool,
-    dnf_enabled: bool,
-    dnf_cap: u64,
-    cdclt_iter_cap: u64,
-    gb_trace: bool,
-    cache_enabled: bool,
-}
+fn cmd_check(r1cs_path: PathBuf, config: PicusConfig, format: OutputFormat) {
+    // Pull the display-facing fields out before `config` moves into the
+    // solve; the engine knobs travel inside `config`.
+    let solver = config.analysis.solver;
+    let theory = config.analysis.theory;
+    let timeout = config.analysis.timeout_ms;
+    let lemmas_display = config.analysis.lemmas.to_string();
+    let theory_str = match theory {
+        Theory::Ff => "ff",
+        Theory::Nia => "nia",
+    };
 
-#[allow(clippy::too_many_arguments)]
-fn cmd_check(
-    r1cs_path: PathBuf,
-    solver_str: &str,
-    theory_str: &str,
-    timeout: u64,
-    selector_str: &str,
-    lemmas_str: &str,
-    dump_smt: Option<PathBuf>,
-    format: OutputFormat,
-    profile_on: bool,
-    gb_stats_on: bool,
-    gb_strategy: GbStrategy,
-    extras: CheckExtras,
-) {
-    let solver: SolverKind = solver_str.parse().unwrap_or_else(|e: String| exit_error(&e));
-    let theory: Theory = theory_str.parse().unwrap_or_else(|e: String| exit_error(&e));
-
+    // Validate up front for a clean message (check_r1cs validates too).
     if let Err(e) = picus::picus_smt::validate_combination(solver, theory) {
         exit_error(&e);
     }
 
-    let selector: SelectorKind = selector_str.parse().unwrap_or_else(|e: String| exit_error(&e));
-    let lemmas = LemmaSet::parse(lemmas_str).unwrap_or_else(|e: String| exit_error(&e));
-
     let r1cs = read_r1cs_file(&r1cs_path).unwrap_or_else(|e| {
         exit_error(&format!("failed to read R1CS file: {}", e));
     });
-
-    let config = Config {
-        solver,
-        theory,
-        timeout_ms: timeout,
-        lemmas,
-        selector,
-        dump_smt,
-        gb_strategy,
-        profile: profile_on,
-        gb_stats: gb_stats_on,
-        use_f4: extras.use_f4,
-        dnf_enabled: extras.dnf_enabled,
-        dnf_cap: extras.dnf_cap,
-        cdclt_iter_cap: extras.cdclt_iter_cap,
-        gb_trace: extras.gb_trace,
-        cache_enabled: extras.cache_enabled,
-    };
 
     let result = check_r1cs(&r1cs, config).unwrap_or_else(|e| exit_error(&e.to_string()));
 
@@ -364,6 +372,7 @@ fn cmd_check(
         (SolverKind::Cvc5, Theory::Ff) => "cvc5 (QF_FF)",
         (SolverKind::Cvc5, Theory::Nia) => "cvc5 (QF_NIA)",
         (SolverKind::Z3, Theory::Nia) => "z3 (QF_NIA)",
+        (SolverKind::Native, Theory::Ff) => "native (QF_FF)",
         (SolverKind::None, _) => "none",
         _ => "unknown",
     };
@@ -388,7 +397,7 @@ fn cmd_check(
             aprintln!();
             print_section("Analysis");
             print_field("Solver", solver_display);
-            print_field("Lemmas", lemmas_str);
+            print_field("Lemmas", &lemmas_display);
             print_field("Timeout", &format!("{}ms", timeout));
             aprintln!();
             print_section("Result");
@@ -428,9 +437,9 @@ fn cmd_check(
                     prv_in: r1cs.header.n_prv_in,
                 },
                 config: ConfigInfo {
-                    solver: solver_str.to_string(),
+                    solver: solver.as_str().to_string(),
                     theory: theory_str.to_string(),
-                    lemmas: lemmas_str.to_string(),
+                    lemmas: lemmas_display,
                     timeout_ms: timeout,
                 },
                 result: result_str,

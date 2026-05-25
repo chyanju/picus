@@ -1,0 +1,67 @@
+# Picus configuration — recommended defaults.
+#
+# This file documents every configuration knob at its built-in default
+# value. The compiled-in defaults (`PicusConfig::default`) are the source
+# of truth; this file mirrors them and is the starting point for a
+# copied-and-edited config.
+#
+# Resolution order (later wins): built-in defaults < this file (the file
+# passed to `--config`, else `./picus.toml` when present) < `PICUS_*`
+# environment variables < CLI flags. Every key is optional — omit a key
+# to keep the value from a lower layer. Keys mirror the struct field
+# names exactly; an unknown key is an error.
+
+[analysis]
+# Solver backend: "native" | "cvc5" | "z3" | "none". "native" is the only
+# backend in the default build; "cvc5"/"z3" need their opt-in Cargo features.
+solver = "native"
+# SMT theory: "ff" (finite field) | "nia" (nonlinear integer arithmetic).
+theory = "ff"
+# Signal selection heuristic: "first" | "counter".
+selector = "counter"
+# Per-query solver timeout, milliseconds.
+timeout_ms = 5000
+# Propagation lemmas: "all" | "none" | "all-X,Y" (exclude X,Y) |
+# "none+X,Y" (include X,Y). Names: linear, binary01, basis2, aboz, bim.
+lemmas = "all"
+# Directory to dump SMT-LIB queries into for debugging. Unset = no dump.
+# dump_smt = "/tmp/picus-smt"
+
+# [engine] tunes Picus's in-tree machinery (the IR/lemma layer plus the
+# native FF Gröbner solver), as opposed to the external SMT backends
+# selected by `analysis.solver`. The external solvers (cvc5 / z3) take no
+# algorithmic knobs from Picus beyond `analysis.timeout_ms`; the
+# native-FF-only keys below are simply unused when you delegate to them.
+[engine]
+
+# --- Native FF solver only (unused by --solver cvc5 / z3 / none) ---
+# Groebner-basis strategy:
+#   "direct"   — DegRevLex Buchberger on P;
+#   "by-homog" — homogenize -> GB on P[h] -> dehomogenize -> interreduce;
+#   "auto"     — pick by-homog iff some input is non-homogeneous.
+gb_strategy = "direct"
+# Use F4 matrix reduction for batched same-sugar S-pairs.
+use_f4 = false
+# Pick DNF instead of CNF for the boolean layer.
+dnf_enabled = false
+# DNF expansion cap; native FF returns Unknown beyond this disjunct count.
+dnf_cap = 100000
+# CDCL(T) outer-iteration cap; 0 = immediate Unknown (test helper).
+cdclt_iter_cap = 1000000
+# Reuse the incremental Buchberger cache between successive solve() calls.
+cache_enabled = true
+
+# --- IR / lemma layer (also affects the cvc5 path) ---
+# Polynomial representation: "sparse" (scales on wide rings) | "dense"
+# (faster on narrow rings; the differential-test oracle). Sets the IR
+# representation, so it shapes the native solve AND the cvc5 lowering
+# footprint — "sparse" keeps wide rings from OOMing either path.
+poly_repr = "sparse"
+# Let the aboz lemma emit entailed zero-product disjunctions (feeds the
+# disjunction-aware path for both native and cvc5).
+aboz_emit_disjunctions = true
+
+# --- Diagnostics to stderr (native engine) ---
+gb_stats_enabled = false
+gb_trace_enabled = false
+profile_enabled = false
