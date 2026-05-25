@@ -1247,12 +1247,10 @@ impl DensePoly {
 
         // Precompute LT info for each divisor: exponent slice (BORROWED,
         // no per-divisor Vec allocation), total degree, and DivMask. The
-        // leading *coefficient* is deliberately NOT captured here — over a
-        // large prime its `FieldElem` is a heap GMP integer, and cloning
-        // one for every divisor on every reduce call dominated setup
-        // (`div_lt_setup`). It is read lazily from the divisor only when
-        // that divisor is actually selected (once per reduction step, not
-        // once per divisor per call). Result-identical.
+        // leading *coefficient* is not captured here — over a large prime a
+        // `FieldElem` is a heap GMP integer, and only the divisor actually
+        // selected needs its coefficient, so it is read lazily at selection
+        // (once per reduction step, not once per divisor per call).
         use super::divmask::DivMask;
         let div_lt: Vec<Option<(&[u16], u32, DivMask)>> = divisors
             .iter()

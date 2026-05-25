@@ -449,17 +449,14 @@ impl<'r> Ideal<'r> {
 
     /// `dim_k(R/I)` — the number of standard monomials, equivalently the
     /// number of solutions of `I` with multiplicity over the algebraic
-    /// closure — read off the leading monomials of this (already-computed)
-    /// basis via the Hilbert function ([`crate::ff::hilbert::quotient_dimension`]).
+    /// closure — read off the leading monomials of this basis via the
+    /// Hilbert function ([`crate::ff::hilbert::quotient_dimension`]).
     ///
-    /// `Some(0)` for the whole ring, `Some(d)` for a zero-dimensional
-    /// ideal, and `None` when `R/I` is not finite-dimensional (positive-
-    /// dimensional) or the dimension is declined for a pathologically
-    /// large ideal. Sound and verdict-neutral: a pure combinatorial read
-    /// of the finished basis, with no caller on the default solve path.
-    /// Its live use is an independent cross-check of the FGLM staircase
-    /// size (a differential-test guard on `fglm_to_lex`, in the spirit of
-    /// `repr_oracle`); otherwise a reusable utility, not a solver feature.
+    /// `Some(0)` for the whole ring, `Some(d)` for a zero-dimensional ideal,
+    /// `None` when `R/I` is not finite-dimensional (positive-dimensional) or
+    /// the dimension is declined for a pathologically large ideal. A pure
+    /// combinatorial read of the finished basis (sound, verdict-neutral);
+    /// cross-checks the FGLM staircase size in [`crate::gb::fglm`].
     pub fn quotient_dimension(&self) -> Option<u128> {
         if self.is_whole_ring() {
             return Some(0);
@@ -838,12 +835,10 @@ pub fn compute_gb_incremental_with_order(
         order,
         cancel_token: Some(cancel.clone()),
         abort_on_trivial: true,
-        // Incremental extends are inherently tiny-batch (a handful of new
-        // S-pairs per call), so F4's degree-batched matrix never amortizes —
-        // its per-batch overhead made `--use-f4` 10-20x slower here with the
-        // matrix path firing zero times. Always run the per-pair engine on the
-        // incremental path; F4 (when enabled) is used only for from-scratch GB.
-        // Result-identical (F4 ≡ per-pair); this is a routing/perf choice.
+        // Incremental extends are tiny-batch (a few new S-pairs per call), so
+        // F4's degree-batched matrix never amortizes; run the per-pair engine
+        // here. F4 (when enabled) is used only for from-scratch GB.
+        // Result-identical (F4 ≡ per-pair).
         use_f4: false,
     };
 

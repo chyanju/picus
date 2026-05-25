@@ -106,26 +106,23 @@ pub struct RuntimeConfig {
     /// cores there. Set false to drop the small per-reduce counting cost on
     /// the SingleGb path.
     pub track_inter_reduce_deps: bool,
-    /// Use triangular model construction (cvc5 `multi_roots` analogue) on the
-    /// **default split-GB** path: when the combined system is zero-dimensional,
-    /// decide it by complete univariate-root + back-substitution enumeration
-    /// instead of the split brancher DFS. Sound: SAT returns a verified
-    /// witness; UNSAT comes only from a complete zero-dimensional enumeration;
-    /// any other case (positive-dimensional, inconclusive, cancelled) falls
-    /// back to the DFS, so it can change timing/`Unknown`-resolution but never
-    /// a definite verdict. Off by default: validated ON (corpus verdicts
-    /// identical to baseline) but corpus-neutral — no `Unknown` is resolved
-    /// (the PLDI set has no zero-dim-stuck circuit), and it builds the combined
-    /// GB the split path avoids. On (`--split-triangular on`) for zero-dim
-    /// workloads where the bounded brancher otherwise leaves `Unknown`.
+    /// Triangular model construction (cvc5 `multi_roots` analogue) on the
+    /// default split-GB path: decide a zero-dimensional combined system by
+    /// univariate-root + back-substitution enumeration instead of the
+    /// brancher DFS. Sound — SAT returns a verified witness, UNSAT comes only
+    /// from a complete zero-dimensional enumeration, and any other case
+    /// (positive-dimensional, inconclusive, cancelled) falls back to the DFS,
+    /// so it can change timing and `Unknown` resolution but never a definite
+    /// verdict. Off by default: it builds the combined GB the split path
+    /// otherwise avoids, so it is opt-in for zero-dimensional workloads the
+    /// bounded brancher leaves `Unknown`.
     pub split_triangular: bool,
     /// Cache the geobucket reducer's divisor index (DivMask buckets + degree
-    /// order) across S-pair reductions whose active basis is unchanged, instead
-    /// of rebuilding it per call. Result-preserving (same normal form). Off by
-    /// default: validated ON (corpus verdicts identical) but corpus-neutral —
-    /// the Buchberger basis grows so the cache hit rate is low (~39% on
-    /// Pedersen) and the rebuild-on-miss offsets the hit savings. On
-    /// (`--reducer-index-cache on`) for long runs against a stable basis.
+    /// order) across S-pair reductions whose active basis is unchanged,
+    /// instead of rebuilding it per call. Result-preserving (same normal
+    /// form). Off by default: a growing basis changes the active set often,
+    /// so the rebuild on a cache miss offsets the saving; opt-in for long
+    /// runs of reductions against a stable basis.
     pub reducer_index_cache: bool,
 }
 
@@ -145,11 +142,6 @@ impl Default for RuntimeConfig {
             poly_repr: ReprKind::Sparse,
             linear_elim: false,
             track_inter_reduce_deps: true,
-            // Validated with these ON: the corpus verdicts are identical to
-            // the baseline (both are correct/verdict-neutral), but neither
-            // improves the corpus (no Unknown resolved, timings neutral) and
-            // both add work the default path otherwise avoids — so the shipped
-            // default is OFF, exposed as a switch for workloads that benefit.
             split_triangular: false,
             reducer_index_cache: false,
         }

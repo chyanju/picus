@@ -43,6 +43,9 @@ picus check --r1cs circuit.r1cs --dump-smt /tmp/smt/         # dump SMT queries
 | `--gb-trace` | off | Emit GB trace events to stderr (`native`) |
 | `--no-cache` | off | Disable the native FF backend's incremental Buchberger cache between successive `solve()` calls |
 | `--no-aboz-disj` | off | Disable the `aboz` lemma's entailed zero-product disjunctions (`native`) |
+| `--linear-elim` | off | Linear (Gaussian) pre-elimination before solving (`native`); may help linear-heavy circuits |
+| `--split-triangular <on\|off>` | off | Triangular model construction for a zero-dimensional combined system on the split-GB path, in place of the brancher DFS (`native`) |
+| `--reducer-index-cache <on\|off>` | off | Cache the reducer's divisor index across reductions with an unchanged active basis (`native`) |
 
 > `z3 + ff` is rejected (z3 has no finite-field theory); `native + nia` is
 > rejected (the native backend implements only QF_FF).
@@ -68,7 +71,7 @@ only the keys it sets (later wins):
 key at its default value — copy it and edit. Keys are split into two tables:
 
 - `[analysis]` — `solver`, `theory`, `timeout_ms`, `selector`, `lemmas`, `dump_smt`. Backend-agnostic.
-- `[engine]` — Picus's in-tree engine: the native FF Gröbner solver knobs (`gb_strategy`, `use_f4`, `dnf_enabled`, `dnf_cap`, `cdclt_iter_cap`, `cache_enabled`) plus the IR/lemma knobs that also shape the cvc5 path (`poly_repr`, `aboz_emit_disjunctions`) and the diagnostics (`gb_stats_enabled`, `gb_trace_enabled`, `profile_enabled`). The native-solver-only keys are unused when delegating to cvc5 / z3.
+- `[engine]` — Picus's in-tree engine: the native FF Gröbner solver knobs (`gb_strategy`, `use_f4`, `dnf_enabled`, `dnf_cap`, `cdclt_iter_cap`, `cache_enabled`, `linear_elim`, `split_triangular`, `reducer_index_cache`, `track_inter_reduce_deps`) plus the IR/lemma knobs that also shape the cvc5 path (`poly_repr`, `aboz_emit_disjunctions`) and the diagnostics (`gb_stats_enabled`, `gb_trace_enabled`, `profile_enabled`). The native-solver-only keys are unused when delegating to cvc5 / z3.
 
 ```toml
 [analysis]

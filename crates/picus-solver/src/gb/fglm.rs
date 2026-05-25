@@ -3,9 +3,7 @@
 //! Converts a Gröbner basis of a **zero-dimensional** ideal from its source
 //! order (here DegRevLex) to a target order (Lex) by linear algebra in the
 //! finite-dimensional quotient ring `R/I`, instead of re-running Buchberger
-//! from scratch in the target order. cvc5/CoCoA reach a lex/elimination
-//! basis the same way; picus previously recomputed the Lex GB with a second
-//! Buchberger pass (`gb::compute_gb_with_timeout` Phase 2).
+//! from scratch in the target order.
 //!
 //! Algorithm. Walk target-order monomials in increasing order from `1`.
 //! For each `m` not already a multiple of a discovered leading term, take
