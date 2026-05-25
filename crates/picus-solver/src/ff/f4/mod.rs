@@ -18,8 +18,8 @@
 //!
 //! Provenance. Each [`F4Output`] records the batch-index of every
 //! input S-pair and the basis-index of every reducer whose row was
-//! linearly combined to produce it (`RowProv` is unioned per
-//! `sparse_echelon` axpy). `BuchbergerState::run_f4` threads these
+//! linearly combined to produce it (`RowProv` is unioned per echelon
+//! axpy). `BuchbergerState::run_f4` threads these
 //! into `on_pair_reducers` + `on_new_poly` so the `GbTracer` UNSAT-
 //! core path stays sound under F4.
 //!
@@ -29,10 +29,10 @@
 //!   filter before the O(n_vars) `Monomial::divides` check.
 //! * The monomial → column index uses a `HashMap` built from a
 //!   single sort pass over the unique monomial set.
-//! * `sparse_echelon` borrows pivot rows in place via `split_at_mut`
-//!   and threads one `SparseRow` scratch buffer through every axpy
-//!   via [`sparse_sub_scaled_consume_a`], which moves `FieldElem`
-//!   coefficients into the merge instead of cloning them.
+//! * The sparse echelon ([`picus_core::ff::linalg::echelonize`])
+//!   borrows pivot rows in place via `split_at_mut` and threads one
+//!   scratch row through every axpy, moving `FieldElem` coefficients
+//!   into the merge instead of cloning them.
 //! * [`F4Workspace`] caches `monomial → (basis_idx, reducer_poly)`
 //!   across batches, invalidating entries whose `basis_idx` becomes
 //!   inactive. The same workspace owns the per-batch scratch buffers
@@ -77,7 +77,7 @@ use super::monomial::Monomial;
 use super::polynomial::{PolyRing, DensePoly};
 use super::spair::SPair;
 use crate::timeout::CancelToken;
-use matrix::{poly_to_sparse_row, sparse_echelon, sparse_row_to_poly, MonoKey, RowProv, SparseRow};
+use matrix::{poly_to_sparse_row, sparse_row_to_poly, MonoKey, RowProv, SparseRow};
 
 
 /// View of a basis element for F4 consumption.
@@ -335,7 +335,7 @@ pub fn process_batch_with_workspace(
     // `provs` runs parallel to `rows`. Reducer rows seed with their
     // contributing basis index; S-poly rows seed with their pair
     // index in `batch[]`. Provenance is unioned on each row-vs-pivot
-    // axpy in `sparse_echelon`, so the final S-poly rows carry every
+    // axpy in the echelon, so the final S-poly rows carry every
     // pair and reducer that participated in producing them.
     let n_reducers = all_polys.len() - n_spolys;
     let mut rows: Vec<SparseRow> = Vec::with_capacity(all_polys.len());
@@ -350,7 +350,7 @@ pub fn process_batch_with_workspace(
     }
 
     // Step 5: sparse row-echelon reduce.
-    sparse_echelon(&mut rows, &mut provs, &ring.field, cancel);
+    crate::ff::linalg::echelonize(&mut rows, &mut provs, &ring.field, cancel);
 
     if cancel.map(|c| c.is_cancelled()).unwrap_or(false) {
         return Vec::new();
