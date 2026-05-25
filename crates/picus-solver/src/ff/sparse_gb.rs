@@ -4,9 +4,9 @@
 //! the dense engine applies: Buchberger's product (coprime) criterion and
 //! the Gebauer-Möller M-criterion at pair generation, the B-criterion at
 //! basis-add, and a sugar-degree priority queue for pair selection. The
-//! criteria mirror [`super::buchberger`]'s `spair_criteria`, minus the
-//! dense `DivMask` prefilter — divisibility goes straight through
-//! [`MonomialRepr`].
+//! criteria mirror [`super::buchberger`]'s `spair_criteria`, with a
+//! presence-based DivMask prefilter ([`SparseMonomial::divmask`]) on the
+//! divisibility checks.
 //!
 //! The reduced Gröbner basis of an ideal under a fixed monomial order is
 //! unique, so the criteria (which only change *which* S-pairs are
@@ -46,9 +46,9 @@ pub fn s_polynomial(
 
 // ──────────────────────────── S-pair + criteria ────────────────────────────
 
-/// A critical S-pair. Mirrors [`super::spair::SPair`] without the dense
-/// `DivMask` (a dense-monomial prefilter) or `generation` (the dense
-/// incremental driver's tag) fields.
+/// A critical S-pair. Mirrors [`super::spair::SPair`]; the `generation`
+/// tag (dense incremental driver) is omitted, and `lcm_divmask` is the
+/// presence-based sparse DivMask rather than the dense threshold scheme.
 #[derive(Clone, Debug)]
 struct SPair {
     i: usize,
@@ -71,7 +71,7 @@ impl SPair {
 }
 
 /// Gebauer-Möller M-criterion insertion (mirror of
-/// `spair_criteria::gm_insert`, divmask-free). A pair whose `lcm` divides
+/// `spair_criteria::gm_insert`). A pair whose `lcm` divides
 /// another's dominates it: drop the new pair if an existing one dominates
 /// it, and erase existing pairs the new one dominates. Coprime pairs never
 /// reach here (the product criterion drops them at generation), so the
@@ -101,8 +101,8 @@ fn gm_insert(list: &mut Vec<SPair>, pair: SPair) {
     list.push(pair);
 }
 
-/// Buchberger B-criterion (mirror of `spair_criteria::b_criterion_kill`,
-/// divmask-free). Erase every pending pair `(i, j)` that the newly-added
+/// Buchberger B-criterion (mirror of `spair_criteria::b_criterion_kill`).
+/// Erase every pending pair `(i, j)` that the newly-added
 /// element's leading term `new_lt` makes redundant: `new_lt | lcm`,
 /// `lcm(LT_j, new_lt) != lcm`, and `lcm(LT_i, new_lt) != lcm`.
 fn b_criterion_kill(pairs: &mut Vec<SPair>, new_lt: &SparseMonomial, basis: &[BasisElement]) {

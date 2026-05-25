@@ -211,7 +211,10 @@ types that the rest of the workspace builds on, plus the
   `FieldElem`), `monomial`, `polynomial` (`DensePoly` dense flat
   storage + the runtime dense/sparse `Polynomial` enum + `PolyRing`,
   whose `repr` fixes the arm), `sparse_monomial` / `sparse_polynomial` /
-  `sparse_gb` (the sparse representation and its Buchberger), `repr`
+  `sparse_geobucket` / `sparse_gb` (the sparse representation, its
+  geobucket reducer, and a Buchberger with the same product / M / B
+  criteria, sugar selection, and incremental seeding as the dense
+  engine), `repr`
   (the `MonomialRepr` / `PolyRepr` shared interface; `repr_oracle`
   cross-checks sparse against dense), `divmask`, `geobucket`, `spair`,
   `hilbert`, `univariate`, `buchberger/` (engine, GM-criterion
