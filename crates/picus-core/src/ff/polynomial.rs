@@ -372,6 +372,116 @@ impl<'a> TermRef<'a> {
     }
 }
 
+/// Prebuilt divisor-lookup structure for the geobucket reducer, owning its
+/// data so it can be **cached across reduce calls** whose divisor set is
+/// unchanged (the Buchberger active basis between basis mutations). Mirrors
+/// the per-call structure that `reduce_by_refs_geobucket` builds: a degree-
+/// sorted `order` (from `SORT_THRESHOLD` divisors) and DivMask `buckets`
+/// (from `BUCKET_THRESHOLD`). The leading *coefficient* is NOT stored — it is
+/// read lazily from the live divisor at reduce time, matching the per-call
+/// reducer. Built by [`ReducerIndex::build`], consumed by
+/// [`DensePoly::reduce_by_refs_geobucket_indexed`].
+pub struct ReducerIndex {
+    /// Per divisor `i`: `(owned LT exponents, LT total degree, LT DivMask)`,
+    /// or `None` if the divisor was zero.
+    div_lt: Vec<Option<(Vec<u16>, u32, super::divmask::DivMask)>>,
+    /// Degree-ascending order of divisor indices (early-break scan), present
+    /// at `>= SORT_THRESHOLD` divisors.
+    order: Option<Vec<usize>>,
+    /// DivMask-keyed buckets (each sorted by LT degree), present at
+    /// `>= BUCKET_THRESHOLD` divisors.
+    buckets: Option<std::collections::HashMap<u128, Vec<usize>>>,
+}
+
+impl ReducerIndex {
+    /// Divisor count from which the degree-`order` index is worth caching
+    /// (matches `reduce_by_refs_geobucket`'s `SORT_THRESHOLD`).
+    pub const SORT_THRESHOLD: usize = 64;
+    /// Divisor count from which the DivMask bucket index is built (matches
+    /// `reduce_by_refs_geobucket`'s `BUCKET_THRESHOLD`).
+    pub const BUCKET_THRESHOLD: usize = 256;
+
+    /// Build the index over `divisors` (in caller order). `div_dms[i]`, when
+    /// supplied, is divisor `i`'s precomputed leading-term DivMask. Exponent
+    /// vectors are cloned (owned) so the index outlives the `divisors` borrow.
+    pub fn build(
+        divisors: &[&DensePoly],
+        ring: &PolyRing,
+        div_dms: Option<&[super::divmask::DivMask]>,
+    ) -> Self {
+        use super::divmask::DivMask;
+        let div_lt: Vec<Option<(Vec<u16>, u32, DivMask)>> = divisors
+            .iter()
+            .enumerate()
+            .map(|(i, d)| {
+                d.leading_term(ring).map(|lt| {
+                    let exps = lt.exponents();
+                    let dm = match div_dms {
+                        Some(dms) => dms[i],
+                        None => ring.divmask.compute_from_slice(exps),
+                    };
+                    (exps.to_vec(), lt.total_degree(), dm)
+                })
+            })
+            .collect();
+        let order = if div_lt.len() >= Self::SORT_THRESHOLD {
+            let mut o: Vec<usize> = (0..div_lt.len()).collect();
+            o.sort_by_key(|&i| div_lt[i].as_ref().map(|t| t.1).unwrap_or(u32::MAX));
+            Some(o)
+        } else {
+            None
+        };
+        let buckets = if div_lt.len() >= Self::BUCKET_THRESHOLD {
+            let mut b: std::collections::HashMap<u128, Vec<usize>> =
+                std::collections::HashMap::new();
+            for (i, lt_opt) in div_lt.iter().enumerate() {
+                if let Some((_, _, dm)) = lt_opt {
+                    b.entry(dm.0).or_default().push(i);
+                }
+            }
+            for indices in b.values_mut() {
+                indices.sort_by_key(|&i| div_lt[i].as_ref().map(|t| t.1).unwrap_or(u32::MAX));
+            }
+            Some(b)
+        } else {
+            None
+        };
+        ReducerIndex { div_lt, order, buckets }
+    }
+
+    /// Number of divisors the index was built over.
+    pub fn len(&self) -> usize {
+        self.div_lt.len()
+    }
+
+    /// `true` when the index is empty.
+    pub fn is_empty(&self) -> bool {
+        self.div_lt.is_empty()
+    }
+
+    /// Whether the cached leading-term data still matches `divisors`'
+    /// current leading terms (exponents + degree). A debug-only staleness
+    /// guard for the Buchberger cache: an unchanged active-index set must
+    /// imply unchanged leading terms (tail reduction preserves them).
+    pub fn matches_active(&self, divisors: &[&DensePoly], ring: &PolyRing) -> bool {
+        if self.div_lt.len() != divisors.len() {
+            return false;
+        }
+        for (entry, d) in self.div_lt.iter().zip(divisors.iter()) {
+            match (entry, d.leading_term(ring)) {
+                (Some((exps, deg, _)), Some(lt)) => {
+                    if exps.as_slice() != lt.exponents() || *deg != lt.total_degree() {
+                        return false;
+                    }
+                }
+                (None, None) => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+}
+
 impl DensePoly {
     /// The zero polynomial.
     pub fn zero() -> Self {
@@ -1404,6 +1514,120 @@ impl DensePoly {
             g.time_sub_scaled_ns.fetch_add(local_sub_ns, std::sync::atomic::Ordering::Relaxed);
         }
         result
+    }
+
+    /// Reduce against a divisor set using a **prebuilt** [`ReducerIndex`]
+    /// (the geobucket reducer's degree-order + DivMask-bucket lookup
+    /// structure, owned so it can be cached across calls whose divisor set
+    /// is unchanged). `divisors[i]` must be the divisor the index's entry
+    /// `i` was built from — the leading *coefficient* is read lazily from
+    /// `divisors` here, matching `reduce_by_refs_geobucket`. Result-identical
+    /// to that method on a Gröbner-basis-shaped set (same first-divisor
+    /// selection, same order-tolerance).
+    pub fn reduce_by_refs_geobucket_indexed(
+        &self,
+        index: &ReducerIndex,
+        divisors: &[&DensePoly],
+        ring: &PolyRing,
+        cancel: Option<&crate::timeout::CancelToken>,
+        mut use_counts: Option<&mut [u64]>,
+    ) -> DensePoly {
+        let n = ring.n_vars;
+        debug_assert_eq!(index.div_lt.len(), divisors.len(),
+            "ReducerIndex size must match the divisor slice");
+        if crate::profile::gb_stats_enabled() {
+            crate::profile::SPLIT_GB.reduce_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        let div_lt = &index.div_lt;
+        let mut gb = super::geobucket::Geobucket::from_poly(self.clone(), ring);
+        let mut result_exps: Vec<u16> = Vec::new();
+        let mut result_coeffs: Vec<FieldElem> = Vec::new();
+        let mut result_degs: Vec<u32> = Vec::new();
+        let mut shift = vec![0u16; n];
+        let mut iter_counter: u32 = 0;
+        const CANCEL_CHECK_PERIOD: u32 = 4096;
+        loop {
+            let (lt_exps, lt_deg, lt_coeff) = match gb.pop_leading_term() {
+                Some(t) => t,
+                None => break,
+            };
+            iter_counter = iter_counter.wrapping_add(1);
+            if iter_counter & (CANCEL_CHECK_PERIOD - 1) == 0 {
+                if let Some(c) = cancel {
+                    if c.is_cancelled() {
+                        result_exps.extend_from_slice(&lt_exps);
+                        result_coeffs.push(lt_coeff);
+                        result_degs.push(lt_deg);
+                        while let Some((e, d, c2)) = gb.pop_leading_term() {
+                            result_exps.extend_from_slice(&e);
+                            result_coeffs.push(c2);
+                            result_degs.push(d);
+                        }
+                        return DensePoly::from_raw_sorted(result_exps, result_coeffs, result_degs);
+                    }
+                }
+            }
+            let cur_dm = ring.divmask.compute_from_slice(&lt_exps);
+            let mut chosen: Option<usize> = None;
+            if let Some(buckets) = &index.buckets {
+                let cur_bits = cur_dm.0;
+                'outer: for (&mask, indices) in buckets {
+                    if (mask & !cur_bits) != 0 {
+                        continue;
+                    }
+                    for &di in indices {
+                        if let Some((d_exps, d_deg, _)) = &div_lt[di] {
+                            if *d_deg > lt_deg { break; }
+                            if d_exps.iter().zip(lt_exps.iter()).all(|(a, b)| a <= b) {
+                                chosen = Some(di);
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+            } else if let Some(order) = &index.order {
+                for &di in order {
+                    if let Some((d_exps, d_deg, d_dm)) = &div_lt[di] {
+                        if *d_deg > lt_deg { break; }
+                        if !d_dm.divides_consistent_with(cur_dm) { continue; }
+                        if d_exps.iter().zip(lt_exps.iter()).all(|(a, b)| a <= b) {
+                            chosen = Some(di);
+                            break;
+                        }
+                    }
+                }
+            } else {
+                for (di, lt_opt) in div_lt.iter().enumerate() {
+                    if let Some((d_exps, d_deg, d_dm)) = lt_opt {
+                        if *d_deg > lt_deg { continue; }
+                        if !d_dm.divides_consistent_with(cur_dm) { continue; }
+                        if d_exps.iter().zip(lt_exps.iter()).all(|(a, b)| a <= b) {
+                            chosen = Some(di);
+                            break;
+                        }
+                    }
+                }
+            }
+            if let Some(di) = chosen {
+                let d_exps = &div_lt[di].as_ref().unwrap().0;
+                let d_lc = divisors[di].leading_coefficient().expect("nonzero divisor LC");
+                let coeff_ratio = ring.field.div(&lt_coeff, d_lc).expect("nonzero divisor LC");
+                let neg_coeff = ring.field.neg(&coeff_ratio);
+                for k in 0..n {
+                    shift[k] = lt_exps[k] - d_exps[k];
+                }
+                gb.sub_scaled_tail(&shift, &neg_coeff, divisors[di]);
+                if let Some(counts) = use_counts.as_deref_mut() {
+                    counts[di] = counts[di].saturating_add(1);
+                }
+            } else {
+                result_exps.extend_from_slice(&lt_exps);
+                result_coeffs.push(lt_coeff);
+                result_degs.push(lt_deg);
+            }
+        }
+        DensePoly::from_raw_sorted(result_exps, result_coeffs, result_degs)
     }
 
     /// Single-vector reduction with fused `merge_sub_scaled_tail`. The

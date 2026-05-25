@@ -61,6 +61,18 @@ linear_elim = false
 # precise (cvc5/CoCoA-style) cores. On by default: only affects the
 # non-default SingleGb path (no cost on the main/PLDI workload).
 track_inter_reduce_deps = true
+# Triangular model construction (cvc5 `multi_roots` analogue) on the default
+# split-GB path: decide a zero-dimensional combined system by univariate-root
+# + back-substitution enumeration instead of the brancher DFS. Sound (SAT =
+# verified witness; UNSAT = complete zero-dim enumeration; else falls back to
+# the DFS). Off by default: validated correct (corpus verdicts identical to
+# baseline with it ON) but corpus-neutral. CLI: --split-triangular on|off.
+split_triangular = false
+# Cache the reducer's divisor index (DivMask buckets + degree order) across
+# S-pair reductions with an unchanged active basis. Result-preserving. Off by
+# default: validated correct but corpus-neutral (low cache hit rate as the
+# basis grows). CLI: --reducer-index-cache on|off.
+reducer_index_cache = false
 
 # --- IR / lemma layer (also affects the cvc5 path) ---
 # Polynomial representation: "sparse" (scales on wide rings) | "dense"

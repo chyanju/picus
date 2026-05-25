@@ -101,6 +101,45 @@ pub fn num_terms(p: &Poly) -> usize {
     p.num_terms()
 }
 
+/// Triangular model construction (cvc5 `multi_roots` analogue) for the default
+/// split path, gated by `config.split_triangular`. When the combined system
+/// `all_gens` is zero-dimensional, decide it completely via
+/// [`crate::gb::model::find_zero_cancel`] (univariate roots + back-substitution
+/// over the exhaustive zero-dim branchers) instead of the brancher DFS.
+///
+/// Returns `Some(Sat(verified point))`, `Some(Unsat)` (a complete
+/// zero-dimensional enumeration found no `GF(p)` solution), or `None` to fall
+/// back to the DFS — when the system is positive-dimensional, the search was
+/// inconclusive (`Unknown`), the witness failed verification, or the GB build
+/// was cancelled. Sound: SAT is a verified witness; UNSAT comes only from a
+/// complete zero-dimensional enumeration; every other case defers to the DFS.
+fn try_split_triangular<'r>(
+    poly_ring: &'r FfPolyRing,
+    all_gens: &[Poly],
+    cancel: &CancelToken,
+) -> Option<SplitFindZeroOutcome> {
+    let gens: Vec<Poly> = all_gens.iter().map(|p| poly_ring.ring.clone_el(p)).collect();
+    let ideal = Ideal::new_with_cancel(poly_ring, gens, cancel).ok()?;
+    if !ideal.is_zero_dim() {
+        return None; // positive-dimensional → the DFS handles it
+    }
+    match crate::gb::model::find_zero_cancel(poly_ring, &ideal.basis, cancel) {
+        crate::gb::model::FindZeroOutcome::Sat(model) => {
+            // The witness must satisfy the original combined system.
+            if !crate::gb::model::verify_model(poly_ring, all_gens, &model) {
+                return None;
+            }
+            let mut pt = Vec::with_capacity(poly_ring.n_vars);
+            for name in &poly_ring.var_names {
+                pt.push(poly_ring.field.from_biguint(model.get(name)?));
+            }
+            Some(SplitFindZeroOutcome::Sat(pt))
+        }
+        crate::gb::model::FindZeroOutcome::Unsat => Some(SplitFindZeroOutcome::Unsat),
+        crate::gb::model::FindZeroOutcome::Unknown => None, // fall back to the DFS
+    }
+}
+
 /// Encode `(orig_polys, bitsums)` into a split GB, run the propagation
 /// fixpoint, then [`split_zero_extend`] to extract a model.
 pub fn split_find_zero<'r>(
@@ -132,6 +171,16 @@ pub fn split_find_zero_cancel<'r>(
                 all_gens.push(poly_ring.ring.clone_el(p));
             }
         }
+
+        // Triangular model construction (config-gated, default off): when the
+        // combined system is zero-dimensional, decide it completely via
+        // `gb::model::find_zero` instead of the brancher DFS below.
+        if crate::config::with(|c| c.split_triangular) {
+            if let Some(outcome) = try_split_triangular(poly_ring, &all_gens, cancel) {
+                return Ok(outcome);
+            }
+        }
+
         let null_partial: PartialPoint = vec![None; poly_ring.n_vars];
 
         let cur_bases: SplitGb<'r> = split_basis.iter()

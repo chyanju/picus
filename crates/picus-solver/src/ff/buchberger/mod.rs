@@ -26,7 +26,7 @@ use super::field::FieldElem;
 #[cfg(test)]
 use super::field::PrimeField;
 use super::monomial::{Monomial, MonomialOrder};
-use super::polynomial::{PolyRing, DensePoly};
+use super::polynomial::{PolyRing, DensePoly, ReducerIndex};
 use super::spair::SPair;
 
 /// Configuration for `groebner_basis`.
@@ -298,6 +298,12 @@ pub(super) struct BuchbergerState {
     /// Enables periodic in-loop tail-reduction. Set by
     /// [`Self::add_generators`] based on input shape.
     input_is_homog: bool,
+    /// Cached divisor index for the reducer, paired with the active-basis
+    /// index list it was built for. Reused across S-pair reductions whose
+    /// active set is unchanged; a mismatch forces a rebuild. Populated only
+    /// when `config.reducer_index_cache` is on and the active basis reaches
+    /// `ReducerIndex::SORT_THRESHOLD`.
+    red_index: Option<(Vec<usize>, ReducerIndex)>,
 }
 
 /// Minimum active-basis size for use-count-based reductor reordering to
@@ -333,6 +339,7 @@ impl BuchbergerState {
             trivial: false,
             stats: GbEngineStats::default(),
             input_is_homog: false,
+            red_index: None,
         }
     }
 
@@ -686,6 +693,79 @@ impl BuchbergerState {
             .collect()
     }
 
+    /// Reduce `s_poly` against the current active basis, returning the
+    /// normal form, the active-basis index list used (reduction order), and
+    /// the per-divisor use counts (parallel to that list).
+    ///
+    /// When `config.reducer_index_cache` is on and the active basis reaches
+    /// `ReducerIndex::SORT_THRESHOLD`, the divisor index is cached in
+    /// `self.red_index` and reused while the active set is unchanged (the
+    /// active list stays in basis order there — the lookup is order-tolerant
+    /// on a GB-shaped set). Otherwise the per-call borrowing reducer is used
+    /// unchanged, keeping its `use_count`-ordered scan.
+    fn reduce_spoly_against_active(
+        &mut self,
+        s_poly: &DensePoly,
+    ) -> (DensePoly, Vec<usize>, Vec<u64>) {
+        let cancel = self.cfg.cancel_token.clone();
+        let mut active_idxs: Vec<usize> = (0..self.basis.len())
+            .filter(|&i| self.basis[i].active)
+            .collect();
+        let mut use_counts = vec![0u64; active_idxs.len()];
+
+        let use_cache = crate::config::with(|c| c.reducer_index_cache)
+            && active_idxs.len() >= ReducerIndex::SORT_THRESHOLD;
+
+        if !use_cache {
+            if active_idxs.len() >= USE_COUNT_SORT_THRESHOLD {
+                active_idxs.sort_by(|&a, &b| {
+                    self.basis[b].use_count.cmp(&self.basis[a].use_count)
+                });
+            }
+            let active_refs: Vec<&DensePoly> =
+                active_idxs.iter().map(|&i| &self.basis[i].poly).collect();
+            let active_dms: Vec<DivMask> =
+                active_idxs.iter().map(|&i| self.basis[i].lt_divmask).collect();
+            let nf = match cancel.as_ref() {
+                Some(c) => s_poly.reduce_by_refs_counted_cancel_dms(
+                    &active_refs, &self.ring, c, &mut use_counts, &active_dms,
+                ),
+                None => s_poly.reduce_by_refs_counted_dms(
+                    &active_refs, &self.ring, &mut use_counts, &active_dms,
+                ),
+            };
+            return (nf, active_idxs, use_counts);
+        }
+
+        // Cached path: reuse the index iff it was built for this exact active
+        // set; otherwise rebuild and cache it.
+        let mut cached = self.red_index.take();
+        let reuse = matches!(&cached, Some((idxs, _)) if *idxs == active_idxs);
+        if !reuse {
+            let active_refs: Vec<&DensePoly> =
+                active_idxs.iter().map(|&i| &self.basis[i].poly).collect();
+            let active_dms: Vec<DivMask> =
+                active_idxs.iter().map(|&i| self.basis[i].lt_divmask).collect();
+            let index = ReducerIndex::build(&active_refs, &self.ring, Some(&active_dms));
+            cached = Some((active_idxs.clone(), index));
+        }
+        let active_refs: Vec<&DensePoly> =
+            active_idxs.iter().map(|&i| &self.basis[i].poly).collect();
+        let index = &cached.as_ref().unwrap().1;
+        #[cfg(debug_assertions)]
+        debug_assert!(
+            index.matches_active(&active_refs, &self.ring),
+            "cached ReducerIndex is stale: active leading terms changed \
+             without an active-set change"
+        );
+        let nf = s_poly.reduce_by_refs_geobucket_indexed(
+            index, &active_refs, &self.ring, cancel.as_ref(), Some(&mut use_counts),
+        );
+        drop(active_refs);
+        self.red_index = cached;
+        (nf, active_idxs, use_counts)
+    }
+
     pub(super) fn run<O: BuchbergerObserver>(&mut self, observer: &mut O) -> Result<(), SolverError> {
         if self.cfg.use_f4 {
             return self.run_f4(observer);
@@ -754,35 +834,12 @@ impl BuchbergerState {
             // tried in `use_count` descending order; the inner stable
             // sort by LT degree preserves this for equal-degree ties.
             let t_red_start = if stats_on { Some(std::time::Instant::now()) } else { None };
-            let mut active_idxs: Vec<usize> = (0..self.basis.len())
-                .filter(|&i| self.basis[i].active)
-                .collect();
-            if active_idxs.len() >= USE_COUNT_SORT_THRESHOLD {
-                active_idxs.sort_by(|&a, &b| {
-                    self.basis[b].use_count.cmp(&self.basis[a].use_count)
-                });
-            }
-            let mut use_counts = vec![0u64; active_idxs.len()];
-            let mut nf = {
-                let active_refs: Vec<&DensePoly> = active_idxs
-                    .iter()
-                    .map(|&i| &self.basis[i].poly)
-                    .collect();
-                // Precomputed leading-term DivMasks (stored per basis
-                // element) — lets the reducer skip the per-call recompute.
-                let active_dms: Vec<_> = active_idxs
-                    .iter()
-                    .map(|&i| self.basis[i].lt_divmask)
-                    .collect();
-                match &self.cfg.cancel_token {
-                    Some(c) => s_poly.reduce_by_refs_counted_cancel_dms(
-                        &active_refs, &self.ring, c, &mut use_counts, &active_dms,
-                    ),
-                    None => s_poly.reduce_by_refs_counted_dms(
-                        &active_refs, &self.ring, &mut use_counts, &active_dms,
-                    ),
-                }
-            };
+            // Reduce against the active basis. With `reducer_index_cache` on
+            // this reuses a cached divisor index across reductions whose
+            // active set is unchanged (see `reduce_spoly_against_active`).
+            let (nf_reduced, active_idxs, use_counts) =
+                self.reduce_spoly_against_active(&s_poly);
+            let mut nf = nf_reduced;
             for (slot, &basis_i) in active_idxs.iter().enumerate() {
                 self.basis[basis_i].use_count = self.basis[basis_i]
                     .use_count

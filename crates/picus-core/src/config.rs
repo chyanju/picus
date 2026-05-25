@@ -106,6 +106,27 @@ pub struct RuntimeConfig {
     /// cores there. Set false to drop the small per-reduce counting cost on
     /// the SingleGb path.
     pub track_inter_reduce_deps: bool,
+    /// Use triangular model construction (cvc5 `multi_roots` analogue) on the
+    /// **default split-GB** path: when the combined system is zero-dimensional,
+    /// decide it by complete univariate-root + back-substitution enumeration
+    /// instead of the split brancher DFS. Sound: SAT returns a verified
+    /// witness; UNSAT comes only from a complete zero-dimensional enumeration;
+    /// any other case (positive-dimensional, inconclusive, cancelled) falls
+    /// back to the DFS, so it can change timing/`Unknown`-resolution but never
+    /// a definite verdict. Off by default: validated ON (corpus verdicts
+    /// identical to baseline) but corpus-neutral — no `Unknown` is resolved
+    /// (the PLDI set has no zero-dim-stuck circuit), and it builds the combined
+    /// GB the split path avoids. On (`--split-triangular on`) for zero-dim
+    /// workloads where the bounded brancher otherwise leaves `Unknown`.
+    pub split_triangular: bool,
+    /// Cache the geobucket reducer's divisor index (DivMask buckets + degree
+    /// order) across S-pair reductions whose active basis is unchanged, instead
+    /// of rebuilding it per call. Result-preserving (same normal form). Off by
+    /// default: validated ON (corpus verdicts identical) but corpus-neutral —
+    /// the Buchberger basis grows so the cache hit rate is low (~39% on
+    /// Pedersen) and the rebuild-on-miss offsets the hit savings. On
+    /// (`--reducer-index-cache on`) for long runs against a stable basis.
+    pub reducer_index_cache: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -124,6 +145,13 @@ impl Default for RuntimeConfig {
             poly_repr: ReprKind::Sparse,
             linear_elim: false,
             track_inter_reduce_deps: true,
+            // Validated with these ON: the corpus verdicts are identical to
+            // the baseline (both are correct/verdict-neutral), but neither
+            // improves the corpus (no Unknown resolved, timings neutral) and
+            // both add work the default path otherwise avoids — so the shipped
+            // default is OFF, exposed as a switch for workloads that benefit.
+            split_triangular: false,
+            reducer_index_cache: false,
         }
     }
 }
@@ -146,6 +174,8 @@ impl RuntimeConfig {
         if let Some(v) = o.poly_repr { self.poly_repr = v; }
         if let Some(v) = o.linear_elim { self.linear_elim = v; }
         if let Some(v) = o.track_inter_reduce_deps { self.track_inter_reduce_deps = v; }
+        if let Some(v) = o.split_triangular { self.split_triangular = v; }
+        if let Some(v) = o.reducer_index_cache { self.reducer_index_cache = v; }
     }
 }
 
@@ -174,6 +204,8 @@ pub struct EngineOverlay {
     pub poly_repr: Option<ReprKind>,
     pub linear_elim: Option<bool>,
     pub track_inter_reduce_deps: Option<bool>,
+    pub split_triangular: Option<bool>,
+    pub reducer_index_cache: Option<bool>,
 }
 
 thread_local! {
