@@ -373,7 +373,7 @@ fn reduce_geobucket_matches_naive_random() {
             continue;
         }
         let refs: Vec<&DensePoly> = divisors.iter().collect();
-        let geo = subject.reduce_by_refs_geobucket(&refs, &r, None, None);
+        let geo = subject.reduce_by_refs_geobucket(&refs, &r, None, None, None);
         let naive = subject.reduce_by_refs_naive(&refs, &r);
         assert_eq!(dense_to_map(&geo, &r), dense_to_map(&naive, &r));
     }

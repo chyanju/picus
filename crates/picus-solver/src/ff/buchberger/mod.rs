@@ -733,12 +733,18 @@ impl BuchbergerState {
                     .iter()
                     .map(|&i| &self.basis[i].poly)
                     .collect();
+                // Precomputed leading-term DivMasks (stored per basis
+                // element) — lets the reducer skip the per-call recompute.
+                let active_dms: Vec<_> = active_idxs
+                    .iter()
+                    .map(|&i| self.basis[i].lt_divmask)
+                    .collect();
                 match &self.cfg.cancel_token {
-                    Some(c) => s_poly.reduce_by_refs_counted_cancel(
-                        &active_refs, &self.ring, c, &mut use_counts,
+                    Some(c) => s_poly.reduce_by_refs_counted_cancel_dms(
+                        &active_refs, &self.ring, c, &mut use_counts, &active_dms,
                     ),
-                    None => s_poly.reduce_by_refs_counted(
-                        &active_refs, &self.ring, &mut use_counts,
+                    None => s_poly.reduce_by_refs_counted_dms(
+                        &active_refs, &self.ring, &mut use_counts, &active_dms,
                     ),
                 }
             };
@@ -915,12 +921,16 @@ impl BuchbergerState {
                 .iter()
                 .map(|&i| &self.basis[i].poly)
                 .collect();
+            let active_dms: Vec<_> = active_idxs
+                .iter()
+                .map(|&i| self.basis[i].lt_divmask)
+                .collect();
             match &self.cfg.cancel_token {
-                Some(c) => s_poly.reduce_by_refs_counted_cancel(
-                    &active_refs, &self.ring, c, &mut use_counts,
+                Some(c) => s_poly.reduce_by_refs_counted_cancel_dms(
+                    &active_refs, &self.ring, c, &mut use_counts, &active_dms,
                 ),
-                None => s_poly.reduce_by_refs_counted(
-                    &active_refs, &self.ring, &mut use_counts,
+                None => s_poly.reduce_by_refs_counted_dms(
+                    &active_refs, &self.ring, &mut use_counts, &active_dms,
                 ),
             }
         };

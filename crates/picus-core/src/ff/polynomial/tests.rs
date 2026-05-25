@@ -146,7 +146,7 @@ fn reduce_by_refs_geobucket_matches_naive() {
         &r,
     );
     let divs: Vec<&DensePoly> = vec![&d1, &d2, &d3];
-    let geo = p.reduce_by_refs_geobucket(&divs, &r, None, None);
+    let geo = p.reduce_by_refs_geobucket(&divs, &r, None, None, None);
     let naive = p.reduce_by_refs_naive(&divs, &r);
     let dispatched = p.reduce_by_refs(&divs, &r);
     assert_eq!(geo.num_terms(), naive.num_terms());
@@ -183,7 +183,7 @@ fn reduce_by_refs_geobucket_to_zero() {
         &r,
     );
     // p reduced by (x - y): leading reductions cancel until 0.
-    let nf = p.reduce_by_refs_geobucket(&[&d], &r, None, None);
+    let nf = p.reduce_by_refs_geobucket(&[&d], &r, None, None, None);
     let nf_naive = p.reduce_by_refs_naive(&[&d], &r);
     assert!(nf.is_zero(), "geobucket reduction should yield zero");
     assert!(nf_naive.is_zero(), "naive reduction should also yield zero");
