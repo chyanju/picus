@@ -161,6 +161,73 @@ fn reduce_by_refs_geobucket_matches_naive() {
     }
 }
 
+fn assert_indexed_matches_geobucket(n: usize) {
+    // Unique-match divisor set d_i = x_i^2 - (i+1): leading term x_i^2 in its
+    // own variable, so any monomial is divisible by at most one — the normal
+    // form is independent of scan order, so the per-call reducer's bucket
+    // HashMap order and the ReducerIndex's order cannot diverge.
+    let f = PrimeField::new(BigUint::from(101u32));
+    let names: Vec<String> = (0..n).map(|i| format!("x{i}")).collect();
+    let r = PolyRing::new(f, names, MonomialOrder::DegRevLex);
+    let fp = &r.field;
+    let divisors: Vec<DensePoly> = (0..n)
+        .map(|i| {
+            let mut sq = vec![0u16; n];
+            sq[i] = 2;
+            DensePoly::from_terms(
+                vec![
+                    (Monomial::from_exponents(sq), fp.from_u64(1)),
+                    (Monomial::from_exponents(vec![0u16; n]), fp.from_u64((i as u64 + 1) % 101)),
+                ],
+                &r,
+            )
+        })
+        .collect();
+    let div_refs: Vec<&DensePoly> = divisors.iter().collect();
+    // p = Σ_i x_i^2 + x_7 (x_7, degree 1, is irreducible by any x_j^2).
+    let mut terms: Vec<(Monomial, FieldElem)> = (0..n)
+        .map(|i| {
+            let mut sq = vec![0u16; n];
+            sq[i] = 2;
+            (Monomial::from_exponents(sq), fp.from_u64(1))
+        })
+        .collect();
+    let mut x7 = vec![0u16; n];
+    x7[7] = 1;
+    terms.push((Monomial::from_exponents(x7), fp.from_u64(1)));
+    let p = DensePoly::from_terms(terms, &r);
+
+    let original = p.reduce_by_refs_geobucket(&div_refs, &r, None, None, None);
+    let index = super::ReducerIndex::build(&div_refs, &r, None);
+    assert_eq!(index.len(), n);
+    let mut uc = vec![0u64; n];
+    let indexed = p.reduce_by_refs_geobucket_indexed(&index, &div_refs, &r, None, Some(&mut uc));
+
+    assert_eq!(indexed.num_terms(), original.num_terms(), "indexed vs geobucket term count (n={n})");
+    for (a, b) in indexed.terms(&r).zip(original.terms(&r)) {
+        assert_eq!(a.exponents(), b.exponents(), "indexed exps diverge (n={n})");
+        assert_eq!(a.coefficient(), b.coefficient(), "indexed coeffs diverge (n={n})");
+    }
+    let used = uc.iter().filter(|&&c| c > 0).count();
+    assert_eq!(used, n, "each x_i^2 reduced by its unique divisor once (n={n})");
+}
+
+#[test]
+fn reduce_indexed_matches_geobucket_order_path() {
+    // 100 divisors: >= SORT_THRESHOLD (64), < BUCKET_THRESHOLD (256) → the
+    // ReducerIndex uses the degree-`order` path.
+    assert!(100 >= super::ReducerIndex::SORT_THRESHOLD);
+    assert!(100 < super::ReducerIndex::BUCKET_THRESHOLD);
+    assert_indexed_matches_geobucket(100);
+}
+
+#[test]
+fn reduce_indexed_matches_geobucket_bucket_path() {
+    // 300 divisors: >= BUCKET_THRESHOLD → the ReducerIndex uses DivMask buckets.
+    assert!(300 >= super::ReducerIndex::BUCKET_THRESHOLD);
+    assert_indexed_matches_geobucket(300);
+}
+
 #[test]
 fn reduce_by_refs_geobucket_to_zero() {
     // DensePoly that fully reduces to zero — exercises the cancellation

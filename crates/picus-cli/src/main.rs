@@ -144,6 +144,19 @@ enum Commands {
         /// general workload.
         #[arg(long)]
         linear_elim: bool,
+
+        /// Triangular model construction (cvc5 multi_roots analogue) on the
+        /// default split-GB path: on | off. Decides a zero-dimensional
+        /// combined system by univariate-root enumeration instead of the
+        /// brancher DFS. Omit to use the built-in default.
+        #[arg(long, value_parser = ["on", "off"])]
+        split_triangular: Option<String>,
+
+        /// Cache the reducer's divisor index across reductions with an
+        /// unchanged active basis (native FF backend only): on | off. Omit
+        /// to use the built-in default.
+        #[arg(long, value_parser = ["on", "off"])]
+        reducer_index_cache: Option<String>,
     },
 
     /// Print R1CS circuit information
@@ -190,6 +203,8 @@ fn main() {
             no_cache,
             no_aboz_disj,
             linear_elim,
+            split_triangular,
+            reducer_index_cache,
         } => {
             // CLI overlay — the highest-precedence config layer. Only the
             // flags the user actually passed become `Some`; everything
@@ -229,6 +244,8 @@ fn main() {
                     // Config-file only (no CLI flag): precise inter-reduce
                     // core tracking is a niche knob; set it via picus.toml.
                     track_inter_reduce_deps: None,
+                    split_triangular: split_triangular.as_deref().map(|s| s == "on"),
+                    reducer_index_cache: reducer_index_cache.as_deref().map(|s| s == "on"),
                 },
             };
             let resolved = resolve_config(config.as_deref(), &overlay)
