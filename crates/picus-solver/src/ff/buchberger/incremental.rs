@@ -62,7 +62,7 @@ impl IncrementalGB {
         // Tail-reduce the active basis to prevent monotonic growth across
         // successive `add_generators` calls.
         if !self.state.trivial {
-            self.state.tail_reduce_active();
+            self.state.tail_reduce_active(false);
         }
         Ok(self.state.trivial)
     }
@@ -78,7 +78,7 @@ impl IncrementalGB {
         let mut obs = NoObserver;
         self.state.run(&mut obs)?;
         if !self.state.trivial {
-            self.state.tail_reduce_active();
+            self.state.tail_reduce_active(false);
         }
         Ok(self.state.trivial)
     }

@@ -57,6 +57,10 @@ cache_enabled = true
 # overhead (net loss on the general workload). May help linear-heavy
 # conjunctive circuits.
 linear_elim = false
+# Track inter-reduction reducer deps in the single-GB UNSAT-core tracer for
+# precise (cvc5/CoCoA-style) cores. Off by default (small per-reduce cost;
+# only affects the non-default SingleGb path).
+track_inter_reduce_deps = false
 
 # --- IR / lemma layer (also affects the cvc5 path) ---
 # Polynomial representation: "sparse" (scales on wide rings) | "dense"

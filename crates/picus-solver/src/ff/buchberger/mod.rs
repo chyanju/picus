@@ -84,7 +84,15 @@ pub trait BuchbergerObserver {
     /// under-approximate the dependency set.
     fn on_pair_reducers(&mut self, _reducer_indices: &[usize]) {}
     fn on_new_poly(&mut self, _idx: usize, _poly: &DensePoly, _from_pair: (usize, usize)) {}
-    fn on_inter_reduce(&mut self, _old_idx: usize, _new_idx: usize) {}
+    /// True if the engine should track inter-reduction reducer dependencies
+    /// and report them via [`on_inter_reduce`]. Off by default — the extra
+    /// counted reduction in `tail_reduce_active` costs a little, so only
+    /// observers that consume precise inter-reduce deps opt in.
+    fn wants_inter_reduce_deps(&self) -> bool { false }
+    /// Reports that basis element `affected` (a basis position) was
+    /// tail-reduced using the elements at the given `reducer` basis
+    /// positions. Observers fold the reducers' deps into `affected`'s.
+    fn on_inter_reduce(&mut self, _affected: usize, _reducers: &[usize]) {}
 }
 
 /// No-op observer.
@@ -577,20 +585,26 @@ impl BuchbergerState {
     /// If a polynomial reduces to zero, it is deactivated (and all bookkeeping
     /// invariants — including `Checkpoint::active_snapshot` — remain stable
     /// because we never resize `self.basis`).
-    pub(super) fn tail_reduce_active(&mut self) {
+    pub(super) fn tail_reduce_active(&mut self, track: bool) -> Vec<(usize, Vec<usize>)> {
         // Snapshot the active indices and clone their polys ONCE into a
         // workspace. We then reduce each workspace[i] by &workspace[j] for
         // j ≠ i with `reduce_by_refs`. Repeating to a fixed point isn't
         // necessary because tail reduction is monotone (each pass strictly
         // shrinks tails or leaves them unchanged).
+        //
+        // When `track`, a counted reduction records which other elements
+        // actually reduced each one; the returned `(affected, reducers)`
+        // pairs (basis positions) let the UNSAT-core tracer fold the
+        // reducers' dependencies into the reduced element.
         self.stats.interreduces_run += 1;
         let active_idx: Vec<usize> = self.basis.iter()
             .enumerate()
             .filter(|(_, e)| e.active)
             .map(|(i, _)| i)
             .collect();
+        let mut log: Vec<(usize, Vec<usize>)> = Vec::new();
         if active_idx.len() < 2 {
-            return;
+            return log;
         }
         // Workspace = active polys, in active_idx order.
         let mut workspace: Vec<DensePoly> = active_idx.iter()
@@ -612,17 +626,37 @@ impl BuchbergerState {
         };
         for i in 0..workspace.len() {
             if cancel.is_cancelled() {
-                return;
+                return log;
             }
-            let others: Vec<&DensePoly> = workspace.iter()
-                .enumerate()
-                .filter(|(j, p)| *j != i && !p.is_zero())
-                .map(|(_, p)| p)
-                .collect();
+            // Other active elements (skip self / already-zero), keeping
+            // their basis positions parallel for the reducer log.
+            let mut others: Vec<&DensePoly> = Vec::new();
+            let mut other_pos: Vec<usize> = Vec::new();
+            for (j, p) in workspace.iter().enumerate() {
+                if j != i && !p.is_zero() {
+                    others.push(p);
+                    other_pos.push(active_idx[j]);
+                }
+            }
             if others.is_empty() {
                 continue;
             }
-            let red = workspace[i].reduce_by_refs_cancel(&others, &self.ring, cancel);
+            let red = if track {
+                let mut use_counts = vec![0u64; others.len()];
+                let r = workspace[i].reduce_by_refs_counted_cancel(
+                    &others, &self.ring, cancel, &mut use_counts,
+                );
+                let reducers: Vec<usize> = (0..other_pos.len())
+                    .filter(|&k| use_counts[k] > 0)
+                    .map(|k| other_pos[k])
+                    .collect();
+                if !reducers.is_empty() {
+                    log.push((active_idx[i], reducers));
+                }
+                r
+            } else {
+                workspace[i].reduce_by_refs_cancel(&others, &self.ring, cancel)
+            };
             workspace[i] = red;
         }
 
@@ -638,6 +672,7 @@ impl BuchbergerState {
                 // lt/lt_divmask unchanged: tail reduction preserves leading term.
             }
         }
+        log
     }
 
     /// Indices (into `self.basis`) of currently-active basis elements.
@@ -839,7 +874,11 @@ impl BuchbergerState {
             if self.stats.reductions_useful > 0
                 && self.stats.reductions_useful % interreduce_period == 0
             {
-                self.tail_reduce_active();
+                let track = observer.wants_inter_reduce_deps();
+                let log = self.tail_reduce_active(track);
+                for (affected, reducers) in &log {
+                    observer.on_inter_reduce(*affected, reducers);
+                }
             }
         }
         // Optional GB-engine telemetry: only emit when the user opts in
