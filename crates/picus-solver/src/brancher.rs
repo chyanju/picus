@@ -4,8 +4,8 @@
 //! Used by both `model.rs` (single-GB findZero) and `split_gb.rs`
 //! (split-GB splitZeroExtend).
 
-use crate::field::FfField;
-use crate::field::FfEl;
+use crate::ff::field::PrimeField;
+use crate::ff::field::FieldElem;
 
 /// Brancher: lazily produces (var_idx, value) candidates.
 ///
@@ -14,7 +14,7 @@ use crate::field::FfEl;
 /// - `RoundRobin`: lazily generates (var, val) from an index counter.
 pub enum Brancher {
     /// Pre-computed root list: iterate from back via `pop()`.
-    Roots(Vec<(usize, FfEl)>),
+    Roots(Vec<(usize, FieldElem)>),
     /// Round-robin: lazily generates (var, val) from index counter.
     RoundRobin {
         unassigned: Vec<usize>,
@@ -28,7 +28,7 @@ pub enum Brancher {
 }
 
 impl Brancher {
-    pub fn next(&mut self, field: &FfField) -> Option<(usize, FfEl)> {
+    pub fn next(&mut self, field: &PrimeField) -> Option<(usize, FieldElem)> {
         match self {
             Brancher::Roots(v) => v.pop(),
             Brancher::RoundRobin { unassigned, idx, total, .. } => {

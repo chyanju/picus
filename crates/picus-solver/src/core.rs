@@ -242,9 +242,9 @@ pub fn solve_split_gb_cancel<'r>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::field::FfField;
+    use crate::ff::field::PrimeField;
 
-    fn ff(p: u32) -> FfField { FfField::new(BigUint::from(p)) }
+    fn ff(p: u32) -> PrimeField { PrimeField::new(BigUint::from(p)) }
 
     #[test]
     fn test_solve_sat() {

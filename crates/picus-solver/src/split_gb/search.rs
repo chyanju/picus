@@ -11,14 +11,14 @@
 //!   reordered to the front of any future [`Brancher::Roots`] list for
 //!   the same variable.
 //! * **Nogood cache** — partial assignments proved infeasible are stored
-//!   as `BTreeMap<usize, FfEl>`s; a new candidate whose assignment is a
+//!   as `BTreeMap<usize, FieldElem>`s; a new candidate whose assignment is a
 //!   superset of any stored nogood is rejected without GB work.
 
 use std::collections::{BTreeMap, HashMap};
 
 use crate::bitprop::BitProp;
 use crate::brancher::Brancher;
-use crate::field::{FfEl, FfField};
+use crate::ff::field::{FieldElem, PrimeField};
 use crate::ideal::Ideal;
 use crate::poly::{FfPolyRing, Poly};
 use crate::timeout::CancelToken;
@@ -65,25 +65,25 @@ pub fn split_zero_extend_cancel<'r>(
         candidates: Brancher,
         /// `(var, val)` of the most recently attempted candidate from
         /// `candidates`. Used to feed `saved_phase` on backtrack.
-        last_tried: Option<(usize, FfEl)>,
+        last_tried: Option<(usize, FieldElem)>,
     }
 
     // `saved_phase[v]` is the most recently popped value of variable `v`
     // across the whole search. When a future `Brancher::Roots` produces
     // candidates for `v`, the saved value is moved to the back of the
     // `Vec` so `Vec::pop` (Brancher::Roots semantics) tries it first.
-    let mut saved_phase: HashMap<usize, FfEl> = HashMap::new();
+    let mut saved_phase: HashMap<usize, FieldElem> = HashMap::new();
 
     // `nogoods` records partial assignments proved infeasible. Each
     // entry is the minimal prefix that triggered the infeasibility:
     // the path from the root plus the failing decision. A new candidate
     // is skipped if its partial assignment is a superset of any stored
     // nogood.
-    let mut nogoods: Vec<BTreeMap<usize, FfEl>> = Vec::new();
+    let mut nogoods: Vec<BTreeMap<usize, FieldElem>> = Vec::new();
     const MAX_NOGOODS: usize = 4096;
 
     // Convert a PartialPoint to a compact map keyed by variable.
-    fn point_to_map(r: &PartialPoint, fp: &FfField) -> BTreeMap<usize, FfEl> {
+    fn point_to_map(r: &PartialPoint, fp: &PrimeField) -> BTreeMap<usize, FieldElem> {
         let mut m = BTreeMap::new();
         for (i, slot) in r.iter().enumerate() {
             if let Some(v) = slot {
@@ -94,7 +94,7 @@ pub fn split_zero_extend_cancel<'r>(
     }
 
     // Subset check: returns true iff every (k, v) in `needle` matches `r[k]`.
-    fn point_covers(needle: &BTreeMap<usize, FfEl>, r: &PartialPoint) -> bool {
+    fn point_covers(needle: &BTreeMap<usize, FieldElem>, r: &PartialPoint) -> bool {
         for (k, v) in needle {
             match &r[*k] {
                 Some(rv) if rv == v => continue,
@@ -106,7 +106,7 @@ pub fn split_zero_extend_cancel<'r>(
 
     // Reorder a Brancher::Roots so the saved phase for a variable (if any)
     // is moved to the back of the Vec, so Vec::pop tries it first.
-    fn apply_phase_save(b: &mut Brancher, saved: &HashMap<usize, FfEl>) {
+    fn apply_phase_save(b: &mut Brancher, saved: &HashMap<usize, FieldElem>) {
         if let Brancher::Roots(v) = b {
             for i in (0..v.len()).rev() {
                 let (var, ref val) = v[i];
@@ -146,7 +146,7 @@ pub fn split_zero_extend_cancel<'r>(
 
     let n_assigned = first.r.iter().filter(|v| v.is_some()).count();
     if n_assigned == poly_ring.n_vars {
-        let out: Vec<FfEl> = first.r.clone().into_iter().map(|v| v.unwrap()).collect();
+        let out: Vec<FieldElem> = first.r.clone().into_iter().map(|v| v.unwrap()).collect();
         return ZeroExtendResult::Point(out);
     }
 
@@ -364,7 +364,7 @@ pub fn split_zero_extend_cancel<'r>(
                 crate::profile::SPLIT_DFS.points_returned
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
-            let out: Vec<FfEl> = new_r.into_iter().map(|v| v.unwrap()).collect();
+            let out: Vec<FieldElem> = new_r.into_iter().map(|v| v.unwrap()).collect();
             return ZeroExtendResult::Point(out);
         }
 
@@ -391,7 +391,7 @@ pub fn split_zero_extend_cancel<'r>(
 }
 
 /// Build a polynomial of the form `x_var - val`.
-fn assignment_poly(pr: &FfPolyRing, var: usize, val: &FfEl) -> Poly {
+fn assignment_poly(pr: &FfPolyRing, var: usize, val: &FieldElem) -> Poly {
     let v = pr.var(var);
     let c = pr.constant(pr.field.clone_el(val));
     pr.sub(v, c)
@@ -400,7 +400,7 @@ fn assignment_poly(pr: &FfPolyRing, var: usize, val: &FfEl) -> Poly {
 /// Substitute the partial assignment into a polynomial and evaluate it.
 /// Returns `Some(value)` if all variables in `p` are assigned (so it can
 /// be fully evaluated); otherwise `None`.
-pub(super) fn evaluate_full(pr: &FfPolyRing, p: &Poly, r: &PartialPoint) -> Option<FfEl> {
+pub(super) fn evaluate_full(pr: &FfPolyRing, p: &Poly, r: &PartialPoint) -> Option<FieldElem> {
     let ring = &pr.ring;
     let fp = &pr.field;
     let mut acc = fp.zero();

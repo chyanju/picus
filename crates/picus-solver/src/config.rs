@@ -14,7 +14,18 @@
 
 use std::cell::RefCell;
 
-use crate::ideal::GbStrategy;
+/// Strategy for computing a Groebner basis. Set via
+/// [`RuntimeConfig::gb_strategy`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum GbStrategy {
+    /// Plain DegRevLex Buchberger on `P`. Default.
+    Direct,
+    /// Homogenize → GB on `P[h]` → dehomogenize → interreduce.
+    ByHomog,
+    /// Pick `Direct` if every input is already homogeneous w.r.t. the
+    /// total-degree grading; otherwise pick `ByHomog`.
+    Auto,
+}
 
 /// Polynomial storage representation, selected at ring construction and
 /// carried by `ff::PolyRing.repr`. Applies to the IR (`PolyIR` equalities/

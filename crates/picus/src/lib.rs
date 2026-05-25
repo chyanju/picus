@@ -53,7 +53,7 @@ pub use picus_analysis::dpvl::LemmaSet;
 pub use picus_analysis::selector::SelectorKind;
 
 /// Groebner basis algorithm strategy used by the native FF backend.
-pub use picus_solver::ideal::GbStrategy;
+pub use picus_solver::config::GbStrategy;
 
 // Sub-crates exposed for advanced usage (e.g., dump_smt, custom pipelines).
 pub use picus_r1cs;

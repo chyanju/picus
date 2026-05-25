@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 
 use crate::brancher::Brancher;
-use crate::field::FfEl;
+use crate::ff::field::FieldElem;
 use crate::ideal::Ideal;
 use crate::poly::{FfPolyRing, Poly};
 
@@ -156,14 +156,14 @@ fn univariate_coeffs(
     poly_ring: &FfPolyRing,
     p: &Poly,
     var_idx: usize,
-) -> Option<Vec<FfEl>> {
+) -> Option<Vec<FieldElem>> {
     let ring = &poly_ring.ring;
     let fp = &poly_ring.field;
     let appearing = ring.appearing_indeterminates(p);
     for (v, _) in &appearing {
         if *v != var_idx { return None; }
     }
-    let mut coeffs: HashMap<usize, FfEl> = HashMap::new();
+    let mut coeffs: HashMap<usize, FieldElem> = HashMap::new();
     let mut max_deg = 0usize;
     for (c, m) in ring.terms(p) {
         let d = ring.exponent_at(&m, var_idx);

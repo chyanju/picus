@@ -16,7 +16,6 @@ pub mod config;
 pub mod core;
 pub mod encoder;
 pub mod ff;
-pub mod field;
 pub mod gb;
 pub mod ideal;
 pub mod incremental;

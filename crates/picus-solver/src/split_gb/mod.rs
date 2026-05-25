@@ -35,7 +35,7 @@ pub(crate) use fixpoint::split_gb_extend_cancel;
 pub use search::{split_zero_extend, split_zero_extend_cancel};
 
 use crate::bitprop::BitProp;
-use crate::field::FfEl;
+use crate::ff::field::FieldElem;
 use crate::ideal::Ideal;
 use crate::poly::{FfPolyRing, Poly};
 use crate::timeout::{CancelToken, Cancelled};
@@ -44,12 +44,12 @@ use crate::timeout::{CancelToken, Cancelled};
 pub type SplitGb<'r> = Vec<Ideal<'r>>;
 
 /// A partial assignment of variable indices to field values.
-pub type PartialPoint = Vec<Option<FfEl>>;
+pub type PartialPoint = Vec<Option<FieldElem>>;
 
 /// Result of [`split_zero_extend`].
 pub enum ZeroExtendResult {
     /// A complete assignment was found.
-    Point(Vec<FfEl>),
+    Point(Vec<FieldElem>),
     /// A conflict polynomial: not in `bases[0]` but evaluates to non-zero
     /// under the partial assignment.
     Conflict(Poly),
@@ -69,7 +69,7 @@ pub enum ZeroExtendResult {
 /// tried. Callers must NOT treat `Unknown` as UNSAT.
 #[derive(Debug)]
 pub enum SplitFindZeroOutcome {
-    Sat(Vec<FfEl>),
+    Sat(Vec<FieldElem>),
     Unsat,
     Unknown,
 }
@@ -172,10 +172,10 @@ pub fn split_find_zero_cancel<'r>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::field::FfField;
+    use crate::ff::field::PrimeField;
     use num_bigint::BigUint;
 
-    fn ff(p: u32) -> FfField { FfField::new(BigUint::from(p)) }
+    fn ff(p: u32) -> PrimeField { PrimeField::new(BigUint::from(p)) }
 
     #[test]
     fn test_admit() {
