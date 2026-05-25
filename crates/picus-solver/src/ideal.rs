@@ -3,7 +3,7 @@
 //! Thin shim over the in-tree [`crate::ff`] Buchberger / Ideal
 //! implementation. Public API: [`Ideal`], [`compute_gb_with_order`],
 //! [`compute_gb_with_order_traced`], [`interreduce_basis`],
-//! [`leading_monomial`], [`leading_coefficient`], [`GbStrategy`],
+//! [`leading_monomial`], [`leading_coefficient`],
 //! [`GbAlgorithm`], [`last_dispatched_algorithm`].
 
 use std::cell::RefCell;
@@ -20,19 +20,7 @@ use crate::poly::{FfPolyRing, Mono, Poly, PolyRingType};
 use crate::timeout::{CancelToken, Cancelled};
 use crate::tracer::GbTracer;
 use crate::SolverError;
-
-/// Strategy for computing a Groebner basis. Set via
-/// [`crate::config::RuntimeConfig::gb_strategy`].
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum GbStrategy {
-    /// Plain DegRevLex Buchberger on `P`. Default.
-    Direct,
-    /// Homogenize → GB on `P[h]` → dehomogenize → interreduce.
-    ByHomog,
-    /// Pick `Direct` if every input is already homogeneous w.r.t. the
-    /// total-degree grading; otherwise pick `ByHomog`.
-    Auto,
-}
+use crate::config::GbStrategy;
 
 /// Pluggable Groebner-basis algorithm.
 ///
