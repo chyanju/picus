@@ -1024,7 +1024,7 @@ impl DensePoly {
         if self.is_zero() || divisors.is_empty() {
             return self.clone();
         }
-        self.reduce_by_refs_geobucket(divisors, ring, None, None)
+        self.reduce_by_refs_geobucket(divisors, ring, None, None, None)
     }
 
     /// Cancel-aware variant of [`reduce_by_refs`]. On cancel, returns
@@ -1042,7 +1042,7 @@ impl DensePoly {
         if self.is_zero() || divisors.is_empty() {
             return self.clone();
         }
-        self.reduce_by_refs_geobucket(divisors, ring, Some(cancel), None)
+        self.reduce_by_refs_geobucket(divisors, ring, Some(cancel), None, None)
     }
 
     /// Variant of [`reduce_by_refs_cancel`] that also records, in
@@ -1060,7 +1060,26 @@ impl DensePoly {
         if self.is_zero() || divisors.is_empty() {
             return self.clone();
         }
-        self.reduce_by_refs_geobucket(divisors, ring, Some(cancel), Some(use_counts))
+        self.reduce_by_refs_geobucket(divisors, ring, Some(cancel), Some(use_counts), None)
+    }
+
+    /// Like [`reduce_by_refs_counted_cancel`] but reuses the caller's
+    /// precomputed leading-term DivMasks (`div_dms[i]` for `divisors[i]`),
+    /// skipping the per-call recompute. Result-identical.
+    pub fn reduce_by_refs_counted_cancel_dms(
+        &self,
+        divisors: &[&DensePoly],
+        ring: &PolyRing,
+        cancel: &crate::timeout::CancelToken,
+        use_counts: &mut [u64],
+        div_dms: &[super::divmask::DivMask],
+    ) -> DensePoly {
+        debug_assert_eq!(divisors.len(), use_counts.len());
+        debug_assert_eq!(divisors.len(), div_dms.len());
+        if self.is_zero() || divisors.is_empty() {
+            return self.clone();
+        }
+        self.reduce_by_refs_geobucket(divisors, ring, Some(cancel), Some(use_counts), Some(div_dms))
     }
 
     /// Non-cancel-aware version of [`reduce_by_refs_counted_cancel`].
@@ -1074,7 +1093,24 @@ impl DensePoly {
         if self.is_zero() || divisors.is_empty() {
             return self.clone();
         }
-        self.reduce_by_refs_geobucket(divisors, ring, None, Some(use_counts))
+        self.reduce_by_refs_geobucket(divisors, ring, None, Some(use_counts), None)
+    }
+
+    /// Like [`reduce_by_refs_counted`] but reuses the caller's precomputed
+    /// leading-term DivMasks. Result-identical.
+    pub fn reduce_by_refs_counted_dms(
+        &self,
+        divisors: &[&DensePoly],
+        ring: &PolyRing,
+        use_counts: &mut [u64],
+        div_dms: &[super::divmask::DivMask],
+    ) -> DensePoly {
+        debug_assert_eq!(divisors.len(), use_counts.len());
+        debug_assert_eq!(divisors.len(), div_dms.len());
+        if self.is_zero() || divisors.is_empty() {
+            return self.clone();
+        }
+        self.reduce_by_refs_geobucket(divisors, ring, None, Some(use_counts), Some(div_dms))
     }
 
     /// Geobucket-based reduction. Public for testing — production code should
@@ -1089,6 +1125,7 @@ impl DensePoly {
         ring: &PolyRing,
         cancel: Option<&crate::timeout::CancelToken>,
         mut use_counts: Option<&mut [u64]>,
+        div_dms: Option<&[super::divmask::DivMask]>,
     ) -> DensePoly {
         let n = ring.n_vars;
         let stats_on = crate::profile::gb_stats_enabled();
@@ -1104,11 +1141,20 @@ impl DensePoly {
         use super::divmask::DivMask;
         let div_lt: Vec<Option<(&[u16], u32, FieldElem, DivMask)>> = divisors
             .iter()
-            .map(|d| {
+            .enumerate()
+            .map(|(i, d)| {
                 if let Some(lt) = d.leading_term(ring) {
                     let exps = lt.exponents();  // borrows from divisor
                     let total_deg = lt.total_degree();
-                    let dm = ring.divmask.compute_from_slice(exps);
+                    // Reuse the caller's precomputed leading-term DivMask
+                    // when supplied (the Buchberger basis stores one per
+                    // element); else compute it. Same value either way —
+                    // tail reduction preserves the leading term — so the
+                    // normal form is identical.
+                    let dm = match div_dms {
+                        Some(dms) => dms[i],
+                        None => ring.divmask.compute_from_slice(exps),
+                    };
                     Some((exps, total_deg, lt.coefficient().clone(), dm))
                 } else {
                     None
