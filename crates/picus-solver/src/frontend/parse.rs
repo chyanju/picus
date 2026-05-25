@@ -1,6 +1,6 @@
 //! Pattern detection on polynomials.
 //!
-//! Mirrors cvc5's `theory/ff/parse.{h,cpp}` but operates on the **semantic**
+//! Mirrors cvc5's FF pattern detection, but operates on the **semantic**
 //! polynomial form (i.e. on a `Poly` already encoded in our `FfPolyRing`)
 //! rather than on SMT AST nodes.  This is sufficient for our pipeline, which
 //! has already encoded all input constraints into polynomials.
@@ -468,8 +468,7 @@ mod tests {
         assert!(pr.is_zero(&residual));
     }
 
-    /// Audit equivalence with cvc5 AST-level `bitConstraint`
-    /// (`parse.cpp:91-100`). Each case asserts that picus's
+    /// Audit equivalence with cvc5's AST-level `bitConstraint`. Each case asserts that picus's
     /// polynomial-level detector accepts (or correctly rejects) the
     /// canonical form produced by encoding the equivalent AST.
 

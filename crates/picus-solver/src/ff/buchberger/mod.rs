@@ -881,8 +881,8 @@ impl BuchbergerState {
         interreduce(active, &self.ring)
     }
 
-    /// Per-pair S-poly construction + geobucket reduction. Extracted
-    /// from `run()` so `run_f4` can fall back to it for size-1
+    /// Per-pair S-poly construction + geobucket reduction. Shared
+    /// with `run()` so `run_f4` can fall back to it for size-1
     /// batches (where F4's matrix amortization wins zero and the
     /// safety-net reduction is pure overhead).
     fn process_pair_geobucket<O: BuchbergerObserver>(

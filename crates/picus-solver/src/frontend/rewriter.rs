@@ -1,6 +1,6 @@
 //! FF term canonicalization on polynomial term lists.
 //!
-//! Equivalent of cvc5's `theory_ff_rewriter` (`theory/ff/theory_ff_rewriter.cpp`)
+//! Equivalent of cvc5's `theory_ff_rewriter`
 //! at the granularity picus-solver works with. cvc5 rewrites on its AST
 //! (`FINITE_FIELD_ADD`, `FINITE_FIELD_MULT`, `FINITE_FIELD_NEG`, `EQUAL`);
 //! picus-solver receives a flat `Vec<PolyTerm>` per equality, so the

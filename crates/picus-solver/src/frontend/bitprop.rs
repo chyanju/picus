@@ -1,6 +1,6 @@
 //! Bit propagation: derive new equalities from known bitsum structure.
 //!
-//! Mirrors cvc5's `BitProp` class in `theory/ff/split_gb.{h,cpp}`.
+//! Mirrors cvc5's split-GB `BitProp`.
 //!
 //! The key observation: if a polynomial `b = b_0 + 2*b_1 + ... + 2^k*b_k`
 //! is known (via the GB) to equal a constant `v`, **and** all `b_i` are

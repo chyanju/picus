@@ -14,8 +14,7 @@
 //!
 //! [`Literal`] carries index-keyed `Vec<PolyTerm>` whose `VarIdx`
 //! values reference [`BooleanQuery::builder`]'s variable frame.
-//! [`rewrite_disjunctive_bit`] is the equivalent of cvc5
-//! `preprocessing/passes/ff_disjunctive_bit.cpp`.
+//! [`rewrite_disjunctive_bit`] is the equivalent of cvc5's disjunctive-bit preprocessing pass.
 
 use num_bigint::BigUint;
 use num_traits::Zero;
@@ -362,7 +361,7 @@ fn try_disjunctive_bit(or_children: &[Formula], prime: &BigUint) -> Option<VarId
     }
 }
 
-/// Equivalent of cvc5's `preprocessing/passes/ff_disjunctive_bit.cpp`.
+/// Equivalent of cvc5's disjunctive-bit preprocessing pass.
 /// Rewrites every `(or (= x 0) (= x 1))` subformula to the polynomial
 /// equality `x * x = x` (a single-conjunct literal). Other formula
 /// nodes are recursed into unchanged.

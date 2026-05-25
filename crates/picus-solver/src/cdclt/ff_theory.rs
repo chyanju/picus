@@ -1,6 +1,6 @@
 //! FF theory plug-in over `core::solve_encoded_with_cancel`.
 //!
-//! Shape matches cvc5 `theory/ff/sub_theory.cpp`. Facts arrive via
+//! Shape matches cvc5's FF sub-theory. Facts arrive via
 //! [`Theory::notify_fact`] onto a level-indexed trail. Each
 //! [`Theory::post_check`] at `Effort::Full` walks the trail
 //! through [`ConstraintSystemBuilder`] to build a canonical

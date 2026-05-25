@@ -92,7 +92,7 @@ pub type BackendFactory = fn() -> Box<dyn SolverBackend>;
 /// dispatch time. Adding a new backend is therefore a single new file
 /// containing the impl plus a submit block — no edits to enums,
 /// match tables, or CLI parsers required. The built-in `SolverKind`
-/// enum is kept for ergonomic library use and matches lowercase
+/// enum provides ergonomic library use and matches the lowercase
 /// `name` values.
 pub struct SolverBackendDescriptor {
     /// Stable name used by `--solver`, `SolverKind::from_str`, and

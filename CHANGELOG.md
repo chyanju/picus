@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.35] - 2026-05-25
+- New `picus-core` crate holding the shared GF(p) algebra (`ff` field / monomial / dense+sparse polynomials / reduction, the `poly` ring facade), runtime `config`, `timeout::CancelToken`, and `profile`, extracted from `picus-solver`. `picus-solver` keeps the Gröbner / CDCL(T) engine and depends on `picus-core`; `picus-analysis` depends on `picus-core` instead of `picus-solver`.
+- `picus-solver` modules grouped into `gb/` (ideal, GB drivers, model, brancher, tracer, roots, homogenisation) and `frontend/` (encoder, parse, rewriter, bitprop, bench_fixtures); large inline test modules externalised to sibling `tests.rs` files.
+- `GbStrategy` moved from `ideal` to `config`; removed the `field.rs` alias shim (`FfField` / `FfEl` → `PrimeField` / `FieldElem`).
+- `GbStrategy::ByHomog` is honoured on the sparse representation (sparse homogenise → GB → dehomogenise pipeline); `last_dispatched_algorithm` records on both representations.
+- `#[inline]` on the hot cross-crate algebra methods (field, monomial, polynomial term accessors) so they inline into the engine without link-time optimisation.
+- `docs/architecture.md` updated for the new crate and module layout.
+
 ## [1.7.34] - 2026-05-24
 - Sparse Gröbner engine (`ff::sparse_gb`) brought to parity with the dense engine's pair management: product (coprime) + Gebauer-Möller M + Buchberger B criteria, sugar-degree pair selection, and cooperative cancellation (the sparse path now honours `--timeout`).
 - `ff::sparse_geobucket`: geobucket reduction (Yan 1998) for `SparsePolynomial`, replacing the naive accumulator's O(n) leading-term removal and per-step re-merge.
