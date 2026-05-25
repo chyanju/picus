@@ -167,11 +167,10 @@ thread_local! {
     static LAST_DISPATCHED: RefCell<Option<&'static str>> = const { RefCell::new(None) };
 }
 
-/// Name of the algorithm that last serviced a GB request on the
-/// current thread, or `None` if no GB call has run yet. Updated by
-/// [`compute_gb_dispatch`] on every non-empty call. Stays `None` under the
-/// sparse representation: `compute_gb_with_order` routes to `ff::sparse_gb`,
-/// which has its own Buchberger and does not consult the strategy dispatch.
+/// Name of the algorithm that last serviced a GB request on the current
+/// thread, or `None` if no GB call has run yet. The dense path records the
+/// dispatched [`GbAlgorithm`] (`"buchberger-direct"` / `"buchberger-by-homog"`);
+/// the sparse path records `"sparse-buchberger"` / `"sparse-by-homog"`.
 pub fn last_dispatched_algorithm() -> Option<&'static str> {
     LAST_DISPATCHED.with(|c| *c.borrow())
 }
@@ -672,6 +671,19 @@ pub fn compute_gb_with_order(
         return Vec::new();
     }
     if use_sparse_gb() {
+        // Honour the configured strategy on the sparse path too: ByHomog
+        // (DegRevLex only, mirroring BuchbergerByHomog) runs the
+        // homogenize → GB → dehomogenize pipeline with a sparse inner GB;
+        // everything else is plain sparse Buchberger.
+        let strat = match crate::config::with(|c| c.gb_strategy) {
+            GbStrategy::Auto => resolve_auto(poly_ring, &generators),
+            s => s,
+        };
+        if strat == GbStrategy::ByHomog && order == FfOrder::DegRevLex {
+            record_dispatched("sparse-by-homog");
+            return crate::gb::gb_homog::compute_gb_by_homog(poly_ring, generators, cancel);
+        }
+        record_dispatched("sparse-buchberger");
         return sparse_gb_route(poly_ring, generators, order, cancel);
     }
     let n_gens = generators.len();
@@ -727,6 +739,30 @@ pub(crate) fn compute_gb_buchberger(
             Err(SolverError::Internal("Buchberger panicked".into()))
         }
     }
+}
+
+/// Raw *direct* Gröbner basis (plain Buchberger, no strategy dispatch) on
+/// `poly_ring`, routed to the sparse or dense engine per the active
+/// representation. The inner homogeneous-GB step of the by-homog pipeline
+/// uses this so it never re-enters strategy dispatch. Empty input → empty;
+/// on a dense-engine error, falls back to the unreduced generators.
+pub(crate) fn compute_gb_direct(
+    poly_ring: &FfPolyRing,
+    generators: Vec<Poly>,
+    cancel: &CancelToken,
+    order: FfOrder,
+) -> Vec<Poly> {
+    if generators.is_empty() {
+        return Vec::new();
+    }
+    if use_sparse_gb() {
+        return sparse_gb_route(poly_ring, generators, order, cancel);
+    }
+    let backup: Vec<Poly> = generators.iter().map(|p| p.clone()).collect();
+    compute_gb_buchberger(poly_ring, generators, cancel, order).unwrap_or_else(|e| {
+        log::debug!("inner direct GB returned {:?}; falling back to unreduced", e);
+        backup
+    })
 }
 
 /// Incremental GB extension. Computes GB of `<known_gb> + <new_polys>`

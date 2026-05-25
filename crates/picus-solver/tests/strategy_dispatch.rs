@@ -13,10 +13,10 @@
 //! on observable basis differences (Direct and ByHomog return the
 //! same final ideal — just via different intermediate steps).
 //!
-//! These tests pin `ReprKind::Dense`: `GbAlgorithm` dispatch is the dense
-//! path. Under the sparse representation `compute_gb_with_order` routes to
-//! `ff::sparse_gb`, which has its own Buchberger and does not consult the
-//! strategy or record a dispatched algorithm.
+//! Tests pinning `ReprKind::Dense` exercise the dense `GbAlgorithm` dispatch
+//! (`buchberger-direct` / `buchberger-by-homog`). The sparse path honours the
+//! same strategy through its own engine — recording `sparse-buchberger` /
+//! `sparse-by-homog` — which `sparse_by_homog_matches_direct` covers.
 
 use num_bigint::BigUint;
 
@@ -137,4 +137,70 @@ fn default_strategy_is_direct() {
     let (pr, gens) = gens_xy_minus_1();
     let _ = compute_gb_with_order(&pr, gens, &CancelToken::none(), MonomialOrder::DegRevLex);
     assert_eq!(last_dispatched_algorithm(), Some("buchberger-direct"));
+}
+
+/// Leading-monomial set in DegRevLex on `P` — two reduced GBs of the same
+/// ideal share LM sets, so this is the standard equivalence check.
+fn lm_set(pr: &FfPolyRing, gb: &[picus_core::poly::Poly]) -> std::collections::BTreeSet<Vec<usize>> {
+    let ctx = pr.ctx();
+    let n = pr.n_vars;
+    let mut s = std::collections::BTreeSet::new();
+    for p in gb {
+        if let Some(m) = p.leading_monomial(ctx) {
+            s.insert((0..n).map(|i| m.exponent(i) as usize).collect::<Vec<_>>());
+        }
+    }
+    s
+}
+
+/// `{x^2 - x, x*y - 1}` over GF(7): non-homogeneous, so by-homog takes a
+/// genuinely different intermediate path from direct.
+fn gens_bc_and_xy() -> (FfPolyRing, Vec<picus_core::poly::Poly>) {
+    let field = PrimeField::new(BigUint::from(7u32));
+    let pr = FfPolyRing::new(field, vec!["x".into(), "y".into()]);
+    let x = pr.var(0);
+    let y = pr.var(1);
+    let xx = pr.mul(pr.clone_poly(&x), pr.clone_poly(&x));
+    let bc = pr.sub(xx, pr.clone_poly(&x)); // x^2 - x
+    let xy = pr.mul(x, y);
+    let g = pr.sub(xy, pr.one()); // x*y - 1
+    (pr, vec![bc, g])
+}
+
+#[test]
+fn sparse_by_homog_matches_direct() {
+    // On the sparse representation, ByHomog must run the sparse by-homog
+    // pipeline (recorded "sparse-by-homog") and yield the same ideal as the
+    // sparse direct path.
+    let (pr, _) = gens_bc_and_xy();
+
+    let by_homog = {
+        let _g = ConfigGuard::with_override(|c| {
+            c.gb_strategy = GbStrategy::ByHomog;
+            c.poly_repr = ReprKind::Sparse;
+        });
+        let (_, gens) = gens_bc_and_xy();
+        let b = compute_gb_with_order(&pr, gens, &CancelToken::none(), MonomialOrder::DegRevLex);
+        assert_eq!(
+            last_dispatched_algorithm(),
+            Some("sparse-by-homog"),
+            "sparse ByHomog must run the by-homog pipeline"
+        );
+        b
+    };
+    let direct = {
+        let _g = ConfigGuard::with_override(|c| {
+            c.gb_strategy = GbStrategy::Direct;
+            c.poly_repr = ReprKind::Sparse;
+        });
+        let (_, gens) = gens_bc_and_xy();
+        let b = compute_gb_with_order(&pr, gens, &CancelToken::none(), MonomialOrder::DegRevLex);
+        assert_eq!(last_dispatched_algorithm(), Some("sparse-buchberger"));
+        b
+    };
+    assert_eq!(
+        lm_set(&pr, &by_homog),
+        lm_set(&pr, &direct),
+        "sparse by-homog and sparse direct must yield the same ideal"
+    );
 }
