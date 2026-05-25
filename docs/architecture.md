@@ -335,7 +335,7 @@ DPVL algorithm + propagation lemma plugins.
   `--lemmas all` / `all-X` / `none+X` syntax resolves names against
   the live `inventory` registry.
 - **`propagation/`** — Five propagation lemmas plus the plugin
-  infrastructure. See [Propagation Lemmas](./propagation-lemmas.md).
+  infrastructure. See [Propagation Lemmas](./lemmas.md).
 - **`selector.rs`** — `SelectorKind` (`First` / `Counter`) +
   `SelectorState`. The counter strategy consumes a
   `wire_connectivity_score(&PolyIR)` map built once by the DPVL

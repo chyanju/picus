@@ -333,9 +333,8 @@ impl PolyIR {
     }
 }
 
-/// Construct a [`PolyIR`] from a parsed R1CS file. Performs the
-/// equivalent of the old `expand_r1cs + normalize + optimize_p1` chain
-/// in a single pass over the constraint blocks: each `A * B = C`
+/// Construct a [`PolyIR`] from a parsed R1CS file in a single pass over
+/// the constraint blocks: each `A * B = C`
 /// constraint becomes one polynomial equality `(sum_a)(sum_b) - sum_c =
 /// 0`, with both copies (`x_i`, `y_i`) emitted side-by-side. Inputs are
 /// pinned to a single value (`x_i - y_i = 0`); wire 0 is pinned to `1`

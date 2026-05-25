@@ -31,7 +31,7 @@ lemmas = "all"
 # native FF Gröbner solver), as opposed to the external SMT backends
 # selected by `analysis.solver`. The external solvers (cvc5 / z3) take no
 # algorithmic knobs from Picus beyond `analysis.timeout_ms`; the
-# native-FF-only keys below are simply unused when you delegate to them.
+# native-FF-only keys below are unused when you delegate to them.
 [engine]
 
 # --- Native FF solver only (unused by --solver cvc5 / z3 / none) ---

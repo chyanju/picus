@@ -641,7 +641,7 @@ fn sparse_gb_route(
 
 /// Unwrap a vector of solve-core `Poly` to the dense `DensePoly` the
 /// Gröbner engine consumes. On the dense path every element is already
-/// the `Dense` arm; a stray sparse element is materialised defensively.
+/// the `Dense` arm; a stray sparse element is materialised to dense.
 pub(crate) fn unwrap_dense_vec(v: Vec<Poly>, ring: &crate::ff::polynomial::PolyRing) -> Vec<crate::ff::DensePoly> {
     v.into_iter()
         .map(|p| match p {

@@ -18,8 +18,8 @@ impl ClauseRef {
 #[derive(Clone, Debug)]
 pub struct Clause {
     pub lits: Vec<Lit>,
-    /// `true` for learnt clauses (created by conflict analysis);
-    /// `false` for input clauses. Kept for future clause-deletion support.
+    /// `true` for learnt clauses (created by conflict analysis),
+    /// `false` for input clauses.
     #[allow(dead_code)]
     pub learnt: bool,
 }

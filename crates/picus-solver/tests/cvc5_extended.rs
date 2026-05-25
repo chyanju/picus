@@ -64,7 +64,7 @@ fn test_bigff_is_zero_sound() {
         add_field_polys: false,
         bitsums: vec![],
     };
-    // The placeholder above is messy; rebuild equalities cleanly.
+    // The struct above is a placeholder; build the actual system below.
     let p_minus_1 = &p - BigUint::one();
     let system = NamedSystem {
         prime: p.clone(),
