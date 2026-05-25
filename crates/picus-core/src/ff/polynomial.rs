@@ -1135,11 +1135,16 @@ impl DensePoly {
         }
         let setup_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
 
-        // Precompute LT info for each divisor. The exponent slice is
-        // BORROWED rather than cloned, saving an O(n_vars) Vec allocation
-        // per divisor.
+        // Precompute LT info for each divisor: exponent slice (BORROWED,
+        // no per-divisor Vec allocation), total degree, and DivMask. The
+        // leading *coefficient* is deliberately NOT captured here — over a
+        // large prime its `FieldElem` is a heap GMP integer, and cloning
+        // one for every divisor on every reduce call dominated setup
+        // (`div_lt_setup`). It is read lazily from the divisor only when
+        // that divisor is actually selected (once per reduction step, not
+        // once per divisor per call). Result-identical.
         use super::divmask::DivMask;
-        let div_lt: Vec<Option<(&[u16], u32, FieldElem, DivMask)>> = divisors
+        let div_lt: Vec<Option<(&[u16], u32, DivMask)>> = divisors
             .iter()
             .enumerate()
             .map(|(i, d)| {
@@ -1155,7 +1160,7 @@ impl DensePoly {
                         Some(dms) => dms[i],
                         None => ring.divmask.compute_from_slice(exps),
                     };
-                    Some((exps, total_deg, lt.coefficient().clone(), dm))
+                    Some((exps, total_deg, dm))
                 } else {
                     None
                 }
@@ -1188,7 +1193,7 @@ impl DensePoly {
                 let mut buckets: std::collections::HashMap<u128, Vec<usize>> =
                     std::collections::HashMap::new();
                 for (i, lt_opt) in div_lt.iter().enumerate() {
-                    if let Some((_, _, _, dm)) = lt_opt {
+                    if let Some((_, _, dm)) = lt_opt {
                         buckets.entry(dm.0).or_default().push(i);
                     }
                 }
@@ -1282,7 +1287,7 @@ impl DensePoly {
                     }
                     for &di in indices {
                         local_lookups += 1;
-                        if let Some((d_exps, d_deg, _, _)) = &div_lt[di] {
+                        if let Some((d_exps, d_deg, _)) = &div_lt[di] {
                             if *d_deg > lt_deg {
                                 // Bucket is sorted by LT degree ascending;
                                 // once it exceeds `lt_deg`, every later
@@ -1308,7 +1313,7 @@ impl DensePoly {
                 // exceeded-degree divisors.
                 for &di in order {
                     local_lookups += 1;
-                    if let Some((d_exps, d_deg, _, d_dm)) = &div_lt[di] {
+                    if let Some((d_exps, d_deg, d_dm)) = &div_lt[di] {
                         if *d_deg > lt_deg {
                             break;
                         }
@@ -1331,7 +1336,7 @@ impl DensePoly {
             } else {
                 for (di, lt_opt) in div_lt.iter().enumerate() {
                     local_lookups += 1;
-                    if let Some((d_exps, d_deg, _, d_dm)) = lt_opt {
+                    if let Some((d_exps, d_deg, d_dm)) = lt_opt {
                         if *d_deg > lt_deg {
                             continue;
                         }
@@ -1358,7 +1363,11 @@ impl DensePoly {
 
             if let Some(di) = chosen {
                 let sub_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
-                let (d_exps, _d_deg, d_lc, _) = div_lt[di].as_ref().unwrap();
+                let (d_exps, _d_deg, _) = div_lt[di].as_ref().unwrap();
+                // Read the divisor's leading coefficient lazily (only the
+                // selected divisor needs it), avoiding a per-divisor clone
+                // in the index build above.
+                let d_lc = divisors[di].leading_coefficient().expect("nonzero divisor LC");
                 let coeff_ratio = ring.field.div(&lt_coeff, d_lc).expect("nonzero divisor LC");
                 let neg_coeff = ring.field.neg(&coeff_ratio);
                 for k in 0..n {
