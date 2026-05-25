@@ -67,8 +67,9 @@ pub fn compute_gb_with_timeout(
         return GbResult::Trivial;
     }
 
-    // Phase 2: Lex GB (for model extraction via back-substitution)
-    let gb_lex = compute_gb_with_order(poly_ring, gb_degrevlex, &cancel, MonomialOrder::Lex);
+    // Phase 2: Lex GB (for model extraction via back-substitution),
+    // via FGLM when zero-dimensional.
+    let gb_lex = degrevlex_to_lex(poly_ring, gb_degrevlex, &cancel);
 
     if cancel.is_cancelled() {
         return GbResult::Timeout;
@@ -126,8 +127,9 @@ pub fn compute_gb_with_timeout_traced(
         return GbResultTraced::Trivial(core);
     }
 
-    // Phase 2: Lex GB (no tracing needed — only used for model extraction)
-    let gb_lex = compute_gb_with_order(poly_ring, gb_degrevlex, &cancel, MonomialOrder::Lex);
+    // Phase 2: Lex GB (no tracing needed — only used for model extraction),
+    // via FGLM when zero-dimensional.
+    let gb_lex = degrevlex_to_lex(poly_ring, gb_degrevlex, &cancel);
 
     if cancel.is_cancelled() {
         return GbResultTraced::Timeout;
@@ -138,6 +140,27 @@ pub fn compute_gb_with_timeout_traced(
     }
 
     GbResultTraced::NonTrivial(gb_lex)
+}
+
+/// Convert a DegRevLex Gröbner basis to a Lex GB for model extraction.
+///
+/// Uses FGLM order conversion ([`crate::gb::fglm`]) when the ideal is
+/// zero-dimensional — linear algebra in the finite quotient `R/I`, far
+/// cheaper than a second Buchberger run — and falls back to a direct Lex
+/// Buchberger computation otherwise.
+fn degrevlex_to_lex(
+    poly_ring: &FfPolyRing,
+    gb_degrevlex: Vec<Poly>,
+    cancel: &CancelToken,
+) -> Vec<Poly> {
+    let ideal = crate::gb::ideal::Ideal::from_gb(poly_ring, gb_degrevlex);
+    match crate::gb::fglm::fglm_to_lex(&ideal) {
+        Some(lex) => lex,
+        None => {
+            let basis = ideal.basis;
+            compute_gb_with_order(poly_ring, basis, cancel, MonomialOrder::Lex)
+        }
+    }
 }
 
 /// Check if a GB is trivial (ideal = whole ring).
@@ -198,6 +221,7 @@ mod tests {
 
 // Submodules: ideal operations, incremental GB, root finding, homogenization
 // pipeline, model construction, branching, and UNSAT-core tracing.
+pub mod fglm;
 pub mod ideal;
 pub mod incremental;
 pub mod linsolve;
