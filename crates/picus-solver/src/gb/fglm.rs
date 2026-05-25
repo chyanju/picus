@@ -168,6 +168,24 @@ pub fn fglm_to_lex(ideal: &Ideal) -> Option<Vec<Poly>> {
         }
     }
 
+    // Sound cross-check: the staircase is a k-basis of R/I, so its size
+    // equals dim_k(R/I) read independently off the leading-term ideal via
+    // the Hilbert function (`crate::ff::hilbert`). Verdict-neutral; trips
+    // the test suite if either path has a bug. Free in release; logged
+    // when GB stats are enabled.
+    debug_assert_eq!(
+        ideal.quotient_dimension(),
+        Some(staircase.len() as u128),
+        "FGLM staircase size disagrees with Hilbert quotient dimension"
+    );
+    if crate::config::with(|c| c.gb_stats_enabled) {
+        eprintln!(
+            "[picus-gb-stats] fglm_dim={} hilbert_dim={:?}",
+            staircase.len(),
+            ideal.quotient_dimension()
+        );
+    }
+
     Some(lex_gb)
 }
 
@@ -291,5 +309,27 @@ mod tests {
         let xy = pr.mul(pr.var(0), pr.var(1));
         let drl = Ideal::new(&pr, vec![xy]);
         assert!(fglm_to_lex(&drl).is_none());
+        // The Hilbert oracle agrees: positive-dimensional ⇒ no finite dim.
+        assert_eq!(drl.quotient_dimension(), None);
+    }
+
+    #[test]
+    fn quotient_dimension_matches_fglm_staircase() {
+        // The Hilbert quotient dimension equals dim_k(R/I) = the FGLM
+        // staircase size (the in-`fglm_to_lex` debug-assert checks the
+        // equality directly on every zero-dim fixture). `<x^2-5, x*y-1>`
+        // over GF(11) has GB {x - 5y, y^2 - 9}: standard monomials {1, y}
+        // ⇒ dim 2 (the two roots x = ±4, y = 1/x).
+        let pr = FfPolyRing::new(ff(11), vec!["x".into(), "y".into()]);
+        let x2 = pr.mul(pr.var(0), pr.var(0));
+        let xy = pr.mul(pr.var(0), pr.var(1));
+        let gens = vec![
+            pr.sub(x2, pr.constant(pr.field.from_int(5))),
+            pr.sub(xy, pr.one()),
+        ];
+        let drl = Ideal::new(&pr, gens);
+        assert_eq!(drl.quotient_dimension(), Some(2));
+        let lex = fglm_to_lex(&drl).expect("zero-dim → Some");
+        assert!(!lex.is_empty());
     }
 }
