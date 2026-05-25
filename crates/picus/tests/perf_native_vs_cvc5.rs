@@ -24,7 +24,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use picus::{check_circuit, CheckResult, Config, SolverKind, Theory};
+use picus::{check_circuit, AnalysisConfig, CheckResult, PicusConfig, SolverKind, Theory};
 
 const TIMEOUT_MS: u64 = 30_000;
 
@@ -42,11 +42,14 @@ fn verdict_str(r: &CheckResult) -> &'static str {
 }
 
 fn time_one(path: &Path, solver: SolverKind) -> (String, Duration) {
-    let cfg = Config {
-        solver,
-        theory: Theory::Ff,
-        timeout_ms: TIMEOUT_MS,
-        ..Config::default()
+    let cfg = PicusConfig {
+        analysis: AnalysisConfig {
+            solver,
+            theory: Theory::Ff,
+            timeout_ms: TIMEOUT_MS,
+            ..Default::default()
+        },
+        ..Default::default()
     };
     let t0 = Instant::now();
     let result = check_circuit(path, cfg).unwrap_or_else(|e| {

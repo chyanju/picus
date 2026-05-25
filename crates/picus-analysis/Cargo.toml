@@ -25,3 +25,4 @@ num-traits = { workspace = true }
 num-integer = { workspace = true }
 log = { workspace = true }
 inventory = { workspace = true }
+serde = { workspace = true }

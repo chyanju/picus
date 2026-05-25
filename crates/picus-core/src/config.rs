@@ -12,11 +12,13 @@
 //! `PICUS_*` environment variables so existing benchmark scripts
 //! and CLI invocations keep their behaviour without code changes.
 
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 
 /// Strategy for computing a Groebner basis. Set via
 /// [`RuntimeConfig::gb_strategy`].
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum GbStrategy {
     /// Plain DegRevLex Buchberger on `P`. Default.
     Direct,
@@ -37,13 +39,14 @@ pub enum GbStrategy {
 /// dense resident memory is O(n_vars · terms), so `Sparse` is the scalable
 /// choice. Both are kept permanently: `Dense` is the differential-test
 /// oracle and is faster on small/narrow rings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ReprKind {
     Dense,
     Sparse,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeConfig {
     /// GB algorithm strategy.
     pub gb_strategy: GbStrategy,
@@ -104,49 +107,103 @@ impl Default for RuntimeConfig {
 }
 
 impl RuntimeConfig {
-    /// Read defaults from the `PICUS_*` environment variables. Used to
-    /// seed the thread-local config the first time a thread asks for it.
+    /// Seed the compiled defaults, then apply any `PICUS_*` environment
+    /// overrides. Used to initialise the thread-local config the first
+    /// time a thread asks for it, so existing benchmark scripts and CLI
+    /// invocations keep their behaviour.
     pub fn from_env() -> Self {
         let mut c = Self::default();
+        c.apply_overlay(&EngineOverlay::from_env());
+        c
+    }
+
+    /// Merge the `Some` fields of `o` onto `self`; `None` fields are
+    /// left untouched. This is the overlay/merge step that layers a
+    /// config file, environment, or CLI flags onto a base config.
+    pub fn apply_overlay(&mut self, o: &EngineOverlay) {
+        if let Some(v) = o.gb_strategy { self.gb_strategy = v; }
+        if let Some(v) = o.use_f4 { self.use_f4 = v; }
+        if let Some(v) = o.dnf_cap { self.dnf_cap = v; }
+        if let Some(v) = o.dnf_enabled { self.dnf_enabled = v; }
+        if let Some(v) = o.cdclt_iter_cap { self.cdclt_iter_cap = v; }
+        if let Some(v) = o.gb_stats_enabled { self.gb_stats_enabled = v; }
+        if let Some(v) = o.gb_trace_enabled { self.gb_trace_enabled = v; }
+        if let Some(v) = o.profile_enabled { self.profile_enabled = v; }
+        if let Some(v) = o.cache_enabled { self.cache_enabled = v; }
+        if let Some(v) = o.aboz_emit_disjunctions { self.aboz_emit_disjunctions = v; }
+        if let Some(v) = o.poly_repr { self.poly_repr = v; }
+    }
+}
+
+/// Partial overlay for [`RuntimeConfig`]: every field is optional, so a
+/// single config layer (file, environment, CLI) carries only the knobs
+/// it actually sets. Merged onto a base via [`RuntimeConfig::apply_overlay`];
+/// later layers win.
+///
+/// TOML keys mirror the [`RuntimeConfig`] field names exactly, so adding
+/// a knob is one field here plus one line in `apply_overlay` — no rename
+/// bookkeeping. `deny_unknown_fields` turns a mistyped key into an error
+/// rather than a silent no-op.
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EngineOverlay {
+    pub gb_strategy: Option<GbStrategy>,
+    pub use_f4: Option<bool>,
+    pub dnf_cap: Option<u64>,
+    pub dnf_enabled: Option<bool>,
+    pub cdclt_iter_cap: Option<u64>,
+    pub gb_stats_enabled: Option<bool>,
+    pub gb_trace_enabled: Option<bool>,
+    pub profile_enabled: Option<bool>,
+    pub cache_enabled: Option<bool>,
+    pub aboz_emit_disjunctions: Option<bool>,
+    pub poly_repr: Option<ReprKind>,
+}
+
+impl EngineOverlay {
+    /// Read the `PICUS_*` environment variables into an overlay. Absent
+    /// variables stay `None` so they don't clobber lower config layers.
+    pub fn from_env() -> Self {
+        let mut o = Self::default();
         if std::env::var_os("PICUS_USE_F4").is_some() {
-            c.use_f4 = true;
+            o.use_f4 = Some(true);
         }
         if let Ok(v) = std::env::var("PICUS_BOOLEAN") {
-            c.dnf_enabled = v == "dnf";
+            o.dnf_enabled = Some(v == "dnf");
         }
         if let Ok(v) = std::env::var("PICUS_DNF_CAP") {
             if let Ok(n) = v.parse::<u64>() {
-                c.dnf_cap = n;
+                o.dnf_cap = Some(n);
             }
         }
         if let Ok(v) = std::env::var("PICUS_CDCLT_ITER_CAP") {
             if let Ok(n) = v.parse::<u64>() {
-                c.cdclt_iter_cap = n;
+                o.cdclt_iter_cap = Some(n);
             }
         }
         if std::env::var_os("PICUS_GB_STATS").is_some() {
-            c.gb_stats_enabled = true;
+            o.gb_stats_enabled = Some(true);
         }
         if std::env::var_os("PICUS_GB_TRACE").is_some() {
-            c.gb_trace_enabled = true;
+            o.gb_trace_enabled = Some(true);
         }
         if std::env::var_os("PICUS_PROFILE").is_some() {
-            c.profile_enabled = true;
+            o.profile_enabled = Some(true);
         }
         if std::env::var_os("PICUS_NO_INCREMENTAL_CACHE").is_some() {
-            c.cache_enabled = false;
+            o.cache_enabled = Some(false);
         }
         if std::env::var_os("PICUS_NO_ABOZ_DISJ").is_some() {
-            c.aboz_emit_disjunctions = false;
+            o.aboz_emit_disjunctions = Some(false);
         }
         if let Ok(v) = std::env::var("PICUS_POLY_REPR") {
             match v.as_str() {
-                "dense" => c.poly_repr = ReprKind::Dense,
-                "sparse" => c.poly_repr = ReprKind::Sparse,
+                "dense" => o.poly_repr = Some(ReprKind::Dense),
+                "sparse" => o.poly_repr = Some(ReprKind::Sparse),
                 _ => {}
             }
         }
-        c
+        o
     }
 }
 

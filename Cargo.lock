@@ -635,7 +635,9 @@ dependencies = [
  "picus-r1cs",
  "picus-smt",
  "picus-solver",
+ "serde",
  "thiserror",
+ "toml",
 ]
 
 [[package]]
@@ -650,6 +652,7 @@ dependencies = [
  "picus-core",
  "picus-r1cs",
  "picus-smt",
+ "serde",
 ]
 
 [[package]]
@@ -676,6 +679,7 @@ dependencies = [
  "num-integer",
  "num-traits",
  "rug",
+ "serde",
 ]
 
 [[package]]

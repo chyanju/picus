@@ -19,6 +19,7 @@
 //! backend's closing `(not (= x_target y_target))` matches.
 
 use num_bigint::BigUint;
+use serde::{Deserialize, Serialize};
 use picus_r1cs::grammar::*;
 use picus_smt::backends::{SolverBackend, SolverResult};
 use picus_smt::poly_ir::{r1cs_to_poly_ir, PolyIR};
@@ -45,7 +46,7 @@ pub enum DpvlResult {
 ///
 /// Names are resolved against the live `inventory` registry; an
 /// unknown name in `--lemmas` is an error. Default is "all enabled".
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LemmaSet {
     enabled: HashSet<String>,
 }
@@ -134,13 +135,93 @@ impl LemmaSet {
     }
 }
 
-/// Configuration for the DPVL algorithm.
+impl std::fmt::Display for LemmaSet {
+    /// Canonical `--lemmas` spec: `none` (empty), `all` (every
+    /// registered lemma), or the sorted enabled names joined by `,`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.enabled.is_empty() {
+            return write!(f, "none");
+        }
+        if self.enabled.len() == all_names().len() {
+            return write!(f, "all");
+        }
+        let mut names: Vec<&str> = self.enabled.iter().map(|s| s.as_str()).collect();
+        names.sort_unstable();
+        write!(f, "{}", names.join(","))
+    }
+}
+
+/// Configuration for the DPVL algorithm — the analysis-layer half of
+/// the resolved Picus configuration (the engine-layer half lives in
+/// [`picus_core::config::RuntimeConfig`]).
+#[derive(Debug, Clone, PartialEq)]
 pub struct DpvlConfig {
     pub solver: SolverKind,
     pub theory: Theory,
     pub selector: SelectorKind,
     pub timeout_ms: u64,
     pub lemmas: LemmaSet,
+    pub dump_smt: Option<PathBuf>,
+}
+
+impl Default for DpvlConfig {
+    fn default() -> Self {
+        Self {
+            // Native FF solver is the default: it's the only backend
+            // compiled in the default (native-only) build, so a bare
+            // `picus check` works without extra Cargo features. cvc5 / z3
+            // require their opt-in features and an explicit `--solver`.
+            solver: SolverKind::Native,
+            theory: Theory::Ff,
+            selector: SelectorKind::Counter,
+            timeout_ms: 5000,
+            lemmas: LemmaSet::all(),
+            dump_smt: None,
+        }
+    }
+}
+
+impl DpvlConfig {
+    /// Merge the `Some` fields of `o` onto `self`; `None` fields are
+    /// left untouched. Enum-valued fields arrive as strings (matching
+    /// the CLI and TOML surface) and are parsed here, so a bad value
+    /// surfaces as a config error rather than a silent default.
+    pub fn apply_overlay(&mut self, o: &DpvlOverlay) -> Result<(), String> {
+        if let Some(s) = &o.solver {
+            self.solver = s.parse()?;
+        }
+        if let Some(s) = &o.theory {
+            self.theory = s.parse()?;
+        }
+        if let Some(s) = &o.selector {
+            self.selector = s.parse()?;
+        }
+        if let Some(v) = o.timeout_ms {
+            self.timeout_ms = v;
+        }
+        if let Some(s) = &o.lemmas {
+            self.lemmas = LemmaSet::parse(s)?;
+        }
+        if let Some(p) = &o.dump_smt {
+            self.dump_smt = Some(p.clone());
+        }
+        Ok(())
+    }
+}
+
+/// Partial overlay for [`DpvlConfig`]: every field optional, so a config
+/// layer (file, CLI) carries only what it sets. Enum fields are raw
+/// strings parsed by [`DpvlConfig::apply_overlay`] via the same
+/// `FromStr` / [`LemmaSet::parse`] the CLI uses. Merged via
+/// `apply_overlay`; later layers win. TOML keys mirror the field names.
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DpvlOverlay {
+    pub solver: Option<String>,
+    pub theory: Option<String>,
+    pub selector: Option<String>,
+    pub timeout_ms: Option<u64>,
+    pub lemmas: Option<String>,
     pub dump_smt: Option<PathBuf>,
 }
 

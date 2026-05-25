@@ -14,7 +14,7 @@
 
 use std::path::PathBuf;
 
-use picus::{check_circuit, CheckResult, Config, SolverKind, Theory};
+use picus::{check_circuit, AnalysisConfig, CheckResult, PicusConfig, SolverKind, Theory};
 
 /// `(circuit_name, expected_verdict)` pairs over the
 /// `circomlib-cff5ab6` subset.
@@ -81,11 +81,14 @@ fn r1cs_smoke_native_ff() {
         );
     }
 
-    let cfg = Config {
-        solver: SolverKind::Native,
-        theory: Theory::Ff,
-        timeout_ms: 5000,
-        ..Config::default()
+    let cfg = PicusConfig {
+        analysis: AnalysisConfig {
+            solver: SolverKind::Native,
+            theory: Theory::Ff,
+            timeout_ms: 5000,
+            ..Default::default()
+        },
+        ..Default::default()
     };
 
     let mut missing: Vec<&str> = Vec::new();

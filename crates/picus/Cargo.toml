@@ -24,3 +24,5 @@ picus-solver = { path = "../picus-solver" }
 picus-core = { path = "../picus-core" }
 num-bigint = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
