@@ -243,6 +243,8 @@ fn basis2_native_ff_finds_counterexample() {
 /// Same trap as `basis2_native_ff_finds_counterexample`, but via cvc5
 /// QF_FF — confirms the test setup itself is sound and the native_ff
 /// failure is a backend bug rather than an incorrect synthetic R1CS.
+/// Requires the cvc5 backend, so it is gated on the `cvc5` feature.
+#[cfg(feature = "cvc5")]
 #[test]
 fn basis2_cvc5_ff_finds_counterexample() {
     let r1cs = basis2_trap_r1cs();
