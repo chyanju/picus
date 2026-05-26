@@ -36,7 +36,9 @@ pub fn normalize_term_list(terms: &mut Vec<PolyTerm>, prime: &BigUint) {
         let mut write = 0usize;
         for read in 0..t.vars.len() {
             if write > 0 && t.vars[write - 1].0 == t.vars[read].0 {
-                let combined_exp = t.vars[write - 1].1.saturating_add(t.vars[read].1);
+                let combined_exp = t.vars[write - 1].1
+                    .checked_add(t.vars[read].1)
+                    .expect("monomial exponent exceeds u16");
                 t.vars[write - 1].1 = combined_exp;
             } else {
                 if read != write {
