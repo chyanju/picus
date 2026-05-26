@@ -13,8 +13,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use num_bigint::BigUint;
-
 use crate::frontend::bitprop::{BitProp, BitPropState};
 use crate::core::{populate_bitprop, SolveOutcome};
 use crate::frontend::encoder::{
@@ -676,9 +674,4 @@ pub fn digest_constraint_side(cs: &crate::frontend::encoder::ConstraintSystem) -
         }
     }
     h.finish()
-}
-
-#[allow(dead_code)]
-fn _unused() -> BigUint {
-    BigUint::from(0u32)
 }
