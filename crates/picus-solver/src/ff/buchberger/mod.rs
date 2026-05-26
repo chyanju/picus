@@ -375,11 +375,7 @@ impl BuchbergerState {
             // `add_generators` does, so the seeded basis matches what
             // sequential `add_generators` would have produced.
             let new_idx = self.basis.len();
-            for k in 0..new_idx {
-                if self.basis[k].active && lt.divides(&self.basis[k].lt) {
-                    self.basis[k].active = false;
-                }
-            }
+            self.deactivate_superseded(new_idx, &lt);
             self.basis.push(BasisElement {
                 poly,
                 lt,
@@ -482,11 +478,7 @@ impl BuchbergerState {
             // to become inactive (D3: non-strict deactivation).
             self.generate_pairs_against(idx, &lt, sugar);
             // Non-strict deactivation: deactivate older elements whose LT is divisible by lt.
-            for k in 0..idx {
-                if self.basis[k].active && lt.divides(&self.basis[k].lt) {
-                    self.basis[k].active = false;
-                }
-            }
+            self.deactivate_superseded(idx, &lt);
             self.basis.push(BasisElement { poly: g_red, lt, lt_divmask, active: true, sugar, use_count: 0 });
         }
         Ok(())
@@ -563,6 +555,35 @@ impl BuchbergerState {
         // order from `gm_insert`; sort it once, then merge.
         new_pairs.sort_by(|a, b| b.cmp(a));
         merge_sorted_descending(&mut self.open, new_pairs);
+    }
+
+    /// Build the S-polynomial of `pair`:
+    /// `(lcm/LT_i)·f_i − (lc_i/lc_j)·(lcm/LT_j)·f_j`, scaled so the two
+    /// leading terms cancel.
+    fn build_spoly(&self, pair: &SPair) -> DensePoly {
+        let bi = &self.basis[pair.i];
+        let bj = &self.basis[pair.j];
+        let mul_i = pair.lcm.div(&bi.lt);
+        let mul_j = pair.lcm.div(&bj.lt);
+        let lc_i = bi.poly.leading_coefficient().unwrap();
+        let lc_j = bj.poly.leading_coefficient().unwrap();
+        let scale_j = self.ring.field.div(lc_i, lc_j).unwrap();
+        let term_i = self.ring.field.one();
+        let part_i = bi.poly.mul_term(mul_i.exponents(), &term_i, &self.ring);
+        let part_j = bj.poly.mul_term(mul_j.exponents(), &scale_j, &self.ring);
+        part_i.sub(&part_j, &self.ring)
+    }
+
+    /// Non-strict deactivation (D3): deactivate every active element in
+    /// `0..upto` whose leading monomial is divisible by `lt`. Run after
+    /// `generate_pairs_against`, so pairs involving an element about to be
+    /// deactivated are still generated.
+    fn deactivate_superseded(&mut self, upto: usize, lt: &Monomial) {
+        for k in 0..upto {
+            if self.basis[k].active && lt.divides(&self.basis[k].lt) {
+                self.basis[k].active = false;
+            }
+        }
     }
 
     pub(super) fn active_polys(&self) -> Vec<DensePoly> {
@@ -809,19 +830,7 @@ impl BuchbergerState {
             // not reach this loop.
 
             let t_spoly_start = if stats_on { Some(std::time::Instant::now()) } else { None };
-            // Build the S-polynomial: (lcm/LT_i) * f_i - (lcm/LT_j) * f_j
-            let bi = &self.basis[pair.i];
-            let bj = &self.basis[pair.j];
-            let mul_i = pair.lcm.div(&bi.lt);
-            let mul_j = pair.lcm.div(&bj.lt);
-            let lc_i = bi.poly.leading_coefficient().unwrap();
-            let lc_j = bj.poly.leading_coefficient().unwrap();
-            // Scale fj by (lc_i / lc_j) so leading coefficients cancel.
-            let scale_j = self.ring.field.div(lc_i, lc_j).unwrap();
-            let term_i = self.ring.field.one();
-            let part_i = bi.poly.mul_term(mul_i.exponents(), &term_i, &self.ring);
-            let part_j = bj.poly.mul_term(mul_j.exponents(), &scale_j, &self.ring);
-            let s_poly = part_i.sub(&part_j, &self.ring);
+            let s_poly = self.build_spoly(&pair);
             if let Some(t0) = t_spoly_start {
                 t_spoly_ns += t0.elapsed().as_nanos() as u64;
             }
@@ -917,11 +926,7 @@ impl BuchbergerState {
             if let Some(t0) = t_genpairs_start {
                 t_genpairs_ns += t0.elapsed().as_nanos() as u64;
             }
-            for k in 0..new_idx {
-                if self.basis[k].active && lt.divides(&self.basis[k].lt) {
-                    self.basis[k].active = false;
-                }
-            }
+            self.deactivate_superseded(new_idx, &lt);
             self.basis.push(BasisElement { poly: nf, lt, lt_divmask, active: true, sugar, use_count: 0 });
             // Periodic in-loop tail-reduction. Tail-reduction preserves
             // the gradedness invariant exactly for homogeneous input;
@@ -992,17 +997,7 @@ impl BuchbergerState {
         pair: SPair,
         observer: &mut O,
     ) -> Result<(), EngineError> {
-        let bi = &self.basis[pair.i];
-        let bj = &self.basis[pair.j];
-        let mul_i = pair.lcm.div(&bi.lt);
-        let mul_j = pair.lcm.div(&bj.lt);
-        let lc_i = bi.poly.leading_coefficient().unwrap();
-        let lc_j = bj.poly.leading_coefficient().unwrap();
-        let scale_j = self.ring.field.div(lc_i, lc_j).unwrap();
-        let term_i = self.ring.field.one();
-        let part_i = bi.poly.mul_term(mul_i.exponents(), &term_i, &self.ring);
-        let part_j = bj.poly.mul_term(mul_j.exponents(), &scale_j, &self.ring);
-        let s_poly = part_i.sub(&part_j, &self.ring);
+        let s_poly = self.build_spoly(&pair);
         let mut active_idxs: Vec<usize> = (0..self.basis.len())
             .filter(|&i| self.basis[i].active)
             .collect();
@@ -1074,11 +1069,7 @@ impl BuchbergerState {
         }
 
         self.generate_pairs_against(new_idx, &lt, sugar);
-        for k in 0..new_idx {
-            if self.basis[k].active && lt.divides(&self.basis[k].lt) {
-                self.basis[k].active = false;
-            }
-        }
+        self.deactivate_superseded(new_idx, &lt);
         self.basis.push(BasisElement { poly: nf, lt, lt_divmask, active: true, sugar, use_count: 0 });
         Ok(())
     }
@@ -1253,11 +1244,7 @@ impl BuchbergerState {
                 }
 
                 self.generate_pairs_against(new_idx, &lt, sugar);
-                for k in 0..new_idx {
-                    if self.basis[k].active && lt.divides(&self.basis[k].lt) {
-                        self.basis[k].active = false;
-                    }
-                }
+                self.deactivate_superseded(new_idx, &lt);
                 self.basis.push(BasisElement {
                     poly,
                     lt,
