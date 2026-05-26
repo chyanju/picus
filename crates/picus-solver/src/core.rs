@@ -325,10 +325,8 @@ mod tests {
         // `split_gb::fixpoint::run_fixpoint_traced`), so the returned core is
         // guaranteed to be a sound *super-set* of the minimal core — it must
         // contain {0, 1} and stay within the input range, but it may also
-        // include the irrelevant input 2 (y=1). Precise minimisation would
-        // require a per-element dependency map that survives Buchberger
-        // deactivation and zero-reduction; that is a possible follow-up, but
-        // soundness (never dropping a needed generator) is the invariant here.
+        // include the irrelevant input 2 (y=1). This pins only the soundness
+        // invariant: the core never drops a generator the contradiction needs.
         let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
         let two = pr.field.from_int(2);
         let three = pr.field.from_int(3);

@@ -108,10 +108,10 @@ algebra), `smt2/`, and `split_gb/`, with `core.rs`, `boolean.rs`, and
   pub trait GbAlgorithm {
       fn name(&self) -> &'static str;
       fn compute(&self, pr, gens, cancel, order)
-          -> Result<Vec<Poly>, SolverError>;
+          -> Result<Vec<Poly>, EngineError>;
       fn supports_tracing(&self) -> bool { false }
       fn compute_traced(&self, pr, gens, cancel, order, tracer)
-          -> Result<Vec<Poly>, SolverError> { /* default panics */ }
+          -> Result<Vec<Poly>, EngineError> { /* default panics */ }
   }
   ```
 
