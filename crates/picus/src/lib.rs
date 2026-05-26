@@ -94,6 +94,10 @@ pub enum PicusError {
     #[error("solver error: {0}")]
     Solver(String),
 
+    /// DPVL analysis error (R1CS lowering or backend construction).
+    #[error("analysis error: {0}")]
+    Dpvl(#[from] picus_analysis::dpvl::DpvlError),
+
     /// Invalid solver/theory combination or other configuration issue.
     #[error("invalid configuration: {0}")]
     Config(String),
@@ -313,8 +317,7 @@ pub fn check_r1cs(
     let _engine_guard = picus_core::config::ConfigGuard::install(config.engine.clone());
 
     // Run DPVL on the analysis-layer config.
-    let result = picus_analysis::dpvl::run_dpvl(r1cs, &config.analysis)
-        .map_err(PicusError::Solver)?;
+    let result = picus_analysis::dpvl::run_dpvl(r1cs, &config.analysis)?;
 
     // Convert internal result to public API result
     match result {
