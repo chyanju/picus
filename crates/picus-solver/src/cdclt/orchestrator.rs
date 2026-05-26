@@ -91,8 +91,7 @@ fn cdclt_loop<T: Theory>(
             if sat.should_restart() {
                 sat.perform_restart();
             }
-            sync_theory_after_backtrack(sat, theory, &mut theory_levels);
-            notified = notified.min(trail_pre_lemma).min(sat.trail_len());
+            resync_after_lemma(sat, theory, &mut theory_levels, &mut notified, trail_pre_lemma);
             continue;
         }
 
@@ -107,8 +106,7 @@ fn cdclt_loop<T: Theory>(
         match run_theory_propagation(sat, theory) {
             TheoryStep::Progressed => continue,
             TheoryStep::Conflict(trail_pre_lemma) => {
-                sync_theory_after_backtrack(sat, theory, &mut theory_levels);
-                notified = notified.min(trail_pre_lemma).min(sat.trail_len());
+                resync_after_lemma(sat, theory, &mut theory_levels, &mut notified, trail_pre_lemma);
                 continue;
             }
             TheoryStep::RootUnsat => return SolveOutcome::Unsat(Vec::new()),
@@ -136,8 +134,7 @@ fn cdclt_loop<T: Theory>(
                         None if sat.gave_up() => return SolveOutcome::Unknown,
                         None => return SolveOutcome::Unsat(Vec::new()),
                     };
-                    sync_theory_after_backtrack(sat, theory, &mut theory_levels);
-                    notified = notified.min(trail_pre_lemma).min(sat.trail_len());
+                    resync_after_lemma(sat, theory, &mut theory_levels, &mut notified, trail_pre_lemma);
                     continue;
                 }
                 CheckOutcome::Unknown => return SolveOutcome::Unknown,
@@ -280,6 +277,22 @@ fn sync_theory_after_backtrack<T: Theory>(
         theory.pop();
         *theory_levels -= 1;
     }
+}
+
+/// Resync after a lemma forced a backjump: rewind the theory trail to the
+/// new decision level and rewind `notified` so the next pass re-notifies
+/// from the position the asserting literal now occupies. The three lemma
+/// sites (propagation conflict, theory-propagation disagreement, post-check
+/// UNSAT) must use the identical rewind formula, so it lives here once.
+fn resync_after_lemma<T: Theory>(
+    sat: &Solver,
+    theory: &mut T,
+    theory_levels: &mut usize,
+    notified: &mut usize,
+    trail_pre_lemma: usize,
+) {
+    sync_theory_after_backtrack(sat, theory, theory_levels);
+    *notified = (*notified).min(trail_pre_lemma).min(sat.trail_len());
 }
 
 #[cfg(test)]
