@@ -35,6 +35,14 @@ impl SolverBackend for Z3NiaBackend {
         if cancel.is_cancelled() {
             return Ok(SolverResult::Unknown(UnknownReason::Timeout));
         }
+        // This backend lowers only equalities + the target disequality.
+        // Disjunctions / assignments / bitsums would silently weaken the
+        // query (dropping constraints → spurious SAT), so refuse rather
+        // than solve a different problem. The R1CS uniqueness query never
+        // populates these, so this is inert on the supported path.
+        if !ir.disjunctions.is_empty() || !ir.assignments.is_empty() || !ir.bitsums.is_empty() {
+            return Ok(SolverResult::Unknown(UnknownReason::IncompleteTheory));
+        }
         let solver = Solver::new();
         let mut params = Params::new();
         params.set_u32("timeout", timeout_ms.min(u32::MAX as u64) as u32);

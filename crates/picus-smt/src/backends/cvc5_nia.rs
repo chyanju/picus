@@ -33,6 +33,14 @@ impl SolverBackend for Cvc5NiaBackend {
         if cancel.is_cancelled() {
             return Ok(SolverResult::Unknown(UnknownReason::Timeout));
         }
+        // This backend lowers only equalities + the target disequality.
+        // Disjunctions / assignments / bitsums would silently weaken the
+        // query (dropping constraints → spurious SAT), so refuse rather
+        // than solve a different problem. The R1CS uniqueness query never
+        // populates these, so this is inert on the supported path.
+        if !ir.disjunctions.is_empty() || !ir.assignments.is_empty() || !ir.bitsums.is_empty() {
+            return Ok(SolverResult::Unknown(UnknownReason::IncompleteTheory));
+        }
         let tm = cvc5_ff::TermManager::new();
         let mut solver = cvc5_ff::Solver::new(&tm);
         solver.set_logic("QF_NIA");
