@@ -220,6 +220,18 @@ pub fn r1cs_to_poly_ir(
     target_signal: usize,
 ) -> Result<PolyIR, LowerError> {
     let n_wires = r1cs.n_wires() as usize;
+    // The target indexes both copies (`target_signal` and
+    // `n_wires + target_signal`); an out-of-range value would build a
+    // disequality over a non-existent ring variable. Reject explicitly
+    // rather than silently producing an unsatisfiable-by-construction
+    // query that degrades to Unknown.
+    if target_signal >= n_wires {
+        return Err(LowerError::WireOutOfBounds {
+            wire: target_signal,
+            n_wires,
+            ctx: "target signal",
+        });
+    }
     let input_indices: HashSet<usize> = r1cs.inputs.iter().copied().collect();
     let prime = &r1cs.header.prime_number;
 
