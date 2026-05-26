@@ -388,26 +388,34 @@ fn run_fixpoint_traced<'r>(
             let extended = existing.extend_with_cancel_traced(added, cancel, &mut tracer)?;
             split_basis[i] = extended;
 
+            // Conservative dependency attribution (sound super-set).
+            //
+            // The tracer's `deps` are keyed by Buchberger *push* order, but the
+            // returned basis is `active_polys()` — a compacted subsequence
+            // (deactivated elements stay in the engine's vector but drop out of
+            // the active list), and a batched new generator that reduces to
+            // zero never gets a tracer input slot at all. Both break a
+            // positional `deps_of(bidx)` / `tracer_input_to_orig[ti]`
+            // correspondence, so a per-index read could attribute a *smaller*
+            // dep set than the element truly has — an under-approximation, i.e.
+            // an unsound (too-small) UNSAT core that could drop a needed
+            // generator and yield a wrong UNSAT in CDCL(T). Instead attribute
+            // every surviving element — and any extracted core — the union of
+            // all original inputs that fed this partition's extend. That is
+            // always a sound super-set: it can only widen the CDCL(T) conflict
+            // clause, never flip a verdict. (The default conjunctive path
+            // discards the core entirely in the native_ff backend, so the
+            // precision cost lands only on the CDCL(T)/disjunction path.)
+            let all_input_deps: BTreeSet<usize> = tracer_input_to_orig
+                .iter()
+                .flat_map(|d| d.iter().copied())
+                .collect();
+
             if split_basis[i].is_whole_ring() {
-                // Buchberger compacts the basis to `[1]` on trivial abort;
-                // the contradiction polynomial is the last entry pushed
-                // into the tracer (same indexing as `gb::compute_gb_with_timeout_traced`).
-                let last_idx = tracer.basis_count();
-                let tcis: Vec<usize> = if last_idx == 0 {
-                    Vec::new()
-                } else {
-                    tracer.unsat_core_for(last_idx - 1)
-                };
-                let mut s: BTreeSet<usize> = BTreeSet::new();
-                for ti in tcis {
-                    if let Some(d) = tracer_input_to_orig.get(ti) {
-                        s.extend(d.iter().copied());
-                    }
-                }
-                let orig_core = if s.is_empty() {
+                let orig_core = if all_input_deps.is_empty() {
                     None
                 } else {
-                    Some(s.into_iter().collect::<Vec<usize>>())
+                    Some(all_input_deps.iter().copied().collect::<Vec<usize>>())
                 };
                 return Ok(TracedSplitGb {
                     split_basis,
@@ -416,26 +424,7 @@ fn run_fixpoint_traced<'r>(
             }
 
             let new_basis_len = split_basis[i].basis.len();
-            let mut new_basis_deps: Vec<BTreeSet<usize>> = Vec::with_capacity(new_basis_len);
-            for bidx in 0..new_basis_len {
-                let mut s: BTreeSet<usize> = BTreeSet::new();
-                match tracer.deps_of(bidx) {
-                    Some(tcis) => {
-                        for &ti in tcis {
-                            if let Some(d) = tracer_input_to_orig.get(ti) {
-                                s.extend(d.iter().copied());
-                            }
-                        }
-                    }
-                    None => {
-                        for d in &tracer_input_to_orig {
-                            s.extend(d.iter().copied());
-                        }
-                    }
-                }
-                new_basis_deps.push(s);
-            }
-            basis_deps[i] = new_basis_deps;
+            basis_deps[i] = vec![all_input_deps; new_basis_len];
         }
 
         if split_basis.iter().any(|b| b.is_whole_ring()) {
