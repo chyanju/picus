@@ -13,7 +13,7 @@
 //! interreduced.
 //!
 //! The `ext` ring is a regular [`FfPolyRing`] with `n + 1` variables;
-//! the extra variable `h` lives at index `n` (= `base.n_vars`).
+//! the extra variable `h` lives at index `n` (= `base.n_vars()`).
 
 use crate::ff::field::PrimeField;
 use crate::poly::{FfPolyRing, Poly};
@@ -21,13 +21,13 @@ use crate::poly::{FfPolyRing, Poly};
 /// Wraps a base polynomial ring `P` and exposes a fresh ring `Ph = P[h]`
 /// with one extra "homogenizing" variable.
 ///
-/// The extra variable `h` lives at index [`Self::h_idx`] (== `base.n_vars`).
+/// The extra variable `h` lives at index [`Self::h_idx`] (== `base.n_vars()`).
 pub struct HomogRing<'r> {
     /// The base ring `P` (n vars).
     pub base: &'r FfPolyRing,
     /// The extended ring `Ph = P[h]` (n+1 vars; the last one is `h`).
     pub ext: FfPolyRing,
-    /// Index of the homogenizing variable inside [`Self::ext`] — equals `base.n_vars`.
+    /// Index of the homogenizing variable inside [`Self::ext`] — equals `base.n_vars()`.
     pub h_idx: usize,
 }
 
@@ -37,7 +37,7 @@ impl<'r> HomogRing<'r> {
     /// circuit signal names which never start with `__`).
     ///
     /// `Ph` constructs a fresh `PrimeField` over the same prime as
-    /// `base.field`. Coefficient moves between `base.ring` and
+    /// `base.field()`. Coefficient moves between `base.ring` and
     /// `ext.ring` are sound because `FieldElem` arithmetic dispatches
     /// on the `PrimeField` passed to each op — the field identity
     /// itself is irrelevant once the prime matches.

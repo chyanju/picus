@@ -62,8 +62,9 @@ pub enum SolverError {
 ///
 /// Backends consume a [`PolyIR`] snapshot whose `target_signal` and
 /// `known_signals` reflect the current DPVL state. The PolyIR's
-/// `equalities` already encode `x_0 = 1`, the input wires' `x_i = y_i`
-/// equalities, and every learned equality from previous solves; the
+/// `equalities` already encode `x_0 = 1` and every learned equality from
+/// previous solves (input wires reuse `x_i` across copies, so no
+/// `x_i = y_i` equality appears); the
 /// backend additionally asserts `x_target ≠ y_target` and runs SMT
 /// `(check-sat)`. SAT models are returned as
 /// `HashMap<String, BigUint>` keyed by the ring's canonical variable

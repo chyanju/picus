@@ -6,8 +6,8 @@
 //! returns `Sat` / `Unsat(core)` / `Unknown`; the orchestrator turns the
 //! core into a SAT lemma.
 //!
-//! [`propagate`] and [`explain`] have default no-op implementations; the
-//! FF theory does not override them.
+//! [`propagate`] defaults to no propagation and [`explain`] to a panic;
+//! the FF theory overrides both.
 
 use std::collections::HashMap;
 

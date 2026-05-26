@@ -1,5 +1,7 @@
-//! Solver-agnostic polynomial IR for propagation and (eventually)
-//! backend lowering.
+//! Solver-agnostic polynomial IR: the query form the propagation lemmas
+//! read and the SMT backends lower. The native engine's lowering (to
+//! `ConstraintSystem` / `BooleanQuery` / `EncodedSystem`) lives in the
+//! native backend, so this module depends only on `picus-core`.
 //!
 //! A [`PolyIR`] bundles a polynomial ring over GF(p) together with the
 //! constraint system extracted from a uniqueness query: a list of
@@ -10,9 +12,10 @@
 //! Variable layout. For an R1CS with `n_wires` wires, the ring carries
 //! `2 * n_wires` variables. Variable index `i` (for `i < n_wires`) is
 //! the original copy `x_i`; index `n_wires + i` is the alt copy `y_i`.
-//! Inputs satisfy `x_i = y_i` (encoded as an explicit equality at
-//! lowering time); wire 0 is the R1CS one-wire and pinned to `1` in
-//! both copies. `target_signal` is the wire index `s` whose
+//! Inputs share a value across copies structurally: lowering emits `x_i`
+//! (not `y_i`) for an input wire in both copies, so no explicit
+//! `x_i = y_i` equality is materialised. Wire 0 is the R1CS one-wire and
+//! pinned to `1` in both copies. `target_signal` is the wire index `s` whose
 //! uniqueness we are checking — equivalently, we ask whether
 //! `x_s = y_s` is forced by the constraints.
 //!
@@ -140,8 +143,8 @@ impl PolyIR {
     /// next backend call sees it as a regular constraint.
     pub fn add_known_wire(&mut self, w: usize) {
         if self.known_signals.insert(w) && !self.input_indices.contains(&w) {
-            // Inputs already had `x_i - y_i = 0` baked in at lowering;
-            // only non-input wires need a fresh equality here.
+            // Input wires reuse `x_i` across both copies at lowering, so
+            // only non-input wires need a fresh `x_w - y_w = 0` equality here.
             let x = self.ring.var(self.orig_var(w));
             let y = self.ring.var(self.alt_var(w));
             self.equalities.push(self.ring.sub(x, y));
@@ -207,8 +210,8 @@ impl PolyIR {
 /// Construct a [`PolyIR`] from a parsed R1CS file in a single pass over
 /// the constraint blocks: each `A * B = C`
 /// constraint becomes one polynomial equality `(sum_a)(sum_b) - sum_c =
-/// 0`, with both copies (`x_i`, `y_i`) emitted side-by-side. Inputs are
-/// pinned to a single value (`x_i - y_i = 0`); wire 0 is pinned to `1`
+/// 0`, with both copies (`x_i`, `y_i`) emitted side-by-side. Input wires
+/// reuse `x_i` in both copies (no `x_i = y_i` equality); wire 0 is pinned to `1`
 /// in both copies; the target signal disequality is *not* materialised
 /// here (the GB solver handles it via a Rabinowitsch trick).
 pub fn r1cs_to_poly_ir(

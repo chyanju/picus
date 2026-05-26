@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.4] - 2026-05-25
+- Internal refactors only — no change to any verdict, the public API, or the CLI. Maintainability/structure cleanups toward the planned cvc5/CoCoA engine alignment:
+  - The Gebauer–Möller M-criterion, B-criterion, and S-pair queue merge are unified into one representation-agnostic `ff::spair_criteria` module (generic over a `CriterionPair` / `LeadingTerms` trait pair); the dense and sparse Buchberger engines share it instead of hand-mirrored copies.
+  - `ff::buchberger` factors S-polynomial construction and non-strict deactivation into `build_spoly` / `deactivate_superseded`, shared across the per-pair, F4, and seeding paths.
+  - The CDCL(T) main loop is generic over the `Theory` trait; the unused `Effort` / `pre_check` scaffolding is removed.
+  - `PolyIR` no longer depends on `picus-solver`: its native-engine lowering (`to_constraint_system` / `to_boolean_query` / `encode` / `pre_eliminate_linear`) moves to the native backend, leaving the IR dependent only on `picus-core`.
+  - `FfPolyRing` reads field / variable count / names from the shared ring context instead of storing duplicates.
+  - `run_dpvl` returns a typed `DpvlError` (was `String`); `PicusError` gains a `Dpvl` variant.
+  - Removed the unused `SolverMode` enum and `solve_encoded_with_mode` entry points; the `solver_bench` criterion target builds again and `cargo build --all-targets` is warning-clean.
+
 ## [1.8.3] - 2026-05-25
 - Split-GB UNSAT core is now a sound conservative over-approximation: every element of a partition, and any extracted core, is attributed the union of the original inputs that fed that partition. This closes an under-approximation hazard where Buchberger deactivation (active-vs-push index skew) or a zero-reducing batched generator could yield a too-small core. Only the CDCL(T) conflict path consumes the core; the default conjunctive path discards it, so verdicts are unchanged.
 - Univariate root-finding distinguishes completeness: `find_roots_checked` returns `(roots, complete)`, with `complete = false` when Cantor–Zassenhaus leaves an unsplit product of linear factors. The split-GB brancher and model search treat an incomplete result as inconclusive (fall through to round-robin → `unknown`) instead of as proof of infeasibility, so a dropped root can never produce a wrong `unsafe`/UNSAT.
