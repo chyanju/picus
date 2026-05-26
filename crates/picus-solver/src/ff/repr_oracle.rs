@@ -501,7 +501,7 @@ fn sparse_groebner_incremental_matches_from_scratch_random() {
     let r: &PolyRing = &arc_r;
     let mut rng = Rng::new(73);
 
-    let mut rand_gens = |rng: &mut Rng| -> Vec<SparsePolynomial> {
+    let rand_gens = |rng: &mut Rng| -> Vec<SparsePolynomial> {
         let count = 1 + rng.below(2) as usize;
         (0..count)
             .map(|_| {

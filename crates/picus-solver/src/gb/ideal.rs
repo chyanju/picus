@@ -26,10 +26,19 @@ use crate::config::GbStrategy;
 ///
 /// Every public GB entry point (`compute_gb_with_order` and its
 /// traced sibling) routes through [`compute_gb_dispatch`], which
-/// selects an algorithm from [`crate::config::RuntimeConfig::gb_strategy`]
-/// and forwards. Adding a new algorithm (F5, signature-based, CoCoA-
-/// style, …) is therefore a matter of implementing this trait and
-/// teaching dispatch about it; no other entry point needs touching.
+/// selects a strategy from [`crate::config::RuntimeConfig::gb_strategy`]
+/// and forwards.
+///
+/// Scope: this trait dispatches the *algorithm strategy* — currently the
+/// homogenisation choice ([`BuchbergerDirect`] vs [`BuchbergerByHomog`]),
+/// and the extension point for a genuinely different algorithm such as a
+/// signature-based F5. It does **not** select the polynomial
+/// representation (dense vs sparse — chosen inside `compute` from
+/// `config.poly_repr`) nor the F4 matrix batch path (chosen via
+/// `BuchbergerConfig.use_f4`): those are orthogonal implementation
+/// choices made within a strategy's `compute`, not separate
+/// `GbAlgorithm`s. A CoCoA-style F4 improvement lands in the
+/// Buchberger/F4 engine, not as a new trait impl.
 ///
 /// Two execution modes are supported. `compute` is the basic call;
 /// `compute_traced` feeds a [`GbTracer`] observer for UNSAT-core
