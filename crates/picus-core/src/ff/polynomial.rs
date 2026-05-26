@@ -1365,6 +1365,14 @@ impl DensePoly {
             if iter_counter & (CANCEL_CHECK_PERIOD - 1) == 0 {
                 if let Some(c) = cancel_ref {
                     if c.is_cancelled() {
+                        // The current leading term was already popped above;
+                        // re-attach it before draining the rest so the partial
+                        // residue stays in the input's coset (same contract as
+                        // the indexed and sparse cancel paths). It is the global
+                        // maximum, so the result stays descending.
+                        result_exps.extend_from_slice(&lt_exps);
+                        result_coeffs.push(lt_coeff);
+                        result_degs.push(lt_deg);
                         while let Some((e, d, c2)) = gb.pop_leading_term() {
                             result_exps.extend_from_slice(&e);
                             result_coeffs.push(c2);
