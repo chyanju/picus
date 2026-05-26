@@ -110,7 +110,7 @@ impl<'r> BitProp<'r> {
         let _t = crate::profile::ScopedTimer::new("bitprop::get_bit_equalities");
         let pr = self.poly_ring;
         let ring = &pr.ring;
-        let fp = &pr.field;
+        let fp = &pr.field();
         let mut output: Vec<Poly> = Vec::new();
 
         // We snapshot the bitsums to avoid borrow conflicts with `self.is_bit`.
@@ -141,7 +141,7 @@ impl<'r> BitProp<'r> {
 
                 // val = the constant
                 let val_el = constant_term_value(pr, &nf);
-                let val: BigUint = pr.field.to_biguint(&val_el);
+                let val: BigUint = pr.field().to_biguint(&val_el);
                 let two_k = BigUint::from(1u32) << bs.len();
                 if val >= two_k {
                     // overflow → contradiction
@@ -186,7 +186,7 @@ impl<'r> BitProp<'r> {
                 let min = a.len().min(b.len());
                 let max = a.len().max(b.len());
                 // Check overflow: bitwidth shouldn't exceed field bitlength
-                let field_bits = pr.field.prime().bits() as usize;
+                let field_bits = pr.field().prime().bits() as usize;
                 if max > field_bits { continue; }
 
                 let all_bits = a.iter().chain(b.iter()).all(|&v| self.is_bit(v, split_basis));
@@ -210,7 +210,7 @@ impl<'r> BitProp<'r> {
 
 /// Construct the polynomial  `b_0 + 2*b_1 + ... + 2^k*b_k`  for a bitsum.
 fn bitsum_poly(pr: &FfPolyRing, bits: &[usize]) -> Poly {
-    let fp = &pr.field;
+    let fp = &pr.field();
     let two = fp.int_hom().map(2);
     let mut result = pr.zero();
     let mut coeff = fp.one();
@@ -225,11 +225,11 @@ fn bitsum_poly(pr: &FfPolyRing, bits: &[usize]) -> Poly {
 /// Get the constant term of a polynomial (assumes it's already a constant).
 fn constant_term_value(pr: &FfPolyRing, p: &Poly) -> FieldElem {
     let ring = &pr.ring;
-    let fp = &pr.field;
+    let fp = &pr.field();
     let mut acc = fp.zero();
     for (c, m) in ring.terms(p) {
         let mut deg = 0usize;
-        for v in 0..pr.n_vars {
+        for v in 0..pr.n_vars() {
             deg += ring.exponent_at(&m, v);
         }
         if deg == 0 {
@@ -253,9 +253,9 @@ mod tests {
         // x_0 + 2*x_1 + 4*x_2 = 5,  all x_i bits.
         // Should propagate x_0 = 1, x_1 = 0, x_2 = 1.
         let pr = FfPolyRing::new(ff(17), vec!["b0".into(), "b1".into(), "b2".into()]);
-        let two = pr.field.from_int(2);
-        let four = pr.field.from_int(4);
-        let neg_five = pr.field.from_int(-5);
+        let two = pr.field().from_int(2);
+        let four = pr.field().from_int(4);
+        let neg_five = pr.field().from_int(-5);
         let sum = pr.add(
             pr.add(pr.var(0), pr.scale(two, pr.var(1))),
             pr.add(pr.scale(four, pr.var(2)), pr.constant(neg_five)),
@@ -285,7 +285,7 @@ mod tests {
     fn test_bitprop_overflow() {
         // x_0 = 5  with only ONE bit.  Overflow → emit `1`.
         let pr = FfPolyRing::new(ff(17), vec!["b0".into()]);
-        let neg_five = pr.field.from_int(-5);
+        let neg_five = pr.field().from_int(-5);
         let p = pr.add(pr.var(0), pr.constant(neg_five));
         let x = pr.var(0);
         let x2 = pr.mul(pr.clone_poly(&x), pr.clone_poly(&x));
@@ -296,8 +296,8 @@ mod tests {
         // bitsum equals 5 with only 2 bits, so the implied value
         // (`b0 + 2·b1 ∈ {0,1,2,3}`) cannot match 5.
         let pr2 = FfPolyRing::new(ff(17), vec!["b0".into(), "b1".into()]);
-        let two = pr2.field.from_int(2);
-        let neg_five = pr2.field.from_int(-5);
+        let two = pr2.field().from_int(2);
+        let neg_five = pr2.field().from_int(-5);
         // b0 + 2*b1 = 5; with b_i in {0,1} we have b0+2*b1 ∈ {0,1,2,3} so 5 is overflow.
         let sum = pr2.add(pr2.add(pr2.var(0), pr2.scale(two, pr2.var(1))), pr2.constant(neg_five));
         let mut polys = vec![sum];

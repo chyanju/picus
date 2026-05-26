@@ -151,7 +151,7 @@ impl GbAlgorithm for BuchbergerByHomog {
 
 fn is_total_deg_homogeneous(pr: &FfPolyRing, p: &Poly) -> bool {
     let ring = &pr.ring;
-    let n = pr.n_vars;
+    let n = pr.n_vars();
     let mut iter = ring.terms(p);
     let Some((_, m0)) = iter.next() else { return true; };
     let d0: usize = (0..n).map(|i| ring.exponent_at(&m0, i)).sum();
@@ -427,7 +427,7 @@ impl<'r> Ideal<'r> {
             return false;
         }
         let ring = self.poly_ring.ctx();
-        let n_vars = self.poly_ring.n_vars;
+        let n_vars = self.poly_ring.n_vars();
 
         let mut covered: HashSet<usize> = HashSet::new();
         for p in &self.basis {
@@ -473,7 +473,7 @@ impl<'r> Ideal<'r> {
             return None;
         }
         let ring = self.poly_ring.ctx();
-        let n_vars = self.poly_ring.n_vars;
+        let n_vars = self.poly_ring.n_vars();
         let mut lead: Vec<Monomial> = Vec::with_capacity(self.basis.len());
         for p in &self.basis {
             if p.is_zero() {
@@ -647,8 +647,8 @@ pub(crate) fn interreduce_basis(
 /// Cheap (an `Arc<PolyRing>` with the same field/var-name data).
 pub(crate) fn ring_for_order(poly_ring: &FfPolyRing, order: FfOrder) -> std::sync::Arc<crate::ff::polynomial::PolyRing> {
     crate::ff::polynomial::PolyRing::new(
-        poly_ring.field.clone(),
-        poly_ring.var_names.clone(),
+        poly_ring.field().clone(),
+        poly_ring.var_names().to_vec(),
         order,
     )
 }
@@ -726,7 +726,7 @@ pub fn compute_gb_with_order(
         return sparse_gb_route(poly_ring, generators, order, cancel);
     }
     let n_gens = generators.len();
-    let n_vars = poly_ring.n_vars;
+    let n_vars = poly_ring.n_vars();
     let backup: Vec<Poly> = generators.iter().map(|p| p.clone()).collect();
     let start = std::time::Instant::now();
     let result = compute_gb_dispatch(poly_ring, generators, cancel, order, None);

@@ -147,7 +147,7 @@ fn test_multiple_disequalities_sat() {
     let encoded = system.encode().unwrap();
     let n_witnesses = encoded
         .poly_ring
-        .var_names
+        .var_names()
         .iter()
         .filter(|n| n.starts_with("__w_diseq_"))
         .count();

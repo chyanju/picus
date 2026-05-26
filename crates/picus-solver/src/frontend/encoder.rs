@@ -274,7 +274,7 @@ fn find_bitsum_chain(
 /// Divide a polynomial by its leading coefficient (in DegRevLex order).
 fn normalize_poly(pr: &FfPolyRing, p: Poly) -> Poly {
     let ring = &pr.ring;
-    let fp = &pr.field;
+    let fp = &pr.field();
     if ring.is_zero(&p) || p.num_terms() == 0 { return p; }
     // Leading term is at index 0 (polynomials are stored sorted descending).
     let lc = fp.clone_el(p.leading_coefficient().expect("nonzero polynomial has a leading term"));
@@ -611,7 +611,7 @@ fn encode_impl(
     for eq in &system.equalities {
         let mut poly = poly_ring.zero();
         for term in eq {
-            let c = poly_ring.field.from_biguint(&term.coeff);
+            let c = poly_ring.field().from_biguint(&term.coeff);
             let mut t = poly_ring.constant(c);
             for &(vidx, exp) in &term.vars {
                 if (vidx as usize) >= n_ring {
@@ -641,7 +641,7 @@ fn encode_impl(
             ));
         }
         let v = poly_ring.var(*v_idx as usize);
-        let c = poly_ring.constant(poly_ring.field.from_biguint(val));
+        let c = poly_ring.constant(poly_ring.field().from_biguint(val));
         let diff = poly_ring.sub(v, c);
         if !poly_ring.is_zero(&diff) {
             polynomials.push(diff);
@@ -671,10 +671,10 @@ fn encode_impl(
     // Bitsum definitions: b0 + 2·b1 + 4·b2 + ... - aux = 0.
     let mut bitsum_polys: Vec<Poly> = Vec::new();
     for (bs, &aux_idx) in system.bitsums.iter().zip(bitsum_aux_idxs.iter()) {
-        let fp = &poly_ring.field;
+        let fp = &poly_ring.field();
         let two = fp.int_hom().map(2);
         let mut sum = poly_ring.zero();
-        let mut coeff = poly_ring.field.one();
+        let mut coeff = poly_ring.field().one();
         for &bit_idx in bs {
             if (bit_idx as usize) >= n_user {
                 return Err(format!(
@@ -699,7 +699,7 @@ fn encode_impl(
         let p_usize = system.prime.to_u64_digits();
         if p_usize.len() == 1 && p_usize[0] <= 1000 {
             let p_val = p_usize[0] as usize;
-            for i in 0..poly_ring.n_vars {
+            for i in 0..poly_ring.n_vars() {
                 let x = poly_ring.var(i);
                 let mut x_p = poly_ring.one();
                 let mut base = poly_ring.clone_poly(&x);

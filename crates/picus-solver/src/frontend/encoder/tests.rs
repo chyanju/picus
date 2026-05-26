@@ -244,7 +244,7 @@ fn encode_disequality_adds_witness() {
     let enc = encode(&sys).expect("encode");
     assert_eq!(enc.polynomials.len(), 1, "one Rabinowitsch poly");
     assert!(enc.var_map.contains_key("__w_diseq_0"));
-    assert_eq!(enc.poly_ring.n_vars, 3); // x, y, __w_diseq_0
+    assert_eq!(enc.poly_ring.n_vars(), 3); // x, y, __w_diseq_0
 }
 
 /// Bitsum routes into the separate bitsum_polys list.

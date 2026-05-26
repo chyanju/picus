@@ -28,38 +28,30 @@ pub type PolyRingType = PolyRingFacade;
 /// `pr.ring` is a thin facade around the underlying [`ff::PolyRing`]
 /// context, exposing `terms`, `create_term`, `exponent_at`, etc.
 pub struct FfPolyRing {
-    pub field: PrimeField,
     pub ring: PolyRingFacade,
-    pub n_vars: usize,
-    pub var_names: Vec<String>,
 }
 
 impl FfPolyRing {
     /// Create a new polynomial ring with degrevlex term order.
     pub fn new(field: PrimeField, var_names: Vec<String>) -> Self {
-        let n_vars = var_names.len();
-        let ctx = FfPolyRingCtx::new(
-            field.clone(),
-            var_names.clone(),
-            MonomialOrder::DegRevLex,
-        );
-        let ring = PolyRingFacade { ctx };
-        FfPolyRing { field, ring, n_vars, var_names }
+        let ctx = FfPolyRingCtx::new(field, var_names, MonomialOrder::DegRevLex);
+        FfPolyRing { ring: PolyRingFacade { ctx } }
     }
 
     /// Like [`Self::new`] but with an explicit polynomial representation,
     /// bypassing the thread-local `config::poly_repr`.
     pub fn new_with_repr(field: PrimeField, var_names: Vec<String>, repr: ReprKind) -> Self {
-        let n_vars = var_names.len();
-        let ctx = FfPolyRingCtx::new_with_repr(
-            field.clone(),
-            var_names.clone(),
-            MonomialOrder::DegRevLex,
-            repr,
-        );
-        let ring = PolyRingFacade { ctx };
-        FfPolyRing { field, ring, n_vars, var_names }
+        let ctx = FfPolyRingCtx::new_with_repr(field, var_names, MonomialOrder::DegRevLex, repr);
+        FfPolyRing { ring: PolyRingFacade { ctx } }
     }
+
+    /// The prime field. Read from the shared context — `FfPolyRing` no
+    /// longer stores a duplicate copy.
+    pub fn field(&self) -> &PrimeField { &self.ring.ctx.field }
+    /// Number of indeterminates.
+    pub fn n_vars(&self) -> usize { self.ring.ctx.n_vars }
+    /// Variable names, in index order.
+    pub fn var_names(&self) -> &[String] { &self.ring.ctx.var_names }
 
     /// i-th indeterminate as a polynomial.
     pub fn var(&self, index: usize) -> Poly {
@@ -72,7 +64,7 @@ impl FfPolyRing {
     }
 
     pub fn zero(&self) -> Poly { Polynomial::zero() }
-    pub fn one(&self) -> Poly { Polynomial::constant(self.field.one(), &self.ring.ctx) }
+    pub fn one(&self) -> Poly { Polynomial::constant(self.ring.ctx.field.one(), &self.ring.ctx) }
 
     pub fn add(&self, a: Poly, b: Poly) -> Poly { a.add(&b, &self.ring.ctx) }
     pub fn sub(&self, a: Poly, b: Poly) -> Poly { a.sub(&b, &self.ring.ctx) }
@@ -88,7 +80,7 @@ impl FfPolyRing {
 
     /// Look up variable index by name.
     pub fn var_index(&self, name: &str) -> Option<usize> {
-        self.var_names.iter().position(|n| n == name)
+        self.ring.ctx.var_names.iter().position(|n| n == name)
     }
 
     /// Reference to the underlying `ff::PolyRing` context.
@@ -295,9 +287,9 @@ impl IrPolyRing {
     /// `&FfPolyRing` (e.g. to run a Gröbner-basis routine over the IR
     /// polynomials) borrow it here.
     pub fn as_ff(&self) -> &FfPolyRing { &self.inner }
-    pub fn n_vars(&self) -> usize { self.inner.n_vars }
-    pub fn var_names(&self) -> &[String] { &self.inner.var_names }
-    pub fn field(&self) -> &PrimeField { &self.inner.field }
+    pub fn n_vars(&self) -> usize { self.inner.n_vars() }
+    pub fn var_names(&self) -> &[String] { self.inner.var_names() }
+    pub fn field(&self) -> &PrimeField { self.inner.field() }
     pub fn ctx(&self) -> &Arc<FfPolyRingCtx> { &self.inner.ring.ctx }
     pub fn var_index(&self, name: &str) -> Option<usize> { self.inner.var_index(name) }
 

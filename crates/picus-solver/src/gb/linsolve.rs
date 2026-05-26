@@ -139,7 +139,7 @@ mod tests {
         // After elimination the nonlinear poly must no longer mention x:
         // x*y - 1 reduces to 3*y - 1.
         let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
-        let three = pr.field.from_int(3);
+        let three = pr.field().from_int(3);
         let lin = pr.sub(pr.var(0), pr.constant(three));
         let nl = pr.sub(pr.mul(pr.var(0), pr.var(1)), pr.one());
         let elim = eliminate_linear(&pr, &[lin, nl], &CancelToken::none()).unwrap();
@@ -159,19 +159,19 @@ mod tests {
             match v { 0 => BigUint::from(3u32), _ => BigUint::from(5u32) }
         };
         for p in &elim.reduced {
-            let mut acc = pr.field.zero();
+            let mut acc = pr.field().zero();
             for (c, m) in pr.ring.terms(p) {
-                let mut term = pr.field.clone_el(c);
-                for v in 0..pr.n_vars {
+                let mut term = pr.field().clone_el(c);
+                for v in 0..pr.n_vars() {
                     let e = pr.ring.exponent_at(&m, v);
                     if e > 0 {
-                        let val = pr.field.from_biguint(&assign(v));
-                        term = pr.field.mul(&term, &pr.field.pow_u64(&val, e as u64));
+                        let val = pr.field().from_biguint(&assign(v));
+                        term = pr.field().mul(&term, &pr.field().pow_u64(&val, e as u64));
                     }
                 }
-                acc = pr.field.add(&acc, &term);
+                acc = pr.field().add(&acc, &term);
             }
-            assert!(pr.field.is_zero(&acc), "reduced poly must vanish at the witness");
+            assert!(pr.field().is_zero(&acc), "reduced poly must vanish at the witness");
         }
     }
 }

@@ -109,7 +109,7 @@ mod tests {
     /// monic, DegRevLex GBs of the same ideal must have identical LM sets.
     fn lm_set(pr: &FfPolyRing, gb: &[Poly]) -> BTreeSet<Vec<usize>> {
         let ctx = pr.ctx();
-        let n = pr.n_vars;
+        let n = pr.n_vars();
         let mut s = BTreeSet::new();
         for p in gb {
             if let Some(m) = p.leading_monomial(ctx) {
@@ -177,8 +177,8 @@ mod tests {
         let bc1 = pr.sub(xx, pr.clone_poly(&x));
         let bc2 = pr.sub(yy, pr.clone_poly(&y));
         // x + 2y - 3
-        let two = pr.constant(pr.field.from_int(2));
-        let three = pr.constant(pr.field.from_int(3));
+        let two = pr.constant(pr.field().from_int(2));
+        let three = pr.constant(pr.field().from_int(3));
         let two_y = pr.mul(two, pr.clone_poly(&y));
         let bs = pr.sub(pr.add(pr.clone_poly(&x), two_y), three);
         let gens = vec![bc1, bc2, bs];
@@ -227,7 +227,7 @@ mod tests {
         let bc_a = pr.sub(aa, pr.clone_poly(&a));
         let bc_b = pr.sub(bb, pr.clone_poly(&b));
         let bc_c = pr.sub(cc, pr.clone_poly(&c));
-        let two = pr.constant(pr.field.from_int(2));
+        let two = pr.constant(pr.field().from_int(2));
         let two_c = pr.mul(two, pr.clone_poly(&c));
         // a + b - 2c - r
         let chunk = pr.sub(

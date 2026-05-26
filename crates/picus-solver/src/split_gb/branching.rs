@@ -34,7 +34,7 @@ pub fn apply_rule<'r>(
     r: &PartialPoint,
 ) -> Brancher {
     let ring = &poly_ring.ring;
-    let field = &poly_ring.field;
+    let field = &poly_ring.field();
 
     // (1) univariate polynomial in an unassigned variable
     for p in &gb.basis {
@@ -60,7 +60,7 @@ pub fn apply_rule<'r>(
 
     // (2) zero-dim: compute minimal polynomial
     if gb.is_zero_dim() {
-        for v in 0..poly_ring.n_vars {
+        for v in 0..poly_ring.n_vars() {
             if r[v].is_none() {
                 if let Some(coeffs) = gb.min_poly(v) {
                     let (roots, complete) = crate::gb::roots::find_roots_checked(field, &coeffs);
@@ -79,7 +79,7 @@ pub fn apply_rule<'r>(
     }
 
     // (3) round-robin: lazy enumeration.
-    let unassigned: Vec<usize> = (0..poly_ring.n_vars).filter(|i| r[*i].is_none()).collect();
+    let unassigned: Vec<usize> = (0..poly_ring.n_vars()).filter(|i| r[*i].is_none()).collect();
     if unassigned.is_empty() {
         return Brancher::Roots(Vec::new());
     }
@@ -115,7 +115,7 @@ pub(super) fn apply_rule_multi<'r>(
 ) -> Brancher {
     let _t = crate::profile::ScopedTimer::new("apply_rule_multi");
     let ring = &poly_ring.ring;
-    let field = &poly_ring.field;
+    let field = &poly_ring.field();
 
     // (1) Check all bases for a univariate polynomial in an unassigned
     // variable.
@@ -143,7 +143,7 @@ pub(super) fn apply_rule_multi<'r>(
     // (2) Check all bases for a zero-dimensional ideal → minimal polynomial.
     for gb in bases {
         if gb.is_zero_dim() {
-            for v in 0..poly_ring.n_vars {
+            for v in 0..poly_ring.n_vars() {
                 if r[v].is_none() {
                     if let Some(coeffs) = gb.min_poly(v) {
                         let (roots, complete) = crate::gb::roots::find_roots_checked(field, &coeffs);
@@ -174,7 +174,7 @@ fn univariate_coeffs(
     var_idx: usize,
 ) -> Option<Vec<FieldElem>> {
     let ring = &poly_ring.ring;
-    let fp = &poly_ring.field;
+    let fp = &poly_ring.field();
     let appearing = ring.appearing_indeterminates(p);
     for (v, _) in &appearing {
         if *v != var_idx { return None; }

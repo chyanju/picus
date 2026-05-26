@@ -56,8 +56,8 @@ pub struct BitSum {
 /// and a non-zero constant `c`.  Otherwise `None`.
 pub fn linear_monomial(pr: &FfPolyRing, p: &Poly) -> Option<LinearMonomial> {
     let ring = &pr.ring;
-    let fp = &pr.field;
-    let n_vars = pr.n_vars;
+    let fp = &pr.field();
+    let n_vars = pr.n_vars();
 
     let mut found: Option<(usize, FieldElem)> = None;
     for (c, m) in ring.terms(p) {
@@ -98,8 +98,8 @@ pub fn zero_constraint(pr: &FfPolyRing, p: &Poly) -> Option<usize> {
 /// Detects polynomials of the form `c*x + d` with `c, d != 0` and `d/c = -1`.
 pub fn one_constraint(pr: &FfPolyRing, p: &Poly) -> Option<usize> {
     let ring = &pr.ring;
-    let fp = &pr.field;
-    let n_vars = pr.n_vars;
+    let fp = &pr.field();
+    let n_vars = pr.n_vars();
 
     let mut linear_term: Option<(usize, FieldElem)> = None;
     let mut const_term: Option<FieldElem> = None;
@@ -146,8 +146,8 @@ pub fn one_constraint(pr: &FfPolyRing, p: &Poly) -> Option<usize> {
 /// any sign / scalar form: `c*(x^2 - x) == 0` for some non-zero `c`.
 pub fn bit_constraint(pr: &FfPolyRing, p: &Poly) -> Option<BitConstraint> {
     let ring = &pr.ring;
-    let fp = &pr.field;
-    let n_vars = pr.n_vars;
+    let fp = &pr.field();
+    let n_vars = pr.n_vars();
 
     // Collect the (degree, var, coeff) triples.
     // Expect exactly two terms: c*x^2 and -c*x for the same var.
@@ -201,8 +201,8 @@ pub fn extract_linear_monomials(
     p: &Poly,
 ) -> Option<(Vec<LinearMonomial>, Vec<Poly>)> {
     let ring = &pr.ring;
-    let fp = &pr.field;
-    let n_vars = pr.n_vars;
+    let fp = &pr.field();
+    let n_vars = pr.n_vars();
 
     if ring.is_zero(p) {
         return None;
@@ -261,7 +261,7 @@ pub fn bit_sums(
     bits_hint: &HashSet<usize>,
 ) -> Option<(Vec<BitSum>, Poly)> {
     let ring = &pr.ring;
-    let fp = &pr.field;
+    let fp = &pr.field();
     let two = fp.int_hom().map(2);
 
     let (mut linears, rest) = extract_linear_monomials(pr, p)?;
@@ -339,7 +339,7 @@ pub fn bit_sums(
         }
 
         // Avoid runaway in pathological inputs.
-        if bitsums.len() > pr.n_vars + 4 {
+        if bitsums.len() > pr.n_vars() + 4 {
             break;
         }
     }
@@ -380,7 +380,7 @@ mod tests {
         let x = pr.var(0);
         assert_eq!(zero_constraint(&pr, &x), Some(0));
 
-        let three = pr.field.from_int(3);
+        let three = pr.field().from_int(3);
         let three_x = pr.scale(three, pr.var(0));
         assert_eq!(zero_constraint(&pr, &three_x), Some(0));
 
@@ -396,14 +396,14 @@ mod tests {
         assert_eq!(one_constraint(&pr, &x_minus_1), Some(0));
 
         // 3x - 3 = 0  →  x = 1
-        let three = pr.field.from_int(3);
-        let neg_three = pr.field.from_int(-3);
+        let three = pr.field().from_int(3);
+        let neg_three = pr.field().from_int(-3);
         let term = pr.scale(three, pr.var(0));
         let p = pr.add(term, pr.constant(neg_three));
         assert_eq!(one_constraint(&pr, &p), Some(0));
 
         // x - 2 ≠ x = 1
-        let neg_two = pr.field.from_int(-2);
+        let neg_two = pr.field().from_int(-2);
         let p2 = pr.add(pr.var(0), pr.constant(neg_two));
         assert_eq!(one_constraint(&pr, &p2), None);
     }
@@ -418,8 +418,8 @@ mod tests {
         assert_eq!(bit_constraint(&pr, &p), Some(BitConstraint { var: 0 }));
 
         // 5*x^2 - 5*x = 0  (also a bit constraint after scaling)
-        let five = pr.field.from_int(5);
-        let neg_five = pr.field.from_int(-5);
+        let five = pr.field().from_int(5);
+        let neg_five = pr.field().from_int(-5);
         let x2_b = pr.mul(pr.var(0), pr.var(0));
         let lin = pr.scale(neg_five, pr.var(0));
         let quad = pr.scale(five, x2_b);
@@ -436,9 +436,9 @@ mod tests {
     fn test_extract_linear_monomials() {
         // p = 2x + 3y + xy + 5
         let pr = FfPolyRing::new(ff(17), vec!["x".into(), "y".into()]);
-        let two = pr.field.from_int(2);
-        let three = pr.field.from_int(3);
-        let five = pr.field.from_int(5);
+        let two = pr.field().from_int(2);
+        let three = pr.field().from_int(3);
+        let five = pr.field().from_int(5);
         let p = pr.add(
             pr.add(
                 pr.add(pr.scale(two, pr.var(0)), pr.scale(three, pr.var(1))),
@@ -455,8 +455,8 @@ mod tests {
     fn test_bit_sums_simple() {
         // p = x_0 + 2*x_1 + 4*x_2  →  bitsum with coeff=1, bits=[0,1,2]
         let pr = FfPolyRing::new(ff(17), vec!["x0".into(), "x1".into(), "x2".into()]);
-        let two = pr.field.from_int(2);
-        let four = pr.field.from_int(4);
+        let two = pr.field().from_int(2);
+        let four = pr.field().from_int(4);
         let p = pr.add(
             pr.add(pr.var(0), pr.scale(two, pr.var(1))),
             pr.scale(four, pr.var(2)),
@@ -492,7 +492,7 @@ mod tests {
         // AST: (= 0 (* x (- x 1)))  →  x*(x-1) → x² - x
         // After polynomial multiplication picus produces x² - x directly.
         let pr = FfPolyRing::new(ff(17), vec!["x".into()]);
-        let neg_one = pr.field.from_int(-1);
+        let neg_one = pr.field().from_int(-1);
         // (x - 1) = x + (-1)
         let x_minus_1 = pr.add(pr.var(0), pr.constant(neg_one));
         // x * (x - 1) = x² - x
@@ -506,7 +506,7 @@ mod tests {
         // Algebraically same as standard form.
         let pr = FfPolyRing::new(ff(17), vec!["x".into()]);
         let x2 = pr.mul(pr.var(0), pr.var(0));
-        let neg_x = pr.scale(pr.field.from_int(-1), pr.var(0));
+        let neg_x = pr.scale(pr.field().from_int(-1), pr.var(0));
         let p = pr.add(x2, neg_x);
         assert_eq!(bit_constraint(&pr, &p), Some(BitConstraint { var: 0 }));
     }
@@ -525,7 +525,7 @@ mod tests {
         // (+ b0 (* 3 b1)) — not a bitsum (3 ≠ 2). Detector should
         // either reject or treat as a degenerate case.
         let pr = FfPolyRing::new(ff(17), vec!["b0".into(), "b1".into()]);
-        let three = pr.field.from_int(3);
+        let three = pr.field().from_int(3);
         let p = pr.add(pr.var(0), pr.scale(three, pr.var(1)));
         // Not a power-of-2-coefficient sequence; bit_sums returns the
         // partial sum (just b0 with coeff 1) and the rest as residual.
@@ -545,7 +545,7 @@ mod tests {
     fn test_bit_sums_with_residual() {
         // p = x + 2*y + z*z  →  bitsum [x,y] with coeff=1, residual=z*z
         let pr = FfPolyRing::new(ff(17), vec!["x".into(), "y".into(), "z".into()]);
-        let two = pr.field.from_int(2);
+        let two = pr.field().from_int(2);
         let z2 = pr.mul(pr.var(2), pr.var(2));
         let p = pr.add(pr.add(pr.var(0), pr.scale(two, pr.var(1))), z2);
         let (sums, residual) = bit_sums(&pr, &p, &HashSet::new()).unwrap();
