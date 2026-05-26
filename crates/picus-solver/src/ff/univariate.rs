@@ -394,12 +394,31 @@ pub(crate) fn cantor_zassenhaus(
 /// the zero polynomial (every element is a root, which is not a useful
 /// answer; callers should check for the zero case themselves).
 pub fn find_roots(poly: &UnivariatePoly, field: &PrimeField) -> Vec<FieldElem> {
+    find_roots_checked(poly, field).0
+}
+
+/// Like [`find_roots`], but also reports whether root finding was
+/// **complete**. Returns `(roots, complete)`:
+///
+/// * `complete == true` — every root of `poly` in GF(p) is present in
+///   `roots`.
+/// * `complete == false` — Cantor–Zassenhaus could not fully split a
+///   product of linear factors within its randomised retry budget, so
+///   `roots` is a (possibly empty) *subset* of the true root set.
+///
+/// A caller that uses an exhausted/empty root set to prove a branch
+/// infeasible MUST consult this flag: on `complete == false` it must not
+/// treat the enumeration as exhaustive, since a dropped root could be the
+/// satisfying assignment — concluding UNSAT there would be unsound. Such
+/// callers should fall back to a non-exhaustive search (yielding Unknown)
+/// instead.
+pub fn find_roots_checked(poly: &UnivariatePoly, field: &PrimeField) -> (Vec<FieldElem>, bool) {
     if poly.is_zero() {
-        return Vec::new();
+        return (Vec::new(), true);
     }
     let deg = poly.degree().unwrap_or(0);
     if deg == 0 {
-        return Vec::new();
+        return (Vec::new(), true);
     }
     if deg == 1 {
         // a*x + b = 0 -> x = -b / a
@@ -407,23 +426,29 @@ pub fn find_roots(poly: &UnivariatePoly, field: &PrimeField) -> Vec<FieldElem> {
         let b = &poly.coeffs[0];
         let neg_b = field.neg(b);
         let inv_a = field.inv(a).expect("non-zero leading coefficient");
-        return vec![field.mul(&neg_b, &inv_a)];
+        return (vec![field.mul(&neg_b, &inv_a)], true);
     }
     let monic = poly.make_monic(field);
     let sf = squarefree(&monic, field);
     let factors = cantor_zassenhaus(&sf, field);
     let mut roots = Vec::with_capacity(factors.len());
+    let mut complete = true;
     for f in factors {
-        // Each factor is monic linear: x - r, so r = -f.coeffs[0].
-        if f.degree() == Some(1) {
-            let r = field.neg(&f.coeffs[0]);
-            roots.push(r);
+        match f.degree() {
+            // Each linear factor is monic: x - r, so r = -f.coeffs[0].
+            Some(1) => roots.push(field.neg(&f.coeffs[0])),
+            // `cantor_zassenhaus` already stripped the non-linear (rootless)
+            // part via `distinct_linear_part`, so any degree >= 2 factor here
+            // is an *unsplit product of linear factors* — its roots exist in
+            // GF(p) but were not extracted within the retry budget.
+            Some(d) if d >= 2 => complete = false,
+            _ => {}
         }
     }
     // Sort by canonical `BigUint` value for deterministic output.
     roots.sort_by(|a, b| a.as_biguint().cmp(&b.as_biguint()));
     roots.dedup_by(|a, b| field.eq(a, b));
-    roots
+    (roots, complete)
 }
 
 #[cfg(test)]
@@ -443,6 +468,50 @@ mod tests {
     fn poly_from_ints(coeffs: &[i64], f: &PrimeField) -> UnivariatePoly {
         let cs = coeffs.iter().map(|&c| f.from_i64(c)).collect();
         UnivariatePoly::from_coeffs(cs, f)
+    }
+
+    /// Ground-truth roots: evaluate at every element of GF(p) (small p only).
+    fn brute_roots(p: &UnivariatePoly, f: &PrimeField) -> Vec<BigUint> {
+        let prime = f.prime().clone();
+        let mut out = Vec::new();
+        let mut c = BigUint::from(0u32);
+        while c < prime {
+            if f.is_zero(&p.evaluate(&f.from_biguint(&c), f)) {
+                out.push(c.clone());
+            }
+            c += 1u32;
+        }
+        out
+    }
+
+    #[test]
+    fn find_roots_checked_matches_brute_force_and_is_complete() {
+        let f = small_field();
+        let lin = |r: i64| poly_from_ints(&[-r, 1], &f); // x - r
+
+        // (x-3)(x-7)(x-50) — distinct roots.
+        let p1 = lin(3).mul(&lin(7), &f).mul(&lin(50), &f);
+        // (x-4)^2 (x-9) — repeated root 4 (deduped) plus 9.
+        let p2 = lin(4).mul(&lin(4), &f).mul(&lin(9), &f);
+        // x^2 - 2 — no root in GF(101) (2 is a non-residue).
+        let p3 = poly_from_ints(&[-2, 0, 1], &f);
+        // Nonzero constant — no roots.
+        let p4 = poly_from_ints(&[5], &f);
+
+        for p in [&p1, &p2, &p3, &p4] {
+            let (roots, complete) = find_roots_checked(p, &f);
+            assert!(complete, "small-prime root finding must report complete");
+            let mut got: Vec<BigUint> = roots.iter().map(|r| r.as_biguint().clone()).collect();
+            got.sort();
+            let mut want = brute_roots(p, &f);
+            want.sort();
+            assert_eq!(got, want, "checked roots must match brute force");
+            // `find_roots` is exactly the `.0` projection.
+            let mut plain: Vec<BigUint> =
+                find_roots(p, &f).iter().map(|r| r.as_biguint().clone()).collect();
+            plain.sort();
+            assert_eq!(plain, got, "find_roots must equal find_roots_checked.0");
+        }
     }
 
     #[test]

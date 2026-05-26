@@ -43,10 +43,16 @@ pub fn apply_rule<'r>(
             let (var_idx, _) = appearing[0];
             if r[var_idx].is_none() {
                 if let Some(coeffs) = univariate_coeffs(poly_ring, p, var_idx) {
-                    let roots = crate::gb::roots::find_roots(field, &coeffs);
-                    return Brancher::Roots(
-                        roots.into_iter().map(|v| (var_idx, v)).collect()
-                    );
+                    let (roots, complete) = crate::gb::roots::find_roots_checked(field, &coeffs);
+                    if complete {
+                        return Brancher::Roots(
+                            roots.into_iter().map(|v| (var_idx, v)).collect()
+                        );
+                    }
+                    // Incomplete root extraction: a partial root set treated as
+                    // exhaustive could prune a satisfying assignment (unsound
+                    // UNSAT). Fall through to the non-exhaustive round-robin
+                    // brancher (→ Unknown on large primes).
                 }
             }
         }
@@ -57,13 +63,16 @@ pub fn apply_rule<'r>(
         for v in 0..poly_ring.n_vars {
             if r[v].is_none() {
                 if let Some(coeffs) = gb.min_poly(v) {
-                    let roots = crate::gb::roots::find_roots(field, &coeffs);
-                    // If roots is empty, the ideal is inconsistent under
-                    // any assignment to this variable — return empty to
-                    // trigger backtracking.
-                    return Brancher::Roots(
-                        roots.into_iter().map(|val| (v, val)).collect()
-                    );
+                    let (roots, complete) = crate::gb::roots::find_roots_checked(field, &coeffs);
+                    // A *complete* empty root set proves the ideal inconsistent
+                    // under any assignment to this variable (empty Roots ⇒
+                    // backtrack). An *incomplete* set must not be trusted as
+                    // exhaustive, so fall through to round-robin instead.
+                    if complete {
+                        return Brancher::Roots(
+                            roots.into_iter().map(|val| (v, val)).collect()
+                        );
+                    }
                 }
             }
         }
@@ -117,10 +126,14 @@ pub(super) fn apply_rule_multi<'r>(
                 let (var_idx, _) = appearing[0];
                 if r[var_idx].is_none() {
                     if let Some(coeffs) = univariate_coeffs(poly_ring, p, var_idx) {
-                        let roots = crate::gb::roots::find_roots(field, &coeffs);
-                        return Brancher::Roots(
-                            roots.into_iter().map(|v| (var_idx, v)).collect()
-                        );
+                        let (roots, complete) = crate::gb::roots::find_roots_checked(field, &coeffs);
+                        if complete {
+                            return Brancher::Roots(
+                                roots.into_iter().map(|v| (var_idx, v)).collect()
+                            );
+                        }
+                        // Incomplete: fall through rather than risk an unsound
+                        // infeasible conclusion (see `apply_rule`).
                     }
                 }
             }
@@ -133,10 +146,13 @@ pub(super) fn apply_rule_multi<'r>(
             for v in 0..poly_ring.n_vars {
                 if r[v].is_none() {
                     if let Some(coeffs) = gb.min_poly(v) {
-                        let roots = crate::gb::roots::find_roots(field, &coeffs);
-                        return Brancher::Roots(
-                            roots.into_iter().map(|val| (v, val)).collect()
-                        );
+                        let (roots, complete) = crate::gb::roots::find_roots_checked(field, &coeffs);
+                        if complete {
+                            return Brancher::Roots(
+                                roots.into_iter().map(|val| (v, val)).collect()
+                            );
+                        }
+                        // Incomplete: fall through to round-robin (see `apply_rule`).
                     }
                 }
             }
