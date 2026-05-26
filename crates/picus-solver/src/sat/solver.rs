@@ -819,7 +819,14 @@ impl Solver {
     /// level (i.e. all literals in `lits[1..]` are currently False and
     /// `lits[0]` is currently Undef).
     pub fn learn_clause(&mut self, lits: Vec<Lit>) -> ClauseRef {
-        debug_assert!(!lits.is_empty(), "cannot learn empty clause");
+        // Always-on (not debug-only): an empty clause would index-panic at
+        // `lits[0]` below in release. `analyze` always yields a non-empty
+        // learnt clause and its `None` (resolution-bail) path routes to
+        // `give_up`, so this is unreachable today; enforce it loudly anyway —
+        // a panic here is caught at the backend `catch_unwind` (→ Unknown),
+        // never a wrong verdict. The `len() == 1` arm guards the `>= 2`
+        // indexing that follows.
+        assert!(!lits.is_empty(), "cannot learn empty clause");
         let asserting = lits[0];
         if lits.len() == 1 {
             let cref = self.arena.add(Clause::new(lits, true));

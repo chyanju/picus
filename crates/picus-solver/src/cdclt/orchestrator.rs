@@ -252,6 +252,18 @@ fn sync_theory_after_propagate<T: Theory>(
     theory_levels: &mut usize,
 ) {
     let dl = sat.decision_level() as usize;
+    // The main loop makes at most one decision per iteration and syncs every
+    // iteration, so `dl` rises by at most 1 per call: the loop pushes a single
+    // level whose `facts.len()` snapshot (see `Theory::push`) belongs to
+    // exactly that decision level. If decisions were ever batched, multiple
+    // pushes here would snapshot the same `facts.len()` and a later single
+    // `pop()` would discard several levels' facts at once, desyncing the theory
+    // trail from SAT. Enforce the invariant so such a change fails loudly.
+    debug_assert!(
+        dl <= *theory_levels + 1,
+        "theory push assumes <=1 new decision level per sync (dl={dl}, theory_levels={})",
+        *theory_levels
+    );
     while *theory_levels < dl {
         theory.push();
         *theory_levels += 1;

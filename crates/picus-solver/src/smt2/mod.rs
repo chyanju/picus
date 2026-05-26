@@ -145,11 +145,16 @@ fn mul_polys(a: &Polynomial, b: &Polynomial, prime: &BigUint) -> Polynomial {
                 continue;
             }
             let mut counts: BTreeMap<VarIdx, u16> = BTreeMap::new();
-            for &(idx, exp) in &ta.vars {
-                *counts.entry(idx).or_insert(0) += exp;
-            }
-            for &(idx, exp) in &tb.vars {
-                *counts.entry(idx).or_insert(0) += exp;
+            // Accumulate per-variable exponents with `checked_add`, matching the
+            // engine's u16-exponent discipline (monomial.rs / polynomial.rs):
+            // an `ff.mul` chain raising one variable past 65535 panics (caught
+            // at the backend boundary → Unknown) rather than silently wrapping
+            // to a wrong exponent and mistranslating the polynomial.
+            for &(idx, exp) in ta.vars.iter().chain(tb.vars.iter()) {
+                let e = counts.entry(idx).or_insert(0);
+                *e = e
+                    .checked_add(exp)
+                    .expect("SMT2 monomial exponent exceeds u16");
             }
             out.push(PolyTerm {
                 coeff,

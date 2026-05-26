@@ -38,6 +38,8 @@ pub enum R1csParseError {
         claimed: u64,
         bound: u64,
     },
+    #[error("Field modulus {0} is invalid (must be > 1)")]
+    InvalidPrime(BigUint),
 }
 
 /// Hard upper bound on a header-claimed count before we'll allocate
@@ -214,6 +216,13 @@ fn parse_header_section(data: &[u8]) -> Result<HeaderSection, R1csParseError> {
     let mut prime_bytes = vec![0u8; fs];
     cur.read_exact(&mut prime_bytes)?;
     let prime_number = BigUint::from_bytes_le(&prime_bytes);
+    // A field modulus must be > 1 (`field_size = 0`, or all-zero/one prime
+    // bytes, decodes to 0/1). Reject here so a malformed file surfaces as a
+    // parse error rather than reaching `PrimeField::new`'s `assert!(prime > 1)`
+    // during lowering and aborting the process.
+    if prime_number <= BigUint::from(1u32) {
+        return Err(R1csParseError::InvalidPrime(prime_number));
+    }
 
     let n_wires = cur.read_u32::<LittleEndian>()?;
     let n_pub_out = cur.read_u32::<LittleEndian>()?;
@@ -381,6 +390,41 @@ mod tests {
         assert!(
             matches!(r, Err(R1csParseError::HeaderImplausible { .. })),
             "expected HeaderImplausible, got {:?}",
+            r
+        );
+    }
+
+    #[test]
+    fn zero_prime_returns_error_not_panic() {
+        // field_size = 8 (multiple of 8, fits the payload) but the prime
+        // bytes are all zero → prime = 0. Must be rejected as a parse error
+        // rather than reaching PrimeField::new's `assert!(prime > 1)` and
+        // aborting the process during lowering.
+        let field_size: u32 = 8;
+        let mut header_payload: Vec<u8> = Vec::new();
+        header_payload.extend_from_slice(&field_size.to_le_bytes());
+        header_payload.extend_from_slice(&[0u8; 8]); // prime = 0
+        // (the prime check fires before the remaining header fields are read)
+
+        let constraint_payload: Vec<u8> = Vec::new();
+        let w2l_payload: Vec<u8> = Vec::new();
+
+        let mut data: Vec<u8> = b"r1cs".to_vec();
+        data.extend_from_slice(&1u32.to_le_bytes()); // version
+        data.extend_from_slice(&3u32.to_le_bytes()); // n_sections
+        for (ty, payload) in [
+            (1u32, &header_payload),
+            (2u32, &constraint_payload),
+            (3u32, &w2l_payload),
+        ] {
+            data.extend_from_slice(&ty.to_le_bytes());
+            data.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+            data.extend_from_slice(payload);
+        }
+        let r = read_r1cs(&data);
+        assert!(
+            matches!(r, Err(R1csParseError::InvalidPrime(_))),
+            "expected InvalidPrime, got {:?}",
             r
         );
     }

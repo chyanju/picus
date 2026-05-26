@@ -1,9 +1,8 @@
 //! Solver backend trait and common types.
 //!
-//! The cvc5 and z3 backends are behind Cargo features (default-on).
-//! Disabling them via `--no-default-features` drops the cvc5 / z3
-//! build chains entirely so a native-FF-only build skips the
-//! expensive vendored compiles.
+//! The cvc5 and z3 backends are opt-in Cargo features (default off): the
+//! default `native` build skips their expensive vendored compiles. Enable
+//! them with `--features cvc5` / `--features z3`.
 
 #[cfg(feature = "cvc5")]
 pub mod cvc5_ff;

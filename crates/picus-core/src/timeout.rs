@@ -167,8 +167,8 @@ mod tests {
         let c = CancelToken::either(&a, &b);
         assert!(!c.is_cancelled());
         a.cancel();
-        // Allow the watcher one polling tick (≤ 1 ms initial delay + slack).
-        std::thread::sleep(Duration::from_millis(20));
+        // `either` is lazy: the combined token reflects its sources
+        // synchronously in `is_cancelled`, so no wait is needed.
         assert!(c.is_cancelled(), "combined token should fire when a fires");
     }
 
@@ -178,7 +178,6 @@ mod tests {
         let b = CancelToken::new();
         let c = CancelToken::either(&a, &b);
         b.cancel();
-        std::thread::sleep(Duration::from_millis(20));
         assert!(c.is_cancelled(), "combined token should fire when b fires");
     }
 
