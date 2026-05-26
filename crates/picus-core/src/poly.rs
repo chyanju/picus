@@ -47,6 +47,20 @@ impl FfPolyRing {
         FfPolyRing { field, ring, n_vars, var_names }
     }
 
+    /// Like [`Self::new`] but with an explicit polynomial representation,
+    /// bypassing the thread-local `config::poly_repr`.
+    pub fn new_with_repr(field: PrimeField, var_names: Vec<String>, repr: ReprKind) -> Self {
+        let n_vars = var_names.len();
+        let ctx = FfPolyRingCtx::new_with_repr(
+            field.clone(),
+            var_names.clone(),
+            MonomialOrder::DegRevLex,
+            repr,
+        );
+        let ring = PolyRingFacade { ctx };
+        FfPolyRing { field, ring, n_vars, var_names }
+    }
+
     /// i-th indeterminate as a polynomial.
     pub fn var(&self, index: usize) -> Poly {
         Polynomial::variable(index, &self.ring.ctx)
@@ -271,12 +285,10 @@ impl IrPolyRing {
         IrPolyRing { inner: FfPolyRing::new(field, var_names), repr }
     }
 
-    /// New ring with an explicit representation (tests / oracle). The
-    /// inner ring's `ctx.repr` is seeded from config at construction, so
-    /// we install `repr` for that construction.
+    /// New ring with an explicit representation (tests / oracle),
+    /// bypassing the thread-local config entirely.
     pub fn new_with_repr(field: PrimeField, var_names: Vec<String>, repr: ReprKind) -> Self {
-        let _g = config::ConfigGuard::with_override(|c| c.poly_repr = repr);
-        IrPolyRing { inner: FfPolyRing::new(field, var_names), repr }
+        IrPolyRing { inner: FfPolyRing::new_with_repr(field, var_names, repr), repr }
     }
 
     pub fn repr(&self) -> ReprKind { self.repr }
