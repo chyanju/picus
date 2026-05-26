@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.5] - 2026-05-26
+- Soundness and robustness hardening. No change to any verdict (identical over the 61-circuit corpus, dense and sparse), the public API, or the CLI.
+  - CDCL(T) maps a theory UNSAT core back to trail atoms through per-polynomial provenance (`EncodedSystem::poly_provenance`) instead of an assumed positional layout, which the interleaved zero-assignment / Rabinowitsch / field polynomials and dropped zero polynomials could misalign. Equality entries are trusted only when the pre-encode rewrite dropped no equality; disequality (Rabinowitsch) entries always align; encoder-internal polynomials contribute no atom. An unattributable index falls back to the full trail core.
+  - `compute_gb_*` distinguishes cancellation from a genuine engine error: a real error (e.g. a caught degree-overflow panic) now yields an empty basis rather than the unreduced input generators, so `is_zero_dim` / `min_poly` / FGLM cannot consume a non-GB as a GB (a former false-UNSAT hazard). Cancellation still returns the generators unchanged for the caller's `is_cancelled` check.
+  - `fglm_to_lex` verifies the staircase size against the Hilbert quotient dimension in release builds (was debug-only) and returns `None` on mismatch, so the caller falls back to a direct Buchberger Lex computation instead of a possibly-not-in-ideal lex basis.
+  - `interreduce` de-duplicates elements with equal leading monomials (keeping the lowest index), not only strict-divisibility duplicates; dehomogenisation can produce equal leading monomials, and the previous code could leave a non-minimal basis. Applies to both the dense and sparse engines.
+  - The sparse Buchberger reduction is cancel-aware (`reduce_by_refs_cancel`, threaded into the sparse geobucket reducer), so a single large reduction can be interrupted as on the dense path.
+  - `CancelToken` evaluates timeouts and `either` combination lazily in `is_cancelled()` (an optional deadline plus a source list) instead of spawning a background timer / watcher thread per token, so creating one token per solve no longer accumulates detached threads.
+  - `native_ff` installs its panic-silencing hook once per process behind a thread-local guard rather than swapping the global hook on every solve.
+  - `enqueue_theory` rejects a stale theory reason (a negated reason literal not currently False) in release builds, not only under `debug_assert`, avoiding a malformed justification clause.
+  - `r1cs_to_poly_ir` validates `target_signal` against the wire count and returns `LowerError::WireOutOfBounds` rather than building a query over a non-existent ring variable.
+  - The QF_NIA backends (`cvc5_nia`, `z3_nia`) return `Unknown(IncompleteTheory)` when the query carries disjunctions / assignments / bitsums they do not lower, instead of silently solving a weakened query.
+  - Documentation/comment accuracy: the split-GB UNSAT core is documented as a sound conservative over-approximation (was "precise"); the `u16` monomial-exponent overflow contract and the Gebauer–Möller F-criterion behaviour of `gm_insert` are stated; stale comments in the encoder and incremental context are corrected.
+
 ## [1.8.4] - 2026-05-25
 - Internal refactors only — no change to any verdict, the public API, or the CLI. Maintainability/structure cleanups toward the planned cvc5/CoCoA engine alignment:
   - The Gebauer–Möller M-criterion, B-criterion, and S-pair queue merge are unified into one representation-agnostic `ff::spair_criteria` module (generic over a `CriterionPair` / `LeadingTerms` trait pair); the dense and sparse Buchberger engines share it instead of hand-mirrored copies.
