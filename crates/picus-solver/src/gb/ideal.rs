@@ -1019,10 +1019,20 @@ pub fn compute_gb_incremental_with_order_traced(
     }));
     match result {
         Ok(Ok(basis)) => wrap_dense_vec(basis),
-        Ok(Err(_)) => backup,
-        Err(_) => {
-            log::warn!("Traced incremental GB computation panicked; returning concatenated generators unreduced");
-            backup
+        // Mirror `compute_gb_incremental_with_order`: a genuine engine error
+        // (panic or non-cancel `Err`) returns an empty basis, never the
+        // unreduced `known_gb ++ new_polys`. Handing back a non-GB would let a
+        // downstream `is_zero_dim`/`min_poly`/FGLM treat it as a GB (a possible
+        // false UNSAT); an empty basis is `is_whole_ring() == false`, so the
+        // split-GB fixpoint keeps searching (Unknown) rather than concluding.
+        // `backup` is returned only on cooperative cancellation.
+        Ok(Err(_)) | Err(_) => {
+            if cancel.is_cancelled() {
+                backup
+            } else {
+                log::warn!("traced incremental GB failed; returning empty basis (Unknown)");
+                Vec::new()
+            }
         }
     }
 }
