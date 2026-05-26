@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.3] - 2026-05-25
+- Split-GB UNSAT core is now a sound conservative over-approximation: every element of a partition, and any extracted core, is attributed the union of the original inputs that fed that partition. This closes an under-approximation hazard where Buchberger deactivation (active-vs-push index skew) or a zero-reducing batched generator could yield a too-small core. Only the CDCL(T) conflict path consumes the core; the default conjunctive path discards it, so verdicts are unchanged.
+- Univariate root-finding distinguishes completeness: `find_roots_checked` returns `(roots, complete)`, with `complete = false` when Cantor–Zassenhaus leaves an unsplit product of linear factors. The split-GB brancher and model search treat an incomplete result as inconclusive (fall through to round-robin → `unknown`) instead of as proof of infeasibility, so a dropped root can never produce a wrong `unsafe`/UNSAT.
+- CDCL(T) hardening: a theory UNSAT core that maps to no trail atom falls back to the full trail (a sound, coarser conflict) instead of returning `unknown`; an unassigned theory-core literal yields `unknown` rather than an `unreachable!` panic.
+- `--selector first` selects the smallest unknown signal index (deterministic across runs) rather than an arbitrary hash-set iteration order.
+- Internal: the Gröbner-engine error type is renamed `SolverError` → `EngineError` (the backend-facing `picus_smt::backends::SolverError` is unchanged); `PolyRing::new_with_repr` / `FfPolyRing::new_with_repr` set the polynomial representation explicitly instead of through the thread-local config. Added differential tests for the `u64` field arm above 2^63 (Goldilocks) and for F4 vs per-pair Gröbner bases over BN254, plus a config drift guard asserting `apply_overlay` consumes every overlay field.
+
 ## [1.8.2] - 2026-05-25
 - `ff::hilbert::quotient_dimension` + `Ideal::quotient_dimension`: `dim_k(R/I)` (the standard-monomial count, i.e. the solution count with multiplicity) read from a finished basis' leading terms via the graded Hilbert function. Cross-checks the FGLM staircase size in `fglm_to_lex` (debug assertion).
 - Geobucket reducer reads each divisor's leading coefficient lazily — only for the divisor actually selected — instead of cloning it for every divisor on every reduce call (a heap `FieldElem` clone over large primes).

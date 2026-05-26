@@ -170,8 +170,8 @@ fn small_matches_gmp_axioms() {
 /// **above 2^63** (Goldilocks, `0xFFFFFFFF00000001` = 2^64 - 2^32 + 1).
 /// This is the only regime that exercises the Small-arm `small_add`
 /// wraparound branch (`s >= p128`) and large-operand `small_mul` /
-/// `small_inv` — the path any 64-bit user prime takes, and one that had
-/// no differential coverage.
+/// `small_inv` — the path any 64-bit user prime (e.g. a Goldilocks-style
+/// field) takes.
 #[test]
 fn small_matches_gmp_axioms_above_2_63() {
     const P: u64 = 0xFFFF_FFFF_0000_0001; // 2^64 - 2^32 + 1, prime, > 2^63
