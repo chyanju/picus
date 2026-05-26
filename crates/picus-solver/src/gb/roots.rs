@@ -15,14 +15,23 @@ use crate::ff::field::{FieldElem, PrimeField};
 ///
 /// `coeffs[i]` is the coefficient of x^i.
 pub fn find_roots(field: &PrimeField, coeffs: &[FieldElem]) -> Vec<FieldElem> {
+    find_roots_checked(field, coeffs).0
+}
+
+/// Like [`find_roots`], returning `(roots, complete)`. See
+/// [`crate::ff::univariate::find_roots_checked`] for the completeness
+/// contract: when `complete == false` the returned roots are only a subset
+/// of the true root set, so callers must not treat exhausting them as proof
+/// of infeasibility.
+pub fn find_roots_checked(field: &PrimeField, coeffs: &[FieldElem]) -> (Vec<FieldElem>, bool) {
     let _t = crate::profile::ScopedTimer::new("find_roots");
     let fp = field;
     let owned: Vec<FieldElem> = coeffs.iter().map(|c| fp.clone_el(c)).collect();
     let poly = UnivariatePoly::from_coeffs(owned, fp);
     if poly.is_zero() {
-        return Vec::new();
+        return (Vec::new(), true);
     }
-    univariate::find_roots(&poly, fp)
+    univariate::find_roots_checked(&poly, fp)
 }
 
 #[cfg(test)]

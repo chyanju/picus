@@ -16,7 +16,7 @@ use crate::gb::brancher::Brancher;
 use crate::ff::field::{PrimeField, FieldElem};
 use crate::gb::ideal::Ideal;
 use crate::poly::{FfPolyRing, Poly};
-use crate::gb::roots::find_roots;
+use crate::gb::roots::{find_roots, find_roots_checked};
 use crate::timeout::CancelToken;
 
 /// Three-valued outcome of a model search.
@@ -291,10 +291,15 @@ fn compute_candidates(
             if !assigned[var_idx] {
                 if let Some(coeffs) = extract_univariate_coeffs(ring, field, p, var_idx) {
                     if coeffs.len() > 2 { // deg > 1
-                        let roots = find_roots(field, &coeffs);
-                        return Brancher::Roots(
-                            roots.into_iter().map(|v| (var_idx, v)).collect()
-                        );
+                        let (roots, complete) = find_roots_checked(field, &coeffs);
+                        if complete {
+                            return Brancher::Roots(
+                                roots.into_iter().map(|v| (var_idx, v)).collect()
+                            );
+                        }
+                        // Incomplete root extraction: fall through to the
+                        // non-exhaustive round-robin brancher rather than
+                        // trust a partial set as exhaustive (unsound UNSAT).
                     }
                 }
             }
@@ -306,10 +311,13 @@ fn compute_candidates(
         for v in 0..n_vars {
             if !assigned[v] {
                 if let Some(coeffs) = ideal.min_poly(v) {
-                    let roots = find_roots(field, &coeffs);
-                    return Brancher::Roots(
-                        roots.into_iter().map(|val| (v, val)).collect()
-                    );
+                    let (roots, complete) = find_roots_checked(field, &coeffs);
+                    if complete {
+                        return Brancher::Roots(
+                            roots.into_iter().map(|val| (v, val)).collect()
+                        );
+                    }
+                    // Incomplete: fall through to round-robin.
                 }
             }
         }
