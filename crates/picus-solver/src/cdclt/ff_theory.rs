@@ -148,7 +148,19 @@ impl<'a> FfTheory<'a> {
                 atom_core.sort();
                 atom_core.dedup();
                 if atom_core.is_empty() {
-                    return CheckOutcome::Unknown;
+                    // The GB proved UNSAT, but every returned core index fell
+                    // outside the trail-atom range (e.g. it named only
+                    // encoder-introduced field / Rabinowitsch polynomials).
+                    // Returning Unknown here would forfeit a genuine UNSAT (a
+                    // completeness loss). Fall back to the full set of trail
+                    // atoms: a coarser but sound conflict core.
+                    let mut full: Vec<Var> = input_atom_in_encode_order;
+                    full.sort();
+                    full.dedup();
+                    if full.is_empty() {
+                        return CheckOutcome::Unknown;
+                    }
+                    return CheckOutcome::Unsat { core: full };
                 }
                 CheckOutcome::Unsat { core: atom_core }
             }

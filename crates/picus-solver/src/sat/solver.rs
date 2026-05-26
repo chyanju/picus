@@ -576,6 +576,15 @@ impl Solver {
         self.give_up
     }
 
+    /// Force the give-up flag. Used when an external invariant makes the
+    /// current conflict unrepresentable (e.g. a theory core literal that is
+    /// unassigned in SAT, indicating theory/SAT trail divergence): reporting
+    /// UNSAT or SAT would then be unsound, so the only safe outcome is
+    /// Unknown. The CDCL(T) caller observes this via [`Self::gave_up`].
+    pub fn mark_give_up(&mut self) {
+        self.give_up = true;
+    }
+
     /// Number of literals on the trail.
     pub fn trail_len(&self) -> usize {
         self.trail.len()
