@@ -4,6 +4,10 @@
 //! IR. If the variables that appear in the collected equations form
 //! a square invertible system over GF(p), every variable in it is
 //! uniquely determined and can be marked known.
+//!
+//! Wire-keyed: marking a wire known relies on the collected equations
+//! being mirrored in both copies (the copy-symmetry invariant documented
+//! in `picus_smt::poly_ir::r1cs_to_poly_ir`).
 #![allow(clippy::needless_range_loop)]
 
 use std::collections::{HashMap, HashSet};

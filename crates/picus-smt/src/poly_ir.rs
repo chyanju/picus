@@ -248,6 +248,17 @@ pub fn r1cs_to_poly_ir(
 
     let mut equalities: Vec<Poly> = Vec::new();
 
+    // Copy-symmetry invariant (load-bearing for wire-keyed propagation):
+    // every R1CS constraint is lowered into BOTH copies below — the original
+    // over `x_*` and the alt over `y_*` (input wires share `x_*` in both; see
+    // `block_to_linear`). The wire-keyed propagation lemmas (linear,
+    // binary01, bim, basis2) match a structural pattern in one copy and
+    // promote a *wire* — both copies at once — to "known"; their soundness
+    // relies on the matched structure having an identical mirror in the other
+    // copy. Emitting a constraint for only one copy, or asymmetrically,
+    // breaks that assumption and can make those lemmas unsound (a wire marked
+    // "known" whose two copies need not actually agree).
+
     // Original-copy constraints.
     for c in &r1cs.constraints.constraints {
         if let Some(eq) = constraint_to_poly(&ring, &c.a, &c.b, &c.c, &input_indices, /*is_alt=*/ false, prime)? {

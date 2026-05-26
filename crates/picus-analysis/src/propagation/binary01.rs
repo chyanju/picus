@@ -4,6 +4,10 @@
 //! field form, `x^2 + (p-1) * x` with no other terms). The constraint
 //! pins the wire's value to `{0, 1}`. Once a wire's range collapses
 //! to a singleton, it joins the known set.
+//!
+//! Wire-keyed: promoting a wire to known relies on the `x^2-x=0` match
+//! being mirrored in both copies (the copy-symmetry invariant documented
+//! in `picus_smt::poly_ir::r1cs_to_poly_ir`).
 
 use std::collections::HashSet;
 

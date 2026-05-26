@@ -8,6 +8,10 @@
 //! as every other variable in `p` is known, so we record the implication
 //! `deps(p, v) → wire(v)`. The lemma applies the implications to a
 //! fixed point each iteration.
+//!
+//! Wire-keyed: promoting a wire to known relies on the matched constraint
+//! being mirrored in both copies (the copy-symmetry invariant documented
+//! in `picus_smt::poly_ir::r1cs_to_poly_ir`).
 
 use std::collections::{HashMap, HashSet};
 
