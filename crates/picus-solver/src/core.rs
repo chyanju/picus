@@ -22,15 +22,6 @@ use crate::timeout::CancelToken;
 /// An UNSAT core: indices into the input fact list that suffice for UNSAT.
 pub type UnsatCore = Vec<usize>;
 
-/// Solver mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SolverMode {
-    /// Split Groebner basis (default).
-    SplitGb,
-    /// Single Groebner basis (DegRevLex → Lex → findZero).
-    SingleGb,
-}
-
 /// Outcome of the core solver.
 ///
 /// `Unsat` and `Unknown` are distinct: `Unsat` is a proof of
@@ -91,35 +82,6 @@ pub fn solve_split_gb<'r>(
 /// Solve an `EncodedSystem` directly.  Convenience wrapper.
 pub fn solve_encoded(encoded: &EncodedSystem) -> SolveOutcome {
     solve_encoded_with_cancel(encoded, &CancelToken::none())
-}
-
-/// Solve with a specified mode.
-pub fn solve_encoded_with_mode(
-    encoded: &EncodedSystem,
-    mode: SolverMode,
-) -> SolveOutcome {
-    solve_encoded_with_mode_cancel(encoded, mode, &CancelToken::none())
-}
-
-/// Solve with a specified mode and cooperative timeout.
-pub fn solve_encoded_with_mode_cancel(
-    encoded: &EncodedSystem,
-    mode: SolverMode,
-    cancel: &CancelToken,
-) -> SolveOutcome {
-    match mode {
-        SolverMode::SplitGb => solve_split_gb_cancel(&encoded.poly_ring, &encoded.polynomials, &encoded.bitsum_polys, cancel),
-        SolverMode::SingleGb => {
-            if cancel.is_cancelled() { return SolveOutcome::Unknown; }
-            let polys: Vec<Poly> = encoded.polynomials.iter()
-                .map(|p| encoded.poly_ring.ring.clone_el(p)).collect();
-            // Note: SingleGb mode uses buchberger_simple which doesn't support
-            // mid-computation cancellation. The cancel token is checked between
-            // the DegRevLex and Lex phases and after model construction.
-            let result = solve_single_gb(&encoded.poly_ring, polys);
-            if cancel.is_cancelled() { SolveOutcome::Unknown } else { result }
-        }
-    }
 }
 
 /// Single Groebner basis solver.
