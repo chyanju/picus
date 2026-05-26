@@ -193,7 +193,10 @@ impl<'a> Buchberger<'a> {
             }
             let active_refs: Vec<&SparsePolynomial> =
                 self.basis.iter().filter(|e| e.active).map(|e| &e.poly).collect();
-            let g_red = g.reduce_by_refs(&active_refs, self.ring);
+            let g_red = g.reduce_by_refs_cancel(&active_refs, self.ring, self.cancel);
+            if self.cancelled() {
+                return;
+            }
             if g_red.is_zero() {
                 continue;
             }
@@ -271,8 +274,13 @@ impl<'a> Buchberger<'a> {
             let nf = {
                 let active_refs: Vec<&SparsePolynomial> =
                     self.basis.iter().filter(|e| e.active).map(|e| &e.poly).collect();
-                s.reduce_by_refs(&active_refs, self.ring)
+                s.reduce_by_refs_cancel(&active_refs, self.ring, self.cancel)
             };
+            // A reduction interrupted by cancellation returns a partial
+            // normal form; bail before integrating it.
+            if self.cancelled() {
+                return;
+            }
             if nf.is_zero() {
                 continue;
             }

@@ -286,10 +286,7 @@ impl Polynomial {
                 let ds: Vec<SparsePolynomial> =
                     divisors.iter().map(|p| p.to_sparse(ring)).collect();
                 let dr: Vec<&SparsePolynomial> = ds.iter().collect();
-                // Sparse reducer has no cooperative cancel yet; it is used
-                // on the (small) per-branch cores where this is acceptable.
-                let _ = cancel;
-                Polynomial::Sparse(s.reduce_by_refs(&dr, ring))
+                Polynomial::Sparse(s.reduce_by_refs_cancel(&dr, ring, Some(cancel)))
             }
             Polynomial::Dense(d) => {
                 let ds: Vec<std::borrow::Cow<DensePoly>> =
