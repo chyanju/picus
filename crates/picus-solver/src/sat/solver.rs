@@ -791,14 +791,19 @@ impl Solver {
         let mut clause_lits: Vec<Lit> = Vec::with_capacity(reason_facts.len() + 1);
         clause_lits.push(lit);
         let mut reason_neg: Vec<Lit> = reason_facts.iter().map(|&r| -r).collect();
+        // Each negated reason fact must be currently False (the reason fact
+        // currently True). A stale/incorrect reason would build a malformed
+        // justification clause and corrupt later 1-UIP analysis, so bail
+        // rather than trust it — a real guard, not a debug-only assert.
+        if reason_neg
+            .iter()
+            .any(|&r| !matches!(self.lit_value(r), LBool::False))
+        {
+            log::debug!("enqueue_theory: reason fact not currently True; skipping propagation");
+            return false;
+        }
         // lits[1] = highest-level reason negation, mirroring `learn_clause`.
         reason_neg.sort_by_key(|&l| std::cmp::Reverse(self.level[l.var().index()]));
-        for r in &reason_neg {
-            debug_assert!(
-                matches!(self.lit_value(*r), LBool::False),
-                "negated reason fact must be currently False"
-            );
-        }
         clause_lits.extend(reason_neg);
         let cref = self.arena.add(Clause::new(clause_lits, true));
         let lits_ref = &self.arena.get(cref).lits;
