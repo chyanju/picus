@@ -501,12 +501,11 @@ fn encode_query_disequalities(
     let mut out = Vec::with_capacity(cs.disequalities.len());
     for (i, &(a, b)) in cs.disequalities.iter().enumerate() {
         // Translate the query's producer-frame VarIdx into the
-        // cached ring's frame via name lookup. The cached ring's
-        // variables are stored in alphabetically sorted order
-        // (see `encode_impl`), so the integer `a`/`b`
-        // from the input cannot be used directly as a ring slot
-        // index — they refer to positions in `cs.var_names`, not
-        // in the ring.
+        // cached ring's frame via name lookup. The ring's slot order is
+        // `cs.var_names` order followed by appended aux vars
+        // (`__w_diseq_*` / `__bitsum_*`); `encode_impl` does not sort.
+        // The integer `a`/`b` index `cs.var_names`, not ring slots, so
+        // they must be re-resolved by name through `var_map`.
         let a_name = cs
             .var_names
             .get(a as usize)

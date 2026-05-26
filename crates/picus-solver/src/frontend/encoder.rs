@@ -723,8 +723,9 @@ fn encode_impl(
         }
     }
 
-    // Field polynomials: x^p - x = 0 for every ring variable when
-    // `prime <= 1000`. Matches the gate in `encode_impl`.
+    // Field polynomials: x^p - x = 0 for every ring variable, emitted
+    // only when `add_field_polys` is set and the prime is a single
+    // u64 digit `<= 1000` (small enough for the dense `x^p` expansion).
     if system.add_field_polys {
         let p_usize = system.prime.to_u64_digits();
         if p_usize.len() == 1 && p_usize[0] <= 1000 {
