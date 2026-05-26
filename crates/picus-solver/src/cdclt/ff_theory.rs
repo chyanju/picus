@@ -15,7 +15,7 @@ use num_bigint::BigUint;
 use num_traits::Zero;
 
 use crate::core::{solve_encoded_with_cancel, SolveOutcome};
-use crate::frontend::encoder::{encode, ConstraintSystemBuilder, PolyTerm};
+use crate::frontend::encoder::{encode, ConstraintSystemBuilder, PolySource, PolyTerm};
 use crate::sat::Var;
 use crate::timeout::CancelToken;
 
@@ -52,12 +52,14 @@ impl<'a> FfTheory<'a> {
         }
     }
 
-    /// Build an `ConstraintSystem` from the trail via
+    /// Build a `ConstraintSystem` from the trail via
     /// `ConstraintSystemBuilder`, encode, dispatch to the GB solver,
-    /// and map any returned `original_polys` core indices back to
-    /// atom variables. Encoded-input ordering is
-    /// `equality_atoms ++ disequality_atoms` (see
-    /// `encoder::encode_impl`).
+    /// and map any returned core polynomial indices back to atom
+    /// variables. The mapping uses `EncodedSystem::poly_provenance`
+    /// (per-polynomial source tags) rather than positional layout, so
+    /// it is robust to the encoder's interleaving of assignment /
+    /// Rabinowitsch / field polynomials and to dropped zero
+    /// polynomials.
     fn check_full_with_mapping(&mut self) -> CheckOutcome {
         let prime = self.atoms.prime().clone();
 
@@ -139,22 +141,43 @@ impl<'a> FfTheory<'a> {
             }
             SolveOutcome::Unsat(core_indices) => {
                 self.has_model = false;
-                let mut input_atom_in_encode_order = equality_atoms;
-                input_atom_in_encode_order.extend(disequality_atoms);
-                let mut atom_core: Vec<Var> = core_indices
-                    .iter()
-                    .filter_map(|&i| input_atom_in_encode_order.get(i).copied())
-                    .collect();
-                atom_core.sort();
-                atom_core.dedup();
-                if atom_core.is_empty() {
-                    // The GB proved UNSAT, but every returned core index fell
-                    // outside the trail-atom range (e.g. it named only
-                    // encoder-introduced field / Rabinowitsch polynomials).
-                    // Returning Unknown here would forfeit a genuine UNSAT (a
-                    // completeness loss). Fall back to the full set of trail
-                    // atoms: a coarser but sound conflict core.
-                    let mut full: Vec<Var> = input_atom_in_encode_order;
+                // Map core polynomial indices back to trail atoms via
+                // per-polynomial provenance (`EncodedSystem::poly_provenance`).
+                // `Equality(j)` is reliable only when the pre-encode rewrite
+                // dropped no equality — detected by the input-equality count
+                // matching our equality frame; otherwise a specific equality
+                // cannot be pinned and we fall back to the full trail core.
+                // `Rabinowitsch(d)` always aligns (disequalities are never
+                // dropped or reordered). `Other` polynomials are
+                // constraint-independent (zero assignment / field polys) and
+                // contribute no removable atom.
+                let eq_aligned = encoded.n_input_equalities == equality_atoms.len();
+                let mut atom_core: Vec<Var> = Vec::new();
+                let mut need_full = false;
+                for &i in &core_indices {
+                    match encoded.poly_provenance.get(i) {
+                        Some(PolySource::Equality(j)) => match (eq_aligned, equality_atoms.get(*j)) {
+                            (true, Some(&av)) => atom_core.push(av),
+                            _ => need_full = true,
+                        },
+                        Some(PolySource::Rabinowitsch(d)) => match disequality_atoms.get(*d) {
+                            Some(&av) => atom_core.push(av),
+                            None => need_full = true,
+                        },
+                        Some(PolySource::Other) | None => {}
+                    }
+                }
+                if !need_full {
+                    atom_core.sort();
+                    atom_core.dedup();
+                }
+                if need_full || atom_core.is_empty() {
+                    // Coarser but sound: the whole trail is inconsistent
+                    // (the GB proved UNSAT over all asserted facts). Used
+                    // when a core index cannot be precisely attributed, or
+                    // when only encoder-internal polynomials were named.
+                    let mut full: Vec<Var> = equality_atoms;
+                    full.extend(disequality_atoms);
                     full.sort();
                     full.dedup();
                     if full.is_empty() {

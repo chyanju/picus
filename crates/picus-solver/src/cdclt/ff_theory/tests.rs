@@ -140,6 +140,64 @@ fn neq_via_negative_polarity() {
 }
 
 #[test]
+fn neq_distinct_atoms_core_is_precise() {
+    // (= x 5) ∧ (= y 5) ∧ ¬(= x y): UNSAT. The conflict needs all
+    // three facts (dropping any one is satisfiable), so the returned
+    // core must be exactly {a1, a2, a3} — no dropped real atom, no
+    // spurious atom. Exercises the disequality (Rabinowitsch) path with
+    // *distinct* atoms, where positional index mapping would misattribute.
+    let prime = BigUint::from(101u32);
+    let mut atoms = AtomTable::new(prime);
+    let mut sat = Solver::new();
+    let mut vn: Vec<String> = Vec::new();
+    let a1 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 5);
+    let a2 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "y", 5);
+    let a3 = intern_eq_terms(&mut atoms, &mut sat, &mut vn, &[(1, &["x"])], &[(1, &["y"])]);
+    let cancel = CancelToken::none();
+    let mut th = FfTheory::new(&atoms, &cancel);
+    th.notify_fact(a1, true);
+    th.notify_fact(a2, true);
+    th.notify_fact(a3, false);
+    match th.post_check() {
+        CheckOutcome::Unsat { core } => {
+            assert!(core.contains(&a1), "core must keep x=5");
+            assert!(core.contains(&a2), "core must keep y=5");
+            assert!(core.contains(&a3), "core must keep x≠y");
+            assert_eq!(core.len(), 3, "core must contain no spurious atoms: {:?}", core);
+        }
+        other => panic!("expected Unsat, got {:?}", other),
+    }
+}
+
+#[test]
+fn multi_diseq_exhausts_small_field() {
+    // Over GF(3): ¬(= x 0) ∧ ¬(= x 1) ∧ ¬(= x 2). With the field
+    // polynomial x^3 - x = 0 forcing x ∈ {0,1,2}, excluding all three is
+    // UNSAT. Three disequalities stress `Rabinowitsch(d)` alignment for
+    // d = 0,1,2; the core must contain all three excluding atoms.
+    let prime = BigUint::from(3u32);
+    let mut atoms = AtomTable::new(prime);
+    let mut sat = Solver::new();
+    let mut vn: Vec<String> = Vec::new();
+    let a0 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 0);
+    let a1 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 1);
+    let a2 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 2);
+    let cancel = CancelToken::none();
+    let mut th = FfTheory::new(&atoms, &cancel);
+    th.notify_fact(a0, false);
+    th.notify_fact(a1, false);
+    th.notify_fact(a2, false);
+    match th.post_check() {
+        CheckOutcome::Unsat { core } => {
+            assert!(core.contains(&a0), "core must keep x≠0");
+            assert!(core.contains(&a1), "core must keep x≠1");
+            assert!(core.contains(&a2), "core must keep x≠2");
+        }
+        other => panic!("expected Unsat, got {:?}", other),
+    }
+}
+
+#[test]
 fn push_pop_undoes_facts() {
     let prime = BigUint::from(101u32);
     let mut atoms = AtomTable::new(prime);
