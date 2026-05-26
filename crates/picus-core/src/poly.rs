@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use crate::config::{self, ReprKind};
+use crate::config::ReprKind;
 use crate::ff::field::{FieldElem, PrimeField};
 use crate::ff::monomial::{Monomial, MonomialOrder};
 use crate::ff::polynomial::{DensePoly, PolyRing as FfPolyRingCtx, Polynomial};
@@ -275,23 +275,21 @@ pub type IrTermsIter<'a> = TermsIter<'a>;
 /// representation. All polynomials built over one ring share one arm.
 pub struct IrPolyRing {
     inner: FfPolyRing,
-    repr: ReprKind,
 }
 
 impl IrPolyRing {
     /// New ring; representation taken from the current thread config.
     pub fn new(field: PrimeField, var_names: Vec<String>) -> Self {
-        let repr = config::with(|c| c.poly_repr);
-        IrPolyRing { inner: FfPolyRing::new(field, var_names), repr }
+        IrPolyRing { inner: FfPolyRing::new(field, var_names) }
     }
 
     /// New ring with an explicit representation (tests / oracle),
     /// bypassing the thread-local config entirely.
     pub fn new_with_repr(field: PrimeField, var_names: Vec<String>, repr: ReprKind) -> Self {
-        IrPolyRing { inner: FfPolyRing::new_with_repr(field, var_names, repr), repr }
+        IrPolyRing { inner: FfPolyRing::new_with_repr(field, var_names, repr) }
     }
 
-    pub fn repr(&self) -> ReprKind { self.repr }
+    pub fn repr(&self) -> ReprKind { self.inner.ring.ctx.repr }
     /// The underlying [`FfPolyRing`]. `IrPoly` is the same `Polynomial`
     /// type the solver engine consumes, so callers that need an
     /// `&FfPolyRing` (e.g. to run a Gröbner-basis routine over the IR
