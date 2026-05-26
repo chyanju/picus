@@ -10,6 +10,9 @@ pub mod cvc5_ff;
 #[cfg(feature = "cvc5")]
 pub mod cvc5_nia;
 pub mod native_ff;
+/// Native-engine lowering methods on `PolyIR` (kept off the
+/// solver-agnostic IR so `poly_ir` depends only on picus-core).
+mod native_lower;
 #[cfg(feature = "z3")]
 pub mod z3_nia;
 
