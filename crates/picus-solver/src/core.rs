@@ -250,6 +250,58 @@ mod tests {
     }
 
     #[test]
+    fn satisfiable_system_with_bitsum_shaped_linear_part_is_not_false_unsat() {
+        // A single satisfiable quadratic over GF(7) whose linear part is
+        // `y + 2z` — i.e. a `c, 2c` coefficient run that bitsum extraction
+        // registers as a bitsum `[y, z]` even though neither variable is
+        // bit-constrained. The split-GB search must not let that spurious
+        // bitsum prune solutions: `is_bit` proves bit-ness per branch only,
+        // so a branch assigning z a non-bit value must not inherit a stale
+        // "z is a bit" fact and fire a bogus overflow contradiction.
+        //
+        // q = y^2 + 6z^2 + 5yx + 3zx + 4x^2 + y + 2z + 2, variable order
+        // [y, z, x]. Brute force confirms it has roots over GF(7)^3, so any
+        // UNSAT verdict here is unsound.
+        let pr = FfPolyRing::new(ff(7), vec!["y".into(), "z".into(), "x".into()]);
+        let f = pr.field();
+        let c = |n: i64| f.from_int(n);
+        let q = {
+            let terms = [
+                pr.mul(pr.var(0), pr.var(0)),                 // y^2
+                pr.scale(c(6), pr.mul(pr.var(1), pr.var(1))), // 6 z^2
+                pr.scale(c(5), pr.mul(pr.var(0), pr.var(2))), // 5 y x
+                pr.scale(c(3), pr.mul(pr.var(1), pr.var(2))), // 3 z x
+                pr.scale(c(4), pr.mul(pr.var(2), pr.var(2))), // 4 x^2
+                pr.var(0),                                    // y
+                pr.scale(c(2), pr.var(1)),                    // 2 z
+                pr.constant(c(2)),                            // 2
+            ];
+            let mut acc = pr.zero();
+            for t in terms {
+                acc = pr.add(acc, t);
+            }
+            acc
+        };
+
+        let n_sols = (0..7i64)
+            .flat_map(|y| (0..7i64).flat_map(move |z| (0..7i64).map(move |x| (y, z, x))))
+            .filter(|&(y, z, x)| {
+                (y * y + 6 * z * z + 5 * y * x + 3 * z * x + 4 * x * x + y + 2 * z + 2)
+                    .rem_euclid(7)
+                    == 0
+            })
+            .count();
+        assert!(n_sols > 0, "ground-truth sanity: q must be satisfiable");
+
+        match solve_split_gb(&pr, &[q], &[]) {
+            SolveOutcome::Unsat(_) => {
+                panic!("false UNSAT: q has {n_sols} roots over GF(7)^3 but solver returned UNSAT")
+            }
+            SolveOutcome::Sat(_) | SolveOutcome::Unknown => {}
+        }
+    }
+
+    #[test]
     fn test_single_gb_traced_unsat_core() {
         // System: x = 2, x = 3, y = 1  in GF(7).
         // The UNSAT comes from the first two constraints only.
