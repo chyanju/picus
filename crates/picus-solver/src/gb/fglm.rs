@@ -168,20 +168,26 @@ pub fn fglm_to_lex(ideal: &Ideal) -> Option<Vec<Poly>> {
 
     // Sound cross-check: the staircase is a k-basis of R/I, so its size
     // equals dim_k(R/I) read independently off the leading-term ideal via
-    // the Hilbert function (`crate::ff::hilbert`). Verdict-neutral; trips
-    // the test suite if either path has a bug. Free in release; logged
-    // when GB stats are enabled.
-    debug_assert_eq!(
-        ideal.quotient_dimension(),
-        Some(staircase.len() as u128),
-        "FGLM staircase size disagrees with Hilbert quotient dimension"
-    );
+    // the Hilbert function (`crate::ff::hilbert`). A mismatch means the
+    // FGLM combination accounting is inconsistent — rather than trust a lex
+    // basis that may not lie in I, return None so the caller falls back to
+    // direct Buchberger Lex (sound). Runs in release, not just debug.
+    let hilbert_dim = ideal.quotient_dimension();
     if crate::config::with(|c| c.gb_stats_enabled) {
         eprintln!(
             "[picus-gb-stats] fglm_dim={} hilbert_dim={:?}",
             staircase.len(),
-            ideal.quotient_dimension()
+            hilbert_dim
         );
+    }
+    if hilbert_dim != Some(staircase.len() as u128) {
+        log::warn!(
+            "FGLM staircase size {} disagrees with Hilbert dimension {:?}; \
+             falling back to direct Lex",
+            staircase.len(),
+            hilbert_dim
+        );
+        return None;
     }
 
     Some(lex_gb)
