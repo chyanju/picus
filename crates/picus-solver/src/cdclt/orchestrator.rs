@@ -55,9 +55,9 @@ pub fn iter_cap() -> u64 {
     crate::config::with(|c| c.cdclt_iter_cap)
 }
 
-fn cdclt_loop(
+fn cdclt_loop<T: Theory>(
     sat: &mut Solver,
-    theory: &mut FfTheory<'_>,
+    theory: &mut T,
     cancel: &CancelToken,
 ) -> SolveOutcome {
     let mut notified: usize = 0;
@@ -169,7 +169,7 @@ enum TheoryStep {
 /// One round of theory propagation. Each derived `(atom, polarity)`
 /// becomes a no-op (SAT agrees), an `enqueue_theory` (SAT Undef), or a
 /// theory lemma (SAT disagrees).
-fn run_theory_propagation(sat: &mut Solver, theory: &mut FfTheory<'_>) -> TheoryStep {
+fn run_theory_propagation<T: Theory>(sat: &mut Solver, theory: &mut T) -> TheoryStep {
     let props = theory.propagate();
     if props.is_empty() {
         return TheoryStep::Idle;
@@ -246,9 +246,9 @@ fn apply_theory_conflict(sat: &mut Solver, core: &[Var]) -> Option<usize> {
     sat.add_theory_lemma_with_trail(lits)
 }
 
-fn sync_theory_after_propagate(
+fn sync_theory_after_propagate<T: Theory>(
     sat: &Solver,
-    theory: &mut FfTheory<'_>,
+    theory: &mut T,
     theory_levels: &mut usize,
 ) {
     let dl = sat.decision_level() as usize;
@@ -258,9 +258,9 @@ fn sync_theory_after_propagate(
     }
 }
 
-fn sync_theory_after_backtrack(
+fn sync_theory_after_backtrack<T: Theory>(
     sat: &Solver,
-    theory: &mut FfTheory<'_>,
+    theory: &mut T,
     theory_levels: &mut usize,
 ) {
     let dl = sat.decision_level() as usize;

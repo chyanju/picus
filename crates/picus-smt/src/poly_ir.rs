@@ -245,14 +245,7 @@ impl PolyIR {
             builder.var(name);
         }
         for poly in &self.equalities {
-            let terms: Vec<PolyTerm> = self
-                .poly_terms_idx(poly)
-                .filter(|(coeff, _)| !coeff.is_zero())
-                .map(|(coeff, vars)| PolyTerm {
-                    coeff,
-                    vars: vars.into_iter().map(|(v, e)| (v as u32, e)).collect(),
-                })
-                .collect();
+            let terms = self.poly_terms_vec(poly);
             if !terms.is_empty() {
                 builder.add_equality(terms);
             }
