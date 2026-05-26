@@ -72,10 +72,19 @@ impl<'r> BitProp<'r> {
         }
     }
 
-    /// Test whether `var` is bit-constrained, either via the prior set
-    /// `self.bits` or because some basis in `split_basis` proves
-    /// `var^2 - var ∈ I`.  The check updates `self.bits` if successful.
-    pub fn is_bit(&mut self, var: usize, split_basis: &[Ideal<'r>]) -> bool {
+    /// Test whether `var` is bit-constrained: either it is a globally
+    /// asserted bit (`self.bits`, populated from user `x*(x-1)=0`
+    /// constraints) or some basis in `split_basis` proves `var^2-var ∈ I`.
+    ///
+    /// The per-basis proof is recomputed on every call and **never** cached
+    /// into `self.bits`: `split_basis` varies across the DFS search (a
+    /// variable pinned to 0/1 on one branch is not bit-constrained on
+    /// another, and the search never rolls `self.bits` back on backtrack),
+    /// so persisting a branch-local proof as a global fact is unsound — it
+    /// would let `get_bit_equalities` treat a non-bit variable as a bit on a
+    /// sibling branch and emit a spurious overflow contradiction (false
+    /// UNSAT). `self.bits` therefore holds only globally-valid bits.
+    pub fn is_bit(&self, var: usize, split_basis: &[Ideal<'r>]) -> bool {
         if self.bits.contains(&var) {
             return true;
         }
@@ -83,13 +92,7 @@ impl<'r> BitProp<'r> {
         let x = pr.var(var);
         let x2 = pr.mul(pr.clone_poly(&x), pr.clone_poly(&x));
         let bit_poly = pr.sub(x2, x);
-        for b in split_basis {
-            if b.contains(&bit_poly) {
-                self.bits.insert(var);
-                return true;
-            }
-        }
-        false
+        split_basis.iter().any(|b| b.contains(&bit_poly))
     }
 
     /// Derive new equalities (as polynomials whose `=0` form is asserted)
