@@ -19,7 +19,7 @@
 use std::sync::Arc;
 
 use crate::timeout::CancelToken;
-use crate::SolverError;
+use crate::EngineError;
 
 use super::divmask::DivMask;
 use super::field::FieldElem;
@@ -129,7 +129,7 @@ pub fn groebner_basis(
     generators: Vec<DensePoly>,
     ring: &Arc<PolyRing>,
     config: &BuchbergerConfig,
-) -> Result<GBasis, SolverError> {
+) -> Result<GBasis, EngineError> {
     let mut state = BuchbergerState::new(ring.clone(), config.clone());
     let mut obs = NoObserver;
     {
@@ -151,7 +151,7 @@ pub fn groebner_basis_observed<O: BuchbergerObserver>(
     ring: &Arc<PolyRing>,
     config: &BuchbergerConfig,
     observer: &mut O,
-) -> Result<GBasis, SolverError> {
+) -> Result<GBasis, EngineError> {
     let mut state = BuchbergerState::new(ring.clone(), config.clone());
     state.add_generators(generators, observer)?;
     state.run(observer)?;
@@ -165,7 +165,7 @@ pub fn groebner_basis_incremental(
     new_generators: Vec<DensePoly>,
     ring: &Arc<PolyRing>,
     config: &BuchbergerConfig,
-) -> Result<GBasis, SolverError> {
+) -> Result<GBasis, EngineError> {
     let mut all = existing.basis;
     all.extend(new_generators);
     groebner_basis(all, ring, config)
@@ -343,10 +343,10 @@ impl BuchbergerState {
         }
     }
 
-    fn check_cancel(&self) -> Result<(), SolverError> {
+    fn check_cancel(&self) -> Result<(), EngineError> {
         if let Some(t) = &self.cfg.cancel_token {
             if t.is_cancelled() {
-                return Err(SolverError::Timeout);
+                return Err(EngineError::Timeout);
             }
         }
         Ok(())
@@ -395,7 +395,7 @@ impl BuchbergerState {
         &mut self,
         generators: Vec<DensePoly>,
         observer: &mut O,
-    ) -> Result<(), SolverError> {
+    ) -> Result<(), EngineError> {
         // Detect homogeneous input. If every generator's terms all
         // share the same total degree, the input is homogeneous, and
         // the main loop enables periodic in-loop tail-reduction.
@@ -444,7 +444,7 @@ impl BuchbergerState {
             }
             if let Some(c) = &self.cfg.cancel_token {
                 if c.is_cancelled() {
-                    return Err(SolverError::Timeout);
+                    return Err(EngineError::Timeout);
                 }
             }
             if g_red.is_zero() { continue; }
@@ -766,7 +766,7 @@ impl BuchbergerState {
         (nf, active_idxs, use_counts)
     }
 
-    pub(super) fn run<O: BuchbergerObserver>(&mut self, observer: &mut O) -> Result<(), SolverError> {
+    pub(super) fn run<O: BuchbergerObserver>(&mut self, observer: &mut O) -> Result<(), EngineError> {
         if self.cfg.use_f4 {
             return self.run_f4(observer);
         }
@@ -865,7 +865,7 @@ impl BuchbergerState {
                             t_genpairs_ns as f64 / 1e6,
                         );
                     }
-                    return Err(SolverError::Timeout);
+                    return Err(EngineError::Timeout);
                 }
             }
             self.stats.reductions_total += 1;
@@ -991,7 +991,7 @@ impl BuchbergerState {
         &mut self,
         pair: SPair,
         observer: &mut O,
-    ) -> Result<(), SolverError> {
+    ) -> Result<(), EngineError> {
         let bi = &self.basis[pair.i];
         let bj = &self.basis[pair.j];
         let mul_i = pair.lcm.div(&bi.lt);
@@ -1037,7 +1037,7 @@ impl BuchbergerState {
         }
         if let Some(c) = &self.cfg.cancel_token {
             if c.is_cancelled() {
-                return Err(SolverError::Timeout);
+                return Err(EngineError::Timeout);
             }
         }
         self.stats.reductions_total += 1;
@@ -1087,7 +1087,7 @@ impl BuchbergerState {
     /// reduces them simultaneously via [`f4::process_batch`], then
     /// integrates each new generator (generating cross-pairs against
     /// the existing basis exactly as the per-pair path does).
-    fn run_f4<O: BuchbergerObserver>(&mut self, observer: &mut O) -> Result<(), SolverError> {
+    fn run_f4<O: BuchbergerObserver>(&mut self, observer: &mut O) -> Result<(), EngineError> {
         if self.trivial && self.cfg.abort_on_trivial {
             return Ok(());
         }

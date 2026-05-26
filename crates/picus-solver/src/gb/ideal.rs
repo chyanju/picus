@@ -19,7 +19,7 @@ use crate::ff::field::FieldElem;
 use crate::poly::{FfPolyRing, Mono, Poly, PolyRingType};
 use crate::timeout::{CancelToken, Cancelled};
 use crate::gb::tracer::GbTracer;
-use crate::SolverError;
+use crate::EngineError;
 use crate::config::GbStrategy;
 
 /// Pluggable Groebner-basis algorithm.
@@ -49,7 +49,7 @@ pub trait GbAlgorithm {
         gens: Vec<Poly>,
         cancel: &CancelToken,
         order: FfOrder,
-    ) -> Result<Vec<Poly>, SolverError>;
+    ) -> Result<Vec<Poly>, EngineError>;
 
     /// Whether this algorithm implements [`Self::compute_traced`].
     fn supports_tracing(&self) -> bool {
@@ -66,7 +66,7 @@ pub trait GbAlgorithm {
         _cancel: &CancelToken,
         _order: FfOrder,
         _tracer: &mut GbTracer,
-    ) -> Result<Vec<Poly>, SolverError> {
+    ) -> Result<Vec<Poly>, EngineError> {
         unreachable!(
             "GbAlgorithm {:?}: supports_tracing() returned true but \
              compute_traced is the default panicking impl",
@@ -89,7 +89,7 @@ impl GbAlgorithm for BuchbergerDirect {
         gens: Vec<Poly>,
         cancel: &CancelToken,
         order: FfOrder,
-    ) -> Result<Vec<Poly>, SolverError> {
+    ) -> Result<Vec<Poly>, EngineError> {
         compute_gb_buchberger(pr, gens, cancel, order)
     }
 
@@ -104,7 +104,7 @@ impl GbAlgorithm for BuchbergerDirect {
         cancel: &CancelToken,
         order: FfOrder,
         tracer: &mut GbTracer,
-    ) -> Result<Vec<Poly>, SolverError> {
+    ) -> Result<Vec<Poly>, EngineError> {
         compute_gb_buchberger_traced(pr, gens, cancel, order, tracer)
     }
 }
@@ -128,7 +128,7 @@ impl GbAlgorithm for BuchbergerByHomog {
         gens: Vec<Poly>,
         cancel: &CancelToken,
         order: FfOrder,
-    ) -> Result<Vec<Poly>, SolverError> {
+    ) -> Result<Vec<Poly>, EngineError> {
         if order == FfOrder::DegRevLex {
             Ok(crate::gb::gb_homog::compute_gb_by_homog(pr, gens, cancel))
         } else {
@@ -188,7 +188,7 @@ fn compute_gb_dispatch(
     cancel: &CancelToken,
     order: FfOrder,
     tracer: Option<&mut GbTracer>,
-) -> Result<Vec<Poly>, SolverError> {
+) -> Result<Vec<Poly>, EngineError> {
     if gens.is_empty() {
         return Ok(Vec::new());
     }
@@ -342,7 +342,6 @@ impl<'r> Ideal<'r> {
     /// The tracer's input numbering matches the order generators are added:
     /// first all elements of `self.basis` (already a reduced GB), then all
     /// surviving `new_polys`.
-    #[allow(dead_code)]
     pub(crate) fn extend_with_cancel_traced(
         self,
         new_polys: Vec<Poly>,
@@ -746,7 +745,7 @@ pub(crate) fn compute_gb_buchberger(
     generators: Vec<Poly>,
     cancel: &CancelToken,
     order: FfOrder,
-) -> Result<Vec<Poly>, SolverError> {
+) -> Result<Vec<Poly>, EngineError> {
     let _t = crate::profile::ScopedTimer::new("compute_gb_buchberger");
     if generators.is_empty() {
         return Ok(Vec::new());
@@ -767,7 +766,7 @@ pub(crate) fn compute_gb_buchberger(
         Ok(Err(e)) => Err(e),
         Err(_) => {
             log::warn!("GB computation panicked");
-            Err(SolverError::Internal("Buchberger panicked".into()))
+            Err(EngineError::Internal("Buchberger panicked".into()))
         }
     }
 }
@@ -861,7 +860,7 @@ pub fn compute_gb_incremental_with_order(
         // Genuinely incremental: only the cross-pairs (known_gb × new) and
         // intra-new pairs are processed by add_generators below.
         igb.add_generators(dense_new)?;
-        Ok::<Vec<crate::ff::DensePoly>, crate::SolverError>(igb.basis())
+        Ok::<Vec<crate::ff::DensePoly>, crate::EngineError>(igb.basis())
     }));
     match result {
         Ok(Ok(basis)) => wrap_dense_vec(basis),
@@ -914,7 +913,7 @@ pub(crate) fn compute_gb_buchberger_traced(
     cancel: &CancelToken,
     order: FfOrder,
     tracer: &mut crate::gb::tracer::GbTracer,
-) -> Result<Vec<Poly>, SolverError> {
+) -> Result<Vec<Poly>, EngineError> {
     let _t = crate::profile::ScopedTimer::new("compute_gb_buchberger_traced");
     if generators.is_empty() {
         return Ok(Vec::new());
@@ -935,7 +934,7 @@ pub(crate) fn compute_gb_buchberger_traced(
         Ok(Err(e)) => Err(e),
         Err(_) => {
             log::warn!("traced GB computation panicked");
-            Err(SolverError::Internal("traced Buchberger panicked".into()))
+            Err(EngineError::Internal("traced Buchberger panicked".into()))
         }
     }
 }
@@ -981,7 +980,7 @@ pub fn compute_gb_incremental_with_order_traced(
         let mut igb = IncrementalGB::new(ring.clone(), cfg);
         igb.add_generators_observed(dense_known, tracer)?;
         igb.add_generators_observed(dense_new, tracer)?;
-        Ok::<Vec<crate::ff::DensePoly>, crate::SolverError>(igb.basis())
+        Ok::<Vec<crate::ff::DensePoly>, crate::EngineError>(igb.basis())
     }));
     match result {
         Ok(Ok(basis)) => wrap_dense_vec(basis),

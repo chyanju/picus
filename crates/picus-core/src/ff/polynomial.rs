@@ -44,11 +44,24 @@ pub struct PolyRing {
 
 impl PolyRing {
     pub fn new(field: PrimeField, var_names: Vec<String>, order: MonomialOrder) -> Arc<Self> {
+        let repr = crate::config::with(|c| c.poly_repr);
+        Self::new_with_repr(field, var_names, order, repr)
+    }
+
+    /// Like [`Self::new`] but with an explicit storage representation,
+    /// bypassing the thread-local `config::poly_repr`. Lets callers (tests,
+    /// the differential oracle) pin a representation without mutating global
+    /// config.
+    pub fn new_with_repr(
+        field: PrimeField,
+        var_names: Vec<String>,
+        order: MonomialOrder,
+        repr: ReprKind,
+    ) -> Arc<Self> {
         let n_vars = var_names.len();
         // Heuristic exponent cap: monomials beyond degree 16 in any
         // single variable are rare for the inputs the solver sees.
         let divmask = DivMaskScheme::build(n_vars, 16);
-        let repr = crate::config::with(|c| c.poly_repr);
         Arc::new(PolyRing { field, n_vars, order, var_names, divmask, repr })
     }
 

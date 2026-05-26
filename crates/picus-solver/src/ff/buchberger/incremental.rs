@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use crate::SolverError;
+use crate::EngineError;
 use crate::timeout::CancelToken;
 
 use super::super::polynomial::{PolyRing, DensePoly};
@@ -55,7 +55,7 @@ impl IncrementalGB {
         self.state.seed_with_reduced_basis(basis);
     }
 
-    pub fn add_generators(&mut self, polys: Vec<DensePoly>) -> Result<bool, SolverError> {
+    pub fn add_generators(&mut self, polys: Vec<DensePoly>) -> Result<bool, EngineError> {
         let mut obs = NoObserver;
         self.state.add_generators(polys, &mut obs)?;
         self.state.run(&mut obs)?;
@@ -74,7 +74,7 @@ impl IncrementalGB {
     /// Semantics are identical to `add_generators(vec![])` but skips the
     /// no-op generator append and the homogeneous-input flag detection
     /// (which is set on the first call and is immutable thereafter).
-    pub fn run_only(&mut self) -> Result<bool, SolverError> {
+    pub fn run_only(&mut self) -> Result<bool, EngineError> {
         let mut obs = NoObserver;
         self.state.run(&mut obs)?;
         if !self.state.trivial {
@@ -112,7 +112,7 @@ impl IncrementalGB {
         &mut self,
         polys: Vec<DensePoly>,
         observer: &mut O,
-    ) -> Result<bool, SolverError> {
+    ) -> Result<bool, EngineError> {
         self.state.add_generators(polys, observer)?;
         self.state.run(observer)?;
         // Skip tail-reduce: the observer relies on basis-element identity

@@ -784,6 +784,99 @@ fn f4_vs_per_pair_random_cross_check() {
     }
 }
 
+/// Like [`f4_vs_per_pair_random_cross_check`], but over the BN254 scalar
+/// field (a ~254-bit prime, routed to the GMP `FieldElem` arm) with 3
+/// variables and degree-≤2 generators. Exercises F4 / per-pair agreement
+/// in the realistic coefficient/variable regime the GF(7) two-variable
+/// cross-check does not cover. Compares leading-term sets (the reduced-GB
+/// staircase), matching the convention above — `add_generators`'
+/// single-pass tail reduction does not guarantee identical tails.
+#[test]
+fn f4_vs_per_pair_bn254_3vars() {
+    use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
+    use std::collections::HashSet;
+
+    fn ring_bn254(n_vars: usize) -> Arc<PolyRing> {
+        let p = "21888242871839275222246405745257275088548364400416034343698204186575808495617"
+            .parse::<BigUint>()
+            .unwrap();
+        let f = PrimeField::new(p);
+        let names = (0..n_vars).map(|i| format!("x{}", i)).collect();
+        PolyRing::new(f, names, MonomialOrder::DegRevLex)
+    }
+
+    fn lcg(seed: u64) -> impl FnMut() -> u64 {
+        let mut s = seed;
+        move || {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s
+        }
+    }
+
+    for seed in 1u64..=10 {
+        let ring = ring_bn254(3);
+        let mut rng = lcg(seed);
+        let vars: Vec<DensePoly> = (0..3).map(|i| x(i, &ring)).collect();
+        // Atom set: constant, the three linears, and all degree-2 monomials.
+        let mut atoms: Vec<DensePoly> = vec![DensePoly::constant(ring.field.one(), &ring)];
+        for i in 0..3 {
+            atoms.push(vars[i].clone());
+        }
+        for i in 0..3 {
+            for j in i..3 {
+                atoms.push(vars[i].mul(&vars[j], &ring));
+            }
+        }
+
+        let mut polys: Vec<DensePoly> = Vec::new();
+        for _ in 0..3 {
+            let mut acc = DensePoly::zero();
+            for atom in &atoms {
+                let c_u = rng();
+                if c_u % 4 == 0 {
+                    continue; // sparsify
+                }
+                let c = ring.field.from_u64(c_u);
+                acc = acc.add(&atom.mul(&DensePoly::constant(c, &ring), &ring), &ring);
+            }
+            if !acc.is_zero() {
+                polys.push(acc);
+            }
+        }
+        if polys.len() < 2 {
+            continue;
+        }
+
+        let run = |use_f4: bool| {
+            let cfg = BuchbergerConfig {
+                order: MonomialOrder::DegRevLex,
+                cancel_token: None,
+                abort_on_trivial: false,
+                use_f4,
+            };
+            let mut igb = IncrementalGB::new(Arc::clone(&ring), cfg);
+            let trivial = igb.add_generators(polys.clone()).expect("add");
+            (trivial, igb.basis())
+        };
+        let (pp_trivial, pp_basis) = run(false);
+        let (f4_trivial, f4_basis) = run(true);
+
+        assert_eq!(
+            pp_trivial, f4_trivial,
+            "F4/per-pair triviality disagree at seed={}", seed
+        );
+        if !pp_trivial {
+            let lts = |basis: &[DensePoly]| -> HashSet<Vec<u16>> {
+                basis.iter().map(|p| lt(p, &ring).exponents().to_vec()).collect()
+            };
+            assert_eq!(
+                lts(&pp_basis), lts(&f4_basis),
+                "F4/per-pair LT sets differ at seed={}", seed
+            );
+        }
+    }
+}
+
 // ─── F4 batch-routing end-to-end ─────────────────────────────
 
 /// Katsura-3 in 4 variables over F_7. Buchberger produces several
