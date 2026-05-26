@@ -88,6 +88,16 @@ fn build_cdmap(ir: &PolyIR) -> HashMap<usize, Vec<HashSet<usize>>> {
                 .map(|&u| ir.var_to_wire(u))
                 .filter(|&w| w != wire)
                 .collect();
+            // An empty dep set promotes `wire` unconditionally (the
+            // `deps.all(known)` test in `run` is vacuously true). This is
+            // intended: it means the constraint forces `v` with no remaining
+            // unknowns — e.g. a single-variable assignment `a*x_w + c = 0`
+            // (mirrored in both copies, so the wire's two copies agree), or
+            // the `x_w - y_w = 0` marker `add_known_wire` emits for an
+            // already-known wire. No multi-variable constraint reaches here
+            // with empty deps: orig/alt copies are lowered into separate
+            // constraint sets, so the only poly mixing x_w and y_w is that
+            // marker.
             cdmap.entry(wire).or_default().push(deps);
         }
     }
