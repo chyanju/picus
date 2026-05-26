@@ -100,11 +100,13 @@ pub struct RuntimeConfig {
     /// Track inter-reduction reducer dependencies in the single-GB UNSAT-core
     /// tracer (`GbTracer`), so a trivial core reflects the basis elements that
     /// actually reduced the contradiction — matching cvc5/CoCoA's precise
-    /// cores. On by default: it only affects the non-default SingleGb path
-    /// (the default split-GB path uses a separate tracer with `NoObserver`,
-    /// so there is no cost on the PLDI/main workload), and gives precise
-    /// cores there. Set false to drop the small per-reduce counting cost on
-    /// the SingleGb path.
+    /// cores. On by default, and only meaningful on the non-default SingleGb
+    /// path: that path tail-reduces the basis and emits `on_inter_reduce`
+    /// events (gated by this flag). The default split-GB path never
+    /// tail-reduces during its incremental extends, so no inter-reduce events
+    /// fire there regardless of this flag; its UNSAT core is instead
+    /// attributed by a conservative union (see `split_gb::fixpoint`). Set
+    /// false to drop the small per-reduce counting cost on the SingleGb path.
     pub track_inter_reduce_deps: bool,
     /// Triangular model construction (cvc5 `multi_roots` analogue) on the
     /// default split-GB path: decide a zero-dimensional combined system by
