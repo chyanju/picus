@@ -624,7 +624,6 @@ fn solve_with_cached(
         Ok(SplitFindZeroOutcome::Unknown) => SolveOutcome::Unknown,
         Err(_) => SolveOutcome::Unknown,
     };
-    let _ = outcome.clone();
     outcome
 }
 

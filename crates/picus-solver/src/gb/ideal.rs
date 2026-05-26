@@ -342,7 +342,6 @@ impl<'r> Ideal<'r> {
     /// The tracer's input numbering matches the order generators are added:
     /// first all elements of `self.basis` (already a reduced GB), then all
     /// surviving `new_polys`.
-    #[allow(dead_code)]
     pub(crate) fn extend_with_cancel_traced(
         self,
         new_polys: Vec<Poly>,

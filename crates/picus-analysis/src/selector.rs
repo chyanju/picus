@@ -46,7 +46,10 @@ impl SelectorState {
     /// solver. Returns `None` when the pool is empty.
     pub fn select(&mut self, uspool: &HashSet<usize>) -> Option<usize> {
         match self.kind {
-            SelectorKind::First => uspool.iter().copied().next(),
+            // Smallest index, not `iter().next()`: HashSet iteration order
+            // is nondeterministic across runs/builds, which would make the
+            // `first` selector irreproducible.
+            SelectorKind::First => uspool.iter().copied().min(),
             SelectorKind::Counter => self.select_counter(uspool),
         }
     }
