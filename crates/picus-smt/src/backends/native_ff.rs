@@ -12,10 +12,58 @@ use crate::backends::{SolverBackend, SolverBackendDescriptor, SolverError, Solve
 use crate::poly_ir::PolyIR;
 use crate::Theory;
 
+use std::cell::Cell;
+use std::sync::Once;
+
 use picus_solver::core::{solve_encoded_with_cancel, SolveOutcome};
 use picus_solver::frontend::encoder::ConstraintSystem;
 use picus_solver::incremental_context::IncrementalSolverContext;
 use picus_core::timeout::CancelToken;
+
+thread_local! {
+    /// When true on the current thread, the installed panic hook stays
+    /// silent. Set only while a solve's `catch_unwind` is active, so an
+    /// expected solver panic (e.g. degree overflow) does not spam stderr
+    /// — without globally muting panics on other threads or outside a solve.
+    static SILENCE_SOLVER_PANIC: Cell<bool> = const { Cell::new(false) };
+}
+
+static HOOK_INIT: Once = Once::new();
+
+/// Install, once per process, a panic hook that delegates to the
+/// previous hook except on threads currently inside a solver
+/// `catch_unwind` (see [`SILENCE_SOLVER_PANIC`]). Avoids swapping the
+/// process-global hook on every `solve` call, which races under
+/// multi-threaded use and can suppress an embedder's hook.
+fn install_silencing_hook() {
+    HOOK_INIT.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !SILENCE_SOLVER_PANIC.with(|c| c.get()) {
+                prev(info);
+            }
+        }));
+    });
+}
+
+/// RAII guard: sets the thread-local silence flag and restores its
+/// prior value on drop (including on unwind).
+struct PanicSilenceGuard(bool);
+
+impl PanicSilenceGuard {
+    fn new() -> Self {
+        install_silencing_hook();
+        let prev = SILENCE_SOLVER_PANIC.with(|c| c.replace(true));
+        PanicSilenceGuard(prev)
+    }
+}
+
+impl Drop for PanicSilenceGuard {
+    fn drop(&mut self) {
+        let prev = self.0;
+        SILENCE_SOLVER_PANIC.with(|c| c.set(prev));
+    }
+}
 
 pub struct NativeFfBackend {
     /// Constraint-side digest of the most recent `solve` call. Used to
@@ -94,8 +142,9 @@ impl SolverBackend for NativeFfBackend {
 
         // Wrap encode + solve in catch_unwind as a safety net for any
         // unexpected panics inside the solver (e.g., degree overflow).
-        let prev_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {})); // silence repeated panics
+        // The guard silences the (expected) panic message on this thread
+        // for the duration; the process-global hook is installed once.
+        let silence_guard = PanicSilenceGuard::new();
         let cache_enabled = picus_core::config::with(|c| c.cache_enabled);
         let cache = &mut self.cache;
         // Combine the external cancel (Ctrl-C / parent-process abort)
@@ -167,7 +216,7 @@ impl SolverBackend for NativeFfBackend {
                 SolveOutcome::Unknown => Ok(SolverResult::Unknown(UnknownReason::Timeout)),
             }
         }));
-        std::panic::set_hook(prev_hook);
+        drop(silence_guard);
 
         match result {
             Ok(r) => r,
