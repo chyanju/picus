@@ -22,8 +22,8 @@ use crate::timeout::CancelToken;
 /// Three-valued outcome of a model search.
 ///
 /// `Unknown` means the search exhausted its bounded round-robin cap on
-/// a large prime field; the formula may still be SAT outside the range
-/// we tried.  Callers must NOT treat `Unknown` as UNSAT.
+/// a large prime field; the formula may still be SAT outside the
+/// searched range.  Callers must NOT treat `Unknown` as UNSAT.
 #[derive(Debug)]
 pub enum FindZeroOutcome {
     Sat(HashMap<String, BigUint>),

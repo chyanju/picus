@@ -42,7 +42,7 @@ pub enum R1csParseError {
     InvalidPrime(BigUint),
 }
 
-/// Hard upper bound on a header-claimed count before we'll allocate
+/// Hard upper bound on a header-claimed count before allocating
 /// proportional memory. An R1CS file's `m_constraints`, `nnz`, etc.
 /// can't legitimately exceed the on-disk payload size (each constraint
 /// is at least a few bytes), so this is "what could the file legally
