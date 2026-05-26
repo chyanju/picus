@@ -70,7 +70,7 @@ fn empty_trail_is_sat() {
     let atoms = AtomTable::new(prime);
     let cancel = CancelToken::none();
     let mut th = FfTheory::new(&atoms, &cancel);
-    match th.post_check(Effort::Full) {
+    match th.post_check() {
         CheckOutcome::Sat => {}
         other => panic!("expected Sat, got {:?}", other),
     }
@@ -87,7 +87,7 @@ fn single_eq_sat() {
     let cancel = CancelToken::none();
     let mut th = FfTheory::new(&atoms, &cancel);
     th.notify_fact(av, true);
-    match th.post_check(Effort::Full) {
+    match th.post_check() {
         CheckOutcome::Sat => {}
         other => panic!("expected Sat, got {:?}", other),
     }
@@ -108,7 +108,7 @@ fn two_contradictory_eqs_unsat() {
     let mut th = FfTheory::new(&atoms, &cancel);
     th.notify_fact(a1, true);
     th.notify_fact(a2, true);
-    match th.post_check(Effort::Full) {
+    match th.post_check() {
         CheckOutcome::Unsat { core } => {
             assert!(core.contains(&a1));
             assert!(core.contains(&a2));
@@ -131,7 +131,7 @@ fn neq_via_negative_polarity() {
     let mut th = FfTheory::new(&atoms, &cancel);
     th.notify_fact(av, true);
     th.notify_fact(av, false);
-    match th.post_check(Effort::Full) {
+    match th.post_check() {
         CheckOutcome::Unsat { core } => {
             assert!(core.contains(&av));
         }

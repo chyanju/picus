@@ -653,6 +653,7 @@ dependencies = [
  "picus-r1cs",
  "picus-smt",
  "serde",
+ "thiserror",
 ]
 
 [[package]]

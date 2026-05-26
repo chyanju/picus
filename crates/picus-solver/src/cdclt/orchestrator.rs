@@ -17,7 +17,7 @@ use crate::timeout::CancelToken;
 use super::atoms::AtomTable;
 use super::cnf::{tseitin, TseitinResult};
 use super::ff_theory::FfTheory;
-use super::theory::{CheckOutcome, Effort, Theory};
+use super::theory::{CheckOutcome, Theory};
 
 /// Solve a `Formula` over GF(`prime`) via CDCL(T) with the FF theory.
 /// `var_names` is the producing builder's variable frame (used by
@@ -117,7 +117,7 @@ fn cdclt_loop<T: Theory>(
         }
 
         if sat.all_assigned() {
-            match theory.post_check(Effort::Full) {
+            match theory.post_check() {
                 CheckOutcome::Sat => {
                     // The model returned by the theory's final
                     // `post_check(Full)` already covers every named
