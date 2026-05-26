@@ -27,10 +27,33 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::ff::field::PrimeField;
 use crate::poly::{FfPolyRing, Poly};
 
+/// Origin of an entry in [`EncodedSystem::polynomials`], parallel to it
+/// 1:1. Lets a UNSAT-core consumer attribute a core polynomial index back
+/// to the source constraint without relying on positional layout
+/// assumptions. `Equality(j)` carries `j` = the index into the
+/// `encode_impl`-input equality list; `Rabinowitsch(d)` carries `d` = the
+/// index into the disequality list. `Other` is an encoder-introduced,
+/// constraint-independent polynomial (the zero assignment, field
+/// polynomials) that does not correspond to a removable source constraint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PolySource {
+    Equality(usize),
+    Rabinowitsch(usize),
+    Other,
+}
+
 /// Encoded polynomial system ready for GB computation.
 pub struct EncodedSystem {
     pub poly_ring: FfPolyRing,
     pub polynomials: Vec<Poly>,
+    /// Provenance of each `polynomials[k]`, same length and order.
+    pub poly_provenance: Vec<PolySource>,
+    /// Number of equalities `encode_impl` received (post-rewrite /
+    /// post-bitsum-extraction). Equals the producer's pre-pipeline
+    /// equality count iff `rewrite_system` dropped no equality; a
+    /// core consumer uses this to decide whether `Equality(j)` indices
+    /// align 1:1 with its own equality frame.
+    pub n_input_equalities: usize,
     /// Bitsum definition polynomials: `b0 + 2*b1 + ... - aux = 0`.
     /// These are kept separate from `polynomials` because the split-GB
     /// algorithm seeds them only into the linear basis (basis 0), not
@@ -602,13 +625,15 @@ fn encode_impl(
     }
 
     let mut polynomials: Vec<Poly> = Vec::new();
+    // Parallel to `polynomials`: source constraint of each entry.
+    let mut provenance: Vec<PolySource> = Vec::new();
 
     // Equalities: sum(coeff · prod_vars) = 0. Equality terms may
     // reference aux variables introduced by
     // `auto_extract_bitsums` (indices in the bitsum-aux
     // range); the bounds check is against the full ring size.
     let n_ring = var_names.len();
-    for eq in &system.equalities {
+    for (eq_idx, eq) in system.equalities.iter().enumerate() {
         let mut poly = poly_ring.zero();
         for term in eq {
             let c = poly_ring.field().from_biguint(&term.coeff);
@@ -629,6 +654,7 @@ fn encode_impl(
         }
         if !poly_ring.is_zero(&poly) {
             polynomials.push(poly);
+            provenance.push(PolySource::Equality(eq_idx));
         }
     }
 
@@ -645,12 +671,15 @@ fn encode_impl(
         let diff = poly_ring.sub(v, c);
         if !poly_ring.is_zero(&diff) {
             polynomials.push(diff);
+            provenance.push(PolySource::Other);
         }
     }
 
     // Rabinowitsch trick: (a - b) · w_i - 1 = 0 for each disequality.
     if emit_rabinowitsch {
-        for ((a, b), &w_idx) in system.disequalities.iter().zip(witness_idxs.iter()) {
+        for (d_idx, ((a, b), &w_idx)) in
+            system.disequalities.iter().zip(witness_idxs.iter()).enumerate()
+        {
             if (*a as usize) >= n_user || (*b as usize) >= n_user {
                 return Err(format!(
                     "disequality references var_idx >= {} but only {} user vars exist",
@@ -665,6 +694,7 @@ fn encode_impl(
             let prod = poly_ring.mul(diff, poly_ring.var(w_idx as usize));
             let rabinowitsch = poly_ring.sub(prod, poly_ring.one());
             polynomials.push(rabinowitsch);
+            provenance.push(PolySource::Rabinowitsch(d_idx));
         }
     }
 
@@ -717,11 +747,17 @@ fn encode_impl(
                 let field_poly = poly_ring.sub(x_p, x);
                 if !poly_ring.is_zero(&field_poly) {
                     polynomials.push(field_poly);
+                    provenance.push(PolySource::Other);
                 }
             }
         }
     }
 
+    debug_assert_eq!(
+        provenance.len(),
+        polynomials.len(),
+        "poly_provenance must stay parallel to polynomials"
+    );
     let polynomials = polynomials
         .into_iter()
         .map(|p| normalize_poly(&poly_ring, p))
@@ -730,6 +766,8 @@ fn encode_impl(
     Ok(EncodedSystem {
         poly_ring,
         polynomials,
+        poly_provenance: provenance,
+        n_input_equalities: system.equalities.len(),
         bitsum_polys,
         var_map,
     })
