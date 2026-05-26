@@ -129,9 +129,9 @@ fn try_split_triangular<'r>(
             if !crate::gb::model::verify_model(poly_ring, all_gens, &model) {
                 return None;
             }
-            let mut pt = Vec::with_capacity(poly_ring.n_vars);
-            for name in &poly_ring.var_names {
-                pt.push(poly_ring.field.from_biguint(model.get(name)?));
+            let mut pt = Vec::with_capacity(poly_ring.n_vars());
+            for name in poly_ring.var_names() {
+                pt.push(poly_ring.field().from_biguint(model.get(name)?));
             }
             Some(SplitFindZeroOutcome::Sat(pt))
         }
@@ -181,7 +181,7 @@ pub fn split_find_zero_cancel<'r>(
             }
         }
 
-        let null_partial: PartialPoint = vec![None; poly_ring.n_vars];
+        let null_partial: PartialPoint = vec![None; poly_ring.n_vars()];
 
         let cur_bases: SplitGb<'r> = split_basis.iter()
             .map(|b| {
@@ -250,7 +250,7 @@ mod tests {
         let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
         let xy = pr.mul(pr.var(0), pr.var(1));
         let p1 = pr.sub(xy, pr.one());
-        let two = pr.field.from_int(2);
+        let two = pr.field().from_int(2);
         let p2 = pr.sub(pr.var(0), pr.constant(two));
 
         let mut bp = BitProp::new(&pr);
@@ -262,8 +262,8 @@ mod tests {
             other => panic!("expected SAT, got {:?}", other),
         };
         // Check x = 2, y = 4 (or the other valid roots; should satisfy x*y=1).
-        let x_val = pr.field.to_biguint(&pt[0]);
-        let y_val = pr.field.to_biguint(&pt[1]);
+        let x_val = pr.field().to_biguint(&pt[0]);
+        let y_val = pr.field().to_biguint(&pt[1]);
         assert_eq!(x_val, BigUint::from(2u32));
         let prod = (x_val * y_val) % BigUint::from(7u32);
         assert_eq!(prod, BigUint::from(1u32));
@@ -273,8 +273,8 @@ mod tests {
     fn test_split_gb_unsat() {
         // x = 2, x = 3 in GF(7): UNSAT
         let pr = FfPolyRing::new(ff(7), vec!["x".into()]);
-        let two = pr.field.from_int(2);
-        let three = pr.field.from_int(3);
+        let two = pr.field().from_int(2);
+        let three = pr.field().from_int(3);
         let p1 = pr.sub(pr.var(0), pr.constant(two));
         let p2 = pr.sub(pr.var(0), pr.constant(three));
         let mut bp = BitProp::new(&pr);
@@ -293,35 +293,35 @@ mod tests {
         let r: PartialPoint = vec![None, None];
         let mut brancher = apply_rule(&pr, &gb, &r);
         // first 2 candidates should be (0, 0) and (1, 0): same val, different var.
-        let c0 = brancher.next(&pr.field).unwrap();
+        let c0 = brancher.next(&pr.field()).unwrap();
         assert_eq!(c0.0, 0);
-        assert_eq!(pr.field.to_biguint(&c0.1), num_bigint::BigUint::from(0u32));
-        let c1 = brancher.next(&pr.field).unwrap();
+        assert_eq!(pr.field().to_biguint(&c0.1), num_bigint::BigUint::from(0u32));
+        let c1 = brancher.next(&pr.field()).unwrap();
         assert_eq!(c1.0, 1);
-        assert_eq!(pr.field.to_biguint(&c1.1), num_bigint::BigUint::from(0u32));
+        assert_eq!(pr.field().to_biguint(&c1.1), num_bigint::BigUint::from(0u32));
         // third candidate: var 0 again, val 1.
-        let c2 = brancher.next(&pr.field).unwrap();
+        let c2 = brancher.next(&pr.field()).unwrap();
         assert_eq!(c2.0, 0);
-        assert_eq!(pr.field.to_biguint(&c2.1), num_bigint::BigUint::from(1u32));
+        assert_eq!(pr.field().to_biguint(&c2.1), num_bigint::BigUint::from(1u32));
     }
 
     #[test]
     fn test_apply_rule_univariate() {
         // GB has y^2 - 4 = 0; should enumerate roots of y over GF(7) (i.e., 2 and 5).
         let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
-        let four = pr.field.from_int(4);
+        let four = pr.field().from_int(4);
         let y_sq = pr.mul(pr.var(1), pr.var(1));
         let p = pr.sub(y_sq, pr.constant(four));
         let gb = Ideal::new(&pr, vec![p]);
         let r: PartialPoint = vec![None, None];
         let mut brancher = apply_rule(&pr, &gb, &r);
         let mut cands = Vec::new();
-        while let Some(c) = brancher.next(&pr.field) {
+        while let Some(c) = brancher.next(&pr.field()) {
             cands.push(c);
         }
         assert!(cands.iter().all(|(v, _)| *v == 1));
         let vals: Vec<num_bigint::BigUint> =
-            cands.iter().map(|(_, v)| pr.field.to_biguint(v)).collect();
+            cands.iter().map(|(_, v)| pr.field().to_biguint(v)).collect();
         assert!(vals.contains(&num_bigint::BigUint::from(2u32)));
         assert!(vals.contains(&num_bigint::BigUint::from(5u32)));
     }

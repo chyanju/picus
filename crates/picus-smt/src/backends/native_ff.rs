@@ -144,12 +144,12 @@ impl SolverBackend for NativeFfBackend {
                     nf.encoded_polys_total
                         .fetch_add(encoded.polynomials.len() as u64, Relaxed);
                     nf.observe_polys_max(encoded.polynomials.len() as u64);
-                    nf.observe_vars_max(encoded.poly_ring.n_vars as u64);
+                    nf.observe_vars_max(encoded.poly_ring.n_vars() as u64);
                 }
                 log::debug!(
                     "native-ff: {} polynomials, {} variables",
                     encoded.polynomials.len(),
-                    encoded.poly_ring.n_vars
+                    encoded.poly_ring.n_vars()
                 );
                 solve_encoded_with_cancel(&encoded, &cancel)
             };

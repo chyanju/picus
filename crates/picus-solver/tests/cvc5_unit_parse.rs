@@ -19,7 +19,7 @@ fn ff(p: u32) -> PrimeField { PrimeField::new(BigUint::from(p)) }
 #[test]
 fn test_bit_constraint_positive_forms() {
     let pr = FfPolyRing::new(ff(7), vec!["x".into()]);
-    let _fp = &pr.field;
+    let _fp = &pr.field();
 
     // x*(x-1) = x^2 - x  →  detected
     let x2 = pr.mul(pr.var(0), pr.var(0));
@@ -36,8 +36,8 @@ fn test_bit_constraint_positive_forms() {
     assert!(bit_constraint(&pr, &p3).is_some());
 
     // 5*x^2 - 5*x   (scaled)  → detected
-    let five = pr.field.from_int(5);
-    let neg_five = pr.field.from_int(-5);
+    let five = pr.field().from_int(5);
+    let neg_five = pr.field().from_int(-5);
     let p4 = pr.add(
         pr.scale(five, pr.mul(pr.var(0), pr.var(0))),
         pr.scale(neg_five, pr.var(0)),
@@ -72,13 +72,13 @@ fn test_bit_constraint_negative_forms() {
 #[test]
 fn test_linear_monomial_forms() {
     let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
-    let fp = &pr.field;
+    let fp = &pr.field();
 
     // x * 1 = x  →  detected
     assert!(linear_monomial(&pr, &pr.var(0)).is_some());
 
     // 1 * x = x  →  same as above
-    let one_x = pr.scale(pr.field.one(), pr.var(0));
+    let one_x = pr.scale(pr.field().one(), pr.var(0));
     assert!(linear_monomial(&pr, &one_x).is_some());
 
     // -x  →  detected (coeff = -1)
@@ -113,10 +113,10 @@ fn test_extract_linear_none() {
     //
     // Instead, test: x*y + z*z + 5  →  0 linear, 3 rest terms.
     let pr = FfPolyRing::new(ff(5), vec!["x".into(), "y".into(), "z".into()]);
-    let _five = pr.field.from_int(0);  // 0 is zero, use constant 3
+    let _five = pr.field().from_int(0);  // 0 is zero, use constant 3
     let p = pr.add(
         pr.add(pr.mul(pr.var(0), pr.var(1)), pr.mul(pr.var(2), pr.var(2))),
-        pr.constant(pr.field.from_int(3)),
+        pr.constant(pr.field().from_int(3)),
     );
     let (lins, rest) = extract_linear_monomials(&pr, &p).unwrap();
     assert_eq!(lins.len(), 0);
@@ -127,7 +127,7 @@ fn test_extract_linear_none() {
 fn test_extract_linear_with_neg() {
     // x*y - x  →  1 linear (-x), 1 rest (x*y)
     let pr = FfPolyRing::new(ff(5), vec!["x".into(), "y".into()]);
-    let fp = &pr.field;
+    let fp = &pr.field();
     let p = pr.sub(pr.mul(pr.var(0), pr.var(1)), pr.var(0));
     let (lins, rest) = extract_linear_monomials(&pr, &p).unwrap();
     assert_eq!(lins.len(), 1);
@@ -145,9 +145,9 @@ fn test_extract_linear_mixed() {
     //
     // p = x*y + 3*y + (-1)*x + 4   →  linear: {y(coeff=3), x(coeff=-1)},  rest: {x*y, 4}
     let pr = FfPolyRing::new(ff(5), vec!["x".into(), "y".into()]);
-    let three = pr.field.from_int(3);
-    let neg_one = pr.field.from_int(-1);
-    let four = pr.field.from_int(4);
+    let three = pr.field().from_int(3);
+    let neg_one = pr.field().from_int(-1);
+    let four = pr.field().from_int(4);
     let p = pr.add(
         pr.add(
             pr.add(pr.mul(pr.var(0), pr.var(1)), pr.scale(three, pr.var(1))),
@@ -169,7 +169,7 @@ fn test_bitsums_implicit_one_coeff() {
     // Expected: 1 bitsum with coeff=1, bits=[b0, b1], others=[x, y]
     let pr = FfPolyRing::new(ff(103),
         vec!["x".into(), "y".into(), "b0".into(), "b1".into(), "b2".into(), "b3".into()]);
-    let two = pr.field.from_int(2);
+    let two = pr.field().from_int(2);
     let p = pr.add(
         pr.add(pr.add(pr.var(0), pr.var(1)), pr.var(2)),
         pr.scale(two, pr.var(3)),
@@ -188,10 +188,10 @@ fn test_bitsums_negative_coeffs() {
     // Expected: 1 bitsum coeff=-1, bits=[b0, b1, b2], others=[x*y, x, y]
     let pr = FfPolyRing::new(ff(103),
         vec!["x".into(), "y".into(), "b0".into(), "b1".into(), "b2".into(), "b3".into()]);
-    let fp = &pr.field;
-    let neg1 = pr.field.from_int(-1);
-    let neg2 = pr.field.from_int(-2);
-    let neg4 = pr.field.from_int(-4);
+    let fp = &pr.field();
+    let neg1 = pr.field().from_int(-1);
+    let neg2 = pr.field().from_int(-2);
+    let neg4 = pr.field().from_int(-4);
     let xy = pr.mul(pr.var(0), pr.var(1));
     let p = pr.add(
         pr.add(
@@ -219,9 +219,9 @@ fn test_bitsums_gap_breaks_chain() {
     // b3 with coeff -8 doesn't continue the chain.
     let pr = FfPolyRing::new(ff(103),
         vec!["x".into(), "y".into(), "b0".into(), "b1".into(), "b2".into(), "b3".into()]);
-    let neg1 = pr.field.from_int(-1);
-    let neg2 = pr.field.from_int(-2);
-    let neg8 = pr.field.from_int(-8);
+    let neg1 = pr.field().from_int(-1);
+    let neg2 = pr.field().from_int(-2);
+    let neg8 = pr.field().from_int(-8);
     let xy = pr.mul(pr.var(0), pr.var(1));
     let p = pr.add(
         pr.add(
@@ -244,10 +244,10 @@ fn test_bitsums_weird_positive_start() {
     // 6*b0 + 12*b1 + 24*b2   →  bitsum coeff=6, bits=[b0, b1, b2]
     let pr = FfPolyRing::new(ff(103),
         vec!["b0".into(), "b1".into(), "b2".into(), "b3".into()]);
-    let fp = &pr.field;
-    let c6 = pr.field.from_int(6);
-    let c12 = pr.field.from_int(12);
-    let c24 = pr.field.from_int(24);
+    let fp = &pr.field();
+    let c6 = pr.field().from_int(6);
+    let c12 = pr.field().from_int(12);
+    let c24 = pr.field().from_int(24);
     let p = pr.add(
         pr.add(pr.scale(c6, pr.var(0)), pr.scale(c12, pr.var(1))),
         pr.scale(c24, pr.var(2)),
@@ -269,11 +269,11 @@ fn test_bitsums_two_bitsums() {
     //   coeff=6,  bits=[b0, b1]
     let pr = FfPolyRing::new(ff(103),
         vec!["b0".into(), "b1".into(), "b2".into(), "b3".into()]);
-    let _fp = &pr.field;
-    let c6 = pr.field.from_int(6);
-    let c12 = pr.field.from_int(12);
-    let neg4 = pr.field.from_int(-4);
-    let neg8 = pr.field.from_int(-8);
+    let _fp = &pr.field();
+    let c6 = pr.field().from_int(6);
+    let c12 = pr.field().from_int(12);
+    let neg4 = pr.field().from_int(-4);
+    let neg8 = pr.field().from_int(-8);
     let p = pr.add(
         pr.add(pr.scale(c6, pr.var(0)), pr.scale(c12, pr.var(1))),
         pr.add(pr.scale(neg4, pr.var(2)), pr.scale(neg8, pr.var(3))),

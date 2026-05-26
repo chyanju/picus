@@ -59,7 +59,7 @@ const FGLM_MONO_CAP: usize = 200_000;
 /// zero-dimensional (the caller should fall back to direct computation).
 pub fn fglm_to_lex(ideal: &Ideal) -> Option<Vec<Poly>> {
     let pr = ideal.poly_ring;
-    let f = &pr.field;
+    let f = &pr.field();
     let ctx = pr.ctx();
 
     if ideal.is_whole_ring() {
@@ -69,7 +69,7 @@ pub fn fglm_to_lex(ideal: &Ideal) -> Option<Vec<Poly>> {
         return None;
     }
 
-    let n = pr.n_vars;
+    let n = pr.n_vars();
     let mono_poly = |m: &Monomial| pr.ring.create_term(f.one(), m.clone());
     // Coefficient of `mono` in `p` (0 if absent). `Monomial`'s equality is
     // raw-exponent equality, which is what we want here.
@@ -205,7 +205,7 @@ mod tests {
     /// scalar-multiple representatives of the same GB element compare equal
     /// regardless of the ring's stored monomial order.
     fn canon(pr: &FfPolyRing, p: &Poly) -> Vec<(Vec<u16>, BigUint)> {
-        let f = &pr.field;
+        let f = &pr.field();
         // Lex-largest monomial among the poly's terms.
         let mut lex_lm: Option<Monomial> = None;
         for (_, m) in pr.ring.terms(p) {
@@ -261,7 +261,7 @@ mod tests {
     fn fglm_two_var_quadratics() {
         // GF(7): <x^2 - 3, y^2 - 2, x + y - 1> — zero-dimensional.
         let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
-        let c = |v: i64| pr.constant(pr.field.from_int(v));
+        let c = |v: i64| pr.constant(pr.field().from_int(v));
         let x2 = pr.mul(pr.var(0), pr.var(0));
         let y2 = pr.mul(pr.var(1), pr.var(1));
         let gens = vec![
@@ -279,7 +279,7 @@ mod tests {
         let x2 = pr.mul(pr.var(0), pr.var(0));
         let xy = pr.mul(pr.var(0), pr.var(1));
         let gens = vec![
-            pr.sub(x2, pr.constant(pr.field.from_int(5))),
+            pr.sub(x2, pr.constant(pr.field().from_int(5))),
             pr.sub(xy, pr.one()),
         ];
         assert_fglm_matches(&pr, gens);
@@ -322,7 +322,7 @@ mod tests {
         let x2 = pr.mul(pr.var(0), pr.var(0));
         let xy = pr.mul(pr.var(0), pr.var(1));
         let gens = vec![
-            pr.sub(x2, pr.constant(pr.field.from_int(5))),
+            pr.sub(x2, pr.constant(pr.field().from_int(5))),
             pr.sub(xy, pr.one()),
         ];
         let drl = Ideal::new(&pr, gens);

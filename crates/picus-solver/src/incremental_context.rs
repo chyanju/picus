@@ -596,10 +596,10 @@ fn solve_with_cached(
     let outcome = match split_find_zero_cancel(poly_ring, new_basis, &mut bit_prop, cancel) {
         Ok(SplitFindZeroOutcome::Sat(point)) => {
             let mut model_map = HashMap::new();
-            let field = &poly_ring.field;
+            let field = &poly_ring.field();
             for (idx, val) in point.iter().enumerate() {
-                if idx < poly_ring.var_names.len() {
-                    model_map.insert(poly_ring.var_names[idx].clone(), field.to_biguint(val));
+                if idx < poly_ring.var_names().len() {
+                    model_map.insert(poly_ring.var_names()[idx].clone(), field.to_biguint(val));
                 }
             }
             let mut full_polys: Vec<Poly> = cached

@@ -99,10 +99,10 @@ pub fn find_zero_cancel(
 
         // ideals.len() == branchers.len() — get next candidate
         let brancher = branchers.last_mut().unwrap();
-        if let Some((var, val)) = brancher.next(&poly_ring.field) {
+        if let Some((var, val)) = brancher.next(&poly_ring.field()) {
             // Add x_var - val to the ideal generators
             let v = poly_ring.var(var);
-            let c = poly_ring.constant(poly_ring.field.clone_el(&val));
+            let c = poly_ring.constant(poly_ring.field().clone_el(&val));
             let assign_poly = poly_ring.sub(v, c);
 
             let mut new_gens: Vec<Poly> = ideals.last().unwrap().basis.iter()
@@ -151,7 +151,7 @@ fn try_triangular_solve(
     let gb_polys: Vec<Poly> = gb.iter().map(|p| poly_ring.ring.clone_el(p)).collect();
     let mut assignment: HashMap<usize, FieldElem> = HashMap::new();
     if tri_dfs(poly_ring, &gb_polys, &mut assignment, cancel) {
-        let model = build_model(&poly_ring.field, poly_ring, &assignment);
+        let model = build_model(&poly_ring.field(), poly_ring, &assignment);
         if verify_model(poly_ring, gb, &model) {
             return Some(model);
         }
@@ -172,13 +172,13 @@ fn tri_dfs(
     if cancel.is_cancelled() {
         return false;
     }
-    if assignment.len() == poly_ring.n_vars {
+    if assignment.len() == poly_ring.n_vars() {
         return true;
     }
     let assign_polys: Vec<Poly> = assignment
         .iter()
         .map(|(&v, val)| {
-            poly_ring.sub(poly_ring.var(v), poly_ring.constant(poly_ring.field.clone_el(val)))
+            poly_ring.sub(poly_ring.var(v), poly_ring.constant(poly_ring.field().clone_el(val)))
         })
         .collect();
     let ctx = poly_ring.ctx();
@@ -205,7 +205,7 @@ fn tri_dfs(
             let (v, _) = appearing.get(0);
             if !assignment.contains_key(&v) {
                 if let Some(coeffs) =
-                    extract_univariate_coeffs(&poly_ring.ring, &poly_ring.field, p, v)
+                    extract_univariate_coeffs(&poly_ring.ring, &poly_ring.field(), p, v)
                 {
                     chosen = Some((v, coeffs));
                     break;
@@ -217,7 +217,7 @@ fn tri_dfs(
         Some(c) => c,
         None => return false, // no triangular structure → caller falls back
     };
-    for r in find_roots(&poly_ring.field, &coeffs) {
+    for r in find_roots(&poly_ring.field(), &coeffs) {
         assignment.insert(v, r);
         if tri_dfs(poly_ring, gb_polys, assignment, cancel) {
             return true;
@@ -235,8 +235,8 @@ fn try_extract_full_assignment(
     ideal: &Ideal,
 ) -> Option<HashMap<String, BigUint>> {
     let ring = &poly_ring.ring;
-    let fp = &poly_ring.field;
-    let n_vars = poly_ring.n_vars;
+    let fp = &poly_ring.field();
+    let n_vars = poly_ring.n_vars();
     let mut assignment: HashMap<usize, FieldElem> = HashMap::new();
 
     for p in &ideal.basis {
@@ -255,7 +255,7 @@ fn try_extract_full_assignment(
     }
 
     if assignment.len() == n_vars {
-        Some(build_model(&poly_ring.field, poly_ring, &assignment))
+        Some(build_model(&poly_ring.field(), poly_ring, &assignment))
     } else {
         None
     }
@@ -268,8 +268,8 @@ fn compute_candidates(
     ideal: &Ideal,
 ) -> Brancher {
     let ring = &poly_ring.ring;
-    let field = &poly_ring.field;
-    let n_vars = poly_ring.n_vars;
+    let field = &poly_ring.field();
+    let n_vars = poly_ring.n_vars();
 
     // Determine which variables are already assigned
     let mut assigned = vec![false; n_vars];
@@ -382,8 +382,8 @@ fn build_model(
 ) -> HashMap<String, BigUint> {
     let mut model = HashMap::new();
     for (&idx, val) in assignment {
-        if idx < poly_ring.var_names.len() {
-            model.insert(poly_ring.var_names[idx].clone(), field.to_biguint(val));
+        if idx < poly_ring.var_names().len() {
+            model.insert(poly_ring.var_names()[idx].clone(), field.to_biguint(val));
         }
     }
     model
@@ -396,18 +396,18 @@ pub fn verify_model(
     model: &HashMap<String, BigUint>,
 ) -> bool {
     let ring = &poly_ring.ring;
-    let fp = &poly_ring.field;
+    let fp = &poly_ring.field();
 
     for p in polys {
         let mut val = fp.zero();
         for (c, m) in ring.terms(p) {
             let mut term_val = fp.clone_el(c);
-            for v in 0..poly_ring.n_vars {
+            for v in 0..poly_ring.n_vars() {
                 let e = ring.exponent_at(&m, v);
                 if e > 0 {
-                    let var_name = &poly_ring.var_names[v];
+                    let var_name = &poly_ring.var_names()[v];
                     let var_val = match model.get(var_name) {
-                        Some(bv) => poly_ring.field.from_biguint(bv),
+                        Some(bv) => poly_ring.field().from_biguint(bv),
                         None => fp.zero(), // unassigned → 0
                     };
                     let pow = fp.pow_u64(&var_val, e as u64);
@@ -433,8 +433,8 @@ mod tests {
         let ff = PrimeField::new(BigUint::from(17u32));
         let pr = FfPolyRing::new(ff, vec!["x".into(), "y".into()]);
 
-        let three = pr.field.from_biguint(&BigUint::from(3u32));
-        let five = pr.field.from_biguint(&BigUint::from(5u32));
+        let three = pr.field().from_biguint(&BigUint::from(3u32));
+        let five = pr.field().from_biguint(&BigUint::from(5u32));
 
         let p1 = pr.sub(pr.var(0), pr.constant(three));
         let p2 = pr.sub(pr.var(1), pr.constant(five));
@@ -484,7 +484,7 @@ mod tests {
         // triangular fast path must produce a model satisfying all polys.
         let ff = PrimeField::new(BigUint::from(13u32));
         let pr = FfPolyRing::new(ff, vec!["x".into(), "y".into(), "z".into()]);
-        let three = pr.field.from_int(3);
+        let three = pr.field().from_int(3);
         let z2 = pr.mul(pr.var(2), pr.var(2));
         let p0 = pr.sub(z2, pr.constant(three)); // z^2 = 3
         let p1 = pr.sub(pr.var(1), pr.var(2)); // y = z
@@ -495,7 +495,7 @@ mod tests {
         };
         // Verify against the original system.
         assert!(verify_model(&pr, &[
-            pr.sub(pr.mul(pr.var(2), pr.var(2)), pr.constant(pr.field.from_int(3))),
+            pr.sub(pr.mul(pr.var(2), pr.var(2)), pr.constant(pr.field().from_int(3))),
             pr.sub(pr.var(1), pr.var(2)),
             pr.sub(pr.sub(pr.var(0), pr.var(2)), pr.one()),
         ], &model));

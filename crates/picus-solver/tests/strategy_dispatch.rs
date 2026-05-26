@@ -143,7 +143,7 @@ fn default_strategy_is_direct() {
 /// ideal share LM sets, so this is the standard equivalence check.
 fn lm_set(pr: &FfPolyRing, gb: &[picus_core::poly::Poly]) -> std::collections::BTreeSet<Vec<usize>> {
     let ctx = pr.ctx();
-    let n = pr.n_vars;
+    let n = pr.n_vars();
     let mut s = std::collections::BTreeSet::new();
     for p in gb {
         if let Some(m) = p.leading_monomial(ctx) {

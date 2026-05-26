@@ -37,11 +37,11 @@ fn rand_poly(pr: &FfPolyRing, degree: usize, n_terms: usize, rng: &mut Rand64) -
     loop {
         let mut out = pr.zero();
         for _ in 0..n_terms {
-            let c = rand_coeff(&pr.field, rng);
-            let mut term = pr.constant(pr.field.clone_el(&c));
+            let c = rand_coeff(&pr.field(), rng);
+            let mut term = pr.constant(pr.field().clone_el(&c));
             let t_deg = 1 + (rng.rand_u64() as usize % degree.max(1));
             for _ in 0..t_deg {
-                let j = (rng.rand_u64() as usize) % pr.n_vars;
+                let j = (rng.rand_u64() as usize) % pr.n_vars();
                 term = pr.mul(term, pr.var(j));
             }
             out = pr.add(out, term);
@@ -53,11 +53,11 @@ fn rand_poly(pr: &FfPolyRing, degree: usize, n_terms: usize, rng: &mut Rand64) -
 /// Evaluate `p` at the given point (length = n_vars).  Returns the field element.
 fn eval_poly(pr: &FfPolyRing, p: &Poly, point: &[FieldElem]) -> FieldElem {
     let ring = &pr.ring;
-    let fp = &pr.field;
+    let fp = &pr.field();
     let mut acc = fp.zero();
     for (c, m) in ring.terms(p) {
         let mut t = fp.clone_el(c);
-        for v in 0..pr.n_vars {
+        for v in 0..pr.n_vars() {
             let e = ring.exponent_at(&m, v);
             for _ in 0..e {
                 t = fp.mul_ref(&t, &point[v]);
@@ -107,7 +107,7 @@ fn test_rand_sat() {
         let pr = FfPolyRing::new(ff, var_names);
 
         // Planted root.
-        let root: Vec<FieldElem> = (0..N_VARS).map(|_| rand_coeff(&pr.field, &mut rng)).collect();
+        let root: Vec<FieldElem> = (0..N_VARS).map(|_| rand_coeff(&pr.field(), &mut rng)).collect();
 
         // Generate polys and distribute across two bases.
         let mut all_gens: Vec<Poly> = Vec::new();
@@ -130,7 +130,7 @@ fn test_rand_sat() {
         };
         for g in &all_gens {
             let v = eval_poly(&pr, g, &point);
-            assert!(pr.field.is_zero(&v), "returned model must zero every generator");
+            assert!(pr.field().is_zero(&v), "returned model must zero every generator");
         }
     }
 }
@@ -171,7 +171,7 @@ fn test_rand_unsat() {
             // SAT → the model must actually satisfy the constraints.
             for g in &all_gens {
                 let v = eval_poly(&pr, g, &point);
-                assert!(pr.field.is_zero(&v), "returned model must zero every generator");
+                assert!(pr.field().is_zero(&v), "returned model must zero every generator");
             }
         }
         // UNSAT is permitted; we don't assert it.

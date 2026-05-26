@@ -136,7 +136,7 @@ pub fn split_zero_extend_cancel<'r>(
     if first.bases.iter().any(|b| b.is_whole_ring()) {
         for p in orig_polys {
             if let Some(val) = evaluate_full(poly_ring, p, &first.r) {
-                if !poly_ring.field.is_zero(&val) && !first.bases[0].contains(p) {
+                if !poly_ring.field().is_zero(&val) && !first.bases[0].contains(p) {
                     return ZeroExtendResult::Conflict(poly_ring.ring.clone_el(p));
                 }
             }
@@ -145,7 +145,7 @@ pub fn split_zero_extend_cancel<'r>(
     }
 
     let n_assigned = first.r.iter().filter(|v| v.is_some()).count();
-    if n_assigned == poly_ring.n_vars {
+    if n_assigned == poly_ring.n_vars() {
         let out: Vec<FieldElem> = first.r.clone().into_iter().map(|v| v.unwrap()).collect();
         return ZeroExtendResult::Point(out);
     }
@@ -154,7 +154,7 @@ pub fn split_zero_extend_cancel<'r>(
     apply_phase_save(&mut first.candidates, &saved_phase);
     log::trace!(
         "split_zero_extend: {} vars, {} assigned, brancher={}",
-        poly_ring.n_vars,
+        poly_ring.n_vars(),
         n_assigned,
         match &first.candidates {
             Brancher::Roots(v) => format!("Roots({})", v.len()),
@@ -185,7 +185,7 @@ pub fn split_zero_extend_cancel<'r>(
         let frame_idx = stack.len() - 1;
 
         // Try next candidate.
-        let (var, val) = match stack[frame_idx].candidates.next(&poly_ring.field) {
+        let (var, val) = match stack[frame_idx].candidates.next(&poly_ring.field()) {
             Some(c) => c,
             None => {
                 // Brancher exhausted → backtrack. If it was a non-exhaustive
@@ -205,7 +205,7 @@ pub fn split_zero_extend_cancel<'r>(
         // Record the candidate as the most-recent-tried for this frame
         // BEFORE attempting it, so a return-without-pop (cancel,
         // conflict) also leaves the trail in a consistent state.
-        stack[frame_idx].last_tried = Some((var, poly_ring.field.clone_el(&val)));
+        stack[frame_idx].last_tried = Some((var, poly_ring.field().clone_el(&val)));
 
         if stats_on {
             crate::profile::SPLIT_DFS.branches_tried
@@ -213,7 +213,7 @@ pub fn split_zero_extend_cancel<'r>(
         }
 
         let mut new_r = stack[frame_idx].r.clone();
-        new_r[var] = Some(poly_ring.field.clone_el(&val));
+        new_r[var] = Some(poly_ring.field().clone_el(&val));
         let assign_poly = assignment_poly(poly_ring, var, &val);
 
         // Nogood subsumption check: if any recorded nogood is a subset
@@ -235,7 +235,7 @@ pub fn split_zero_extend_cancel<'r>(
         for b in &stack[frame_idx].bases {
             for p in &b.basis {
                 if let Some(v) = evaluate_full(poly_ring, p, &new_r) {
-                    if !poly_ring.field.is_zero(&v) {
+                    if !poly_ring.field().is_zero(&v) {
                         quick_unsat = true;
                         break;
                     }
@@ -255,7 +255,7 @@ pub fn split_zero_extend_cancel<'r>(
             }
             for p in orig_polys {
                 if let Some(val) = evaluate_full(poly_ring, p, &new_r) {
-                    if !poly_ring.field.is_zero(&val) && !stack[frame_idx].bases[0].contains(p) {
+                    if !poly_ring.field().is_zero(&val) && !stack[frame_idx].bases[0].contains(p) {
                         if stats_on {
                             crate::profile::SPLIT_DFS.conflicts_returned
                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -265,7 +265,7 @@ pub fn split_zero_extend_cancel<'r>(
                 }
             }
             if nogoods.len() < MAX_NOGOODS {
-                nogoods.push(point_to_map(&new_r, &poly_ring.field));
+                nogoods.push(point_to_map(&new_r, &poly_ring.field()));
             }
             continue; // backtrack
         }
@@ -295,7 +295,7 @@ pub fn split_zero_extend_cancel<'r>(
                 }
                 // Linear basis ∪ {assign_poly} ⊇ {1} → whole ring → UNSAT.
                 if nogoods.len() < MAX_NOGOODS {
-                    nogoods.push(point_to_map(&new_r, &poly_ring.field));
+                    nogoods.push(point_to_map(&new_r, &poly_ring.field()));
                 }
                 continue;
             }
@@ -342,7 +342,7 @@ pub fn split_zero_extend_cancel<'r>(
             // UNSAT at this branch → look for conflict poly.
             for p in orig_polys {
                 if let Some(val) = evaluate_full(poly_ring, p, &new_r) {
-                    if !poly_ring.field.is_zero(&val) && !new_bases[0].contains(p) {
+                    if !poly_ring.field().is_zero(&val) && !new_bases[0].contains(p) {
                         if stats_on {
                             crate::profile::SPLIT_DFS.conflicts_returned
                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -352,14 +352,14 @@ pub fn split_zero_extend_cancel<'r>(
                 }
             }
             if nogoods.len() < MAX_NOGOODS {
-                nogoods.push(point_to_map(&new_r, &poly_ring.field));
+                nogoods.push(point_to_map(&new_r, &poly_ring.field()));
             }
             // No conflict found; backtrack to next candidate.
             continue;
         }
 
         let n_assigned = new_r.iter().filter(|v| v.is_some()).count();
-        if n_assigned == poly_ring.n_vars {
+        if n_assigned == poly_ring.n_vars() {
             if stats_on {
                 crate::profile::SPLIT_DFS.points_returned
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -393,7 +393,7 @@ pub fn split_zero_extend_cancel<'r>(
 /// Build a polynomial of the form `x_var - val`.
 fn assignment_poly(pr: &FfPolyRing, var: usize, val: &FieldElem) -> Poly {
     let v = pr.var(var);
-    let c = pr.constant(pr.field.clone_el(val));
+    let c = pr.constant(pr.field().clone_el(val));
     pr.sub(v, c)
 }
 
@@ -402,11 +402,11 @@ fn assignment_poly(pr: &FfPolyRing, var: usize, val: &FieldElem) -> Poly {
 /// be fully evaluated); otherwise `None`.
 pub(super) fn evaluate_full(pr: &FfPolyRing, p: &Poly, r: &PartialPoint) -> Option<FieldElem> {
     let ring = &pr.ring;
-    let fp = &pr.field;
+    let fp = &pr.field();
     let mut acc = fp.zero();
     for (c, m) in ring.terms(p) {
         let mut term_val = fp.clone_el(c);
-        for v in 0..pr.n_vars {
+        for v in 0..pr.n_vars() {
             let e = ring.exponent_at(&m, v);
             if e == 0 { continue; }
             match &r[v] {

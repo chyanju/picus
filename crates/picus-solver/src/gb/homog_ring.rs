@@ -42,12 +42,12 @@ impl<'r> HomogRing<'r> {
     /// on the `PrimeField` passed to each op — the field identity
     /// itself is irrelevant once the prime matches.
     pub fn new(base: &'r FfPolyRing) -> Self {
-        let n = base.n_vars;
-        let mut var_names = base.var_names.clone();
+        let n = base.n_vars();
+        let mut var_names = base.var_names().to_vec();
         var_names.push("__h".to_string());
-        let ext_field = PrimeField::new(base.field.prime().clone());
+        let ext_field = PrimeField::new(base.field().prime().clone());
         let ext = FfPolyRing::new(ext_field, var_names);
-        debug_assert_eq!(ext.n_vars, n + 1);
+        debug_assert_eq!(ext.n_vars(), n + 1);
         HomogRing { base, ext, h_idx: n }
     }
 
@@ -64,12 +64,12 @@ impl<'r> HomogRing<'r> {
     pub fn lift(&self, p: &Poly) -> Poly {
         let base_ring = &self.base.ring;
         let ext_ring = &self.ext.ring;
-        let n = self.base.n_vars;
+        let n = self.base.n_vars();
         let mut acc = ext_ring.zero();
         let mut exps_buf: Vec<usize> = vec![0; n + 1];
         for (c, m) in base_ring.terms(p) {
-            let c_bi = self.base.field.to_biguint(c);
-            let c_ext = self.ext.field.from_biguint(&c_bi);
+            let c_bi = self.base.field().to_biguint(c);
+            let c_ext = self.ext.field().from_biguint(&c_bi);
             for i in 0..n {
                 exps_buf[i] = base_ring.exponent_at(&m, i);
             }
@@ -89,8 +89,8 @@ impl<'r> HomogRing<'r> {
     /// homogeneous in all `n+1` variables.
     pub fn homogenize(&self, q_lifted: &Poly) -> Poly {
         let ext_ring = &self.ext.ring;
-        let n_plus_1 = self.ext.n_vars;
-        let field = &self.ext.field;
+        let n_plus_1 = self.ext.n_vars();
+        let field = &self.ext.field();
         // Gather (coeff, exps[n+1]) and find max total deg.
         // exponent_at slot h_idx is 0 by construction of `lift`.
         let mut terms_buf: Vec<(_, Vec<usize>)> = Vec::new();
@@ -134,11 +134,11 @@ impl<'r> HomogRing<'r> {
     pub fn dehom(&self, q: &Poly) -> Poly {
         let base_ring = &self.base.ring;
         let ext_ring = &self.ext.ring;
-        let n = self.base.n_vars;
+        let n = self.base.n_vars();
         let mut acc = base_ring.zero();
         for (c, m) in ext_ring.terms(q) {
-            let c_bi = self.ext.field.to_biguint(c);
-            let c_base = self.base.field.from_biguint(&c_bi);
+            let c_bi = self.ext.field().to_biguint(c);
+            let c_base = self.base.field().from_biguint(&c_bi);
             let exps = (0..n).map(|i| ext_ring.exponent_at(&m, i));
             let mono_base = base_ring.create_monomial(exps);
             let term = base_ring.create_term(c_base, mono_base);
@@ -163,8 +163,8 @@ mod tests {
     fn test_homog_ring_shape() {
         let pr = pr_xy();
         let h = HomogRing::new(&pr);
-        assert_eq!(h.base.n_vars, 2);
-        assert_eq!(h.ext.n_vars, 3);
+        assert_eq!(h.base.n_vars(), 2);
+        assert_eq!(h.ext.n_vars(), 3);
         assert_eq!(h.h_idx, 2);
     }
 
@@ -213,7 +213,7 @@ mod tests {
         // Every term of `homog` must have total degree exactly 2.
         let ext_ring = &h.ext.ring;
         for (_, m) in ext_ring.terms(&homog) {
-            let d: usize = (0..h.ext.n_vars).map(|i| ext_ring.exponent_at(&m, i)).sum();
+            let d: usize = (0..h.ext.n_vars()).map(|i| ext_ring.exponent_at(&m, i)).sum();
             assert_eq!(d, 2, "homogenized polynomial must be degree-2 homogeneous");
         }
     }

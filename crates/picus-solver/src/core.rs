@@ -185,10 +185,10 @@ pub fn solve_split_gb_cancel<'r>(
     match split_find_zero_cancel(poly_ring, split_basis, &mut bit_prop, cancel) {
         Ok(crate::split_gb::SplitFindZeroOutcome::Sat(point)) => {
             let mut model_map = HashMap::new();
-            let field = &poly_ring.field;
+            let field = &poly_ring.field();
             for (idx, val) in point.iter().enumerate() {
-                if idx < poly_ring.var_names.len() {
-                    model_map.insert(poly_ring.var_names[idx].clone(), field.to_biguint(val));
+                if idx < poly_ring.var_names().len() {
+                    model_map.insert(poly_ring.var_names()[idx].clone(), field.to_biguint(val));
                 }
             }
             if model::verify_model(poly_ring, original_polys, &model_map) {
@@ -219,7 +219,7 @@ mod tests {
         let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
         let xy = pr.mul(pr.var(0), pr.var(1));
         let p1 = pr.sub(xy, pr.one());
-        let two = pr.field.from_int(2);
+        let two = pr.field().from_int(2);
         let p2 = pr.sub(pr.var(0), pr.constant(two));
 
         match solve_split_gb(&pr, &[p1, p2], &[]) {
@@ -236,8 +236,8 @@ mod tests {
     fn test_solve_unsat_returns_core() {
         // x = 2, x = 3 in GF(7): UNSAT, core = [0, 1].
         let pr = FfPolyRing::new(ff(7), vec!["x".into()]);
-        let two = pr.field.from_int(2);
-        let three = pr.field.from_int(3);
+        let two = pr.field().from_int(2);
+        let three = pr.field().from_int(3);
         let p1 = pr.sub(pr.var(0), pr.constant(two));
         let p2 = pr.sub(pr.var(0), pr.constant(three));
         match solve_split_gb(&pr, &[p1, p2], &[]) {
@@ -256,9 +256,9 @@ mod tests {
         // With tracing, the core should be a subset of {0, 1, 2}
         // and must include both 0 and 1 (since those are contradictory).
         let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
-        let two = pr.field.from_int(2);
-        let three = pr.field.from_int(3);
-        let one = pr.field.from_int(1);
+        let two = pr.field().from_int(2);
+        let three = pr.field().from_int(3);
+        let one = pr.field().from_int(1);
         let p0 = pr.sub(pr.var(0), pr.constant(two));   // x = 2
         let p1 = pr.sub(pr.var(0), pr.constant(three));  // x = 3
         let p2 = pr.sub(pr.var(1), pr.constant(one));    // y = 1 (irrelevant)
@@ -290,9 +290,9 @@ mod tests {
         // include the irrelevant input 2 (y=1). This pins only the soundness
         // invariant: the core never drops a generator the contradiction needs.
         let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
-        let two = pr.field.from_int(2);
-        let three = pr.field.from_int(3);
-        let one = pr.field.from_int(1);
+        let two = pr.field().from_int(2);
+        let three = pr.field().from_int(3);
+        let one = pr.field().from_int(1);
         let p0 = pr.sub(pr.var(0), pr.constant(two));
         let p1 = pr.sub(pr.var(0), pr.constant(three));
         let p2 = pr.sub(pr.var(1), pr.constant(one));
@@ -366,8 +366,8 @@ mod tests {
         let p0 = pr.sub(xx, pr.clone_poly(&x));
         let yy = pr.mul(pr.clone_poly(&y), pr.clone_poly(&y));
         let p1 = pr.sub(yy, pr.clone_poly(&y));
-        let two = pr.field.from_int(2);
-        let five = pr.field.from_int(5);
+        let two = pr.field().from_int(2);
+        let five = pr.field().from_int(5);
         let two_y = pr.scale(two, pr.clone_poly(&y));
         let sum = pr.add(pr.clone_poly(&x), two_y);
         let p2 = pr.sub(sum, pr.constant(five));
@@ -401,8 +401,8 @@ mod tests {
         let p0 = pr.sub(xx, pr.clone_poly(&x));
         let yy = pr.mul(pr.clone_poly(&y), pr.clone_poly(&y));
         let p1 = pr.sub(yy, pr.clone_poly(&y));
-        let two = pr.field.from_int(2);
-        let one = pr.field.from_int(1);
+        let two = pr.field().from_int(2);
+        let one = pr.field().from_int(1);
         let two_y = pr.scale(two, pr.clone_poly(&y));
         let sum = pr.add(pr.clone_poly(&x), two_y);
         let p2 = pr.sub(sum, pr.constant(one.clone()));
