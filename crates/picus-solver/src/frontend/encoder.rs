@@ -172,7 +172,7 @@ fn detect_bit_constraint(eq: &[PolyTerm], p: &BigUint) -> Option<VarIdx> {
     Some(quad.vars[0].0)
 }
 
-/// Index-keyed counterpart of [`find_bitsum_chain_in_terms`]. Looks
+/// Looks
 /// for `c·b_0 + 2c·b_1 + ... + 2^(k-1)·c·b_{k-1}` where each `b_i`
 /// is a known bit (degree 1 in a single index, coefficient
 /// `(2^i · base) mod p`). Soundness gate: chain length capped at

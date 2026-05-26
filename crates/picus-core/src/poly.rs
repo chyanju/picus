@@ -45,8 +45,7 @@ impl FfPolyRing {
         FfPolyRing { ring: PolyRingFacade { ctx } }
     }
 
-    /// The prime field. Read from the shared context — `FfPolyRing` no
-    /// longer stores a duplicate copy.
+    /// The prime field, read from the shared ring context.
     pub fn field(&self) -> &PrimeField { &self.ring.ctx.field }
     /// Number of indeterminates.
     pub fn n_vars(&self) -> usize { self.ring.ctx.n_vars }

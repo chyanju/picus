@@ -4,9 +4,10 @@
 //! the dense engine applies: Buchberger's product (coprime) criterion and
 //! the Gebauer-Möller M-criterion at pair generation, the B-criterion at
 //! basis-add, and a sugar-degree priority queue for pair selection. The
-//! criteria mirror [`super::buchberger`]'s `spair_criteria`, with a
-//! presence-based DivMask prefilter ([`SparseMonomial::divmask`]) on the
-//! divisibility checks.
+//! M / B criteria and the descending merge are the shared,
+//! representation-generic [`super::spair_criteria`] functions; the sparse
+//! S-pair supplies a presence-based DivMask ([`SparseMonomial::divmask`])
+//! for the prefilter.
 //!
 //! The reduced Gröbner basis of an ideal under a fixed monomial order is
 //! unique, so the criteria (which only change *which* S-pairs are

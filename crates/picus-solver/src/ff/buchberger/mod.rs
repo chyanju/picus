@@ -99,8 +99,8 @@ pub trait BuchbergerObserver {
 pub struct NoObserver;
 impl BuchbergerObserver for NoObserver {}
 
-/// Internal basis element. Visible to sibling submodules
-/// (`spair_criteria`, `incremental`) so they can index into the
+/// Internal basis element. Visible to the `incremental` submodule and
+/// the `spair_criteria::LeadingTerms` impl so they can index into the
 /// `BuchbergerState::basis` slice.
 #[derive(Clone, Debug)]
 pub(super) struct BasisElement {
@@ -1135,7 +1135,7 @@ impl BuchbergerState {
             // back to the single-pair path. The threshold is
             // calibrated against `bench_f4_vs_per_pair_large`:
             // cyclic-4 produces 3 batches of size ≤ 3 with no cache
-            // reuse, so threshold = 4 leaves all of them on the
+            // reuse, so `F4_MIN_BATCH` leaves all of them on the
             // per-pair path while keeping cyclic-5 / cyclic-6
             // batches (avg 10–30 pairs) in the F4 path.
             if batch.len() < F4_MIN_BATCH {

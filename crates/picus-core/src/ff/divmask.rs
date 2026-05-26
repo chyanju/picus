@@ -31,7 +31,7 @@ impl DivMask {
 /// Per-variable thresholds for the DivMask encoding.
 ///
 /// `thresholds.len() == actual_vars * bits_per_var` where
-/// `actual_vars = min(n_vars, 32 / bits_per_var)`. Variables beyond
+/// `actual_vars = min(n_vars * bits_per_var, 128) / bits_per_var`. Variables beyond
 /// `actual_vars` get no DivMask bits. Bit `(v * bits_per_var + k)` is
 /// set in a monomial's mask iff `monomial.exponent(v) > thresholds[v * bits_per_var + k]`.
 #[derive(Clone, Debug)]
@@ -58,8 +58,8 @@ impl DivMaskScheme {
         let max = max_deg_per_var.max(1);
         for _v in 0..actual_vars {
             for k in 0..bits_per_var {
-                // Linear spacing: 1, ceil(max/bits_per_var), 2*ceil, ...
-                // Threshold k means bit set iff exp > k+1 cumulative units.
+                // Threshold k = (k+1) * max / bits_per_var (floored); bit
+                // (v, k) is set iff exponent(v) exceeds it.
                 let t = ((k as u32 + 1) * max as u32 / bits_per_var as u32)
                     .min(u16::MAX as u32) as u16;
                 thresholds.push(t);

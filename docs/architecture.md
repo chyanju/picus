@@ -126,9 +126,8 @@ algebra), `smt2/`, and `split_gb/`, with `core.rs`, `boolean.rs`, and
   bypasses dispatch; algorithm implementations call it directly to
   avoid recursive dispatch (e.g. `BuchbergerByHomog` lowers its
   inner DegRevLex computation through this entry).
-- **`core.rs`** — `solve_split_gb`, `solve_single_gb`, `SolverMode`,
-  `SolveOutcome`. The top-level QF_FF solving entry point used by
-  the `native_ff` backend.
+- **`core.rs`** — `solve_split_gb`, `solve_single_gb`, `SolveOutcome`.
+  The top-level QF_FF solving entry point used by the `native_ff` backend.
 - **`split_gb/`** — Split GB algorithm with inter-basis propagation
   (OKTB23). `split_gb_cancel_traced` carries per-polynomial
   dependency sets through the fixpoint so whole-ring detection

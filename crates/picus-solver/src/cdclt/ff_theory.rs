@@ -23,7 +23,7 @@ use super::atoms::AtomTable;
 use super::theory::{CheckOutcome, Theory};
 
 /// FF theory plug-in: maintains an asserted-fact trail and dispatches
-/// `post_check(Full)` to [`solve_encoded_with_cancel`].
+/// `post_check` to [`solve_encoded_with_cancel`].
 pub struct FfTheory<'a> {
     atoms: &'a AtomTable,
     cancel: &'a CancelToken,

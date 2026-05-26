@@ -78,9 +78,8 @@ impl SolverBackend for Cvc5FfBackend {
 
         // Disjunctions: clause `[p_1, ..., p_k]` ⇒ `(or (= p_1 0) ... (=
         // p_k 0))`. We hand cvc5 the `or` directly (no special-casing);
-        // its QF_FF DPLL(T) does the case split. The dpvl-level target
-        // disequality guard is the backstop for cvc5's known
-        // `or`-spurious-SAT defect.
+        // its QF_FF DPLL(T) does the case split. (cvc5's `or` soundness
+        // is cvc5's own responsibility; picus adds no guard.)
         for clause in &ir.disjunctions {
             let mut alts: Vec<cvc5_ff::Term> = Vec::with_capacity(clause.len());
             for poly in clause {

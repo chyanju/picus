@@ -4,7 +4,7 @@
 //! ([`crate::sat::Solver`]) is the Boolean reasoner; an arbitrary
 //! [`theory::Theory`] implementation acts as the theory plug-in. The
 //! FF theory ([`ff_theory::FfTheory`]) is the concrete instance for
-//! QF_FF queries and wraps [`crate::core::solve_split_gb_cancel`].
+//! QF_FF queries and wraps [`crate::core::solve_encoded_with_cancel`].
 
 pub mod atoms;
 pub mod cnf;

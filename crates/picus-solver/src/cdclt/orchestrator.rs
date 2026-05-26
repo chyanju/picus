@@ -120,7 +120,7 @@ fn cdclt_loop<T: Theory>(
             match theory.post_check() {
                 CheckOutcome::Sat => {
                     // The model returned by the theory's final
-                    // `post_check(Full)` already covers every named
+                    // `post_check` already covers every named
                     // variable: Bool vars are encoded as FF elements
                     // in {0, 1} in the polynomial namespace, so they
                     // come through the GB SAT point alongside the FF

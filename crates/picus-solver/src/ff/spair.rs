@@ -16,11 +16,11 @@ pub struct SPair {
     /// Generation tag for incremental support — see `IncrementalGB`.
     pub generation: u32,
     /// True iff `LM(i)` and `LM(j)` are coprime; the S-polynomial then
-    /// reduces to zero by Buchberger's product criterion. Coprime pairs
-    /// are kept in the queue during the M-criterion walk so they can
-    /// dominate non-coprime pairs, and are filtered out before the
-    /// queue is merged into `open` so the reduction loop never sees
-    /// them.
+    /// reduces to zero by Buchberger's product criterion. The dense engine
+    /// drops coprime pairs at generation and never enqueues them, so live
+    /// pairs always set this `false`; the field lets the shared
+    /// `spair_criteria::gm_insert` exercise its same-LCM coprime-replacement
+    /// branch generically.
     pub is_coprime: bool,
 }
 

@@ -18,9 +18,10 @@
 //! accumulated table.  `picus-cli` calls `dump_to_stderr` automatically when
 //! profiling is enabled (CLI `--profile wall`).
 //!
-//! The profiler is intentionally *coarse* — it accumulates wall-clock time per
-//! named site, with reentrancy support (nested calls to the same site are
-//! credited to the inner timer; outer-only time is `outer - inner`).  Use it
+//! The profiler is intentionally *coarse* — it accumulates total wall-clock
+//! time and a call count per named site. Overlapping timers on the same site
+//! each add their full elapsed time, so a recursive site's total can exceed
+//! wall-clock. Use it
 //! to find which phases dominate, then drop in finer-grained timers as needed.
 
 use std::collections::HashMap;

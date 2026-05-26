@@ -34,7 +34,7 @@ use crate::timeout::CancelToken;
 /// * Output: a Groebner basis of `(gens) ⊂ P` in DegRevLex order on `P`,
 ///   suitable to be wrapped by `Ideal::from_gb`.
 /// * Empty input → empty basis (matches `compute_gb_with_order`).
-/// * Cancellation: the inner `compute_gb_with_order` already honors
+/// * Cancellation: the inner `compute_gb_direct` already honors
 ///   `cancel`; if it fires, we return whatever interreduced dehom basis
 ///   we have (possibly empty).
 pub fn compute_gb_by_homog(

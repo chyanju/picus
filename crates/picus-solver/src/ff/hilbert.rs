@@ -126,7 +126,7 @@ impl HilbertNum {
         self.coeffs = new_coeffs;
     }
 
-    /// DensePoly multiplication: returns `self * other`. Per-pair
+    /// Polynomial multiplication: returns `self * other`. Per-pair
     /// `i64::saturating_mul` followed by per-cell
     /// `i64::saturating_add`.
     pub fn mul(&self, other: &Self) -> Self {
