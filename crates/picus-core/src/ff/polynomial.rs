@@ -1012,8 +1012,6 @@ impl DensePoly {
         let appearing = self.appearing_variables(ring);
         if appearing.len() == 1 {
             Some(appearing[0].0)
-        } else if appearing.is_empty() {
-            None
         } else {
             None
         }

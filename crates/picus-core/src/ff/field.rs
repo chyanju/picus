@@ -346,7 +346,9 @@ impl PrimeField {
             FieldKind::Small { prime } => {
                 let p_bu = BigUint::from(*prime);
                 let r = v % &p_bu;
-                FieldElem::from_u64_unchecked(biguint_to_u64(&r).unwrap_or(0))
+                FieldElem::from_u64_unchecked(
+                    biguint_to_u64(&r).expect("reduced value < prime < 2^64 fits u64"),
+                )
             }
         }
     }
