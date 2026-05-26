@@ -228,10 +228,19 @@ fn apply_theory_conflict(sat: &mut Solver, core: &[Var]) -> Option<usize> {
         match sat.value(v) {
             LBool::True => lits.push(Lit::neg(v)),
             LBool::False => lits.push(Lit::pos(v)),
-            LBool::Undef => unreachable!(
-                "theory core var {:?} is Undef: theory/SAT push/pop diverged",
-                v
-            ),
+            LBool::Undef => {
+                // A theory core literal that is unassigned in SAT means the
+                // theory's fact trail diverged from SAT's assignment (a
+                // push/pop accounting violation). Building a conflict clause
+                // from a partial core, or reporting UNSAT, would be unsound;
+                // bail to Unknown instead of panicking on a valid input.
+                log::warn!(
+                    "theory core var {:?} is Undef (theory/SAT trail divergence); giving up to Unknown",
+                    v
+                );
+                sat.mark_give_up();
+                return None;
+            }
         }
     }
     sat.add_theory_lemma_with_trail(lits)
@@ -359,5 +368,19 @@ mod tests {
         let f = Formula::Or(vec![eq(1, 0, 5), eq(1, 0, 6)]);
         let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
         assert!(matches!(r, SolveOutcome::Unknown));
+    }
+
+    #[test]
+    fn theory_core_undef_var_gives_up_not_panic() {
+        // A theory UNSAT core that names a SAT-unassigned variable signals
+        // theory/SAT trail divergence. `apply_theory_conflict` must flag
+        // give-up (so the loop returns Unknown), never panic or fabricate a
+        // verdict from a partial core.
+        let mut sat = Solver::new();
+        let v = sat.new_var(); // freshly created ⇒ unassigned (Undef)
+        assert!(matches!(sat.value(v), LBool::Undef));
+        let result = apply_theory_conflict(&mut sat, &[v]);
+        assert!(result.is_none(), "a diverged core must not produce a lemma");
+        assert!(sat.gave_up(), "must flag give-up so the caller returns Unknown");
     }
 }
