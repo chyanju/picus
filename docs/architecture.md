@@ -131,7 +131,7 @@ algebra), `smt2/`, and `split_gb/`, with `core.rs`, `boolean.rs`, and
 - **`split_gb/`** — Split GB algorithm with inter-basis propagation
   (OKTB23). `split_gb_cancel_traced` carries per-polynomial
   dependency sets through the fixpoint so whole-ring detection
-  reports a precise UNSAT core.
+  reports a sound (conservative over-approximation) UNSAT core.
 - **`gb.rs`** — Single GB solver (DegRevLex → Lex) with cooperative
   timeout.
 - **`gb_homog.rs`** + **`homog_ring.rs`** — Homogenisation extension
