@@ -7,6 +7,10 @@
 //! `target` is known the bits are recoverable bit-by-bit and so are
 //! also known.
 //!
+//! Wire-keyed: promoting the bit/target wires to known relies on the
+//! decomposition being mirrored in both copies (the copy-symmetry
+//! invariant documented in `picus_smt::poly_ir::r1cs_to_poly_ir`).
+//!
 //! Soundness depends on `2^n <= p`, where `n` is the number of bits.
 //! When `2^n > p` two distinct bit assignments can sum to the same
 //! target modulo `p` (e.g. `0` and `(1,1,...,1)` with `2^n - 1 ≡ 0

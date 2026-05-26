@@ -541,7 +541,13 @@ fn solve_with_cached(
 
     let query_polys = match encode_query_disequalities(cs, poly_ring, &cached.var_map) {
         Ok(polys) => polys,
-        Err(_) => return SolveOutcome::Unknown,
+        // The cache key (digest) excludes disequalities, so a hit can occur
+        // for a query whose disequality references a variable the cached ring
+        // dropped during compaction (compaction keeps disequality endpoints,
+        // but only those of the query that originally built the cache).
+        // Rather than return Unknown, fall back to a fresh stateless solve for
+        // this query — sound, just without the cache reuse.
+        Err(_) => return stateless_solve(cs, cancel),
     };
 
     let starting: Vec<Ideal> = cached

@@ -1075,7 +1075,9 @@ impl DensePoly {
             let de_base = &divisor.exponents[di * n..(di + 1) * n];
             let dd = divisor.total_degs[di] + shift_deg;
             for k in 0..n {
-                shifted[k] = de_base[k] + shift[k];
+                shifted[k] = de_base[k]
+                    .checked_add(shift[k])
+                    .expect("exponent exceeds u16 in merge_sub_scaled_tail");
             }
 
             match Self::cmp_term_at(se, sd, &shifted, dd, ring.order) {
@@ -1120,7 +1122,9 @@ impl DensePoly {
             let de_base = &divisor.exponents[di * n..(di + 1) * n];
             let dd = divisor.total_degs[di] + shift_deg;
             for k in 0..n {
-                shifted[k] = de_base[k] + shift[k];
+                shifted[k] = de_base[k]
+                    .checked_add(shift[k])
+                    .expect("exponent exceeds u16 in merge_sub_scaled_tail");
             }
             out_exps.extend_from_slice(&shifted);
             out_coeffs.push(ring.field.mul(&divisor.coeffs[di], neg_coeff));

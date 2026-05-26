@@ -360,14 +360,25 @@ pub fn dump_gb_stats() {
 
 /// Split a raw solver model into two clean witness maps, filtering
 /// out internal constants (ps1, zero, etc.). Routing is by the
-/// PolyIR convention: keys matching `x<digits>` go to witness 1, keys
-/// matching `y<digits>` to witness 2. Anything else (an aux var the
-/// solver invented, a Rabinowitsch witness, ...) is treated as
-/// witness 1 by default rather than misclassified by prefix.
+/// PolyIR convention: `x<digits>` keys go to witness 1, `y<digits>` keys
+/// to witness 2. An input wire shares `x_i` across both copies (no `y_i`
+/// is emitted), so its value is echoed into witness 2 as well — keeping
+/// witness 2 a complete assignment rather than only the non-input alt
+/// vars. Anything else (an aux var the solver invented, a Rabinowitsch
+/// witness, ...) goes to witness 1 rather than being misclassified by
+/// prefix.
 fn split_model(
     model: &HashMap<String, BigUint>,
 ) -> (HashMap<String, BigUint>, HashMap<String, BigUint>) {
     let constants: HashSet<&str> = picus_smt::SUBP_CONSTANT_NAMES.iter().copied().collect();
+
+    // Wire indices that have an alt copy (`y_i`) in the model. A wire with
+    // no `y_i` is an input — it shares `x_i` across both copies.
+    let alt_indices: HashSet<usize> = model
+        .keys()
+        .filter(|k| k.starts_with('y'))
+        .filter_map(|k| picus_r1cs::parse_var_index(k))
+        .collect();
 
     let mut w1 = HashMap::new();
     let mut w2 = HashMap::new();
@@ -376,12 +387,20 @@ fn split_model(
         if constants.contains(var.as_str()) {
             continue;
         }
-        let is_alt_copy = var.starts_with('y')
-            && picus_r1cs::parse_var_index(var).is_some();
-        if is_alt_copy {
+        let idx = picus_r1cs::parse_var_index(var);
+        if var.starts_with('y') && idx.is_some() {
             w2.insert(var.clone(), val.clone());
         } else {
             w1.insert(var.clone(), val.clone());
+            // An input wire (`x_i` with no `y_i`) is shared by both copies;
+            // echo it into the alt witness so witness_2 is complete.
+            if var.starts_with('x') {
+                if let Some(i) = idx {
+                    if !alt_indices.contains(&i) {
+                        w2.insert(var.clone(), val.clone());
+                    }
+                }
+            }
         }
     }
 

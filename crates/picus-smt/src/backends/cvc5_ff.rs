@@ -41,6 +41,15 @@ impl SolverBackend for Cvc5FfBackend {
         if cancel.is_cancelled() {
             return Ok(SolverResult::Unknown(UnknownReason::Timeout));
         }
+        // This backend lowers equalities, the target disequality, and
+        // disjunctions, but not `assignments` or `bitsums`. Silently
+        // ignoring them would weaken the query (dropped constraints ->
+        // spurious SAT), so refuse rather than solve a different problem —
+        // matching the NIA backends' guard. The R1CS uniqueness query never
+        // populates these, so the guard is inert on the supported path.
+        if !ir.assignments.is_empty() || !ir.bitsums.is_empty() {
+            return Ok(SolverResult::Unknown(UnknownReason::IncompleteTheory));
+        }
         let tm = cvc5_ff::TermManager::new();
         let mut solver = cvc5_ff::Solver::new(&tm);
         solver.set_logic("QF_FF");

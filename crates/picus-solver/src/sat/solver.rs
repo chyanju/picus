@@ -834,8 +834,11 @@ impl Solver {
             debug_assert!(ok, "asserting literal must be Undef before learning");
             return cref;
         }
-        // Watch lits[0] (1-UIP) and lits[1] (next-highest level, per
-        // analyze()'s ordering invariant).
+        // Watch lits[0] (the 1-UIP asserting literal) and lits[1]. `analyze`
+        // does not sort lits[1..], so lits[1] is an arbitrary lower-level
+        // literal, not necessarily the highest. Correctness is independent of
+        // the choice: after the backjump every literal except the asserting
+        // lits[0] is False, so any of them is a valid second watch.
         let cref = self.arena.add(Clause::new(lits, true));
         let lits_ref = &self.arena.get(cref).lits;
         let w0 = lits_ref[0];

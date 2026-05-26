@@ -8,6 +8,10 @@
 //! as every other variable in `p` is known, so we record the implication
 //! `deps(p, v) → wire(v)`. The lemma applies the implications to a
 //! fixed point each iteration.
+//!
+//! Wire-keyed: promoting a wire to known relies on the matched constraint
+//! being mirrored in both copies (the copy-symmetry invariant documented
+//! in `picus_smt::poly_ir::r1cs_to_poly_ir`).
 
 use std::collections::{HashMap, HashSet};
 
@@ -88,6 +92,16 @@ fn build_cdmap(ir: &PolyIR) -> HashMap<usize, Vec<HashSet<usize>>> {
                 .map(|&u| ir.var_to_wire(u))
                 .filter(|&w| w != wire)
                 .collect();
+            // An empty dep set promotes `wire` unconditionally (the
+            // `deps.all(known)` test in `run` is vacuously true). This is
+            // intended: it means the constraint forces `v` with no remaining
+            // unknowns — e.g. a single-variable assignment `a*x_w + c = 0`
+            // (mirrored in both copies, so the wire's two copies agree), or
+            // the `x_w - y_w = 0` marker `add_known_wire` emits for an
+            // already-known wire. No multi-variable constraint reaches here
+            // with empty deps: orig/alt copies are lowered into separate
+            // constraint sets, so the only poly mixing x_w and y_w is that
+            // marker.
             cdmap.entry(wire).or_default().push(deps);
         }
     }
