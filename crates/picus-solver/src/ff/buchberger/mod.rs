@@ -207,8 +207,11 @@ pub fn interreduce_with_cancel(
         for j in 0..basis.len() {
             if i == j || !keep[j] { continue; }
             let lj = basis[j].leading_monomial(ring).unwrap();
-            // Drop j if li strictly divides lj (and both are different)
-            if li.divides(&lj) && li != lj {
+            // Drop j if li divides lj. On equal leading monomials keep the
+            // lowest index (`j > i`), so duplicate-LT elements — which
+            // dehomogenization can produce, e.g. `h²·m` and `h·m` both
+            // collapsing to `m` — are de-duplicated rather than both kept.
+            if li.divides(&lj) && (li != lj || j > i) {
                 keep[j] = false;
             }
         }
@@ -218,10 +221,10 @@ pub fn interreduce_with_cancel(
         .zip(keep.iter())
         .filter_map(|(p, &k)| if k { Some(p) } else { None })
         .collect();
-    // Single-pass tail reduction. After divisible-LT pruning above,
-    // every surviving element's leading term is incomparable to every
-    // other's, so reducing each element's tail by the others cannot
-    // re-introduce monomials that some other element's LT divides —
+    // Single-pass tail reduction. After the pruning above no surviving
+    // element's leading term divides another's (equal LTs are
+    // de-duplicated too), so reducing each element's tail by the others
+    // cannot re-introduce a monomial that another element's LT divides —
     // one pass suffices.
     let n = filtered.len();
     for i in 0..n {

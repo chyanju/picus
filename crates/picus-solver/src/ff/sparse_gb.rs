@@ -357,8 +357,10 @@ pub fn interreduce(
         let lb = b.leading_monomial().unwrap();
         MonomialRepr::cmp_with_order(lb, la, ring.order)
     });
-    // Minimise: drop any element whose leading monomial is strictly
-    // divisible by another's.
+    // Minimise: drop any element whose leading monomial is divisible by
+    // another's. On equal leading monomials keep the lowest index, so
+    // duplicate-LT elements (which dehomogenization can produce) are
+    // de-duplicated rather than both kept.
     let mut keep = vec![true; basis.len()];
     for i in 0..basis.len() {
         if !keep[i] {
@@ -370,7 +372,7 @@ pub fn interreduce(
                 continue;
             }
             let lj = basis[j].leading_monomial().unwrap();
-            if MonomialRepr::divides(&li, lj) && &li != lj {
+            if MonomialRepr::divides(&li, lj) && (&li != lj || j > i) {
                 keep[j] = false;
             }
         }
@@ -381,8 +383,8 @@ pub fn interreduce(
         .filter_map(|(p, k)| k.then_some(p))
         .collect();
 
-    // Single-pass tail reduction (LTs are pairwise incomparable after
-    // minimisation, so one pass reaches the reduced form).
+    // Single-pass tail reduction (after minimisation no surviving LT
+    // divides another's, so one pass reaches the reduced form).
     let n = filtered.len();
     for i in 0..n {
         if cancel.is_some_and(|c| c.is_cancelled()) {
