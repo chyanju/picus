@@ -696,9 +696,18 @@ pub(crate) fn wrap_dense_vec(v: Vec<crate::ff::DensePoly>) -> Vec<Poly> {
 }
 
 /// Compute a Groebner basis of `generators` in the requested monomial
-/// order, routed through [`compute_gb_dispatch`]. Falls back to the
-/// unreduced generators on cancellation or panic so callers can
-/// proceed in best-effort mode.
+/// order, routed through [`compute_gb_dispatch`].
+///
+/// On failure the result depends on the cause:
+/// * Cancellation — return the generators unchanged; every caller
+///   re-checks `cancel.is_cancelled()` and reports `Timeout`, discarding
+///   this value.
+/// * Genuine engine error (e.g. a caught panic) — return an *empty*
+///   basis. The unreduced generators are not a Gröbner basis, and
+///   handing them back would let `is_zero_dim`/`min_poly`/FGLM treat a
+///   non-GB as a GB (a possible false UNSAT). An empty basis instead
+///   leaves the ideal undetermined downstream (→ Unknown, or a
+///   `verify_model`-guarded SAT), never a trusted zero-dimensional GB.
 pub fn compute_gb_with_order(
     poly_ring: &FfPolyRing,
     generators: Vec<Poly>,
@@ -732,11 +741,15 @@ pub fn compute_gb_with_order(
     let result = compute_gb_dispatch(poly_ring, generators, cancel, order, None);
     let elapsed = start.elapsed();
     let basis = result.unwrap_or_else(|e| {
-        log::debug!(
-            "GB dispatch returned {:?}; falling back to unreduced generators",
-            e
-        );
-        backup
+        if cancel.is_cancelled() {
+            // Cancellation: caller's is_cancelled() check discards this.
+            backup
+        } else {
+            // Genuine failure: no valid GB. Return empty so downstream
+            // does not mistake the unreduced generators for a GB.
+            log::warn!("GB dispatch failed ({:?}); returning empty basis (Unknown)", e);
+            Vec::new()
+        }
     });
     log::trace!(
         "GB call: {} gens, {} vars → {} basis elems in {:.1}ms",
@@ -784,7 +797,8 @@ pub(crate) fn compute_gb_buchberger(
 /// `poly_ring`, routed to the sparse or dense engine per the active
 /// representation. The inner homogeneous-GB step of the by-homog pipeline
 /// uses this so it never re-enters strategy dispatch. Empty input → empty;
-/// on a dense-engine error, falls back to the unreduced generators.
+/// on cancellation → generators unchanged (caller discards); on a genuine
+/// engine error → empty (never a fake GB; see [`compute_gb_with_order`]).
 pub(crate) fn compute_gb_direct(
     poly_ring: &FfPolyRing,
     generators: Vec<Poly>,
@@ -799,8 +813,12 @@ pub(crate) fn compute_gb_direct(
     }
     let backup: Vec<Poly> = generators.iter().map(|p| p.clone()).collect();
     compute_gb_buchberger(poly_ring, generators, cancel, order).unwrap_or_else(|e| {
-        log::debug!("inner direct GB returned {:?}; falling back to unreduced", e);
-        backup
+        if cancel.is_cancelled() {
+            backup
+        } else {
+            log::warn!("inner direct GB failed ({:?}); returning empty basis (Unknown)", e);
+            Vec::new()
+        }
     })
 }
 
@@ -850,7 +868,9 @@ pub fn compute_gb_incremental_with_order(
         use_f4: false,
     };
 
-    // Backup for panic / error fallback (matches compute_gb_with_order behavior).
+    // Cancellation fallback: the caller discards this via its
+    // is_cancelled() check. A genuine engine error returns an empty basis
+    // instead (see `compute_gb_with_order`) — never a fake GB.
     let backup: Vec<Poly> = known_gb.iter().chain(new_polys.iter())
         .map(|p| p.clone())
         .collect();
@@ -873,10 +893,13 @@ pub fn compute_gb_incremental_with_order(
     }));
     match result {
         Ok(Ok(basis)) => wrap_dense_vec(basis),
-        Ok(Err(_)) => backup,
-        Err(_) => {
-            log::warn!("Incremental GB computation panicked; returning concatenated generators unreduced");
-            backup
+        Ok(Err(_)) | Err(_) => {
+            if cancel.is_cancelled() {
+                backup
+            } else {
+                log::warn!("incremental GB failed; returning empty basis (Unknown)");
+                Vec::new()
+            }
         }
     }
 }
@@ -905,11 +928,14 @@ pub fn compute_gb_with_order_traced(
     let backup: Vec<Poly> = generators.iter().map(|p| p.clone()).collect();
     let result = compute_gb_dispatch(poly_ring, generators, cancel, order, Some(tracer));
     result.unwrap_or_else(|e| {
-        log::debug!(
-            "traced GB dispatch returned {:?}; falling back to unreduced generators",
-            e
-        );
-        backup
+        if cancel.is_cancelled() {
+            backup
+        } else {
+            // Genuine failure: empty basis, not a fake GB (see
+            // `compute_gb_with_order`).
+            log::warn!("traced GB dispatch failed ({:?}); returning empty basis (Unknown)", e);
+            Vec::new()
+        }
     })
 }
 
