@@ -52,3 +52,22 @@ impl Ord for SPair {
         self.ordering_key().cmp(&other.ordering_key())
     }
 }
+
+impl super::spair_criteria::CriterionPair for SPair {
+    type Mono = Monomial;
+    fn lcm(&self) -> &Monomial {
+        &self.lcm
+    }
+    fn lcm_divmask(&self) -> DivMask {
+        self.lcm_divmask
+    }
+    fn is_coprime(&self) -> bool {
+        self.is_coprime
+    }
+    fn parents(&self) -> (usize, usize) {
+        (self.i, self.j)
+    }
+    fn cmp_key(&self) -> (u32, u32, u64) {
+        self.ordering_key()
+    }
+}

@@ -254,8 +254,14 @@ pub fn interreduce_with_cancel(
     filtered
 }
 
-mod spair_criteria;
-use spair_criteria::{b_criterion_kill, gm_insert, merge_sorted_descending};
+use crate::ff::spair_criteria::{b_criterion_kill, gm_insert, merge_sorted_descending};
+
+impl crate::ff::spair_criteria::LeadingTerms for Vec<BasisElement> {
+    type Mono = Monomial;
+    fn lt_at(&self, idx: usize) -> &Monomial {
+        &self[idx].lt
+    }
+}
 
 // ────────────────────────────── Buchberger ─────────────────────────────────
 

@@ -15,6 +15,7 @@ pub mod buchberger;
 pub mod f4;
 pub mod hilbert;
 pub mod spair;
+pub(crate) mod spair_criteria;
 pub mod sparse_gb;
 pub mod univariate;
 
