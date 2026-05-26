@@ -20,6 +20,14 @@ pub enum MonomialOrder {
 ///
 /// Exponents stored as a single boxed slice to avoid the `Vec` capacity field;
 /// the total degree is cached because Buchberger checks it on every operation.
+///
+/// Per-variable exponents are `u16`: a single variable's degree must stay
+/// `<= 65535`. Multiplication uses `checked_add` and **panics** on overflow
+/// (degrees on this scale are pathological for the circuits this solver
+/// targets). The panic is caught at the GB-engine boundary
+/// (`compute_gb_buchberger`'s `catch_unwind`) and at the backend boundary
+/// (`native_ff::solve`), both degrading to `Unknown`. Consumers calling
+/// lower-level engine APIs directly must provide their own `catch_unwind`.
 #[derive(Clone, Debug)]
 pub struct Monomial {
     exponents: Box<[u16]>,
