@@ -32,11 +32,13 @@ pub trait CriterionPair {
     fn lcm(&self) -> &Self::Mono;
     /// Divisibility fingerprint of [`Self::lcm`].
     fn lcm_divmask(&self) -> DivMask;
-    /// True iff the parents' leading monomials are coprime. On a same-`lcm`
-    /// tie a coprime owner replaces a non-coprime one (the coprime pair is
-    /// dropped downstream by the product criterion, so swapping it in
-    /// eliminates the work). Engines whose coprime pairs never reach
-    /// [`gm_insert`] return `false`, which makes that branch inert.
+    /// True iff the parents' leading monomials are coprime. Used by the
+    /// Gebauer-Möller F-criterion in [`gm_insert`]: among pairs sharing one
+    /// `lcm`, if any is coprime then all may be discarded (the coprime
+    /// pair's S-polynomial reduces to zero by the product criterion, which
+    /// forces the others to as well). Engines that filter coprime pairs
+    /// *before* [`gm_insert`] return `false` here, leaving that branch
+    /// inert; engines that feed coprime pairs in rely on it for soundness.
     fn is_coprime(&self) -> bool;
     /// Basis positions of the two parents `(i, j)`.
     fn parents(&self) -> (usize, usize);
@@ -57,7 +59,9 @@ pub trait LeadingTerms {
 /// redundant. So:
 ///   * If `LCM(existing) | LCM(P)`: existing dominates P, drop P. Special
 ///     case (LCMs equal): if `existing` is non-coprime and P is coprime,
-///     replace `existing` with P.
+///     replace `existing` with P — the Gebauer-Möller F-criterion (a
+///     coprime pair among equal-`lcm` pairs lets all of them be dropped:
+///     the coprime one falls to the product criterion, the rest follow).
 ///   * Else if `LCM(P) | LCM(existing)`: P dominates existing, erase existing.
 ///
 /// On exit the list is left in arbitrary order; callers sort it before merging.
