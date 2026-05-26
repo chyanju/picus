@@ -2,7 +2,7 @@
 //!
 //! Shape matches cvc5's FF sub-theory. Facts arrive via
 //! [`Theory::notify_fact`] onto a level-indexed trail. Each
-//! [`Theory::post_check`] at `Effort::Full` walks the trail
+//! [`Theory::post_check`] walks the trail
 //! through [`ConstraintSystemBuilder`] to build a canonical
 //! [`ConstraintSystem`], runs the GB solver via
 //! [`encode`], and maps any returned UNSAT core indices
@@ -20,7 +20,7 @@ use crate::sat::Var;
 use crate::timeout::CancelToken;
 
 use super::atoms::AtomTable;
-use super::theory::{CheckOutcome, Effort, Theory};
+use super::theory::{CheckOutcome, Theory};
 
 /// FF theory plug-in: maintains an asserted-fact trail and dispatches
 /// `post_check(Full)` to [`solve_encoded_with_cancel`].
@@ -398,10 +398,7 @@ impl<'a> Theory for FfTheory<'a> {
         self.pending_reasons.clear();
     }
 
-    fn post_check(&mut self, effort: Effort) -> CheckOutcome {
-        if effort != Effort::Full {
-            return CheckOutcome::Unknown;
-        }
+    fn post_check(&mut self) -> CheckOutcome {
         self.check_full_with_mapping()
     }
 
