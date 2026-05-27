@@ -16,7 +16,7 @@ use crate::gb::{compute_gb_with_timeout_traced, GbResultTraced};
 use crate::gb::model;
 use crate::frontend::parse;
 use crate::poly::{FfPolyRing, Poly};
-use crate::split_gb::{admit, split_find_zero_cancel};
+use crate::split_gb::split_find_zero_cancel;
 use crate::timeout::CancelToken;
 
 /// An UNSAT core: indices into the input fact list that suffice for UNSAT.
@@ -138,35 +138,32 @@ pub fn solve_split_gb_cancel<'r>(
     // reaching this conjunctive core — on both the direct and the CDCL(T)
     // per-check paths — are already reduced. This function does not
     // re-eliminate.
-    let nl_gens: Vec<Poly> = original_polys.iter().map(|p| poly_ring.ring.clone_el(p)).collect();
-    let mut nl_deps: Vec<std::collections::BTreeSet<usize>> = Vec::with_capacity(original_polys.len());
-    for i in 0..original_polys.len() {
-        let mut s = std::collections::BTreeSet::new();
-        s.insert(i);
-        nl_deps.push(s);
-    }
-    let mut l_gens: Vec<Poly> = Vec::new();
-    let mut l_deps: Vec<std::collections::BTreeSet<usize>> = Vec::new();
-    for p in bitsum_polys {
-        l_gens.push(poly_ring.ring.clone_el(p));
-        l_deps.push(std::collections::BTreeSet::new());
-    }
-    for (i, p) in original_polys.iter().enumerate() {
-        if admit(poly_ring, 0, p) {
-            l_gens.push(poly_ring.ring.clone_el(p));
-            let mut s = std::collections::BTreeSet::new();
-            s.insert(i);
-            l_deps.push(s);
-        }
-    }
+    let (gens, provenance) =
+        crate::split_gb::build_partitions(poly_ring, original_polys, bitsum_polys);
+    // Lower each generator's provenance to its UNSAT-core dependency set: an
+    // original input `i` depends on itself; a bitsum definition has none.
+    let deps: Vec<Vec<std::collections::BTreeSet<usize>>> = provenance
+        .iter()
+        .map(|part| {
+            part.iter()
+                .map(|prov| {
+                    let mut s = std::collections::BTreeSet::new();
+                    if let Some(i) = prov {
+                        s.insert(*i);
+                    }
+                    s
+                })
+                .collect()
+        })
+        .collect();
 
     let mut bit_prop = BitProp::new(poly_ring);
     populate_bitprop(poly_ring, original_polys, &mut bit_prop);
     populate_bitprop(poly_ring, bitsum_polys, &mut bit_prop);
     let traced = match crate::split_gb::split_gb_cancel_traced(
         poly_ring,
-        vec![l_gens, nl_gens],
-        vec![l_deps, nl_deps],
+        gens,
+        deps,
         &mut bit_prop,
         cancel,
     ) {
