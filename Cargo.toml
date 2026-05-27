@@ -28,7 +28,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "1.8.10"
+version = "1.8.11"
 authors = ["Yanju Chen <chyanju@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/chyanju/Picus"
