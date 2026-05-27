@@ -255,7 +255,7 @@ fn match_part(
     let prod = prod?;
     let (wc, wvar) = wire?;
     // Normalise the equality so the output wire's coefficient is 1.
-    let inv = mod_inverse(&wc, p)?;
+    let inv = crate::propagation::mod_inverse(&wc, p)?;
     let norm = |x: &BigUint| (x * &inv) % p;
     let prod = norm(&prod);
     let sl_c = norm(&sl_c);
@@ -407,11 +407,3 @@ fn pair_key(a: usize, b: usize) -> (usize, usize) {
     }
 }
 
-fn mod_inverse(x: &BigUint, p: &BigUint) -> Option<BigUint> {
-    if x.is_zero() {
-        return None;
-    }
-    // p is prime, so x^{p-2} ≡ x^{-1} (mod p).
-    let exp = p - &BigUint::from(2u32);
-    Some(x.modpow(&exp, p))
-}

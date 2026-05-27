@@ -9,8 +9,27 @@ pub mod range;
 pub use lemma::{all_descriptors, all_names, LemmaDescriptor, PropagationCtx, PropagationLemma};
 pub use range::{initial_ranges, RangeValue};
 
+use num_bigint::{BigInt, BigUint};
+use num_integer::Integer;
+use num_traits::One;
 use picus_smt::poly_ir::PolyIR;
 use std::collections::HashMap;
+
+/// Modular inverse of `a` mod `p` via the extended Euclidean algorithm,
+/// or `None` when `a` is not invertible (not coprime to `p`). Shared by the
+/// lemmas that solve linear systems over GF(p) (`bim`, and `basis2`'s
+/// CompConstant companion); `p` is the field prime, so a non-`None` result
+/// is the unique inverse.
+pub(crate) fn mod_inverse(a: &BigUint, p: &BigUint) -> Option<BigUint> {
+    let a_int = BigInt::from(a.clone());
+    let p_int = BigInt::from(p.clone());
+    let gcd = a_int.extended_gcd(&p_int);
+    if gcd.gcd != BigInt::one() {
+        return None;
+    }
+    let inv = ((gcd.x % &p_int) + &p_int) % &p_int;
+    Some(inv.to_biguint().expect("inverse should be non-negative"))
+}
 
 /// Per-wire connectivity score: the count of distinct constraints whose
 /// support touches the wire. Used by the counter-style signal selector

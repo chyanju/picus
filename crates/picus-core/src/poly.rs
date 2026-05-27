@@ -25,7 +25,7 @@ pub type PolyRingType = PolyRingFacade;
 
 /// A multivariate polynomial ring GF(p)[x_0, ..., x_{n-1}].
 ///
-/// `pr.ring` is a thin facade around the underlying [`ff::PolyRing`]
+/// `pr.ring` is a thin facade around the underlying [`crate::ff::polynomial::PolyRing`]
 /// context, exposing `terms`, `create_term`, `exponent_at`, etc.
 pub struct FfPolyRing {
     pub ring: PolyRingFacade,

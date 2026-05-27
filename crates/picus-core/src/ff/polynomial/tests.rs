@@ -11,6 +11,34 @@ fn small_ring() -> Arc<PolyRing> {
 }
 
 #[test]
+fn reduce_by_refs_lex_ring_non_monotone_degree_no_panic() {
+    // Under Lex order a polynomial's terms descend by the order but NOT by
+    // total degree (`x` > `y^2` in Lex, yet lower degree). The dense reducer
+    // finalises its normal form via `from_raw_sorted`, which must not assume
+    // degree-monotonicity. Reduce `x + y^2` by `x*y` (which divides neither
+    // term) so both pass through and the result is rebuilt with ascending
+    // total degrees [1, 2].
+    let f = PrimeField::new(BigUint::from(101u32));
+    let r = PolyRing::new(f, vec!["x".into(), "y".into()], MonomialOrder::Lex);
+    let fld = &r.field;
+    let p = DensePoly::from_terms(
+        vec![
+            (Monomial::from_exponents(vec![1, 0]), fld.from_u64(1)),
+            (Monomial::from_exponents(vec![0, 2]), fld.from_u64(1)),
+        ],
+        &r,
+    );
+    let d = DensePoly::from_terms(
+        vec![(Monomial::from_exponents(vec![1, 1]), fld.from_u64(1))],
+        &r,
+    );
+    // Must not panic; both terms are irreducible by `x*y`.
+    let nf = p.reduce_by_refs(&[&d], &r);
+    assert_eq!(nf.num_terms(), 2);
+    assert_eq!(nf.leading_term(&r).unwrap().exponents(), &[1, 0]); // x is Lex-leading
+}
+
+#[test]
 fn from_terms_sorts_and_dedupes() {
     let r = small_ring();
     let f = &r.field;

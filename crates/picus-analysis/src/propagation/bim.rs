@@ -12,8 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use num_bigint::{BigInt, BigUint};
-use num_integer::Integer;
+use num_bigint::BigUint;
 use num_traits::{One, Zero};
 use picus_smt::poly_ir::PolyIR;
 
@@ -65,9 +64,6 @@ impl PropagationLemma for BimLemma {
 
         let mut matrix: Vec<Vec<BigUint>> = vec![vec![BigUint::zero(); n]; n];
         for (row, eq) in equations.iter().enumerate() {
-            if row >= n {
-                break;
-            }
             for (sig, coeff) in eq {
                 if let Some(&col) = sig_idx.get(sig) {
                     // Accumulate (mod p): a wire appearing more than once in
@@ -142,7 +138,7 @@ fn matrix_det_mod(matrix: &[Vec<BigUint>], p: &BigUint) -> Option<BigUint> {
             sign_flip = !sign_flip;
         }
         det = (&det * &m[col][col]) % p;
-        let pivot_inv = mod_inverse(&m[col][col], p)?;
+        let pivot_inv = super::mod_inverse(&m[col][col], p)?;
         for row in (col + 1)..n {
             if m[row][col].is_zero() {
                 continue;
@@ -162,17 +158,6 @@ fn matrix_det_mod(matrix: &[Vec<BigUint>], p: &BigUint) -> Option<BigUint> {
         det = (p - &det) % p;
     }
     Some(det)
-}
-
-fn mod_inverse(a: &BigUint, p: &BigUint) -> Option<BigUint> {
-    let a_int = BigInt::from(a.clone());
-    let p_int = BigInt::from(p.clone());
-    let gcd = a_int.extended_gcd(&p_int);
-    if gcd.gcd != BigInt::one() {
-        return None;
-    }
-    let inv = ((gcd.x % &p_int) + &p_int) % &p_int;
-    Some(inv.to_biguint().expect("inverse should be non-negative"))
 }
 
 inventory::submit! {

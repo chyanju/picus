@@ -12,7 +12,7 @@
 //! Key sparse simplification over the dense geobucket: multiplying a
 //! sorted-descending polynomial by a single monomial preserves the order
 //! (the monomial order is multiplicative), so the scaled divisor tail in
-//! [`SparseGeobucket::sub_scaled_tail`] needs no re-sort.
+//! `SparseGeobucket::sub_scaled_tail` needs no re-sort.
 
 use std::cmp::Ordering;
 

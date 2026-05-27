@@ -24,8 +24,8 @@ use crate::gb::ideal::{interreduce_basis, ring_for_order, unwrap_dense_vec, wrap
 use crate::gb::model;
 use crate::poly::{FfPolyRing, Poly};
 use crate::split_gb::{
-    admit, classify_propagation, seed_self_membership, split_find_zero_cancel, split_gb_cancel,
-    split_gb_extend_cancel, Propagate, SplitFindZeroOutcome,
+    admit, build_partitions, classify_propagation, seed_self_membership, split_find_zero_cancel,
+    split_gb_cancel, split_gb_extend_cancel, Propagate, SplitFindZeroOutcome,
 };
 use crate::timeout::CancelToken;
 
@@ -214,32 +214,18 @@ impl IncrementalSolverContext {
             return Err(());
         }
 
-        let nl_gens: Vec<Poly> = encoded
-            .polynomials
-            .iter()
-            .map(|p| encoded.poly_ring.ring.clone_el(p))
-            .collect();
-        let mut l_gens: Vec<Poly> = Vec::new();
-        for p in &encoded.bitsum_polys {
-            l_gens.push(encoded.poly_ring.ring.clone_el(p));
-        }
-        for p in &encoded.polynomials {
-            if admit(&encoded.poly_ring, 0, p) {
-                l_gens.push(encoded.poly_ring.ring.clone_el(p));
-            }
-        }
+        // basis 0 (linear) = bitsum polys + admitted originals; basis 1
+        // (nonlinear) = all originals. The provenance is unused here: the
+        // cached path does not extract an UNSAT core.
+        let (gens, _prov) =
+            build_partitions(&encoded.poly_ring, &encoded.polynomials, &encoded.bitsum_polys);
 
         let mut bit_prop = BitProp::new(&encoded.poly_ring);
         populate_bitprop(&encoded.poly_ring, &encoded.polynomials, &mut bit_prop);
 
         // Fast-path build. On cancel, `split_gb_cancel` returns
         // `Cancelled` and we transition to the resumable path.
-        match split_gb_cancel(
-            &encoded.poly_ring,
-            vec![l_gens.clone(), nl_gens.clone()],
-            &mut bit_prop,
-            cancel,
-        ) {
+        match split_gb_cancel(&encoded.poly_ring, gens.clone(), &mut bit_prop, cancel) {
             Ok(split_basis) => {
                 let split_gb_owned: Vec<Vec<Poly>> = split_basis
                     .into_iter()
@@ -281,7 +267,7 @@ impl IncrementalSolverContext {
                     IncrementalGB::new(ring.clone(), cfg.clone()),
                     IncrementalGB::new(ring, cfg),
                 ];
-                let pending = vec![l_gens, nl_gens];
+                let pending = gens;
                 let bit_prop_state = bit_prop.to_state();
                 self.partial_build = Some(PartialBuild {
                     digest,

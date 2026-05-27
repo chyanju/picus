@@ -53,7 +53,7 @@ pub struct RuntimeConfig {
     /// Use F4 matrix reduction for batched same-sugar S-pairs.
     pub use_f4: bool,
     /// DNF expansion cap (max disjunct count) before
-    /// [`crate::boolean::solve_boolean_query_dnf`] returns `Unknown`.
+    /// `solve_boolean_query_dnf` (in picus-solver) returns `Unknown`.
     pub dnf_cap: u64,
     /// Pick DNF instead of CNF for the boolean layer.
     pub dnf_enabled: bool,

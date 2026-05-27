@@ -161,6 +161,19 @@ fn resolve_auto(pr: &FfPolyRing, gens: &[Poly]) -> GbStrategy {
     if all_homog { GbStrategy::Direct } else { GbStrategy::ByHomog }
 }
 
+/// Resolve the configured GB strategy, expanding `Auto` to a concrete
+/// choice via [`resolve_auto`]. Both GB dispatch paths select a strategy
+/// here: the dense path routes the result through the [`GbAlgorithm`]
+/// trait in [`compute_gb_dispatch`]; the sparse path branches on it inline
+/// in [`compute_gb_with_order`]. A new `GbStrategy` variant must be handled
+/// in both of those dispatch sites.
+fn resolve_strategy(pr: &FfPolyRing, gens: &[Poly]) -> GbStrategy {
+    match crate::config::with(|c| c.gb_strategy) {
+        GbStrategy::Auto => resolve_auto(pr, gens),
+        s => s,
+    }
+}
+
 thread_local! {
     /// Name of the most recent GB algorithm chosen by [`compute_gb_dispatch`]
     /// on this thread. Used by tests to confirm dispatch is actually
@@ -193,10 +206,7 @@ fn compute_gb_dispatch(
     if gens.is_empty() {
         return Ok(Vec::new());
     }
-    let strat = match crate::config::with(|c| c.gb_strategy) {
-        GbStrategy::Auto => resolve_auto(pr, &gens),
-        s => s,
-    };
+    let strat = resolve_strategy(pr, &gens);
     let direct = BuchbergerDirect;
     let by_homog = BuchbergerByHomog;
     let chosen: &dyn GbAlgorithm = match strat {
@@ -350,10 +360,7 @@ pub fn compute_gb_with_order(
         // (DegRevLex only, mirroring BuchbergerByHomog) runs the
         // homogenize → GB → dehomogenize pipeline with a sparse inner GB;
         // everything else is plain sparse Buchberger.
-        let strat = match crate::config::with(|c| c.gb_strategy) {
-            GbStrategy::Auto => resolve_auto(poly_ring, &generators),
-            s => s,
-        };
+        let strat = resolve_strategy(poly_ring, &generators);
         if strat == GbStrategy::ByHomog && order == FfOrder::DegRevLex {
             record_dispatched("sparse-by-homog");
             return crate::gb::gb_homog::compute_gb_by_homog(poly_ring, generators, cancel);
@@ -651,7 +658,3 @@ pub fn compute_gb_incremental_with_order_traced(
         }
     }
 }
-
-// Silence dead-code warnings on shim type alias.
-#[allow(dead_code)]
-type _GbBaseRing<'r> = &'r crate::ff::field::PrimeField;

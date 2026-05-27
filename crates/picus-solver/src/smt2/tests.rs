@@ -912,3 +912,30 @@ fn recursive_define_fun_is_rejected_not_overflow() {
     "#;
     assert!(parse(src).is_err(), "recursive macro must be rejected, not crash");
 }
+
+#[test]
+fn zero_arg_minus_is_rejected_not_panic() {
+    // `(-)` with no operand must surface a parse error, not index out of
+    // bounds in the n-ary minus arm of `build_poly`.
+    let src = r#"
+        (set-logic QF_FF)
+        (define-sort F () (_ FiniteField 7))
+        (declare-fun x () F)
+        (assert (= x (-)))
+        (check-sat)
+    "#;
+    assert!(parse(src).is_err(), "(-) must be rejected, not crash");
+}
+
+#[test]
+fn zero_arg_minus_in_boolean_query_is_rejected_not_panic() {
+    // Same arity guard on the boolean term builder (`build_poly_with_ctx`).
+    let src = r#"
+        (set-logic QF_FF)
+        (define-sort F () (_ FiniteField 7))
+        (declare-fun x () F)
+        (assert (or (= x (-)) (= x (as ff1 F))))
+        (check-sat)
+    "#;
+    assert!(parse_boolean(src).is_err(), "(-) must be rejected, not crash");
+}

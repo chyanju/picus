@@ -559,10 +559,12 @@ impl DensePoly {
         if !coeffs.is_empty() {
             debug_assert_eq!(exponents.len() / coeffs.len() * coeffs.len(), exponents.len());
         }
-        debug_assert!(
-            total_degs.windows(2).all(|w| w[0] >= w[1]),
-            "from_raw_sorted: total_degs must be non-increasing (descending order)"
-        );
+        // No total-degree monotonicity check: "descending" is by the ring's
+        // monomial order, which implies non-increasing total degree under
+        // DegRevLex but not under Lex (e.g. `x0` > `x1^5` in Lex, yet has lower
+        // degree). This function holds no ring and so cannot validate the
+        // order-relative descent; callers build these arrays by popping the
+        // geobucket in `ring.order` and own that contract.
         DensePoly { exponents, coeffs, total_degs }
     }
 

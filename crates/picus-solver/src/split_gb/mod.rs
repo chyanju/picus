@@ -91,6 +91,44 @@ pub fn admit(_pr: &FfPolyRing, idx: usize, p: &Poly) -> bool {
     }
 }
 
+/// Build the default two-partition split-GB generator sets and their
+/// per-generator provenance.
+///
+///   - basis 0 (linear):    the bitsum definition polys, then every
+///                          original admitted by `admit(_, 0, _)`.
+///   - basis 1 (nonlinear): all originals, in order.
+///
+/// The returned `(gens, provenance)` are index-parallel within each basis:
+/// `provenance[b][i]` is `Some(orig_idx)` when `gens[b][i]` is original
+/// input `orig_idx`, or `None` for an encoder-introduced bitsum definition
+/// (which contributes no UNSAT-core dependency). Single source of the
+/// partition layout shared by the conjunctive (`core::solve_split_gb_cancel`)
+/// and cached (`incremental_context`) build paths; callers that don't trace
+/// dependencies ignore the provenance.
+pub(crate) fn build_partitions(
+    poly_ring: &FfPolyRing,
+    originals: &[Poly],
+    bitsums: &[Poly],
+) -> (Vec<Vec<Poly>>, Vec<Vec<Option<usize>>>) {
+    let nl_gens: Vec<Poly> = originals.iter().map(|p| poly_ring.ring.clone_el(p)).collect();
+    let nl_prov: Vec<Option<usize>> = (0..originals.len()).map(Some).collect();
+
+    let mut l_gens: Vec<Poly> = Vec::new();
+    let mut l_prov: Vec<Option<usize>> = Vec::new();
+    for p in bitsums {
+        l_gens.push(poly_ring.ring.clone_el(p));
+        l_prov.push(None);
+    }
+    for (i, p) in originals.iter().enumerate() {
+        if admit(poly_ring, 0, p) {
+            l_gens.push(poly_ring.ring.clone_el(p));
+            l_prov.push(Some(i));
+        }
+    }
+
+    (vec![l_gens, nl_gens], vec![l_prov, nl_prov])
+}
+
 /// Outcome of classifying a candidate poly against one partition during
 /// the propagation fixpoint. Shared by all three fixpoint drivers
 /// (`fixpoint::run_fixpoint`, `run_fixpoint_traced`,
