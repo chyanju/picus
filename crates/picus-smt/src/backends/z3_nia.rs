@@ -66,10 +66,20 @@ impl SolverBackend for Z3NiaBackend {
             solver.assert(sum.rem(&p_ast).eq(Int::from_u64(0)));
         }
 
-        // Target disequality.
+        // Target disequality. A missing copy var would silently drop the
+        // `x_target != y_target` constraint → trivially SAT → spurious
+        // counter-example; error out (→ Unknown) instead of a false UNSAFE.
         let s = ir.target_signal;
-        if let (Some(x), Some(y)) = (vars.get(ir.x_name(s)), vars.get(ir.y_name(s))) {
-            solver.assert(x.eq(y).not());
+        match (vars.get(ir.x_name(s)), vars.get(ir.y_name(s))) {
+            (Some(x), Some(y)) => {
+                solver.assert(x.eq(y).not());
+            }
+            _ => {
+                return Err(SolverError::Internal(format!(
+                    "target wire {} missing a declared copy variable",
+                    s
+                )));
+            }
         }
 
         match solver.check() {

@@ -8,6 +8,16 @@
 
 use super::ParseError;
 
+/// Maximum S-expression nesting depth accepted by [`parse_one`]. Bounds
+/// the depth of every produced [`Sexpr`] tree, which transitively bounds
+/// the recursion of all downstream tree-walkers (`build_poly`,
+/// `assert_to_formula`, …) that descend into sub-expressions. Adversarial
+/// input with deeper nesting is rejected as malformed rather than
+/// overflowing the stack (an abort `catch_unwind` cannot intercept). The
+/// limit is far above any realistic SMT-LIB term and chosen to stay within
+/// a worker thread's default stack even for the heaviest walker frame.
+pub(super) const MAX_SEXPR_DEPTH: usize = 1024;
+
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Tok {
     LParen,
@@ -68,14 +78,20 @@ pub(super) fn parse_sexprs(toks: &[Tok]) -> Result<Vec<Sexpr>, ParseError> {
     let mut i = 0;
     let mut out = Vec::new();
     while i < toks.len() {
-        let (s, ni) = parse_one(toks, i)?;
+        let (s, ni) = parse_one(toks, i, 0)?;
         out.push(s);
         i = ni;
     }
     Ok(out)
 }
 
-pub(super) fn parse_one(toks: &[Tok], i: usize) -> Result<(Sexpr, usize), ParseError> {
+pub(super) fn parse_one(toks: &[Tok], i: usize, depth: usize) -> Result<(Sexpr, usize), ParseError> {
+    if depth > MAX_SEXPR_DEPTH {
+        return Err(ParseError::Malformed(format!(
+            "S-expression nesting exceeds depth {}",
+            MAX_SEXPR_DEPTH
+        )));
+    }
     let tok = toks
         .get(i)
         .ok_or_else(|| ParseError::Malformed("unexpected end of input".into()))?;
@@ -84,7 +100,7 @@ pub(super) fn parse_one(toks: &[Tok], i: usize) -> Result<(Sexpr, usize), ParseE
             let mut j = i + 1;
             let mut children = Vec::new();
             while j < toks.len() && toks[j] != Tok::RParen {
-                let (s, nj) = parse_one(toks, j)?;
+                let (s, nj) = parse_one(toks, j, depth + 1)?;
                 children.push(s);
                 j = nj;
             }

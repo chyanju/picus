@@ -150,18 +150,16 @@ thread_local! {
     /// are always `ElemRepr::Gmp(_)`; Small variants do not pool.
     static FIELDELEM_POOL: std::cell::RefCell<Vec<FieldElem>> =
         std::cell::RefCell::new(Vec::with_capacity(FIELDELEM_POOL_CAP / 4));
-    /// Re-entrancy guard for `Drop` during thread-local destruction.
-    /// `Drop` reads this flag; when set, the impl returns early
-    /// without touching `FIELDELEM_POOL`.
-    static IN_POOL_DROP: std::cell::Cell<bool> = std::cell::Cell::new(false);
 }
 
 impl Drop for FieldElem {
     fn drop(&mut self) {
-        if IN_POOL_DROP.with(|c| c.get()) {
-            return;
-        }
         if let ElemRepr::Gmp(ref mut v) = self.repr {
+            // During thread-local destruction the pool may already be gone
+            // (`try_with` → Err) or mid-drop of its own elements
+            // (`try_borrow_mut` → Err); either way we skip recycling. These
+            // two fallible accesses are the re-entrancy guard — no separate
+            // flag is needed.
             let _ = FIELDELEM_POOL.try_with(|pool| {
                 if let Ok(mut p) = pool.try_borrow_mut() {
                     if p.len() < FIELDELEM_POOL_CAP {

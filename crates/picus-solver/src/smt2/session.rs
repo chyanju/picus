@@ -15,8 +15,8 @@ use num_bigint::BigUint;
 
 use super::tokenizer::{parse_sexprs, tokenize, Sexpr};
 use super::{
-    assert_to_formula, classify_sort, parse_define_fun, MacroDef, ParseCtx, ParseError, Polynomial,
-    VarSort,
+    assert_to_formula, classify_sort, finite_field_prime_str, parse_define_fun, MacroDef,
+    ParseCtx, ParseError, Polynomial, VarSort,
 };
 use crate::boolean::{Formula, Literal};
 use crate::frontend::encoder::{ConstraintSystemBuilder, PolyTerm};
@@ -284,6 +284,7 @@ impl SmtSession {
             next_ite_skolem: self.next_ite_skolem,
             side_constraints: Vec::new(),
             builder,
+            expansion_depth: 0,
         }
     }
 
@@ -424,21 +425,12 @@ impl SmtSession {
         if list.len() < 4 {
             return Ok(());
         }
-        let body = &list[3];
-        if let Sexpr::List(inner) = body {
-            if inner.len() == 3 {
-                if let (Sexpr::Atom(u), Sexpr::Atom(ff), Sexpr::Atom(p)) =
-                    (&inner[0], &inner[1], &inner[2])
-                {
-                    if u == "_" && ff == "FiniteField" {
-                        let n = p.parse::<BigUint>().map_err(|_| {
-                            ParseError::Malformed(format!("bad prime: {}", p))
-                        })?;
-                        self.builder.set_prime(n.clone());
-                        self.prime = Some(n);
-                    }
-                }
-            }
+        if let Some(p) = finite_field_prime_str(&list[3]) {
+            let n = p
+                .parse::<BigUint>()
+                .map_err(|_| ParseError::Malformed(format!("bad prime: {}", p)))?;
+            self.builder.set_prime(n.clone());
+            self.prime = Some(n);
         }
         Ok(())
     }
@@ -458,18 +450,10 @@ impl SmtSession {
         };
         let sort = classify_sort(sort_sexpr).unwrap_or(VarSort::Ff);
         if self.prime.is_none() {
-            if let Some(Sexpr::List(inner)) = sort_sexpr {
-                if inner.len() == 3 {
-                    if let (Sexpr::Atom(u), Sexpr::Atom(ff), Sexpr::Atom(p)) =
-                        (&inner[0], &inner[1], &inner[2])
-                    {
-                        if u == "_" && ff == "FiniteField" {
-                            if let Ok(n) = p.parse::<BigUint>() {
-                                self.builder.set_prime(n.clone());
-                                self.prime = Some(n);
-                            }
-                        }
-                    }
+            if let Some(p) = sort_sexpr.and_then(finite_field_prime_str) {
+                if let Ok(n) = p.parse::<BigUint>() {
+                    self.builder.set_prime(n.clone());
+                    self.prime = Some(n);
                 }
             }
         }

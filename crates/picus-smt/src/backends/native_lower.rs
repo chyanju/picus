@@ -39,7 +39,7 @@ impl PolyIR {
     /// a single `1 = 0`, which the solver rejects immediately.
     pub fn pre_eliminate_linear(&self, cancel: &CancelToken) -> Option<PolyIR> {
         let elim =
-            picus_solver::gb::linsolve::eliminate_linear(self.ring.as_ff(), &self.equalities, cancel)
+            picus_solver::gb::linsolve::eliminate_linear(&self.ring, &self.equalities, cancel)
                 .ok()?;
         if !elim.applied {
             return None;

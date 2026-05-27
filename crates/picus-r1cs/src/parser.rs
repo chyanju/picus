@@ -228,9 +228,11 @@ fn parse_sections(raw: &[u8]) -> Result<Vec<Section>, R1csParseError> {
 fn parse_header_section(data: &[u8]) -> Result<HeaderSection, R1csParseError> {
     let mut cur = Cursor::new(data);
     let field_size = cur.read_u32::<LittleEndian>()?;
-    if field_size % 8 != 0 {
-        return Err(R1csParseError::BadFieldSize(field_size));
-    }
+    // `field_size` is the field-element byte width (iden3 format); it is
+    // NOT required to be a multiple of 8 — a small prime (e.g. GF(7),
+    // 1 byte) is a legitimate width. The real constraints are checked
+    // below: the width must fit the header block, and the decoded prime
+    // must be > 1 (which also rejects `field_size == 0`).
     // Reject any prime byte width larger than the header data block
     // we just received. A header claiming a 4 GiB prime is malformed;
     // refuse rather than try to allocate.
@@ -576,5 +578,32 @@ mod tests {
         }
         let r = read_r1cs(&data);
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn small_field_size_one_byte_prime_parses() {
+        // `field_size = 1` (a 1-byte prime, e.g. GF(7)) is a legitimate
+        // iden3 width that is NOT a multiple of 8. Regression for the
+        // removed `field_size % 8` guard, which wrongly rejected such a
+        // file. The decoded prime and the small field_size must survive.
+        let mut header: Vec<u8> = Vec::new();
+        header.extend_from_slice(&1u32.to_le_bytes()); // field_size = 1
+        header.push(7u8); // prime = 7 (one byte)
+        header.extend_from_slice(&2u32.to_le_bytes()); // n_wires = 2
+        header.extend_from_slice(&1u32.to_le_bytes()); // n_pub_out = 1
+        header.extend_from_slice(&0u32.to_le_bytes()); // n_pub_in
+        header.extend_from_slice(&0u32.to_le_bytes()); // n_prv_in
+        header.extend_from_slice(&2u64.to_le_bytes()); // n_labels = 2
+        header.extend_from_slice(&0u32.to_le_bytes()); // m_constraints = 0
+
+        // w2l: 2 labels (16 bytes) so n_wires (2) <= labels.len() (2).
+        let mut w2l: Vec<u8> = Vec::new();
+        w2l.extend_from_slice(&0u64.to_le_bytes());
+        w2l.extend_from_slice(&1u64.to_le_bytes());
+
+        let data = assemble(&header, &[], &w2l);
+        let r = read_r1cs(&data).expect("1-byte field_size must parse");
+        assert_eq!(r.header.field_size, 1);
+        assert_eq!(r.header.prime_number, BigUint::from(7u32));
     }
 }
