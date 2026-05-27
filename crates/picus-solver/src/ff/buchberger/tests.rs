@@ -56,6 +56,45 @@ fn incremental_push_pop() {
     assert!(!igb.is_trivial());
 }
 
+#[test]
+fn incremental_pop_restores_rewritten_bodies() {
+    // A pre-push element whose body is *rewritten* (not merely deactivated)
+    // by `tail_reduce_active` using a post-push element must be rolled back
+    // on pop. Here p0 = x0^2 + x2; after pushing and adding x2, the
+    // post-push x2 cancels p0's x2 term, rewriting p0's body to x0^2. pop
+    // must restore p0 = x0^2 + x2 — so p0 reduces to zero against the popped
+    // basis again. With a flags-only pop the popped basis is {x0^2} and p0
+    // reduces to x2 != 0.
+    let r = ring(3);
+    let f = &r.field;
+    let p0 = DensePoly::from_terms(
+        vec![
+            (Monomial::from_exponents(vec![2, 0, 0]), f.from_u64(1)), // x0^2
+            (Monomial::from_exponents(vec![0, 0, 1]), f.from_u64(1)), // x2
+        ],
+        &r,
+    );
+    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
+    let mut igb = IncrementalGB::new(r.clone(), cfg);
+    igb.add_generators(vec![p0.clone()]).unwrap();
+    let len_pre = igb.basis().len();
+    assert!(igb.reduce(&p0).is_zero(), "p0 should lie in the ideal pre-push");
+
+    igb.push();
+    let x2 = DensePoly::from_terms(
+        vec![(Monomial::from_exponents(vec![0, 0, 1]), f.from_u64(1))], // x2
+        &r,
+    );
+    igb.add_generators(vec![x2]).unwrap();
+    igb.pop();
+
+    assert_eq!(igb.basis().len(), len_pre);
+    assert!(
+        igb.reduce(&p0).is_zero(),
+        "pop did not restore the rewritten body: x0^2 + x2 no longer reduces to zero"
+    );
+}
+
 fn mk_pair(lcm_exps: Vec<u16>, age: u64, is_coprime: bool, ring: &PolyRing) -> SPair {
     let lcm = Monomial::from_exponents(lcm_exps);
     let lcm_divmask = ring.divmask.compute(&lcm);
