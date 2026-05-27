@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/). Entries are telegraphic: one line per change — what changed plus the key term/API — with no narrative, mechanism explanations, or "no verdict change" boilerplate.
 
+## [1.8.12] - 2026-05-27
+- `DensePoly::from_raw_sorted` drops the total-degree-monotonicity debug assert (invalid under Lex) — fixes a debug/test-build panic on the Lex model-extraction reduction path.
+- SMT-LIB term builders (`build_poly`/`build_poly_with_ctx`) reject a zero-argument `-` instead of indexing out of bounds (was a `run_smt2` process abort).
+- Maintainability: `encode_impl` derives the bitsum aux index from `bitsum_aux_index` (was a debug-only cross-check); single-sourced `propagation::mod_inverse`, the split-GB partition layout (`build_partitions`), and the GB `resolve_strategy`; removed dead guards (`bim` bound, `binary01` subsumed disjunct, `_GbBaseRing`); fixed all picus-core rustdoc intra-doc links.
+
 ## [1.8.11] - 2026-05-27
 - `set_target` asserts a non-input uniqueness target in release builds (was debug-only); split-GB SAT models are re-verified against the bitsum polynomials in addition to the original generators.
 - Sparse Gröbner-basis path (the default representation) wraps the engine in `catch_unwind`, degrading a panic to an empty basis → `Unknown` via `finish_gb` (was a process abort); matches the dense path.
