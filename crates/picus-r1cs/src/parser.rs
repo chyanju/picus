@@ -206,7 +206,13 @@ fn parse_sections(raw: &[u8]) -> Result<Vec<Section>, R1csParseError> {
         let section_type = cur.read_u32::<LittleEndian>()?;
         let section_size = cur.read_u64::<LittleEndian>()? as usize;
         let data_start = pos + 12;
-        let data_end = data_start + section_size;
+        // `section_size` is read straight from the (untrusted) file; guard the
+        // add so an adversarial size near usize::MAX can't wrap past the
+        // bounds check below into an out-of-range slice (panic / DoS).
+        let data_end = match data_start.checked_add(section_size) {
+            Some(e) => e,
+            None => break,
+        };
         if data_end > raw.len() {
             break;
         }
@@ -384,6 +390,22 @@ mod tests {
         let r = read_r1cs(&data);
         // Either "wrong section count" or "truncated" is acceptable;
         // what must NOT happen is a panic.
+        assert!(r.is_err(), "expected error, got Ok");
+    }
+
+    #[test]
+    fn overflowing_section_size_returns_error_not_panic() {
+        // A section header whose claimed size is u64::MAX. In
+        // `parse_sections`, `data_start + section_size` would wrap (release)
+        // or panic (debug) without the `checked_add` guard, then index an
+        // out-of-range slice. Must surface as a clean error, never a panic.
+        let mut data: Vec<u8> = b"r1cs".to_vec();
+        data.extend_from_slice(&1u32.to_le_bytes()); // version
+        data.extend_from_slice(&3u32.to_le_bytes()); // n_sections
+        data.extend_from_slice(&1u32.to_le_bytes()); // section type
+        data.extend_from_slice(&u64::MAX.to_le_bytes()); // adversarial size
+        // ... no payload ...
+        let r = read_r1cs(&data);
         assert!(r.is_err(), "expected error, got Ok");
     }
 
