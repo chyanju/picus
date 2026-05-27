@@ -93,6 +93,16 @@ const MIN_AUTO_BITSUM_LEN: usize = 2;
 /// `picus-analysis`. For cryptographic primes the cap is ~254; for
 /// small primes used in regression tests (GF(7), GF(11), GF(13))
 /// it's 2-3.
+/// Whether a `len`-bit unsigned bitsum embeds into GF(p) without mod-p
+/// aliasing: needs `2^len <= p`, so distinct bit patterns have distinct
+/// residues. When `2^len > p` (e.g. GF(7), len=3: 0 and 7 collide mod 7),
+/// two different patterns can be equal mod p — then neither a constant
+/// pin nor a bitwise-equality propagation is sound. Single source for the
+/// `find_bitsum_chain` length cap and the `bitprop` Phase 1/2 guards.
+pub(crate) fn bitsum_fits(len: usize, p: &BigUint) -> bool {
+    (BigUint::from(1u32) << len) <= *p
+}
+
 pub fn auto_extract_bitsums(
     system: &ConstraintSystem,
 ) -> ConstraintSystem {
@@ -240,10 +250,10 @@ fn find_bitsum_chain(
     let two = BigUint::from(2u32);
 
     let max_chain_bits: usize = {
+        // Largest n with 2^n <= p (see `bitsum_fits`): a chain of this
+        // length cannot alias modulo p.
         let mut n = 0usize;
-        let mut pow = BigUint::from(1u32);
-        while &pow * &two <= *p {
-            pow = pow * &two;
+        while bitsum_fits(n + 1, p) {
             n += 1;
         }
         n
