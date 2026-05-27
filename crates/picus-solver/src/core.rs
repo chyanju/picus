@@ -191,7 +191,9 @@ pub fn solve_split_gb_cancel<'r>(
                     model_map.insert(poly_ring.var_names()[idx].clone(), field.to_biguint(val));
                 }
             }
-            if model::verify_model(poly_ring, original_polys, &model_map) {
+            if model::verify_model(poly_ring, original_polys, &model_map)
+                && model::verify_model(poly_ring, bitsum_polys, &model_map)
+            {
                 SolveOutcome::Sat(model_map)
             } else {
                 log::warn!("model validation failed; reporting Unknown");

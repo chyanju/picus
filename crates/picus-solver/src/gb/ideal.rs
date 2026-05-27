@@ -311,8 +311,13 @@ impl<'r> Ideal<'r> {
             } else {
                 let prev = powers[d - 1].clone();
                 let next = prev.mul(&x_poly, ring);
-                self.reduce(&next)
+                self.reduce_with_cancel(&next, cancel)
             };
+            // A cancelled reduction returns a partial (non-normal-form)
+            // result; bail before it feeds the echelon step.
+            if cancel.is_cancelled() {
+                return None;
+            }
             if d > 0 {
                 powers.push(nf.clone());
             }

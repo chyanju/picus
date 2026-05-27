@@ -163,7 +163,7 @@ impl PolyIR {
         // spurious "two-witness" counter-example. The DPVL driver never
         // targets an input (inputs are seeded into `known`), but guard the
         // public API so a direct caller can't silently get a false UNSAFE.
-        debug_assert!(
+        assert!(
             !self.input_indices.contains(&w),
             "uniqueness target must not be an input wire (its copies are shared)"
         );

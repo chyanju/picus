@@ -109,6 +109,20 @@ fn native_ff_solves_over_gf7() {
     );
 }
 
+/// `set_target` must reject an input wire as the uniqueness target: an
+/// input's alt copy `y_w` is never emitted, so the target disequality
+/// would sit over a free variable and be trivially SAT — a spurious
+/// "two-witness" counter-example. The guard is an `assert!`, so it holds
+/// in release builds, not just debug.
+#[test]
+#[should_panic(expected = "uniqueness target must not be an input wire")]
+fn set_target_rejects_input_wire() {
+    let r1cs = build_x1_squared_eq_x2(); // inputs = [0, 1]
+    let known: HashSet<usize> = r1cs.inputs.iter().copied().collect();
+    let mut ir = r1cs_to_poly_ir(&r1cs, &known, 2).expect("lowering should succeed");
+    ir.set_target(1); // wire 1 is an input ⇒ must panic
+}
+
 /// Lower the GF(7) system, target wire 2, and inject a benign
 /// always-true disjunction `(x0 = 1) ∨ (x2 = 5)`. Wire 0 is pinned to
 /// 1, so the clause holds unconditionally — the verdict must stay UNSAT,

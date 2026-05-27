@@ -106,10 +106,11 @@ pub fn echelonize<P: Provenance>(
         }
         let lead_coeff = rows[i][0].1.clone();
         if !field.is_zero(&lead_coeff) {
-            if let Some(inv) = field.inv(&lead_coeff) {
-                for (_, c) in rows[i].iter_mut() {
-                    *c = field.mul(c, &inv);
-                }
+            let inv = field
+                .inv(&lead_coeff)
+                .expect("prime field: a nonzero element is invertible");
+            for (_, c) in rows[i].iter_mut() {
+                *c = field.mul(c, &inv);
             }
         }
         let lead_col = rows[i][0].0;
