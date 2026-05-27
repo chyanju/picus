@@ -76,7 +76,10 @@ pub(super) fn parse_sexprs(toks: &[Tok]) -> Result<Vec<Sexpr>, ParseError> {
 }
 
 pub(super) fn parse_one(toks: &[Tok], i: usize) -> Result<(Sexpr, usize), ParseError> {
-    match &toks[i] {
+    let tok = toks
+        .get(i)
+        .ok_or_else(|| ParseError::Malformed("unexpected end of input".into()))?;
+    match tok {
         Tok::LParen => {
             let mut j = i + 1;
             let mut children = Vec::new();
