@@ -658,7 +658,3 @@ pub fn compute_gb_incremental_with_order_traced(
         }
     }
 }
-
-// Silence dead-code warnings on shim type alias.
-#[allow(dead_code)]
-type _GbBaseRing<'r> = &'r crate::ff::field::PrimeField;

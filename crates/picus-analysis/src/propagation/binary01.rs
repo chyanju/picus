@@ -31,14 +31,12 @@ impl PropagationLemma for Binary01Lemma {
     }
 
     fn run(&mut self, ir: &PolyIR, ctx: &mut PropagationCtx) -> bool {
-        let p = ir.ring.field().prime();
-        let p_minus_1 = p - BigUint::one();
         let binary_set: HashSet<BigUint> =
             [BigUint::zero(), BigUint::one()].into_iter().collect();
 
         let mut progress = false;
         for poly in &ir.equalities {
-            if let Some(wire) = match_x_squared_minus_x(ir, poly, &p_minus_1)
+            if let Some(wire) = match_x_squared_minus_x(ir, poly)
                 && self.binary_wires.insert(wire)
             {
                 let entry = ctx.ranges.entry(wire).or_insert(RangeValue::Bottom);
@@ -69,7 +67,6 @@ impl PropagationLemma for Binary01Lemma {
 fn match_x_squared_minus_x(
     ir: &PolyIR,
     poly: &picus_core::poly::IrPoly,
-    p_minus_1: &BigUint,
 ) -> Option<usize> {
     // Two-term degree-2 polynomial: gather terms sparse-natively as
     // (coeff, nonzero (var, exp) pairs) — no `0..n_vars` scan, no dense
@@ -113,7 +110,7 @@ fn match_x_squared_minus_x(
     } else {
         p - sq_coeff
     };
-    if lin_coeff == &neg_sq_coeff || (sq_coeff == &BigUint::one() && lin_coeff == p_minus_1) {
+    if lin_coeff == &neg_sq_coeff {
         return Some(ir.var_to_wire(var));
     }
     None

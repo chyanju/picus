@@ -64,9 +64,6 @@ impl PropagationLemma for BimLemma {
 
         let mut matrix: Vec<Vec<BigUint>> = vec![vec![BigUint::zero(); n]; n];
         for (row, eq) in equations.iter().enumerate() {
-            if row >= n {
-                break;
-            }
             for (sig, coeff) in eq {
                 if let Some(&col) = sig_idx.get(sig) {
                     // Accumulate (mod p): a wire appearing more than once in
