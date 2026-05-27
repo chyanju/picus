@@ -108,9 +108,10 @@ impl DensePoly {
         self.reduce_by_refs_geobucket(divisors, ring, None, Some(use_counts), Some(div_dms))
     }
 
-    /// Geobucket-based reduction. Public for testing — production code should
-    /// go through `reduce_by_refs` so the dispatch (currently always geobucket)
-    /// stays in one place.
+    /// Geobucket-based reduction: the shared implementation every
+    /// `reduce_by_refs[_cancel|_counted|…]` wrapper forwards to (each
+    /// selecting a different `(cancel, count, dms)` Option triple). Prefer
+    /// the wrappers at call sites so the variant choice stays in one place.
     ///
     /// When `use_counts` is provided, the per-divisor counter at the
     /// index of the selected reducer is incremented every iteration.
