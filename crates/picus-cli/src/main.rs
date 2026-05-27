@@ -81,13 +81,18 @@ enum Commands {
         #[arg(long, value_parser = ["none", "wall"])]
         profile: Option<String>,
 
-        /// GB strategy:
-        ///   off  — direct DegRevLex Buchberger on P (default, baseline);
-        ///   on   — homogenize → GB on P[h] → dehom → interreduce;
-        ///   auto — pick `on` iff at least one input is non-homogeneous (cheap test).
-        /// Targets the bit-decomp benchmark family where sugar mis-prediction
-        /// causes intermediate expression swell. [default: off]
-        #[arg(long, value_parser = ["off", "on", "auto"])]
+        /// GB strategy (native only), matching the `gb_strategy` config key:
+        ///   direct   — DegRevLex Buchberger on P (default, baseline);
+        ///   by-homog — homogenize → GB on P[h] → dehom → interreduce;
+        ///   auto     — pick by-homog iff some input is non-homogeneous.
+        /// Targets the bit-decomp family where sugar mis-prediction swells
+        /// intermediate expressions. [default: direct]
+        #[arg(long, value_parser = ["direct", "by-homog", "auto"])]
+        gb_strategy: Option<String>,
+
+        /// Deprecated alias for `--gb-strategy` (off→direct, on→by-homog).
+        /// Kept for backward compatibility; prefer `--gb-strategy`.
+        #[arg(long, value_parser = ["off", "on", "auto"], hide = true)]
         gb_by_homog: Option<String>,
 
         /// Polynomial representation for the native FF backend:
@@ -192,6 +197,7 @@ fn main() {
             dump_smt,
             format,
             profile,
+            gb_strategy,
             gb_by_homog,
             poly_repr,
             use_f4,
@@ -222,11 +228,22 @@ fn main() {
                     dump_smt,
                 },
                 engine: EngineOverlay {
-                    gb_strategy: gb_by_homog.as_deref().map(|s| match s {
-                        "on" => GbStrategy::ByHomog,
-                        "auto" => GbStrategy::Auto,
-                        _ => GbStrategy::Direct,
-                    }),
+                    // Prefer the canonical --gb-strategy; fall back to the
+                    // deprecated --gb-by-homog alias (off/on/auto).
+                    gb_strategy: gb_strategy
+                        .as_deref()
+                        .map(|s| match s {
+                            "by-homog" => GbStrategy::ByHomog,
+                            "auto" => GbStrategy::Auto,
+                            _ => GbStrategy::Direct,
+                        })
+                        .or_else(|| {
+                            gb_by_homog.as_deref().map(|s| match s {
+                                "on" => GbStrategy::ByHomog,
+                                "auto" => GbStrategy::Auto,
+                                _ => GbStrategy::Direct,
+                            })
+                        }),
                     poly_repr: poly_repr.as_deref().map(|s| match s {
                         "dense" => ReprKind::Dense,
                         _ => ReprKind::Sparse,

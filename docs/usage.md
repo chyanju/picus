@@ -28,7 +28,7 @@ picus check --r1cs circuit.r1cs --dump-smt /tmp/smt/         # dump SMT queries
 | `--format <human\|json>` | `human` | Output format |
 | `--dump-smt <dir>` | — | Dump SMT-LIB queries to a directory |
 | `--profile <none\|wall>` | `none` | Emit per-site wall-clock profile to stderr |
-| `--gb-by-homog <off\|on\|auto>` | `off` | GB algorithm: direct Buchberger / homogenisation pipeline / auto-pick by homogeneity test (`native` only) |
+| `--gb-strategy <direct\|by-homog\|auto>` | `direct` | GB algorithm: direct Buchberger / homogenisation pipeline / auto-pick by homogeneity test (`native` only). Matches the `gb_strategy` config key. (`--gb-by-homog <off\|on\|auto>` is a deprecated alias.) |
 
 ### Advanced / research flags
 
@@ -126,4 +126,4 @@ timeout. Options:
 - Increase `--timeout` (e.g. `--timeout 60000`).
 - Try another backend (`--solver z3 --theory nia`, or `--solver cvc5 --theory ff` if built with `--features cvc5`).
 - `--solver none` to see how far propagation alone gets.
-- On `native + ff`: `--gb-by-homog auto` routes through the homogenisation GB pipeline that wins on bit-decomposition-shaped ideals; `--use-f4` enables the F4 matrix path (research flag).
+- On `native + ff`: `--gb-strategy auto` routes through the homogenisation GB pipeline that wins on bit-decomposition-shaped ideals; `--use-f4` enables the F4 matrix path (research flag).
