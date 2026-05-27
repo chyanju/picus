@@ -24,7 +24,8 @@ use crate::gb::ideal::{interreduce_basis, ring_for_order, unwrap_dense_vec, wrap
 use crate::gb::model;
 use crate::poly::{FfPolyRing, Poly};
 use crate::split_gb::{
-    admit, split_find_zero_cancel, split_gb_cancel, split_gb_extend_cancel, SplitFindZeroOutcome,
+    admit, classify_propagation, split_find_zero_cancel, split_gb_cancel, split_gb_extend_cancel,
+    Propagate, SplitFindZeroOutcome,
 };
 use crate::timeout::CancelToken;
 
@@ -318,7 +319,7 @@ fn continue_partial(partial: &mut PartialBuild, cancel: &CancelToken) -> ResumeO
     }
     let poly_ring: &FfPolyRing = &partial.poly_ring;
     let k = partial.inflight.len();
-    let mut bit_prop = BitProp::from_state(poly_ring, partial.bit_prop_state.clone());
+    let bit_prop = BitProp::from_state(poly_ring, partial.bit_prop_state.clone());
 
     let max_fixpoint_iters = (k * 64).max(256);
     let mut fixpoint_iter: u64 = 0;
@@ -418,19 +419,11 @@ fn continue_partial(partial: &mut PartialBuild, cancel: &CancelToken) -> ResumeO
             }
             let p_hash = p.content_hash();
             for j in 0..k {
-                if admit(poly_ring, j, p) {
-                    let key = (p_hash, j);
-                    if partial.contains_memo.contains(&key) {
-                        continue;
-                    }
-                    let in_basis = split_basis[j].contains_with_cancel(p, cancel);
-                    if in_basis {
-                        partial.contains_memo.insert(key);
-                    } else {
-                        partial.pending[j].push(poly_ring.ring.clone_el(p));
-                        any_new = true;
-                        partial.contains_memo.insert(key);
-                    }
+                if classify_propagation(
+                    poly_ring, &split_basis[j], j, p, p_hash, &mut partial.contains_memo, cancel,
+                ) == Propagate::NewGenerator {
+                    partial.pending[j].push(poly_ring.ring.clone_el(p));
+                    any_new = true;
                 }
             }
         }

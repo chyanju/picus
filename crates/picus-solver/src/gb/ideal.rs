@@ -273,10 +273,15 @@ impl<'r> Ideal<'r> {
         if generators.is_empty() {
             return Ok(Ideal { poly_ring, basis: Vec::new() });
         }
-        let basis = compute_gb_dispatch(
-            poly_ring, generators, cancel, FfOrder::DegRevLex, None,
-        )
-        .map_err(|_| Cancelled)?;
+        // Route through compute_gb_with_order rather than compute_gb_dispatch
+        // directly, so the split-GB path (this constructor's main caller)
+        // honours the configured representation — sparse by default via
+        // use_sparse_gb (J3) — and the shared finish_gb cancel/error/backup
+        // contract (J9). A genuine engine error yields an empty basis (not the
+        // unreduced generators): downstream that reads as "no constraints",
+        // never a trusted GB, and the post-call is_cancelled checks turn a
+        // cancellation into Err(Cancelled) as before.
+        let basis = compute_gb_with_order(poly_ring, generators, cancel, FfOrder::DegRevLex);
         if cancel.is_cancelled() { return Err(Cancelled); }
         let basis = interreduce_basis(poly_ring, basis, cancel);
         if cancel.is_cancelled() { return Err(Cancelled); }
@@ -664,6 +669,15 @@ fn use_sparse_gb() -> bool {
 /// when the ring's representation is sparse: extract each generator's
 /// sparse arm, compute and inter-reduce sparsely, and return a sparse-arm
 /// basis (the polynomials stay resident-sparse, no dense materialisation).
+///
+/// Contract (load-bearing, not encoded in the return type): on
+/// **cancellation** the sparse engine returns the basis built so far — a
+/// valid generating set of the same ideal but NOT a complete Gröbner
+/// basis — and this function passes it through, so every caller MUST
+/// re-check `cancel.is_cancelled()` and discard it before trusting it as a
+/// GB. Unlike the dense path (`compute_gb_buchberger`), there is no
+/// `catch_unwind` here: a panic in the sparse engine propagates to the
+/// process-level hook (a crash → Unknown, never a false verdict).
 fn sparse_gb_route(
     poly_ring: &FfPolyRing,
     generators: Vec<Poly>,

@@ -61,12 +61,17 @@ impl RangeValue {
         matches!(self, RangeValue::Values(v) if v.len() == 1)
     }
 
-    /// Range is a subset of `{0, 1}`. `Bottom` is not binary.
+    /// Range is a non-empty subset of `{0, 1}`. `Bottom` (unconstrained)
+    /// and the empty set (contradictory) are both not binary — matching
+    /// [`Self::excludes_zero`], so a consumer can't admit a wire as a
+    /// "bit" on a vacuously-true empty range.
     #[must_use]
     pub fn is_binary(&self) -> bool {
         match self {
             RangeValue::Bottom => false,
-            RangeValue::Values(v) => v.iter().all(|x| x.is_zero() || x == &BigUint::one()),
+            RangeValue::Values(v) => {
+                !v.is_empty() && v.iter().all(|x| x.is_zero() || x == &BigUint::one())
+            }
         }
     }
 

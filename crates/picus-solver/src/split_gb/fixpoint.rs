@@ -29,7 +29,7 @@ use crate::poly::{FfPolyRing, Poly};
 use crate::timeout::{CancelToken, Cancelled};
 use crate::gb::tracer::GbTracer;
 
-use super::{admit, SplitGb};
+use super::{classify_propagation, Propagate, SplitGb};
 
 /// Compute a split GB from scratch.
 ///
@@ -223,28 +223,24 @@ fn run_fixpoint<'r>(
             if cancel.is_cancelled() { return Err(Cancelled); }
             let p_hash = p.content_hash();
             for j in 0..k {
-                if admit(poly_ring, j, p) {
-                    if stats_on {
-                        crate::profile::SPLIT_GB.propagate_admit_passes
-                            .fetch_add(1, Relaxed);
-                    }
-                    let key = (p_hash, j);
-                    if contains_memo.contains(&key) {
-                        iter_memo_hits += 1;
-                        continue;
-                    }
-                    let in_basis = split_basis[j].contains_with_cancel(p, cancel);
-                    iter_contains_calls += 1;
-                    if in_basis {
+                let outcome = classify_propagation(
+                    poly_ring, &split_basis[j], j, p, p_hash, &mut contains_memo, cancel,
+                );
+                if stats_on && outcome != Propagate::NotAdmitted {
+                    crate::profile::SPLIT_GB.propagate_admit_passes.fetch_add(1, Relaxed);
+                }
+                match outcome {
+                    Propagate::NotAdmitted => {}
+                    Propagate::MemoHit => iter_memo_hits += 1,
+                    Propagate::InBasis => {
+                        iter_contains_calls += 1;
                         iter_contains_true += 1;
-                        contains_memo.insert(key);
-                    } else {
+                    }
+                    Propagate::NewGenerator => {
+                        iter_contains_calls += 1;
                         new_polys[j].push(poly_ring.ring.clone_el(p));
                         iter_polys_out += 1;
                         any_new = true;
-                        // Pre-record: after the next iteration's
-                        // `extend_with_cancel`, p will be in basis j.
-                        contains_memo.insert(key);
                     }
                 }
             }
@@ -471,19 +467,12 @@ fn run_fixpoint_traced<'r>(
             }
             let p_hash = p.content_hash();
             for j in 0..k {
-                if admit(poly_ring, j, p) {
-                    let key = (p_hash, j);
-                    if contains_memo.contains(&key) {
-                        continue;
-                    }
-                    if split_basis[j].contains_with_cancel(p, cancel) {
-                        contains_memo.insert(key);
-                    } else {
-                        new_polys[j].push(poly_ring.ring.clone_el(p));
-                        new_polys_deps[j].push(p_deps.clone());
-                        any_new = true;
-                        contains_memo.insert(key);
-                    }
+                if classify_propagation(
+                    poly_ring, &split_basis[j], j, p, p_hash, &mut contains_memo, cancel,
+                ) == Propagate::NewGenerator {
+                    new_polys[j].push(poly_ring.ring.clone_el(p));
+                    new_polys_deps[j].push(p_deps.clone());
+                    any_new = true;
                 }
             }
         }
