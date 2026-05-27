@@ -15,6 +15,14 @@ impl DensePoly {
     /// Geobucket-based accumulator (Yan 1998). Each reduction step is
     /// O(D · log(N / D)) where D is the divisor length and N is the
     /// running tail size.
+    ///
+    /// The normal form is term-for-term identical to `reduce_by_refs_naive`
+    /// and to the sparse reducer only on a Gröbner-basis-shaped divisor set
+    /// (at most one leading term divides any monomial). On an arbitrary
+    /// non-GB set the degree-sorted / DivMask-bucketed reducer selection
+    /// (enabled past `ReducerIndex::SORT_THRESHOLD`) may pick a different
+    /// divisor than the linear first-match, yielding a different — but still
+    /// same-coset, valid — remainder.
     pub fn reduce_by_refs(&self, divisors: &[&DensePoly], ring: &PolyRing) -> DensePoly {
         if self.is_zero() || divisors.is_empty() {
             return self.clone();
@@ -22,11 +30,11 @@ impl DensePoly {
         self.reduce_by_refs_geobucket(divisors, ring, None, None, None)
     }
 
-    /// Cancel-aware variant of [`reduce_by_refs`]. On cancel, returns
+    /// Cancel-aware variant of [`Self::reduce_by_refs`]. On cancel, returns
     /// the partial remainder accumulated so far — sound (same residue
     /// class) but not necessarily a normal form. Hot paths (Buchberger
     /// main loop, interreduce, bit-prop `contains`) should prefer this
-    /// over [`reduce_by_refs`] so the cancel token is honoured on
+    /// over [`Self::reduce_by_refs`] so the cancel token is honoured on
     /// dense polynomials.
     pub fn reduce_by_refs_cancel(
         &self,
@@ -40,7 +48,7 @@ impl DensePoly {
         self.reduce_by_refs_geobucket(divisors, ring, Some(cancel), None, None)
     }
 
-    /// Variant of [`reduce_by_refs_cancel`] that also records, in
+    /// Variant of [`Self::reduce_by_refs_cancel`] that also records, in
     /// `use_counts`, how many times each divisor was selected as the
     /// reducer during this call. `use_counts.len()` must equal
     /// `divisors.len()`; entries are incremented (not zeroed).
@@ -58,7 +66,7 @@ impl DensePoly {
         self.reduce_by_refs_geobucket(divisors, ring, Some(cancel), Some(use_counts), None)
     }
 
-    /// Like [`reduce_by_refs_counted_cancel`] but reuses the caller's
+    /// Like [`Self::reduce_by_refs_counted_cancel`] but reuses the caller's
     /// precomputed leading-term DivMasks (`div_dms[i]` for `divisors[i]`),
     /// skipping the per-call recompute. Result-identical.
     pub fn reduce_by_refs_counted_cancel_dms(
@@ -77,7 +85,7 @@ impl DensePoly {
         self.reduce_by_refs_geobucket(divisors, ring, Some(cancel), Some(use_counts), Some(div_dms))
     }
 
-    /// Non-cancel-aware version of [`reduce_by_refs_counted_cancel`].
+    /// Non-cancel-aware version of [`Self::reduce_by_refs_counted_cancel`].
     pub fn reduce_by_refs_counted(
         &self,
         divisors: &[&DensePoly],
@@ -91,7 +99,7 @@ impl DensePoly {
         self.reduce_by_refs_geobucket(divisors, ring, None, Some(use_counts), None)
     }
 
-    /// Like [`reduce_by_refs_counted`] but reuses the caller's precomputed
+    /// Like [`Self::reduce_by_refs_counted`] but reuses the caller's precomputed
     /// leading-term DivMasks. Result-identical.
     pub fn reduce_by_refs_counted_dms(
         &self,
