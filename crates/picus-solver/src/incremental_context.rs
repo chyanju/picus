@@ -41,7 +41,7 @@ pub struct CachedBase {
     /// `split_gb_owned[1]` = nonlinear basis.
     pub split_gb_owned: Vec<Vec<Poly>>,
     pub bit_prop_state: BitPropState,
-    pub digest: u64,
+    pub digest: u128,
 }
 
 /// Partial GB build state preserved across solve calls. Used when the
@@ -50,7 +50,7 @@ pub struct CachedBase {
 /// in-flight [`IncrementalGB`] per partition so the open S-pair queue
 /// is not lost.
 struct PartialBuild {
-    digest: u64,
+    digest: u128,
     poly_ring: Arc<FfPolyRing>,
     var_map: HashMap<String, usize>,
     constraint_polys: Vec<Poly>,
@@ -68,7 +68,7 @@ pub struct IncrementalSolverContext {
     /// The cache builds only when two consecutive calls share a
     /// digest; circuits whose per-call constraint sides never repeat
     /// skip the cache-build cost entirely.
-    last_digest: Option<u64>,
+    last_digest: Option<u128>,
     /// In-flight partial GB build saved from a cancelled call. Resumed
     /// on the next call with the same digest.
     partial_build: Option<PartialBuild>,
@@ -193,7 +193,7 @@ impl IncrementalSolverContext {
     fn rebuild_base(
         &mut self,
         cs: &ConstraintSystem,
-        digest: u64,
+        digest: u128,
         cancel: &CancelToken,
     ) -> Result<(), ()> {
         self.cached_base = None;
@@ -638,12 +638,28 @@ fn stateless_solve(cs: &ConstraintSystem, cancel: &CancelToken) -> SolveOutcome 
 }
 
 /// Hash an [`ConstraintSystem`]'s constraint side (everything
-/// except `disequalities`) into a `u64` cache key. Self-consistent:
+/// except `disequalities`) into a 128-bit cache key. Self-consistent:
 /// two systems agreeing on `(prime, var_names, equalities,
 /// assignments, bitsums, add_field_polys)` produce the same digest.
-pub fn digest_constraint_side(cs: &crate::frontend::encoder::ConstraintSystem) -> u64 {
+///
+/// The key is 128 bits, not 64, because a digest match is trusted to
+/// reuse a prior split-GB without re-deriving it, and an UNSAT result
+/// from a cache hit is returned without a model re-check (unlike SAT,
+/// which `model::verify_model` validates). A two-distinct-constraint-side
+/// collision would therefore be an unsound UNSAT; 64 bits leaves a
+/// ~2^-64 residual, 128 bits makes it negligible against every other
+/// failure mode. Two SipHash passes with distinct domain prefixes are
+/// effectively independent, so a simultaneous collision is ~2^-128.
+pub fn digest_constraint_side(cs: &crate::frontend::encoder::ConstraintSystem) -> u128 {
+    let lo = hash_constraint_side(cs, 0x01);
+    let hi = hash_constraint_side(cs, 0xA5);
+    ((hi as u128) << 64) | (lo as u128)
+}
+
+fn hash_constraint_side(cs: &crate::frontend::encoder::ConstraintSystem, domain: u64) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
+    domain.hash(&mut h);
     cs.prime.hash(&mut h);
     cs.add_field_polys.hash(&mut h);
     // `var_names` is part of the system's identity for caching:

@@ -68,7 +68,7 @@ impl Drop for PanicSilenceGuard {
 pub struct NativeFfBackend {
     /// Constraint-side digest of the most recent `solve` call. Used to
     /// count consecutive-same-digest streaks for telemetry.
-    last_cs_digest: Option<u64>,
+    last_cs_digest: Option<u128>,
     /// Amortises split-GB across `solve` calls whose constraint side
     /// has not changed. Whether to actually consult it is read from
     /// `RuntimeConfig::cache_enabled` at each `solve` call rather than
@@ -94,7 +94,7 @@ impl NativeFfBackend {
 
 /// Thin wrapper around the cache module's `digest_constraint_side`.
 /// Used for the stats path's `last_cs_digest` tracking.
-fn digest_native_constraint_side(ics: &ConstraintSystem) -> u64 {
+fn digest_native_constraint_side(ics: &ConstraintSystem) -> u128 {
     picus_solver::incremental_context::digest_constraint_side(ics)
 }
 

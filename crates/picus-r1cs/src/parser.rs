@@ -124,6 +124,30 @@ pub fn read_r1cs(data: &[u8]) -> Result<R1csFile, R1csParseError> {
         parse_constraint_section(&constraint_sec.data, field_size, m_constraints, &header.prime_number)?;
     let w2l = parse_w2l_section(&w2l_sec.data)?;
 
+    // Header-count plausibility. Two invariants hold for any well-formed
+    // iden3 R1CS: the wire-to-label map carries exactly one label per wire
+    // (so `n_wires == w2l.labels.len()`), and the I/O wires plus the
+    // constant wire are a subset of all wires. Reject violations here, so
+    // an adversarial header (e.g. `n_pub_in = u32::MAX`) cannot drive the
+    // unbounded input-list build below or the `2 * n_wires` ring
+    // allocation in `r1cs_to_poly_ir`. `io_sum` is computed in `u64` to
+    // avoid overflow when the three counts are near `u32::MAX`.
+    let io_sum = 1 + header.n_pub_out as u64 + header.n_pub_in as u64 + header.n_prv_in as u64;
+    if io_sum > header.n_wires as u64 {
+        return Err(R1csParseError::HeaderImplausible {
+            field: "1 + n_pub_out + n_pub_in + n_prv_in",
+            claimed: io_sum,
+            bound: header.n_wires as u64,
+        });
+    }
+    if header.n_wires as usize > w2l.labels.len() {
+        return Err(R1csParseError::HeaderImplausible {
+            field: "n_wires",
+            claimed: header.n_wires as u64,
+            bound: w2l.labels.len() as u64,
+        });
+    }
+
     // Compute input/output lists. Ecne convention (1-based):
     //   inputs = [1] ++ [istart..iend]
     //     istart = 2 + npubout
@@ -387,6 +411,65 @@ mod tests {
             data.extend_from_slice(payload);
         }
         let r = read_r1cs(&data);
+        assert!(
+            matches!(r, Err(R1csParseError::HeaderImplausible { .. })),
+            "expected HeaderImplausible, got {:?}",
+            r
+        );
+    }
+
+    /// Assemble a 3-section R1CS (types 1/2/3) from raw payloads.
+    fn assemble(header: &[u8], constraints: &[u8], w2l: &[u8]) -> Vec<u8> {
+        let mut data: Vec<u8> = b"r1cs".to_vec();
+        data.extend_from_slice(&1u32.to_le_bytes()); // version
+        data.extend_from_slice(&3u32.to_le_bytes()); // n_sections
+        for (ty, payload) in [(1u32, header), (2u32, constraints), (3u32, w2l)] {
+            data.extend_from_slice(&ty.to_le_bytes());
+            data.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+            data.extend_from_slice(payload);
+        }
+        data
+    }
+
+    /// Header payload with prime 7 and the given wire/IO counts.
+    fn header_payload(n_wires: u32, n_pub_out: u32, n_pub_in: u32, n_prv_in: u32) -> Vec<u8> {
+        let mut h: Vec<u8> = Vec::new();
+        h.extend_from_slice(&8u32.to_le_bytes()); // field_size = 8
+        h.extend_from_slice(&[7u8, 0, 0, 0, 0, 0, 0, 0]); // prime = 7
+        h.extend_from_slice(&n_wires.to_le_bytes());
+        h.extend_from_slice(&n_pub_out.to_le_bytes());
+        h.extend_from_slice(&n_pub_in.to_le_bytes());
+        h.extend_from_slice(&n_prv_in.to_le_bytes());
+        h.extend_from_slice(&1u64.to_le_bytes()); // n_labels
+        h.extend_from_slice(&0u32.to_le_bytes()); // m_constraints = 0
+        h
+    }
+
+    #[test]
+    fn implausible_io_count_returns_error_not_oom() {
+        // n_wires = 1 but n_pub_in = u32::MAX violates the I/O-subset
+        // invariant (1 + n_pub_out + n_pub_in + n_prv_in <= n_wires). The
+        // parser must reject before the unbounded input-list build, not
+        // hang/OOM constructing a billion-element Vec.
+        let header = header_payload(1, 0, u32::MAX, 0);
+        let w2l = 1u64.to_le_bytes().to_vec(); // 1 label
+        let r = read_r1cs(&assemble(&header, &[], &w2l));
+        assert!(
+            matches!(r, Err(R1csParseError::HeaderImplausible { .. })),
+            "expected HeaderImplausible, got {:?}",
+            r
+        );
+    }
+
+    #[test]
+    fn implausible_n_wires_returns_error_not_oom() {
+        // n_wires = u32::MAX but the wire-to-label map has one entry. The
+        // parser must reject before r1cs_to_poly_ir allocates 2 * n_wires
+        // variable names (~8.5 GiB). The I/O guard passes here (io_sum = 1),
+        // so this exercises the n_wires <= w2l.labels.len() guard.
+        let header = header_payload(u32::MAX, 0, 0, 0);
+        let w2l = 1u64.to_le_bytes().to_vec(); // 1 label << n_wires
+        let r = read_r1cs(&assemble(&header, &[], &w2l));
         assert!(
             matches!(r, Err(R1csParseError::HeaderImplausible { .. })),
             "expected HeaderImplausible, got {:?}",
