@@ -301,6 +301,9 @@ fn build_poly(
                     Ok(neg_poly(&p, prime))
                 }
                 "-" => {
+                    if elts.len() < 2 {
+                        return Err(ParseError::Malformed("'-' arity".into()));
+                    }
                     let mut acc = build_poly(&elts[1], prime, vars, builder)?;
                     for child in &elts[2..] {
                         let p = build_poly(child, prime, vars, builder)?;
@@ -763,6 +766,9 @@ fn build_poly_with_ctx(s: &Sexpr, ctx: &mut ParseCtx) -> Result<Polynomial, Pars
                     Ok(neg_poly(&p, &prime))
                 }
                 "-" => {
+                    if elts.len() < 2 {
+                        return Err(ParseError::Malformed("'-' arity".into()));
+                    }
                     let mut acc = build_poly_with_ctx(&elts[1], ctx)?;
                     let prime = ctx.prime.clone();
                     for child in &elts[2..] {
