@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/). Entries are telegraphic: one line per change — what changed plus the key term/API — with no narrative, mechanism explanations, or "no verdict change" boilerplate.
 
+## [1.8.11] - 2026-05-27
+- `set_target` asserts a non-input uniqueness target in release builds (was debug-only); split-GB SAT models are re-verified against the bitsum polynomials in addition to the original generators.
+- Sparse Gröbner-basis path (the default representation) wraps the engine in `catch_unwind`, degrading a panic to an empty basis → `Unknown` via `finish_gb` (was a process abort); matches the dense path.
+- `linalg` echelon `expect`s that a nonzero leading coefficient is invertible (was a silently unnormalized pivot row); `min_poly_cancel` uses the cancel-aware reduction.
+- Single-sourced the bitsum aux-variable index (`bitsum_aux_index`), the geobucket reducer thresholds (`ReducerIndex`), and the split-GB self-membership memo seeding (`seed_self_membership`); added dense incremental-vs-from-scratch GB, encoder `n_diseq > 0` bitsum, and lowering copy-symmetry tests.
+
 ## [1.8.10] - 2026-05-27
 - SMT-LIB parser caps S-expression nesting and `define-fun` expansion depth (stack overflow → malformed-input error); `ff.mul` exponent overflow returns a parse error instead of panicking.
 - R1CS parser accepts a non-multiple-of-8 `field_size` (1-byte small primes, e.g. GF(7)).
