@@ -14,15 +14,19 @@ use crate::timeout::CancelToken;
 
 use super::super::polynomial::{PolyRing, DensePoly};
 use super::super::spair::SPair;
-use super::{BuchbergerConfig, BuchbergerObserver, BuchbergerState, NoObserver};
+use super::{BasisElement, BuchbergerConfig, BuchbergerObserver, BuchbergerState, NoObserver};
 
 /// Snapshot of the engine state at a `push` point. Restored on `pop`.
 #[derive(Clone, Debug)]
 struct Checkpoint {
-    basis_len: usize,
-    /// `active` flags for the elements that existed at push time, so any
-    /// deactivations between push and pop are reverted on pop.
-    active_snapshot: Vec<bool>,
+    /// Complete snapshot of the basis elements present at push time,
+    /// including polynomial bodies. `add_generators` / `run_only` run
+    /// `tail_reduce_active`, which rewrites the bodies of pre-push
+    /// elements using post-push (higher-generation) reducers; those
+    /// contributions need not lie in the pre-push ideal, so `pop` must
+    /// restore the bodies — not just the `active` flags — or the
+    /// popped-level basis is no longer a basis of the pre-push ideal.
+    basis_snapshot: Vec<BasisElement>,
     /// Generation at this level — bumped on `pop`.
     generation: u32,
     /// Snapshot of the open S-pair queue (sorted descending, same
@@ -121,13 +125,15 @@ impl IncrementalGB {
         Ok(self.state.trivial)
     }
 
-    /// Save a checkpoint for backtracking. Cost: O(basis_len + open_len)
-    /// (clones the S-pair vector — already sorted, no extra ordering work).
+    /// Save a checkpoint for backtracking. Clones the surviving basis
+    /// elements (with their polynomial bodies) and the open S-pair queue,
+    /// so cost is O(sum of basis body sizes + open_len). Cloning bodies is
+    /// required, not optional: `tail_reduce_active` rewrites pre-push
+    /// element bodies with post-push contributions that `pop` must roll
+    /// back.
     pub fn push(&mut self) {
-        let active_snapshot: Vec<bool> = self.state.basis.iter().map(|e| e.active).collect();
         self.trail.push(Checkpoint {
-            basis_len: self.state.basis.len(),
-            active_snapshot,
+            basis_snapshot: self.state.basis.clone(),
             generation: self.state.generation,
             saved_open: self.state.open.clone(),
             age_counter: self.state.age_counter,
@@ -138,12 +144,11 @@ impl IncrementalGB {
 
     pub fn pop(&mut self) {
         if let Some(cp) = self.trail.pop() {
-            self.state.basis.truncate(cp.basis_len);
-            for (idx, was_active) in cp.active_snapshot.into_iter().enumerate() {
-                if idx < self.state.basis.len() {
-                    self.state.basis[idx].active = was_active;
-                }
-            }
+            // Restore the basis to its exact push-time state in one move:
+            // this drops every element added since the push and rolls back
+            // the bodies / `active` flags of the survivors (which
+            // tail-reduction may have rewritten).
+            self.state.basis = cp.basis_snapshot;
             self.state.open = cp.saved_open;
             self.state.age_counter = cp.age_counter;
             self.state.generation = cp.generation;
