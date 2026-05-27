@@ -91,6 +91,55 @@ pub fn admit(_pr: &FfPolyRing, idx: usize, p: &Poly) -> bool {
     }
 }
 
+/// Outcome of classifying a candidate poly against one partition during
+/// the propagation fixpoint. Shared by all three fixpoint drivers
+/// (`fixpoint::run_fixpoint`, `run_fixpoint_traced`,
+/// `incremental_context::continue_partial`).
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub(crate) enum Propagate {
+    /// `p` doesn't fit partition `j`'s degree/term shape.
+    NotAdmitted,
+    /// `(p, j)` already memoised as in-ideal — skip.
+    MemoHit,
+    /// `contains` confirmed `p ∈ I_j` — skip (now memoised).
+    InBasis,
+    /// `p ∉ I_j` — caller should queue `p` as a new generator of `j`.
+    NewGenerator,
+}
+
+/// Classify whether candidate `p` (with precomputed `p_hash`) should be
+/// queued as a new generator of partition `j`, updating `contains_memo`.
+///
+/// The memo records `(p_hash, j)` both when `p` is found in the basis and
+/// when it is about to be added: after the next iteration's `extend`,
+/// `p ∈ I_j`, so re-checking it would be wasted. This pre-record is the
+/// subtle, must-stay-identical step across the three drivers, so it lives
+/// here as the single source rather than being hand-copied three times.
+pub(crate) fn classify_propagation(
+    poly_ring: &FfPolyRing,
+    basis_j: &Ideal,
+    j: usize,
+    p: &Poly,
+    p_hash: u64,
+    contains_memo: &mut std::collections::HashSet<(u64, usize)>,
+    cancel: &CancelToken,
+) -> Propagate {
+    if !admit(poly_ring, j, p) {
+        return Propagate::NotAdmitted;
+    }
+    let key = (p_hash, j);
+    if contains_memo.contains(&key) {
+        return Propagate::MemoHit;
+    }
+    let in_basis = basis_j.contains_with_cancel(p, cancel);
+    contains_memo.insert(key);
+    if in_basis {
+        Propagate::InBasis
+    } else {
+        Propagate::NewGenerator
+    }
+}
+
 /// Total degree of a polynomial.
 pub fn total_degree(p: &Poly) -> usize {
     p.total_degree() as usize
