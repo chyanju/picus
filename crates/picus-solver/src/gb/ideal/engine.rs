@@ -252,26 +252,35 @@ pub(crate) fn use_sparse_gb() -> bool {
 /// sparse arm, compute and inter-reduce sparsely, and return a sparse-arm
 /// basis (the polynomials stay resident-sparse, no dense materialisation).
 ///
-/// Contract (load-bearing, not encoded in the return type): on
-/// **cancellation** the sparse engine returns the basis built so far — a
-/// valid generating set of the same ideal but NOT a complete Gröbner
-/// basis — and this function passes it through, so every caller MUST
+/// Contract: on **cancellation** the sparse engine returns the basis built
+/// so far — a valid generating set of the same ideal but NOT a complete
+/// Gröbner basis — surfaced here as `Ok(partial)`, so every caller MUST
 /// re-check `cancel.is_cancelled()` and discard it before trusting it as a
-/// GB. Unlike the dense path (`compute_gb_buchberger`), there is no
-/// `catch_unwind` here: a panic in the sparse engine propagates to the
-/// process-level hook (a crash → Unknown, never a false verdict).
+/// GB. A panic in the sparse engine is caught and mapped to
+/// `EngineError::Internal` (mirroring the dense path's `catch_unwind`), so
+/// a malformed query degrades to an empty basis → Unknown via `finish_gb`
+/// rather than aborting the process.
 fn sparse_gb_route(
     poly_ring: &FfPolyRing,
     generators: Vec<Poly>,
     order: FfOrder,
     cancel: &CancelToken,
-) -> Vec<Poly> {
+) -> Result<Vec<Poly>, EngineError> {
     let ring = ring_for_order(poly_ring, order);
-    let sparse: Vec<crate::ff::sparse_polynomial::SparsePolynomial> =
-        generators.iter().map(|p| p.to_sparse(&ring)).collect();
-    let gb = crate::ff::sparse_gb::groebner_basis(sparse, &ring, Some(cancel));
-    let reduced = crate::ff::sparse_gb::interreduce(gb, &ring, Some(cancel));
-    reduced.into_iter().map(Poly::Sparse).collect()
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let sparse: Vec<crate::ff::sparse_polynomial::SparsePolynomial> =
+            generators.iter().map(|p| p.to_sparse(&ring)).collect();
+        let gb = crate::ff::sparse_gb::groebner_basis(sparse, &ring, Some(cancel));
+        let reduced = crate::ff::sparse_gb::interreduce(gb, &ring, Some(cancel));
+        reduced.into_iter().map(Poly::Sparse).collect::<Vec<Poly>>()
+    }));
+    match result {
+        Ok(basis) => Ok(basis),
+        Err(_) => {
+            log::warn!("sparse GB computation panicked");
+            Err(EngineError::Internal("sparse Buchberger panicked".into()))
+        }
+    }
 }
 
 /// Unwrap a vector of solve-core `Poly` to the dense `DensePoly` the
@@ -350,7 +359,9 @@ pub fn compute_gb_with_order(
             return crate::gb::gb_homog::compute_gb_by_homog(poly_ring, generators, cancel);
         }
         record_dispatched("sparse-buchberger");
-        return sparse_gb_route(poly_ring, generators, order, cancel);
+        let backup: Vec<Poly> = generators.iter().map(|p| p.clone()).collect();
+        let result = sparse_gb_route(poly_ring, generators, order, cancel);
+        return finish_gb(result, cancel, backup, "sparse GB");
     }
     let n_gens = generators.len();
     let n_vars = poly_ring.n_vars();
@@ -417,7 +428,9 @@ pub(crate) fn compute_gb_direct(
         return Vec::new();
     }
     if use_sparse_gb() {
-        return sparse_gb_route(poly_ring, generators, order, cancel);
+        let backup: Vec<Poly> = generators.iter().map(|p| p.clone()).collect();
+        let result = sparse_gb_route(poly_ring, generators, order, cancel);
+        return finish_gb(result, cancel, backup, "inner direct sparse GB");
     }
     let backup: Vec<Poly> = generators.iter().map(|p| p.clone()).collect();
     let result = compute_gb_buchberger(poly_ring, generators, cancel, order);
@@ -448,15 +461,29 @@ pub fn compute_gb_incremental_with_order(
         // contract the dense path relies on via `seed_reduced_basis`) and
         // process only the cross / intra-new S-pairs, then inter-reduce —
         // identical to recomputing the union, but skips the O(n²) seed
-        // pairs.
+        // pairs. A panic is caught and mapped to an empty basis → Unknown
+        // via `finish_gb`, mirroring the dense incremental path.
         let ring = ring_for_order(poly_ring, order);
-        let known: Vec<crate::ff::sparse_polynomial::SparsePolynomial> =
-            known_gb.iter().map(|p| p.to_sparse(&ring)).collect();
-        let fresh: Vec<crate::ff::sparse_polynomial::SparsePolynomial> =
-            new_polys.iter().map(|p| p.to_sparse(&ring)).collect();
-        let gb = crate::ff::sparse_gb::groebner_basis_incremental(known, fresh, &ring, Some(cancel));
-        let reduced = crate::ff::sparse_gb::interreduce(gb, &ring, Some(cancel));
-        return reduced.into_iter().map(Poly::Sparse).collect();
+        let backup: Vec<Poly> = known_gb.iter().chain(new_polys.iter())
+            .map(|p| p.clone())
+            .collect();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let known: Vec<crate::ff::sparse_polynomial::SparsePolynomial> =
+                known_gb.iter().map(|p| p.to_sparse(&ring)).collect();
+            let fresh: Vec<crate::ff::sparse_polynomial::SparsePolynomial> =
+                new_polys.iter().map(|p| p.to_sparse(&ring)).collect();
+            let gb = crate::ff::sparse_gb::groebner_basis_incremental(known, fresh, &ring, Some(cancel));
+            let reduced = crate::ff::sparse_gb::interreduce(gb, &ring, Some(cancel));
+            reduced.into_iter().map(Poly::Sparse).collect::<Vec<Poly>>()
+        }));
+        let result: Result<Vec<Poly>, EngineError> = match result {
+            Ok(basis) => Ok(basis),
+            Err(_) => {
+                log::warn!("incremental sparse GB computation panicked");
+                Err(EngineError::Internal("incremental sparse Buchberger panicked".into()))
+            }
+        };
+        return finish_gb(result, cancel, backup, "incremental sparse GB");
     }
     let ring = ring_for_order(poly_ring, order);
     let cfg = BuchbergerConfig {
