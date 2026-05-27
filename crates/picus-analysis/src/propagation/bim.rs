@@ -63,8 +63,7 @@ impl PropagationLemma for BimLemma {
                 if let Some(&col) = sig_idx.get(sig) {
                     // Accumulate (mod p): a wire appearing more than once in
                     // one equation must sum its coefficients, not keep only
-                    // the last. (No fired system reaches this today, but an
-                    // overwrite would silently mis-build the matrix.)
+                    // the last (an overwrite would mis-build the matrix).
                     let acc = (&matrix[row][col] + coeff) % p;
                     matrix[row][col] = acc;
                 }

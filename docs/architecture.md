@@ -161,9 +161,10 @@ algebra), `smt2/`, and `split_gb/`, with `core.rs`, `boolean.rs`, and
   LBool), `clause` (Clause / ClauseArena), `solver` (Solver).
   Watched-literal unit propagation, 1-UIP conflict analysis with
   VSIDS variable activity, phase saving, Luby restart, max-heap
-  variable order; theory integration via `add_theory_lemma` (sorts
-  by descending level, backtracks to the conflict's second-highest
-  level, enqueues the asserting literal) and `enqueue_theory`
+  variable order; theory integration via `add_theory_lemma_with_trail`
+  (sorts by descending level, backtracks to the conflict's second-highest
+  level, enqueues the asserting literal, returns the post-backtrack trail
+  length) and `enqueue_theory`
   (theory-propagated literal with a learnt reason clause
   `(lit ∨ ¬r_i …)`).
 - **`cdclt/`** — CDCL(T) orchestration. `atoms` (canonical FF atom
@@ -289,9 +290,11 @@ R1CS-to-PolyIR lowering and solver-backend trait.
   `validate_combination`, `create_backend`. Dispatch goes through
   the inventory of `SolverBackendDescriptor`s: built-in `SolverKind`
   variants are ergonomic aliases that match the descriptor's `name`
-  field. Adding a new backend (research solver, in-house QF_FF
-  alternative, etc.) is a new `inventory::submit!` block — no edits
-  to enums or match tables required. `SUBP_CONSTANT_NAMES` lists the
+  field. A new backend registers via an `inventory::submit!` block and
+  is then reachable through `create_backend_by_name`; selection by name
+  (`--solver`, config) additionally needs a matching `SolverKind`
+  variant, since `SolverKind::from_str` resolves the built-in names.
+  `SUBP_CONSTANT_NAMES` lists the
   named field constants that the `picus` witness post-processor
   filters out of solver-produced models.
 
