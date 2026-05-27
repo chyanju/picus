@@ -453,10 +453,6 @@ impl<'a> Theory for FfTheory<'a> {
             .unwrap_or_default()
     }
 
-    fn level(&self) -> u32 {
-        self.levels.len() as u32
-    }
-
     fn collect_model(&self) -> Option<HashMap<String, BigUint>> {
         if self.has_model {
             self.last_model.clone()

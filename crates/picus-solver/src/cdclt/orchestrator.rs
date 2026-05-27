@@ -3,7 +3,7 @@
 //! Drives [`sat::Solver`] step by step, notifying the theory plug-in
 //! of each newly-committed literal and consulting it at full
 //! assignment. Theory conflicts become learnt clauses via
-//! [`sat::Solver::add_theory_lemma`].
+//! [`sat::Solver::add_theory_lemma_with_trail`].
 
 use std::collections::HashMap;
 
