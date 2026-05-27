@@ -183,9 +183,7 @@ impl<'a> FfTheory<'a> {
             }
         }
     }
-}
 
-impl<'a> FfTheory<'a> {
     /// `var_name -> (value, source_atom)` from positive single-variable
     /// equalities on the trail.
     fn pinned_vars(&self) -> HashMap<String, (BigUint, Var)> {
