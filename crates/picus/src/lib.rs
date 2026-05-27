@@ -358,15 +358,15 @@ pub fn dump_gb_stats() {
 // Internal helpers
 // ============================================================
 
-/// Split a raw solver model into two clean witness maps, filtering
-/// out internal constants (ps1, zero, etc.). Routing is by the
-/// PolyIR convention: `x<digits>` keys go to witness 1, `y<digits>` keys
-/// to witness 2. An input wire shares `x_i` across both copies (no `y_i`
-/// is emitted), so its value is echoed into witness 2 as well — keeping
-/// witness 2 a complete assignment rather than only the non-input alt
-/// vars. Anything else (an aux var the solver invented, a Rabinowitsch
-/// witness, ...) goes to witness 1 rather than being misclassified by
-/// prefix.
+/// Split a raw solver model into two clean witness maps. Routing is by
+/// the PolyIR convention: `x<digits>` keys go to witness 1, `y<digits>`
+/// keys to witness 2. An input wire shares `x_i` across both copies (no
+/// `y_i` is emitted), so its value is echoed into witness 2 as well —
+/// keeping witness 2 a complete assignment rather than only the non-input
+/// alt vars. Filtered out of both maps: named field constants
+/// (`SUBP_CONSTANT_NAMES`) and solver-internal auxiliary variables
+/// (the encoder's `__w_diseq_*` Rabinowitsch witnesses and `__bitsum_*`
+/// aux), which are not circuit signals.
 fn split_model(
     model: &HashMap<String, BigUint>,
 ) -> (HashMap<String, BigUint>, HashMap<String, BigUint>) {
@@ -387,6 +387,12 @@ fn split_model(
         if constants.contains(var.as_str()) {
             continue;
         }
+        // Encoder-internal aux vars (`__w_diseq_*`, `__bitsum_*`) are not
+        // circuit signals; they would otherwise fall through to witness 1
+        // (no `x`/`y` prefix, no parseable index).
+        if var.starts_with("__") {
+            continue;
+        }
         let idx = picus_r1cs::parse_var_index(var);
         if var.starts_with('y') && idx.is_some() {
             w2.insert(var.clone(), val.clone());
@@ -405,4 +411,35 @@ fn split_model(
     }
 
     (w1, w2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_model_filters_aux_and_routes_copies() {
+        let mut model = HashMap::new();
+        model.insert("x0".to_string(), BigUint::from(1u32)); // input (no y0): shared
+        model.insert("x5".to_string(), BigUint::from(7u32)); // orig copy (has y5)
+        model.insert("y5".to_string(), BigUint::from(9u32)); // alt copy
+        model.insert("__w_diseq_0".to_string(), BigUint::from(3u32)); // aux: filtered
+        model.insert("__bitsum_0".to_string(), BigUint::from(4u32)); // aux: filtered
+        model.insert("one".to_string(), BigUint::from(1u32)); // named constant: filtered
+
+        let (w1, w2) = split_model(&model);
+
+        // witness 1: original copies only, no aux / constants.
+        assert_eq!(w1.get("x0"), Some(&BigUint::from(1u32)));
+        assert_eq!(w1.get("x5"), Some(&BigUint::from(7u32)));
+        assert!(!w1.contains_key("__w_diseq_0"));
+        assert!(!w1.contains_key("__bitsum_0"));
+        assert!(!w1.contains_key("one"));
+
+        // witness 2: alt copy y5, input x0 echoed (shared), no aux.
+        assert_eq!(w2.get("y5"), Some(&BigUint::from(9u32)));
+        assert_eq!(w2.get("x0"), Some(&BigUint::from(1u32)));
+        assert!(!w2.contains_key("__w_diseq_0"));
+        assert!(!w2.contains_key("__bitsum_0"));
+    }
 }

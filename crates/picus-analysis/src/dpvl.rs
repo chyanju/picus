@@ -311,7 +311,6 @@ impl DpvlContext {
                 return DpvlResult::Unknown;
             }
 
-            let us_before = us.len();
             let mut uspool: HashSet<usize> = us.clone();
             let mut made_progress = false;
 
@@ -354,9 +353,9 @@ impl DpvlContext {
             }
 
             if !made_progress {
-                if us.len() < us_before {
-                    continue;
-                }
+                // No wire was verified this round (the only `us`-shrinking
+                // path, `Verified`, sets `made_progress`), so `us` is
+                // unchanged and another iteration cannot help: decide now.
                 return if self.target_set.iter().all(|t| ks.contains(t)) {
                     DpvlResult::Safe
                 } else {

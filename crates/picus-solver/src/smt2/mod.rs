@@ -601,6 +601,22 @@ fn is_bool_expr(s: &Sexpr, ctx: &ParseCtx) -> bool {
     }
 }
 
+/// Sort of an `=` / `distinct` chain, checked for consistency. SMT-LIB
+/// requires every operand to share one sort; classifying by the first
+/// argument alone (as the dispatch needs) would silently mis-route a
+/// mixed Bool/FF chain. Confirm the rest agree, rejecting a mismatch as
+/// malformed rather than picking a branch. `args` is the operand slice
+/// (`list[1..]`), guaranteed non-empty by the caller's arity check.
+fn chain_is_bool(args: &[Sexpr], ctx: &ParseCtx) -> Result<bool, ParseError> {
+    let first = is_bool_expr(&args[0], ctx);
+    if args[1..].iter().any(|a| is_bool_expr(a, ctx) != first) {
+        return Err(ParseError::Malformed(
+            "'=' / 'distinct' operands mix Bool and FF sorts".into(),
+        ));
+    }
+    Ok(first)
+}
+
 /// Build an FF polynomial recursively. Threads `ctx.builder` so
 /// every FF-typed leaf reference goes through `builder.var(name)`,
 /// producing index-keyed `Vec<PolyTerm>` directly.
@@ -849,7 +865,7 @@ pub(in crate::smt2) fn assert_to_formula(s: &Sexpr, ctx: &mut ParseCtx) -> Resul
             if list.len() < 3 {
                 return Err(ParseError::Malformed("'=' arity".into()));
             }
-            let bool_args = is_bool_expr(&list[1], ctx);
+            let bool_args = chain_is_bool(&list[1..], ctx)?;
             if bool_args {
                 let mut bools: Vec<Formula> = Vec::with_capacity(list.len() - 1);
                 for c in &list[1..] {
@@ -868,7 +884,7 @@ pub(in crate::smt2) fn assert_to_formula(s: &Sexpr, ctx: &mut ParseCtx) -> Resul
             if list.len() < 3 {
                 return Err(ParseError::Malformed("'distinct' arity".into()));
             }
-            let bool_args = is_bool_expr(&list[1], ctx);
+            let bool_args = chain_is_bool(&list[1..], ctx)?;
             if bool_args {
                 let mut bools: Vec<Formula> = Vec::with_capacity(list.len() - 1);
                 for c in &list[1..] {

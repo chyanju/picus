@@ -67,11 +67,6 @@ pub trait Theory {
     /// roll its state back symmetrically. Default: noop.
     fn pop(&mut self) {}
 
-    /// Number of `push`-without-`pop` performed so far.
-    fn level(&self) -> u32 {
-        0
-    }
-
     /// On a `Sat` outcome, return the FF variable assignments that
     /// realize the model. Used by the orchestrator to compose the
     /// final SMT model. Default: empty.

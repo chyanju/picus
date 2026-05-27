@@ -6,8 +6,8 @@
 //! ([`Solver::backtrack_to`]), Luby-sequence restarts
 //! ([`Solver::should_restart`] + [`perform_restart`]), and a top-level
 //! [`Solver::solve`] driver. Theory clients call
-//! [`Solver::add_theory_lemma`] to inject conflict / propagation
-//! clauses and read assignments via [`Solver::value`] +
+//! [`Solver::add_theory_lemma_with_trail`] to inject conflict /
+//! propagation clauses and read assignments via [`Solver::value`] +
 //! [`Solver::trail`].
 
 use super::clause::{Clause, ClauseArena, ClauseRef};
@@ -504,17 +504,12 @@ impl Solver {
     /// be False. Sorts by descending decision level, computes the
     /// assertion level (largest literal-level strictly less than the
     /// max, or `max_level - 1` if every literal sits at the max),
-    /// backtracks, then registers via [`Self::learn_clause`]. Returns
-    /// `false` when the lemma forces root-level UNSAT.
-    pub fn add_theory_lemma(&mut self, lits: Vec<Lit>) -> bool {
-        self.add_theory_lemma_with_trail(lits).is_some()
-    }
-
-    /// Like [`Self::add_theory_lemma`], but on success returns the trail
-    /// length right after the internal backtrack and before
-    /// `learn_clause` enqueues the asserting literal. Callers thread
-    /// this through their `notified` pointer so the asserting literal
-    /// is included in the next theory-notify pass.
+    /// backtracks, then registers via [`Self::learn_clause`]. On success
+    /// returns the trail length right after the internal backtrack and
+    /// before `learn_clause` enqueues the asserting literal: callers
+    /// thread this through their `notified` pointer so the asserting
+    /// literal is included in the next theory-notify pass. Returns `None`
+    /// when the lemma forces root-level UNSAT.
     pub fn add_theory_lemma_with_trail(&mut self, mut lits: Vec<Lit>) -> Option<usize> {
         if lits.is_empty() {
             self.unsat = true;

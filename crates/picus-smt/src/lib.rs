@@ -103,9 +103,10 @@ pub fn validate_combination(solver: SolverKind, theory: Theory) -> Result<(), St
 /// Returns `None` for `SolverKind::None` (propagation-only mode).
 ///
 /// Dispatch is via the inventory registry of
-/// [`backends::SolverBackendDescriptor`] entries: adding a new
-/// `(name, theory)` pair is a new `inventory::submit!` block in the
-/// new backend's file — no edits to this function required.
+/// [`backends::SolverBackendDescriptor`] entries, so this function needs
+/// no edits to support a new backend. Reaching it from `--solver`, though,
+/// requires a [`SolverKind`] variant whose `as_str` matches the
+/// descriptor's `name` (see [`SolverKind::from_str`]).
 pub fn create_backend(
     solver: SolverKind,
     theory: Theory,
