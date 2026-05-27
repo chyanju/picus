@@ -882,3 +882,33 @@ fn session_echo_is_passed_through() {
         other => panic!("expected Echo, got {:?}", other),
     }
 }
+
+// ── H1: adversarial-input robustness (no stack overflow) ─────────────
+
+#[test]
+fn deep_sexpr_nesting_is_rejected_not_overflow() {
+    // Nesting far beyond MAX_SEXPR_DEPTH must surface as a clean parse
+    // error, not a stack-overflow abort (which `catch_unwind` cannot
+    // intercept). The depth cap fires inside `parse_one` before the
+    // recursion can exhaust the stack.
+    let depth = tokenizer::MAX_SEXPR_DEPTH + 500;
+    let src = format!(
+        "(set-logic QF_FF)\n(declare-fun x () (_ FiniteField 7))\n(assert {}{})\n",
+        "(".repeat(depth),
+        ")".repeat(depth),
+    );
+    assert!(parse(&src).is_err(), "deep nesting must be rejected, not crash");
+}
+
+#[test]
+fn recursive_define_fun_is_rejected_not_overflow() {
+    // A self-referential macro would expand without bound; the
+    // expansion-depth guard must reject it rather than overflow.
+    let src = r#"
+        (set-logic QF_FF)
+        (define-fun rec () (_ FiniteField 7) (rec))
+        (assert (= (rec) (rec)))
+        (check-sat)
+    "#;
+    assert!(parse(src).is_err(), "recursive macro must be rejected, not crash");
+}

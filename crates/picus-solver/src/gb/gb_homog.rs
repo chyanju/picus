@@ -242,4 +242,83 @@ mod tests {
         assert_eq!(lm_set(&pr, &gb_direct), lm_set(&pr, &gb_homog),
                    "chunked-add: direct LMs vs homog LMs");
     }
+
+    /// Full reduced-GB differential oracle for `compute_gb_by_homog` (the
+    /// engine's `ByHomog` strategy) against the per-pair direct driver, over
+    /// random low-degree generator sets. The LM-set checks above are
+    /// necessary but not sufficient for ideal equality; the reduced GB under
+    /// a fixed order is unique, so comparing the full reduced, monic bases
+    /// term-for-term is the oracle that would catch a by-homog soundness
+    /// divergence (homogenise/dehomogenise losing or adding a solution).
+    /// `compute_gb_direct` is the reference — config-independent per-pair
+    /// Buchberger, the same raw entry by-homog uses internally — so the test
+    /// can't accidentally compare ByHomog against itself.
+    #[test]
+    fn homog_reduced_gb_matches_direct_random() {
+        use crate::gb::ideal::{compute_gb_direct, interreduce_basis};
+
+        const GV: usize = 3;
+        const P: u64 = 101;
+        let field = PrimeField::new(BigUint::from(P as u32));
+        let pr = FfPolyRing::new(field, (0..GV).map(|i| format!("v{i}")).collect());
+
+        // Self-contained deterministic LCG (no test-only RNG dependency).
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            state >> 33
+        };
+
+        // Canonical form of a reduced, monic GB (interreduce_basis already
+        // monic-normalises): each poly's index-keyed terms, bases sorted, for
+        // an order-independent set comparison.
+        let canon = |gb: Vec<Poly>| -> Vec<Vec<(BigUint, Vec<(usize, u16)>)>> {
+            let reduced = interreduce_basis(&pr, gb, &CancelToken::none());
+            let ctx = pr.ctx();
+            let mut out: Vec<_> = reduced.iter().map(|p| p.collect_terms_idx(ctx)).collect();
+            out.sort();
+            out
+        };
+
+        for _ in 0..300 {
+            let n_gen = 2 + (next() % 3) as usize; // 2–4 generators
+            let mut gens: Vec<Poly> = Vec::new();
+            for _ in 0..n_gen {
+                let n_term = 1 + (next() % 3) as usize; // 1–3 terms
+                let mut poly = pr.zero();
+                for _ in 0..n_term {
+                    let coeff = pr.constant(pr.field().from_u64(1 + next() % (P - 1)));
+                    let mut term = coeff;
+                    for v in 0..GV {
+                        if next() % 2 == 1 {
+                            term = pr.mul(term, pr.var(v));
+                        }
+                    }
+                    poly = pr.add(poly, term);
+                }
+                if !pr.is_zero(&poly) {
+                    gens.push(poly);
+                }
+            }
+            if gens.is_empty() {
+                continue;
+            }
+
+            let gb_direct = compute_gb_direct(
+                &pr,
+                gens.iter().map(|p| pr.clone_poly(p)).collect(),
+                &CancelToken::none(),
+                MonomialOrder::DegRevLex,
+            );
+            let gb_homog = compute_gb_by_homog(&pr, gens, &CancelToken::none());
+
+            assert_eq!(
+                canon(gb_direct),
+                canon(gb_homog),
+                "by-homog reduced GB diverges from direct per-pair",
+            );
+        }
+    }
 }

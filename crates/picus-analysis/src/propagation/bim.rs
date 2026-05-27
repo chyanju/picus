@@ -41,6 +41,15 @@ impl PropagationLemma for BimLemma {
 
         // Only apply when the variable count matches the equation count
         // and all variables are currently unknown.
+        //
+        // Note on R1CS-lowered input: this lemma is effectively inert there.
+        // `r1cs_to_poly_ir` emits each linear constraint in both copies
+        // (`Σ a_i x_{w_i}` and `Σ a_i y_{w_i}`), and `collect_linear_homogeneous`
+        // maps both through `var_to_wire` (which collapses x_i and y_i to the
+        // same wire) — so the two copies become identical matrix rows. A square
+        // system with duplicate rows is singular (det = 0 below), so the lemma
+        // declines. It can still fire on a non-mirrored linear-homogeneous
+        // system built directly via the `PolyIR` API; it is not dead code.
         if equations.len() != all_sigs.len()
             || !all_sigs.iter().all(|s| ctx.unknown.contains(s))
         {

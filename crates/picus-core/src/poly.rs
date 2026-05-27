@@ -84,6 +84,13 @@ impl FfPolyRing {
 
     /// Reference to the underlying `ff::PolyRing` context.
     pub fn ctx(&self) -> &Arc<FfPolyRingCtx> { &self.ring.ctx }
+
+    /// Variables that actually appear in `p` (delegates to the inner
+    /// [`PolyRingFacade`]). Exposed here so the IR ring — which is just an
+    /// `FfPolyRing` — offers the structural query the propagation lemmas use.
+    pub fn appearing_indeterminates(&self, p: &Poly) -> AppearingVars {
+        self.ring.appearing_indeterminates(p)
+    }
 }
 
 /// Facade exposing the `.ring.` method surface used throughout
@@ -250,74 +257,14 @@ impl<'a> IntoIterator for &'a AppearingVars {
 
 // ─── IR-layer polynomial ────────────────────────────────────────────
 //
-// The IR layer and the engine share one dense/sparse polynomial type:
-// `IrPoly` aliases `Polynomial`, `IrTermsIter` aliases the facade
-// `TermsIter`, and `IrPolyRing` is a thin representation-aware facade over
-// `FfPolyRing` whose constructors build the arm fixed by the ring's
-// `repr` (seeded from config).
+// The IR layer and the engine share one dense/sparse polynomial type, so
+// the IR ring is just [`FfPolyRing`] (its method surface already covers
+// everything `picus-smt`'s `PolyIR` needs) and the IR polynomial is
+// `IrPoly`, an alias for [`Polynomial`]. Keeping the alias documents intent
+// at the `picus-smt` / `picus-analysis` use sites without a second facade.
 
 /// IR polynomial — the dense/sparse `Polynomial` enum.
 pub type IrPoly = Polynomial;
-
-/// Term iterator over an `IrPoly` (the facade `TermsIter`).
-pub type IrTermsIter<'a> = TermsIter<'a>;
-
-/// IR-layer ring facade producing [`IrPoly`] in the configured
-/// representation. All polynomials built over one ring share one arm.
-pub struct IrPolyRing {
-    inner: FfPolyRing,
-}
-
-impl IrPolyRing {
-    /// New ring; representation taken from the current thread config.
-    pub fn new(field: PrimeField, var_names: Vec<String>) -> Self {
-        IrPolyRing { inner: FfPolyRing::new(field, var_names) }
-    }
-
-    /// New ring with an explicit representation (tests / oracle),
-    /// bypassing the thread-local config entirely.
-    pub fn new_with_repr(field: PrimeField, var_names: Vec<String>, repr: ReprKind) -> Self {
-        IrPolyRing { inner: FfPolyRing::new_with_repr(field, var_names, repr) }
-    }
-
-    pub fn repr(&self) -> ReprKind { self.inner.ring.ctx.repr }
-    /// The underlying [`FfPolyRing`]. `IrPoly` is the same `Polynomial`
-    /// type the solver engine consumes, so callers that need an
-    /// `&FfPolyRing` (e.g. to run a Gröbner-basis routine over the IR
-    /// polynomials) borrow it here.
-    pub fn as_ff(&self) -> &FfPolyRing { &self.inner }
-    pub fn n_vars(&self) -> usize { self.inner.n_vars() }
-    pub fn var_names(&self) -> &[String] { self.inner.var_names() }
-    pub fn field(&self) -> &PrimeField { self.inner.field() }
-    pub fn ctx(&self) -> &Arc<FfPolyRingCtx> { &self.inner.ring.ctx }
-    pub fn var_index(&self, name: &str) -> Option<usize> { self.inner.var_index(name) }
-
-    pub fn var(&self, index: usize) -> IrPoly { self.inner.var(index) }
-    pub fn constant(&self, el: FieldElem) -> IrPoly { self.inner.constant(el) }
-    pub fn zero(&self) -> IrPoly { self.inner.zero() }
-    pub fn one(&self) -> IrPoly { self.inner.one() }
-
-    pub fn add(&self, a: IrPoly, b: IrPoly) -> IrPoly { a.add(&b, &self.inner.ring.ctx) }
-    pub fn sub(&self, a: IrPoly, b: IrPoly) -> IrPoly { a.sub(&b, &self.inner.ring.ctx) }
-    pub fn mul(&self, a: IrPoly, b: IrPoly) -> IrPoly { a.mul(&b, &self.inner.ring.ctx) }
-    pub fn neg(&self, a: IrPoly) -> IrPoly { a.negate(&self.inner.ring.ctx) }
-    pub fn scale(&self, coeff: FieldElem, poly: IrPoly) -> IrPoly {
-        poly.scale(&coeff, &self.inner.ring.ctx)
-    }
-
-    pub fn clone_poly(&self, p: &IrPoly) -> IrPoly { p.clone() }
-    pub fn is_zero(&self, p: &IrPoly) -> bool { p.is_zero() }
-
-    pub fn terms<'a>(&'a self, p: &'a IrPoly) -> IrTermsIter<'a> {
-        self.inner.ring.terms(p)
-    }
-    pub fn exponent_at<M: std::borrow::Borrow<Monomial>>(&self, m: M, var: usize) -> usize {
-        self.inner.ring.exponent_at(m, var)
-    }
-    pub fn appearing_indeterminates(&self, p: &IrPoly) -> AppearingVars {
-        self.inner.ring.appearing_indeterminates(p)
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -339,16 +286,16 @@ mod tests {
         assert!(pr.is_zero(&zero));
     }
 
-    /// The dense and sparse arms of `IrPolyRing` must agree term-for-term
-    /// (the heavy randomised differential check lives in `ff::repr_oracle`;
-    /// this is a facade-dispatch smoke test).
+    /// The dense and sparse arms of the IR ring (`FfPolyRing`) must agree
+    /// term-for-term (the heavy randomised differential check lives in
+    /// `ff::repr_oracle`; this is a facade-dispatch smoke test).
     #[test]
     fn irpoly_dense_sparse_arms_agree() {
         let field = PrimeField::new(BigUint::from(101u32));
         let names: Vec<String> = (0..5).map(|i| format!("x{}", i)).collect();
 
         let build = |repr| -> Vec<(BigUint, Vec<(usize, u16)>)> {
-            let pr = IrPolyRing::new_with_repr(field.clone(), names.clone(), repr);
+            let pr = FfPolyRing::new_with_repr(field.clone(), names.clone(), repr);
             // p = (x0 + x1) * (x2 - 1) + x3
             let a = pr.add(pr.var(0), pr.var(1));
             let b = pr.sub(pr.var(2), pr.one());

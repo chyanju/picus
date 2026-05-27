@@ -31,7 +31,7 @@ use num_bigint::BigUint;
 use picus_r1cs::field_reduce;
 use picus_r1cs::grammar::{ConstraintBlock, R1csFile};
 use picus_core::ff::field::PrimeField;
-use picus_core::poly::{IrPoly as Poly, IrPolyRing};
+use picus_core::poly::{FfPolyRing, IrPoly as Poly};
 use thiserror::Error;
 
 /// Reasons the R1CS-to-PolyIR lowering can fail. Surfacing these as
@@ -51,7 +51,7 @@ pub enum LowerError {
 
 /// Picus uniqueness query in polynomial form.
 pub struct PolyIR {
-    pub ring: Arc<IrPolyRing>,
+    pub ring: Arc<FfPolyRing>,
     pub n_wires: usize,
     pub input_indices: HashSet<usize>,
     pub equalities: Vec<Poly>,
@@ -157,6 +157,16 @@ impl PolyIR {
     /// / assignments / bitsums) is unaffected.
     pub fn set_target(&mut self, w: usize) {
         debug_assert!(w < self.n_wires);
+        // An input wire shares one value across both copies: its alt var
+        // `y_w` is never emitted as a distinct variable, so `(x_w, y_w)`
+        // would be a disequality over a free `y_w` — trivially SAT, i.e. a
+        // spurious "two-witness" counter-example. The DPVL driver never
+        // targets an input (inputs are seeded into `known`), but guard the
+        // public API so a direct caller can't silently get a false UNSAFE.
+        debug_assert!(
+            !self.input_indices.contains(&w),
+            "uniqueness target must not be an input wire (its copies are shared)"
+        );
         self.target_signal = w;
         self.disequalities = vec![(self.orig_var(w), self.alt_var(w))];
     }
@@ -244,7 +254,7 @@ pub fn r1cs_to_poly_ir(
         var_names.push(format!("y{}", i));
     }
     let field = PrimeField::new(prime.clone());
-    let ring = Arc::new(IrPolyRing::new(field, var_names));
+    let ring = Arc::new(FfPolyRing::new(field, var_names));
 
     let mut equalities: Vec<Poly> = Vec::new();
 
@@ -316,7 +326,7 @@ pub fn r1cs_to_poly_ir(
 /// `Ok(None)` when the resulting polynomial is the zero polynomial,
 /// `Err` when any block references an out-of-bounds wire id.
 fn constraint_to_poly(
-    ring: &Arc<IrPolyRing>,
+    ring: &Arc<FfPolyRing>,
     a: &ConstraintBlock,
     b: &ConstraintBlock,
     c: &ConstraintBlock,
@@ -348,7 +358,7 @@ fn constraint_to_poly(
 /// pattern matchers like `binary01` don't need to track `x_0`
 /// separately.
 fn block_to_linear(
-    ring: &Arc<IrPolyRing>,
+    ring: &Arc<FfPolyRing>,
     block: &ConstraintBlock,
     input_indices: &HashSet<usize>,
     is_alt: bool,

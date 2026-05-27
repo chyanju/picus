@@ -77,12 +77,23 @@ impl SolverBackend for Cvc5FfBackend {
             solver.assert_formula(tm.mk_term(cvc5_ff::Kind::Equal, &[lhs, zero.clone()]));
         }
 
-        // Target disequality.
+        // Target disequality. Both copy vars must be declared; a missing
+        // one would silently drop the `x_target != y_target` constraint,
+        // leaving the query trivially SAT — a spurious counter-example.
+        // Surface it as an error (→ Unknown) rather than a false UNSAFE.
         let target_x = vars.get(ir.x_name(ir.target_signal)).cloned();
         let target_y = vars.get(ir.y_name(ir.target_signal)).cloned();
-        if let (Some(x), Some(y)) = (target_x, target_y) {
-            let eq = tm.mk_term(cvc5_ff::Kind::Equal, &[x, y]);
-            solver.assert_formula(tm.mk_term(cvc5_ff::Kind::Not, &[eq]));
+        match (target_x, target_y) {
+            (Some(x), Some(y)) => {
+                let eq = tm.mk_term(cvc5_ff::Kind::Equal, &[x, y]);
+                solver.assert_formula(tm.mk_term(cvc5_ff::Kind::Not, &[eq]));
+            }
+            _ => {
+                return Err(SolverError::Internal(format!(
+                    "target wire {} missing a declared copy variable",
+                    ir.target_signal
+                )));
+            }
         }
 
         // Disjunctions: clause `[p_1, ..., p_k]` ⇒ `(or (= p_1 0) ... (=
