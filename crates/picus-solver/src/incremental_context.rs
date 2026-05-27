@@ -318,7 +318,7 @@ fn continue_partial(partial: &mut PartialBuild, cancel: &CancelToken) -> ResumeO
     }
     let poly_ring: &FfPolyRing = &partial.poly_ring;
     let k = partial.inflight.len();
-    let mut bit_prop = BitProp::from_state(poly_ring, partial.bit_prop_state.clone());
+    let bit_prop = BitProp::from_state(poly_ring, partial.bit_prop_state.clone());
 
     let max_fixpoint_iters = (k * 64).max(256);
     let mut fixpoint_iter: u64 = 0;
