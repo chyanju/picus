@@ -247,15 +247,16 @@ fn encode_impl(
     let mut bitsum_aux_idxs: Vec<VarIdx> = Vec::with_capacity(n_bitsum);
     for i in 0..n_bitsum {
         let name = format!("__bitsum_{}", i);
-        let slot = var_names.len() as VarIdx;
-        // The bitsum extractor predicts this slot via `bitsum_aux_index`
-        // before this loop runs; assert the actual allocation matches so a
-        // change to the aux-append order cannot silently mis-encode a
-        // `__bitsum_N` reference.
+        // Derive the slot from the single-source layout formula the bitsum
+        // extractor also uses to predict `__bitsum_N` references, so the
+        // prediction and the allocation are the same expression and cannot
+        // drift (in release too). The `__bitsum_i` name must land at exactly
+        // this index for the slot to denote the variable it references.
+        let slot = bitsum_aux_index(n_user, n_diseq, i);
         debug_assert_eq!(
             slot,
-            bitsum_aux_index(n_user, n_diseq, i),
-            "bitsum aux layout drifted from bitsum_aux_index"
+            var_names.len() as VarIdx,
+            "bitsum aux append position drifted from bitsum_aux_index"
         );
         bitsum_aux_idxs.push(slot);
         var_names.push(name);
