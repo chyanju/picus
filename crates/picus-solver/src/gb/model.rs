@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use num_bigint::BigUint;
 
-use crate::gb::brancher::Brancher;
+use crate::gb::brancher::{univariate_coeffs, Brancher};
 use crate::ff::field::{PrimeField, FieldElem};
 use crate::gb::ideal::Ideal;
 use crate::poly::{FfPolyRing, Poly};
@@ -204,9 +204,7 @@ fn tri_dfs(
         if appearing.len() == 1 {
             let (v, _) = appearing.get(0);
             if !assignment.contains_key(&v) {
-                if let Some(coeffs) =
-                    extract_univariate_coeffs(&poly_ring.ring, &poly_ring.field(), p, v)
-                {
+                if let Some(coeffs) = univariate_coeffs(poly_ring, p, v) {
                     chosen = Some((v, coeffs));
                     break;
                 }
@@ -244,7 +242,7 @@ fn try_extract_full_assignment(
         if appearing.len() == 1 {
             let (var_idx, max_deg) = appearing[0];
             if max_deg == 1 {
-                if let Some(coeffs) = extract_univariate_coeffs(ring, fp, p, var_idx) {
+                if let Some(coeffs) = univariate_coeffs(poly_ring, p, var_idx) {
                     if coeffs.len() == 2 && !fp.is_zero(&coeffs[1]) {
                         let val = fp.negate(fp.div(&coeffs[0], &coeffs[1]).expect("nonzero divisor"));
                         assignment.entry(var_idx).or_insert(val);
@@ -289,7 +287,7 @@ fn compute_candidates(
         if appearing.len() == 1 {
             let (var_idx, _) = appearing[0];
             if !assigned[var_idx] {
-                if let Some(coeffs) = extract_univariate_coeffs(ring, field, p, var_idx) {
+                if let Some(coeffs) = univariate_coeffs(poly_ring, p, var_idx) {
                     if coeffs.len() > 2 { // deg > 1
                         let (roots, complete) = find_roots_checked(field, &coeffs);
                         if complete {
@@ -328,51 +326,11 @@ fn compute_candidates(
     if unassigned.is_empty() {
         return Brancher::Roots(Vec::new());
     }
-
-    let prime = field.prime();
-    // Match split_gb.rs: no fixed cap. For large primes, set per_var
-    // to u64::MAX; the cancel token in the DFS loop handles termination.
-    let exhaustive = prime.bits() <= 16;
-    let per_var: u64 = if exhaustive {
-        prime.iter_u64_digits().next().unwrap_or(2).max(2)
-    } else {
-        u64::MAX
-    };
-    let total = per_var.saturating_mul(unassigned.len() as u64);
-
-    Brancher::RoundRobin {
-        unassigned,
-        idx: 0,
-        total,
-        exhaustive,
-    }
+    Brancher::round_robin(unassigned, field.prime())
 }
 
-/// Extract univariate coefficients w.r.t. `var_idx`.
-fn extract_univariate_coeffs(
-    ring: &crate::poly::PolyRingType,
-    fp: &crate::ff::field::PrimeField,
-    poly: &Poly,
-    var_idx: usize,
-) -> Option<Vec<FieldElem>> {
-    let appearing = ring.appearing_indeterminates(poly);
-    for &(v, _) in &appearing {
-        if v != var_idx { return None; }
-    }
-    let mut max_deg: usize = 0;
-    let mut coeff_map: HashMap<usize, FieldElem> = HashMap::new();
-    for (coeff, monomial) in ring.terms(poly) {
-        let deg = ring.exponent_at(&monomial, var_idx);
-        if deg > max_deg { max_deg = deg; }
-        let entry = coeff_map.entry(deg).or_insert_with(|| fp.zero());
-        fp.add_assign(entry, fp.clone_el(coeff));
-    }
-    let mut coeffs = Vec::with_capacity(max_deg + 1);
-    for d in 0..=max_deg {
-        coeffs.push(coeff_map.remove(&d).unwrap_or_else(|| fp.zero()));
-    }
-    Some(coeffs)
-}
+// Univariate coefficient extraction is shared with the split-GB DFS via
+// `gb::brancher::univariate_coeffs`.
 
 /// Build output model from assignment.
 fn build_model(

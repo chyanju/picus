@@ -11,12 +11,9 @@
 //!   [`SplitGb`] before falling back to round-robin on basis 0. Used by
 //!   the search-frame branching point in [`super::search`].
 
-use std::collections::HashMap;
-
-use crate::gb::brancher::Brancher;
-use crate::ff::field::FieldElem;
+use crate::gb::brancher::{univariate_coeffs, Brancher};
 use crate::gb::ideal::Ideal;
-use crate::poly::{FfPolyRing, Poly};
+use crate::poly::FfPolyRing;
 
 use super::PartialPoint;
 
@@ -83,26 +80,7 @@ pub fn apply_rule<'r>(
     if unassigned.is_empty() {
         return Brancher::Roots(Vec::new());
     }
-
-    let prime = field.prime();
-    // No per-variable cap: the count is the field size (saturated to
-    // `u64::MAX` for primes larger than 64 bits). Termination on large
-    // primes relies on the cancel token / caller timeout.
-    let exhaustive = prime.bits() <= 16;
-    let per_var: u64 = if exhaustive {
-        let x = prime.iter_u64_digits().next().unwrap_or(2);
-        x.max(2)
-    } else {
-        u64::MAX
-    };
-    let total = per_var.saturating_mul(unassigned.len() as u64);
-
-    Brancher::RoundRobin {
-        unassigned,
-        idx: 0,
-        total,
-        exhaustive,
-    }
+    Brancher::round_robin(unassigned, field.prime())
 }
 
 /// Like [`apply_rule`] but checks every basis for univariate / zero-dim
@@ -167,29 +145,6 @@ pub(super) fn apply_rule_multi<'r>(
     }
 }
 
-/// Extract univariate coefficients (assumes only `var_idx` appears in `p`).
-fn univariate_coeffs(
-    poly_ring: &FfPolyRing,
-    p: &Poly,
-    var_idx: usize,
-) -> Option<Vec<FieldElem>> {
-    let ring = &poly_ring.ring;
-    let fp = &poly_ring.field();
-    let appearing = ring.appearing_indeterminates(p);
-    for (v, _) in &appearing {
-        if *v != var_idx { return None; }
-    }
-    let mut coeffs: HashMap<usize, FieldElem> = HashMap::new();
-    let mut max_deg = 0usize;
-    for (c, m) in ring.terms(p) {
-        let d = ring.exponent_at(&m, var_idx);
-        if d > max_deg { max_deg = d; }
-        let entry = coeffs.entry(d).or_insert_with(|| fp.zero());
-        fp.add_assign(entry, fp.clone_el(c));
-    }
-    let mut out = Vec::with_capacity(max_deg + 1);
-    for d in 0..=max_deg {
-        out.push(coeffs.remove(&d).unwrap_or_else(|| fp.zero()));
-    }
-    Some(out)
-}
+// `univariate_coeffs` and the round-robin constructor are shared with
+// `gb::model` via `gb::brancher`, so the load-bearing `exhaustive`
+// predicate has a single source.
