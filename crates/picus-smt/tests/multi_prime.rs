@@ -88,6 +88,32 @@ fn poly_ir_lowering_honours_non_bn128_prime() {
     assert_eq!(ir.equalities.len(), 3);
 }
 
+/// Copy-symmetry of the lowering (load-bearing for the wire-keyed
+/// propagation lemmas): each constraint is emitted into both copies, but
+/// an input wire shares its `x_i` across both copies (its `y_i` is never
+/// referenced) while a non-input wire gets a distinct `y_i` in the alt
+/// copy. Wire 1 is an input and wire 2 an output, so `y_1` (index
+/// n_wires+1) must appear in no equality and `y_2` (index n_wires+2) must.
+#[test]
+fn lowering_shares_input_copies_and_splits_noninput_copies() {
+    let r1cs = build_x1_squared_eq_x2(); // 3 wires; wire 1 input, wire 2 output
+    let known: HashSet<usize> = r1cs.inputs.iter().copied().collect();
+    let ir = r1cs_to_poly_ir(&r1cs, &known, 2).expect("lowering should succeed");
+    let n_wires = 3usize;
+    let y1 = n_wires + 1;
+    let y2 = n_wires + 2;
+    let mut seen: HashSet<usize> = HashSet::new();
+    for eq in &ir.equalities {
+        for (_coeff, vars) in ir.poly_terms_idx(eq) {
+            for (v, _e) in vars {
+                seen.insert(v);
+            }
+        }
+    }
+    assert!(!seen.contains(&y1), "input wire's alt copy y_1 must never be referenced");
+    assert!(seen.contains(&y2), "non-input wire's alt copy y_2 must be referenced");
+}
+
 #[test]
 fn native_ff_solves_over_gf7() {
     let r1cs = build_x1_squared_eq_x2();
