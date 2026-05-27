@@ -88,18 +88,8 @@ impl<'a> FfTheory<'a> {
                 builder.add_equality(terms);
                 equality_atoms.push(atom_var);
             } else {
-                let d_name = format!("__diseq_d_{}", diseq_counter);
-                diseq_counter += 1;
-                let d_idx = builder.var(&d_name);
-                let zero = match zero_idx {
-                    Some(z) => z,
-                    None => {
-                        let z = builder.var("__zero");
-                        builder.add_assignment(z, BigUint::zero());
-                        zero_idx = Some(z);
-                        z
-                    }
-                };
+                let (d_idx, zero) =
+                    builder.fresh_disequality_vars(&mut diseq_counter, &mut zero_idx);
 
                 // Encode `(d - lhs) = 0`: starts with `+1 * d_var`
                 // then appends the atom's polynomial with each coeff

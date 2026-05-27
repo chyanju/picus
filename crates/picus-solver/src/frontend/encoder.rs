@@ -437,6 +437,34 @@ impl ConstraintSystemBuilder {
         self.disequalities.push((a, b));
     }
 
+    /// Introduce the witness pair for encoding `lhs != 0`: a fresh
+    /// `__diseq_d_{seq}` variable `d` (the caller then constrains
+    /// `d = lhs` via [`Self::add_equality`]) and a shared, lazily-created
+    /// `__zero` pinned to `0`. Returns `(d, zero)`; the caller asserts the
+    /// disequality with `add_disequality(d, zero)`. Centralises the
+    /// synthetic-variable naming and the `__zero` lazy-init shared by the
+    /// DNF (`BooleanQuery`) and CDCL(T) (`FfTheory`) disequality encoders
+    /// so the two cannot drift. `seq` is the caller's per-system
+    /// disequality counter (incremented here).
+    pub fn fresh_disequality_vars(
+        &mut self,
+        seq: &mut usize,
+        zero_idx: &mut Option<VarIdx>,
+    ) -> (VarIdx, VarIdx) {
+        let d_idx = self.var(&format!("__diseq_d_{}", *seq));
+        *seq += 1;
+        let zero = match *zero_idx {
+            Some(z) => z,
+            None => {
+                let z = self.var("__zero");
+                self.add_assignment(z, BigUint::from(0u32));
+                *zero_idx = Some(z);
+                z
+            }
+        };
+        (d_idx, zero)
+    }
+
     pub fn add_assignment(&mut self, v: VarIdx, val: BigUint) {
         self.assignments.push((v, val));
     }
