@@ -92,11 +92,15 @@ pub type BackendFactory = fn() -> Box<dyn SolverBackend>;
 ///
 /// Backends register themselves with `inventory::submit!` from their
 /// own module; [`create_backend_by_name`] walks the registry at
-/// dispatch time. Adding a new backend is therefore a single new file
-/// containing the impl plus a submit block — no edits to enums,
-/// match tables, or CLI parsers required. The built-in `SolverKind`
-/// enum provides ergonomic library use and matches the lowercase
-/// `name` values.
+/// *dispatch* time, and [`crate::SolverKind::from_str`] consults it to
+/// list the known backends in its error message. *Selection by name*,
+/// however, goes through the built-in [`crate::SolverKind`] enum (used
+/// by `--solver` and config files), so a new backend that should be
+/// reachable via `--solver` also needs a matching `SolverKind` variant
+/// and `from_str` arm. A backend registered only via `inventory::submit!`
+/// is dispatchable through `create_backend_by_name` directly but is not
+/// selectable by name. The built-in `SolverKind` `name` values are the
+/// lowercase strings here.
 pub struct SolverBackendDescriptor {
     /// Stable name used by `--solver`, `SolverKind::from_str`, and
     /// `dump_smt` log lines.

@@ -42,10 +42,10 @@ enum Commands {
         #[arg(long)]
         config: Option<PathBuf>,
 
-        /// Solver backend. Names are looked up against the inventory of
-        /// registered `SolverBackendDescriptor`s, so a downstream crate
-        /// can ship a new backend without touching the CLI. Built-in
-        /// names: native, cvc5, z3, none. [default: native]
+        /// Solver backend. Built-in names: native, cvc5, z3, none.
+        /// Resolved through `SolverKind::from_str`; the inventory of
+        /// registered backends supplies the "known backends" list shown
+        /// on an unknown name. [default: native]
         #[arg(long)]
         solver: Option<String>,
 
