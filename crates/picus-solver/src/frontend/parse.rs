@@ -468,7 +468,7 @@ mod tests {
         assert!(pr.is_zero(&residual));
     }
 
-    /// Audit equivalence with cvc5's AST-level `bitConstraint`. Each case asserts that picus's
+    /// Equivalence with cvc5's AST-level `bitConstraint`. Each case asserts that picus's
     /// polynomial-level detector accepts (or correctly rejects) the
     /// canonical form produced by encoding the equivalent AST.
 
