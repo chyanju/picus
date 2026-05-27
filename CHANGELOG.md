@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.10] - 2026-05-27
+- SMT-LIB parser caps S-expression nesting and `define-fun` expansion depth (stack overflow → malformed-input error); `ff.mul` exponent overflow returns a parse error instead of panicking.
+- R1CS parser accepts a non-multiple-of-8 `field_size` (1-byte small primes, e.g. GF(7)).
+- `PolyIR::set_target` debug-asserts a non-input target; `Counter` selector tie-breaks by wire index; cvc5/z3 backends error instead of dropping a target disequality on a missing copy variable.
+- Maintainability: removed the `IrPolyRing` facade and a dead `FieldElem` drop guard; single-sourced the `(_ FiniteField N)` sort detection and disequality-witness naming; `serde_json` to workspace deps; by-homog reduced-GB differential test.
+
 ## [1.8.9] - 2026-05-27
 - Fixes a finite-field solver soundness bug (a false UNSAT — a falsely "safe" verdict) on small primes, plus an R1CS parser robustness fix and a representation-routing fix; the rest is maintainability. The 61-circuit circomlib corpus (BN254) is unaffected (identical verdicts, dense and sparse); the soundness fix changes a verdict only on a small-prime input that triggered the bug. The CLI gains `--gb-strategy` (with `--gb-by-homog` kept as a hidden alias); no other CLI or public-API change.
   - **Soundness (false UNSAT, small primes).** Bit propagation pinned a bitsum's bits from its value modulo `p` — when the bitsum reduced to a constant (Phase 1) or two bitsums were equal modulo `p` (Phase 2) — but `A ≡ B (mod p)` implies the integer (bitwise) equality only when the bitsum range fits in `p` (`2^len <= p`). The Phase 2 guard used `len <= prime.bits()` (= `floor(log2 p) + 1`, one bit too loose) and Phase 1 had no such guard, so on a small prime a modular collision (`GF(7)`: `7 ≡ 0`, so `0b111` and `0b000` are equal mod 7) was forced bit-equal and pruned a satisfying assignment. Both phases now gate on `2^len <= p` through a shared `bitsum_fits` helper, which also single-sources the encoder's bitsum chain-length cap. Inert on cryptographic primes (a bitsum that long never arises); two `GF(7)` regression tests are added.

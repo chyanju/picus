@@ -28,7 +28,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "1.8.9"
+version = "1.8.10"
 authors = ["Yanju Chen <chyanju@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/chyanju/Picus"
@@ -46,4 +46,5 @@ log = "0.4"
 env_logger = "0.11"
 inventory = "0.3"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.8"
