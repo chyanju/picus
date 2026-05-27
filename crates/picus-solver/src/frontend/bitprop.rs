@@ -19,6 +19,7 @@ use num_bigint::BigUint;
 use num_traits::Zero;
 
 use crate::ff::field::FieldElem;
+use crate::frontend::encoder::bitsum_fits;
 use crate::gb::ideal::Ideal;
 use crate::poly::{FfPolyRing, Poly};
 use crate::timeout::CancelToken;
@@ -128,7 +129,15 @@ impl<'r> BitProp<'r> {
             // Build the polynomial b_0 + 2*b_1 + ... + 2^k*b_k.
             let bs_poly = bitsum_poly(pr, bs);
             let mut handled = false;
+            // J1: pinning bits from a mod-p residue is sound only when the
+            // bitsum cannot overflow p (2^len <= p); otherwise the residue
+            // has multiple integer preimages (GF(7): A≡0 admits 0 and 7), so
+            // leave such bitsums unhandled here.
+            let fits = bitsum_fits(bs.len(), pr.field().prime());
             for basis in split_basis {
+                if !fits {
+                    break;
+                }
                 let nf = match cancel {
                     Some(c) => basis.reduce_with_cancel(&bs_poly, c),
                     None => basis.reduce(&bs_poly),
@@ -188,9 +197,11 @@ impl<'r> BitProp<'r> {
 
                 let min = a.len().min(b.len());
                 let max = a.len().max(b.len());
-                // Check overflow: bitwidth shouldn't exceed field bitlength
-                let field_bits = pr.field().prime().bits() as usize;
-                if max > field_bits { continue; }
+                // J1: A ≡ B (mod p) implies bitwise equality only when both
+                // bitsums fit in p (2^max <= p); else they can collide mod p
+                // (GF(7): 7 ≡ 0, so (1,1,1) and (0,0,0) are equal mod 7) and
+                // bitwise propagation would delete a real solution (false UNSAT).
+                if !bitsum_fits(max, pr.field().prime()) { continue; }
 
                 let all_bits = a.iter().chain(b.iter()).all(|&v| self.is_bit(v, split_basis));
                 if !all_bits { continue; }
@@ -329,6 +340,92 @@ mod tests {
             assert_eq!(eqs.len(), 1);
             let appearing = pr2.ring.appearing_indeterminates(&eqs[0]);
             assert!(appearing.is_empty());
+        }
+    }
+
+    /// Soundness guard (J1, Phase 2): on a prime where a bitsum's range
+    /// can exceed `p`, two bitsums equal *mod p* are NOT equal as
+    /// integers, so bitwise equality must not be propagated.
+    ///
+    /// GF(7): `A = b0+2b1+4b2`, `B = c0+2c1+4c2`, constraint `A - B = 0`.
+    /// Because `2^3 = 8 > 7`, `A ≡ B (mod 7)` admits the collision
+    /// `b=(1,1,1), c=(0,0,0)` (as `7 ≡ 0`), where `b_k ≠ c_k`. Hence
+    /// `b_k - c_k` is NOT in the ideal, and emitting it would delete a
+    /// real solution (false UNSAT = false "safe"). Every emitted equality
+    /// must already hold in `I`.
+    #[test]
+    fn bitprop_phase2_smallprime_modp_collision_is_sound() {
+        let pr = FfPolyRing::new(
+            ff(7),
+            vec![
+                "b0".into(), "b1".into(), "b2".into(),
+                "c0".into(), "c1".into(), "c2".into(),
+            ],
+        );
+        let a = pr.add(
+            pr.add(pr.var(0), pr.scale(pr.field().from_int(2), pr.var(1))),
+            pr.scale(pr.field().from_int(4), pr.var(2)),
+        );
+        let b = pr.add(
+            pr.add(pr.var(3), pr.scale(pr.field().from_int(2), pr.var(4))),
+            pr.scale(pr.field().from_int(4), pr.var(5)),
+        );
+        let mut polys = vec![pr.sub(a, b)];
+        for v in 0..6 {
+            let x = pr.var(v);
+            let x2 = pr.mul(pr.clone_poly(&x), pr.clone_poly(&x));
+            polys.push(pr.sub(x2, x));
+        }
+        let ideal = Ideal::new(&pr, polys);
+        assert!(!ideal.is_whole_ring(), "system is SAT (e.g. b=111, c=000)");
+
+        let mut bp = BitProp::new(&pr);
+        bp.add_bitsum(vec![0, 1, 2]);
+        bp.add_bitsum(vec![3, 4, 5]);
+        for v in 0..6 { bp.add_bit(v); }
+
+        let eqs = bp.get_bit_equalities(std::slice::from_ref(&ideal));
+        for e in &eqs {
+            assert!(
+                ideal.contains(e),
+                "bitprop emitted a non-entailed equality (UNSOUND, false-UNSAT risk)"
+            );
+        }
+    }
+
+    /// Soundness guard (J1, Phase 1): a bitsum reducing to a constant
+    /// `val` only forces `b_i = bit_i(val)` when the bitsum cannot
+    /// overflow `p`. GF(7): `A = b0+2b1+4b2 = 0` admits both `(0,0,0)`
+    /// and `(1,1,1)` (since `7 ≡ 0`), so `b_i = 0` is not entailed.
+    #[test]
+    fn bitprop_phase1_smallprime_constant_is_sound() {
+        let pr = FfPolyRing::new(
+            ff(7),
+            vec!["b0".into(), "b1".into(), "b2".into()],
+        );
+        let a = pr.add(
+            pr.add(pr.var(0), pr.scale(pr.field().from_int(2), pr.var(1))),
+            pr.scale(pr.field().from_int(4), pr.var(2)),
+        );
+        let mut polys = vec![a];
+        for v in 0..3 {
+            let x = pr.var(v);
+            let x2 = pr.mul(pr.clone_poly(&x), pr.clone_poly(&x));
+            polys.push(pr.sub(x2, x));
+        }
+        let ideal = Ideal::new(&pr, polys);
+        assert!(!ideal.is_whole_ring(), "system is SAT (e.g. b=000 and b=111)");
+
+        let mut bp = BitProp::new(&pr);
+        bp.add_bitsum(vec![0, 1, 2]);
+        for v in 0..3 { bp.add_bit(v); }
+
+        let eqs = bp.get_bit_equalities(std::slice::from_ref(&ideal));
+        for e in &eqs {
+            assert!(
+                ideal.contains(e),
+                "bitprop emitted a non-entailed equality (UNSOUND, false-UNSAT risk)"
+            );
         }
     }
 }
