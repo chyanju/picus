@@ -404,11 +404,13 @@ pub struct ReducerIndex {
 }
 
 impl ReducerIndex {
-    /// Divisor count from which the degree-`order` index is worth caching
-    /// (matches `reduce_by_refs_geobucket`'s `SORT_THRESHOLD`).
+    /// Divisor count from which the degree-`order` index is built. Single
+    /// source for this threshold, shared with the inline index built in
+    /// `reduce_by_refs_geobucket`.
     pub const SORT_THRESHOLD: usize = 64;
-    /// Divisor count from which the DivMask bucket index is built (matches
-    /// `reduce_by_refs_geobucket`'s `BUCKET_THRESHOLD`).
+    /// Divisor count from which the DivMask bucket index is built. Single
+    /// source for this threshold, shared with the inline index built in
+    /// `reduce_by_refs_geobucket`.
     pub const BUCKET_THRESHOLD: usize = 256;
 
     /// Build the index over `divisors` (in caller order). `div_dms[i]`, when

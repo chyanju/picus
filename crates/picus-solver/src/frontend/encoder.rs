@@ -91,6 +91,17 @@ fn normalize_poly(pr: &FfPolyRing, p: Poly) -> Poly {
 /// system.
 pub type VarIdx = u32;
 
+/// Ring index of the auxiliary variable for the `bitsum_i`-th bitsum,
+/// given the user-variable count and the disequality count. Single source
+/// of the encoder's auxiliary-variable layout: `encode_impl` appends, in
+/// order, the user variables, then one Rabinowitsch witness per
+/// disequality, then one `__bitsum_N` aux per bitsum. The bitsum extractor
+/// must predict these indices before `encode_impl` allocates them, so both
+/// sides route through this function and cannot drift.
+pub(crate) fn bitsum_aux_index(n_user: usize, n_diseq: usize, bitsum_i: usize) -> VarIdx {
+    (n_user + n_diseq + bitsum_i) as VarIdx
+}
+
 mod constraint_system;
 pub use constraint_system::*;
 
@@ -236,7 +247,17 @@ fn encode_impl(
     let mut bitsum_aux_idxs: Vec<VarIdx> = Vec::with_capacity(n_bitsum);
     for i in 0..n_bitsum {
         let name = format!("__bitsum_{}", i);
-        bitsum_aux_idxs.push(var_names.len() as VarIdx);
+        let slot = var_names.len() as VarIdx;
+        // The bitsum extractor predicts this slot via `bitsum_aux_index`
+        // before this loop runs; assert the actual allocation matches so a
+        // change to the aux-append order cannot silently mis-encode a
+        // `__bitsum_N` reference.
+        debug_assert_eq!(
+            slot,
+            bitsum_aux_index(n_user, n_diseq, i),
+            "bitsum aux layout drifted from bitsum_aux_index"
+        );
+        bitsum_aux_idxs.push(slot);
         var_names.push(name);
     }
 

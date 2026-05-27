@@ -79,15 +79,12 @@ pub fn auto_extract_bitsums(
         Vec::with_capacity(system.equalities.len());
     let mut new_bitsums: Vec<Vec<VarIdx>> = system.bitsums.clone();
 
-    // Aux indices align with the encoder's append order:
-    //   user vars : 0 .. n_user
-    //   witnesses : n_user .. n_user + n_diseq
-    //   bitsum aux: n_user + n_diseq .. + n_bitsums
-    // Pre-compute the bitsum-aux base so the rewrite-time term
-    // emission and `encode_impl`'s own aux append loop agree.
-    let n_user = system.var_names.len() as VarIdx;
-    let n_diseq = system.disequalities.len() as VarIdx;
-    let aux_base: VarIdx = n_user + n_diseq;
+    // The aux variable for each extracted bitsum must match the slot
+    // `encode_impl` allocates for it; both sides route through
+    // `super::bitsum_aux_index` (user vars, then diseq witnesses, then one
+    // `__bitsum_N` aux per bitsum) so the two cannot drift.
+    let n_user = system.var_names.len();
+    let n_diseq = system.disequalities.len();
 
     for eq in &system.equalities {
         let mut current_eq: Vec<PolyTerm> = eq.clone();
@@ -95,7 +92,7 @@ pub fn auto_extract_bitsums(
         for _ in 0..max_iters {
             match find_bitsum_chain(&current_eq, &bits, p, MIN_AUTO_BITSUM_LEN) {
                 Some((bit_list, base_coeff, consumed)) => {
-                    let aux_idx = aux_base + (new_bitsums.len() as VarIdx);
+                    let aux_idx = super::bitsum_aux_index(n_user, n_diseq, new_bitsums.len());
                     new_bitsums.push(bit_list);
 
                     let mut new_terms: Vec<PolyTerm> = current_eq

@@ -24,8 +24,8 @@ use crate::gb::ideal::{interreduce_basis, ring_for_order, unwrap_dense_vec, wrap
 use crate::gb::model;
 use crate::poly::{FfPolyRing, Poly};
 use crate::split_gb::{
-    admit, classify_propagation, split_find_zero_cancel, split_gb_cancel, split_gb_extend_cancel,
-    Propagate, SplitFindZeroOutcome,
+    admit, classify_propagation, seed_self_membership, split_find_zero_cancel, split_gb_cancel,
+    split_gb_extend_cancel, Propagate, SplitFindZeroOutcome,
 };
 use crate::timeout::CancelToken;
 
@@ -393,11 +393,7 @@ fn continue_partial(partial: &mut PartialBuild, cancel: &CancelToken) -> ResumeO
             .iter()
             .map(|igb| Ideal::from_gb(poly_ring, wrap_dense_vec(igb.basis())))
             .collect();
-        for j in 0..k {
-            for p in &split_basis[j].basis {
-                partial.contains_memo.insert((p.content_hash(), j));
-            }
-        }
+        seed_self_membership(&mut partial.contains_memo, &split_basis);
 
         let mut to_propagate =
             bit_prop.get_bit_equalities_with_cancel(&split_basis, Some(cancel));

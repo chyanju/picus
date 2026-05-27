@@ -168,8 +168,7 @@ impl DensePoly {
         // `lt_exps` is unique on a Groebner-basis-shaped divisor set;
         // for small divisor sets the linear scan path is kept so
         // unit-tests' "reducer matches naive" property is preserved.
-        const SORT_THRESHOLD: usize = 64;
-        let order_opt: Option<Vec<usize>> = if div_lt.len() >= SORT_THRESHOLD {
+        let order_opt: Option<Vec<usize>> = if div_lt.len() >= ReducerIndex::SORT_THRESHOLD {
             let mut order: Vec<usize> = (0..div_lt.len()).collect();
             order.sort_by_key(|&i| div_lt[i].as_ref().map(|t| t.1).unwrap_or(u32::MAX));
             Some(order)
@@ -181,9 +180,8 @@ impl DensePoly {
         // at ≥ 256 divisors, where `DivMask` filtering wins over the
         // sort + early-break path; below this threshold the cost of
         // building / iterating the buckets outweighs the savings.
-        const BUCKET_THRESHOLD: usize = 256;
         let bucket_index_opt: Option<std::collections::HashMap<u128, Vec<usize>>> =
-            if div_lt.len() >= BUCKET_THRESHOLD {
+            if div_lt.len() >= ReducerIndex::BUCKET_THRESHOLD {
                 let mut buckets: std::collections::HashMap<u128, Vec<usize>> =
                     std::collections::HashMap::new();
                 for (i, lt_opt) in div_lt.iter().enumerate() {

@@ -140,6 +140,21 @@ pub(crate) fn classify_propagation(
     }
 }
 
+/// Seed the cross-iteration containment memo with self-membership: every
+/// polynomial already in partition `j`'s basis trivially satisfies
+/// `contains(p, j)`. Shared by the from-scratch, traced, and incremental
+/// fixpoint drivers so the memo key derivation stays defined once.
+pub(crate) fn seed_self_membership(
+    contains_memo: &mut std::collections::HashSet<(u64, usize)>,
+    split_basis: &[Ideal<'_>],
+) {
+    for (j, ideal) in split_basis.iter().enumerate() {
+        for p in &ideal.basis {
+            contains_memo.insert((p.content_hash(), j));
+        }
+    }
+}
+
 /// Total degree of a polynomial.
 pub fn total_degree(p: &Poly) -> usize {
     p.total_degree() as usize
