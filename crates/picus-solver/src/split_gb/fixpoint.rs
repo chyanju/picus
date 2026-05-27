@@ -29,7 +29,7 @@ use crate::poly::{FfPolyRing, Poly};
 use crate::timeout::{CancelToken, Cancelled};
 use crate::gb::tracer::GbTracer;
 
-use super::{classify_propagation, Propagate, SplitGb};
+use super::{classify_propagation, seed_self_membership, Propagate, SplitGb};
 
 /// Compute a split GB from scratch.
 ///
@@ -191,11 +191,7 @@ fn run_fixpoint<'r>(
 
         // Seed the memo with self-membership: every poly in basis j is
         // trivially `contains(p, j) = true`.
-        for j in 0..k {
-            for p in &split_basis[j].basis {
-                contains_memo.insert((p.content_hash(), j));
-            }
-        }
+        seed_self_membership(&mut contains_memo, &split_basis);
 
         let bit_eq_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
         let mut to_propagate =
@@ -427,11 +423,7 @@ fn run_fixpoint_traced<'r>(
             break;
         }
 
-        for j in 0..k {
-            for p in &split_basis[j].basis {
-                contains_memo.insert((p.content_hash(), j));
-            }
-        }
+        seed_self_membership(&mut contains_memo, &split_basis);
 
         let bit_eqs = bit_prop.get_bit_equalities_with_cancel(&split_basis, Some(cancel));
         if cancel.is_cancelled() {
