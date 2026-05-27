@@ -98,9 +98,12 @@ homogenisation, tracing), `frontend/` (encoding and IO: `encoder`, `parse`,
 CDCL(T) layers), `ff/` (the GB / root-finding engine over the `picus-core`
 algebra), `smt2/`, and `split_gb/`, with `core.rs`, `boolean.rs`, and
 `incremental_context.rs` at the root.
-- **`ideal.rs`** — `Ideal` + `compute_gb_with_order`
-  (`_traced`, `_incremental`) + `interreduce_basis`. Every public
-  GB entry point routes through `compute_gb_dispatch`, which reads
+- **`ideal.rs`** — the `Ideal` type + `interreduce_basis`. Its
+  `engine` submodule (`ideal/engine.rs`, re-exported so
+  `gb::ideal::*` paths are unchanged) holds the `compute_gb_*` family
+  (`with_order`, `_traced`, `_incremental`) and the dense/sparse
+  representation routing. Every public GB entry point routes through
+  `compute_gb_dispatch`, which reads
   `config::with(|c| c.gb_strategy)` and forwards to the configured
   `GbAlgorithm` impl. The trait signature is:
 
@@ -143,7 +146,10 @@ algebra), `smt2/`, and `split_gb/`, with `core.rs`, `boolean.rs`, and
 - **`encoder.rs`** — `ConstraintSystem` → polynomial encoding. Runs
   `rewriter::rewrite_system` then `auto_extract_bitsums` before
   `encode_impl`; bitsum-defining polynomials route into
-  `bitsum_polys` (basis 0 only).
+  `bitsum_polys` (basis 0 only). The `ConstraintSystem` type family
+  lives in the `constraint_system` submodule and the bitsum extractor
+  (`auto_extract_bitsums`, `bitsum_fits`) in `bitsum_extract`, both
+  re-exported.
 - **`rewriter.rs`** — Flat term-list canonicalisation: sort vars
   within each term, sort terms by vars, merge like terms mod prime,
   drop zero-coefficient terms, drop `0 = 0` equalities. Mirrors
@@ -217,7 +223,8 @@ algebra), `smt2/`, and `split_gb/`, with `core.rs`, `boolean.rs`, and
   preprocessing), `sparse_gb` (Buchberger on the sparse representation with the
   same product / M / B criteria, sugar selection, and incremental seeding),
   `hilbert`, `spair`, `univariate` (Cantor-Zassenhaus), and `repr_oracle`
-  (cross-checks the sparse GB against the dense engine).
+  (cross-checks the sparse GB and the F4 path against the dense per-pair
+  engine at the full reduced-GB level).
 
 ### `picus-smt`
 

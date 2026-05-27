@@ -71,8 +71,8 @@ pub fn fglm_to_lex(ideal: &Ideal) -> Option<Vec<Poly>> {
 
     let n = pr.n_vars();
     let mono_poly = |m: &Monomial| pr.ring.create_term(f.one(), m.clone());
-    // Coefficient of `mono` in `p` (0 if absent). `Monomial`'s equality is
-    // raw-exponent equality, which is what we want here.
+    // Coefficient of `mono` in `p` (0 if absent). `Monomial` equality is
+    // raw-exponent equality.
     let coeff_at = |p: &Poly, mono: &Monomial| -> FieldElem {
         for (c, m) in pr.ring.terms(p) {
             if m.exponents() == mono.exponents() {

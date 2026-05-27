@@ -2,8 +2,8 @@
 //! variables and rewrite `c·b_0 + 2c·b_1 + ... + 2^k·c·b_k` sub-sums in
 //! equalities into `__bitsum_N` aux variables. Sole soundness gate is the
 //! `floor(log2 p)` chain-length cap ([`bitsum_fits`]), shared with the
-//! `bitprop` Phase 1/2 guards. Split out of `encoder.rs`; re-exported so
-//! `auto_extract_bitsums` / `bitsum_fits` paths are unchanged.
+//! `bitprop` Phase 1/2 guards. Re-exported from `encoder` so
+//! `auto_extract_bitsums` / `bitsum_fits` resolve here.
 
 use std::collections::{BTreeMap, HashSet};
 
