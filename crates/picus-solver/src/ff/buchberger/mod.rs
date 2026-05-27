@@ -484,7 +484,7 @@ impl BuchbergerState {
             observer.on_initial_basis(idx, &g_red);
             // Generate S-pairs against all earlier ACTIVE elements BEFORE
             // deactivation, so we don't lose pairs that involve elements about
-            // to become inactive (D3: non-strict deactivation).
+            // to become inactive (non-strict deactivation).
             self.generate_pairs_against(idx, &lt, sugar);
             // Non-strict deactivation: deactivate older elements whose LT is divisible by lt.
             self.deactivate_superseded(idx, &lt);
@@ -583,7 +583,7 @@ impl BuchbergerState {
         part_i.sub(&part_j, &self.ring)
     }
 
-    /// Non-strict deactivation (D3): deactivate every active element in
+    /// Non-strict deactivation: deactivate every active element in
     /// `0..upto` whose leading monomial is divisible by `lt`. Run after
     /// `generate_pairs_against`, so pairs involving an element about to be
     /// deactivated are still generated.

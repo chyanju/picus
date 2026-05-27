@@ -883,7 +883,7 @@ fn session_echo_is_passed_through() {
     }
 }
 
-// ── H1: adversarial-input robustness (no stack overflow) ─────────────
+// ── adversarial-input robustness (no stack overflow) ─────────────
 
 #[test]
 fn deep_sexpr_nesting_is_rejected_not_overflow() {

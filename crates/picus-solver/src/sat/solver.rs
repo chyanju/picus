@@ -614,8 +614,8 @@ impl Solver {
         loop {
             // `conf` is `Some` for the initial conflict and is re-set to
             // each resolved pivot's reason below. If a non-final pivot
-            // turns out to have no reason clause (a CDCL(T)/theory
-            // interaction gap on some inputs), `conf?` bails to `None`
+            // has no reason clause (a CDCL(T)/theory interaction gap on
+            // some inputs), `conf?` bails to `None`
             // here rather than panicking — the caller then falls back to
             // a complete engine instead of producing a bogus learnt
             // clause.
