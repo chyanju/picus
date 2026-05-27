@@ -15,15 +15,8 @@
 use std::cmp::Ordering;
 
 use super::field::FieldElem;
+use super::geobucket_params::{BASE_CAPACITY, MAX_BUCKETS, RATIO};
 use super::polynomial::{PolyRing, DensePoly};
-
-/// Smallest bucket capacity (in terms). Larger first-bucket means
-/// fewer cascade events per `sub_scaled_tail` call.
-const BASE_CAPACITY: usize = 128;
-/// Geometric growth factor between consecutive buckets.
-const RATIO: usize = 4;
-/// Hard cap on the number of buckets. 128 * 4^19 ≈ 10^13 terms.
-const MAX_BUCKETS: usize = 20;
 
 pub struct Geobucket<'r> {
     buckets: Vec<DensePoly>,

@@ -297,7 +297,6 @@ impl<'a> FfTheory<'a> {
         let on_trail: std::collections::HashSet<Var> =
             self.facts.iter().map(|&(av, _)| av).collect();
         let one = BigUint::from(1u32);
-        let two = BigUint::from(2u32);
         let mut results = Vec::new();
         for &(src_av, src_pol) in &self.facts {
             if !src_pol {
@@ -370,13 +369,9 @@ impl<'a> FfTheory<'a> {
             } else {
                 prime - &acc_const
             };
-            let inv_a = if unpinned_coeff == one {
-                one.clone()
-            } else {
-                if prime <= &two {
-                    continue;
-                }
-                unpinned_coeff.modpow(&(prime - &two), prime)
+            let inv_a = match super::field_inverse(&unpinned_coeff, prime) {
+                Some(i) => i,
+                None => continue,
             };
             let derived_value = (neg_c * inv_a) % prime;
             let mut reason_base: Vec<(Var, bool)> =

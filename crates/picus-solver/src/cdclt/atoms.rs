@@ -155,22 +155,14 @@ impl AtomKey {
         if coeff_v.is_zero() {
             return None;
         }
-        // a·v + c = 0  ⇒  v = (−c) · a⁻¹ mod p.  a⁻¹ via Fermat: a^(p−2).
+        // a·v + c = 0  ⇒  v = (−c) · a⁻¹ mod p.
         let neg_c = if coeff_c.is_zero() {
             BigUint::zero()
         } else {
             prime - coeff_c
         };
-        let value = if coeff_v == &BigUint::from(1u32) {
-            neg_c
-        } else {
-            let two = BigUint::from(2u32);
-            if prime <= &two {
-                return None;
-            }
-            let inv = coeff_v.modpow(&(prime - &two), prime);
-            (neg_c * inv) % prime
-        };
+        let inv = super::field_inverse(coeff_v, prime)?;
+        let value = (neg_c * inv) % prime;
         Some((var_term.1[0].clone(), value))
     }
 

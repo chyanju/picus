@@ -18,19 +18,13 @@ use std::cmp::Ordering;
 
 use super::divmask::DivMask;
 use super::field::FieldElem;
+use super::geobucket_params::{BASE_CAPACITY, MAX_BUCKETS, RATIO};
 use super::polynomial::PolyRing;
 use super::repr::MonomialRepr;
 use super::sparse_monomial::SparseMonomial;
 use super::sparse_polynomial::SparsePolynomial;
 
 type Term = (SparseMonomial, FieldElem);
-
-/// Smallest bucket capacity (in terms).
-const BASE_CAPACITY: usize = 128;
-/// Geometric growth factor between consecutive buckets.
-const RATIO: usize = 4;
-/// Hard cap on the number of buckets (128·4^19 ≈ 10^13 terms).
-const MAX_BUCKETS: usize = 20;
 
 /// A geobucket: `buckets[i]` is a descending-sorted term list with a
 /// `heads[i]` cursor, so popping a leading term advances the cursor in O(1)
