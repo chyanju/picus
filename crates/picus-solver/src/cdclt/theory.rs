@@ -67,9 +67,17 @@ pub trait Theory {
     /// roll its state back symmetrically. Default: noop.
     fn pop(&mut self) {}
 
-    /// On a `Sat` outcome, return the FF variable assignments that
-    /// realize the model. Used by the orchestrator to compose the
-    /// final SMT model. Default: empty.
+    /// On a `Sat` outcome, return the variable assignments that realize
+    /// the model. Used by the orchestrator to compose the final SMT model.
+    /// Default: empty.
+    ///
+    /// The return type (`String` → field element) is FF-shaped, so this
+    /// trait is effectively single-theory today (the only impl is
+    /// `FfTheory`). A second theory with a different model domain (UF,
+    /// bitvector) would need this widened to an opaque per-theory fragment
+    /// the orchestrator composes; the rest of the trait (`notify_fact`,
+    /// `post_check`, the `Vec<Var>` conflict core) is already
+    /// theory-agnostic.
     fn collect_model(&self) -> Option<HashMap<String, BigUint>> {
         None
     }
