@@ -1,8 +1,7 @@
 //! The index-keyed `ConstraintSystem` type family — the canonical system
 //! shape consumed by the encoder ([`super::encode`]): [`PolyTerm`],
 //! [`ConstraintSystem`], and the producer-side [`ConstraintSystemBuilder`].
-//! Split out of `encoder.rs`; re-exported from `encoder` so the public
-//! paths are unchanged.
+//! Re-exported from `encoder` so `encoder::ConstraintSystem` etc. resolve here.
 
 use std::collections::HashMap;
 

@@ -107,10 +107,11 @@ impl<'r> BitProp<'r> {
     /// derived before cancellation; partial output is still sound (every
     /// emitted poly is a valid consequence of the basis).
     ///
-    /// Takes `&self`: this never mutates `BitProp` (in particular never
-    /// caches a branch-local bit proof into `self.bits` — the round-5 H1
-    /// bug), so the no-mutation contract is enforced by the type rather
-    /// than by prose.
+    /// Takes `&self`: this never mutates `BitProp` — in particular never
+    /// caches a branch-local bit proof into `self.bits`, which would let a
+    /// variable that is a bit only on the current DFS branch be treated as
+    /// a global bit on a sibling branch — so the no-mutation contract is
+    /// enforced by the type rather than by prose.
     pub fn get_bit_equalities_with_cancel(
         &self,
         split_basis: &[Ideal<'r>],
@@ -134,7 +135,7 @@ impl<'r> BitProp<'r> {
             // Build the polynomial b_0 + 2*b_1 + ... + 2^k*b_k.
             let bs_poly = bitsum_poly(pr, bs);
             let mut handled = false;
-            // J1: pinning bits from a mod-p residue is sound only when the
+            // Pinning bits from a mod-p residue is sound only when the
             // bitsum cannot overflow p (2^len <= p); otherwise the residue
             // has multiple integer preimages (GF(7): A≡0 admits 0 and 7), so
             // leave such bitsums unhandled here.
@@ -202,7 +203,7 @@ impl<'r> BitProp<'r> {
 
                 let min = a.len().min(b.len());
                 let max = a.len().max(b.len());
-                // J1: A ≡ B (mod p) implies bitwise equality only when both
+                // A ≡ B (mod p) implies bitwise equality only when both
                 // bitsums fit in p (2^max <= p); else they can collide mod p
                 // (GF(7): 7 ≡ 0, so (1,1,1) and (0,0,0) are equal mod 7) and
                 // bitwise propagation would delete a real solution (false UNSAT).
@@ -348,9 +349,9 @@ mod tests {
         }
     }
 
-    /// Soundness guard (J1, Phase 2): on a prime where a bitsum's range
-    /// can exceed `p`, two bitsums equal *mod p* are NOT equal as
-    /// integers, so bitwise equality must not be propagated.
+    /// Soundness guard (Phase 2): on a prime where a bitsum's range can
+    /// exceed `p`, two bitsums equal *mod p* are NOT equal as integers, so
+    /// bitwise equality must not be propagated.
     ///
     /// GF(7): `A = b0+2b1+4b2`, `B = c0+2c1+4c2`, constraint `A - B = 0`.
     /// Because `2^3 = 8 > 7`, `A ≡ B (mod 7)` admits the collision
@@ -398,7 +399,7 @@ mod tests {
         }
     }
 
-    /// Soundness guard (J1, Phase 1): a bitsum reducing to a constant
+    /// Soundness guard (Phase 1): a bitsum reducing to a constant
     /// `val` only forces `b_i = bit_i(val)` when the bitsum cannot
     /// overflow `p`. GF(7): `A = b0+2b1+4b2 = 0` admits both `(0,0,0)`
     /// and `(1,1,1)` (since `7 ≡ 0`), so `b_i = 0` is not entailed.

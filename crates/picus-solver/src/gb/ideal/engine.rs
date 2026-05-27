@@ -1,9 +1,8 @@
 //! Gröbner-basis engine front-door for [`super::Ideal`]: the pluggable
 //! [`GbAlgorithm`] strategy + dispatch, and the `compute_gb_*` family with
 //! its dense/sparse representation routing and the shared `finish_gb`
-//! cancel/error/backup contract. Split out of `ideal.rs` so the `Ideal`
-//! algebra and the GB computation engine read separately; re-exported from
-//! `ideal` so `gb::ideal::compute_gb_with_order` etc. paths are unchanged.
+//! cancel/error/backup contract. Re-exported from `ideal` so
+//! `gb::ideal::compute_gb_with_order` etc. resolve here.
 
 use std::cell::RefCell;
 

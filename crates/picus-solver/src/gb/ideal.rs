@@ -58,9 +58,9 @@ impl<'r> Ideal<'r> {
         }
         // Route through compute_gb_with_order rather than compute_gb_dispatch
         // directly, so the split-GB path (this constructor's main caller)
-        // honours the configured representation — sparse by default via
-        // use_sparse_gb (J3) — and the shared finish_gb cancel/error/backup
-        // contract (J9). A genuine engine error yields an empty basis (not the
+        // honours the configured representation (sparse by default, via
+        // use_sparse_gb) and the shared finish_gb cancel/error/backup
+        // contract. A genuine engine error yields an empty basis (not the
         // unreduced generators): downstream that reads as "no constraints",
         // never a trusted GB, and the post-call is_cancelled checks turn a
         // cancellation into Err(Cancelled) as before.
