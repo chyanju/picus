@@ -708,6 +708,28 @@ pub(crate) fn wrap_dense_vec(v: Vec<crate::ff::DensePoly>) -> Vec<Poly> {
 ///   non-GB as a GB (a possible false UNSAT). An empty basis instead
 ///   leaves the ideal undetermined downstream (→ Unknown, or a
 ///   `verify_model`-guarded SAT), never a trusted zero-dimensional GB.
+/// Resolve a GB `Result` into a basis under the soundness contract shared
+/// by every public GB entry point: on **cancellation** return `backup`
+/// (the caller's `is_cancelled()` check then discards it); on a **genuine
+/// engine error** return an empty basis — never the unreduced generators,
+/// so downstream cannot mistake them for a Gröbner basis and emit a wrong
+/// verdict. `what` names the call site for the warning log.
+fn finish_gb(
+    result: Result<Vec<Poly>, EngineError>,
+    cancel: &CancelToken,
+    backup: Vec<Poly>,
+    what: &str,
+) -> Vec<Poly> {
+    result.unwrap_or_else(|e| {
+        if cancel.is_cancelled() {
+            backup
+        } else {
+            log::warn!("{} failed ({:?}); returning empty basis (Unknown)", what, e);
+            Vec::new()
+        }
+    })
+}
+
 pub fn compute_gb_with_order(
     poly_ring: &FfPolyRing,
     generators: Vec<Poly>,
@@ -740,17 +762,7 @@ pub fn compute_gb_with_order(
     let start = std::time::Instant::now();
     let result = compute_gb_dispatch(poly_ring, generators, cancel, order, None);
     let elapsed = start.elapsed();
-    let basis = result.unwrap_or_else(|e| {
-        if cancel.is_cancelled() {
-            // Cancellation: caller's is_cancelled() check discards this.
-            backup
-        } else {
-            // Genuine failure: no valid GB. Return empty so downstream
-            // does not mistake the unreduced generators for a GB.
-            log::warn!("GB dispatch failed ({:?}); returning empty basis (Unknown)", e);
-            Vec::new()
-        }
-    });
+    let basis = finish_gb(result, cancel, backup, "GB dispatch");
     log::trace!(
         "GB call: {} gens, {} vars → {} basis elems in {:.1}ms",
         n_gens, n_vars, basis.len(), elapsed.as_secs_f64() * 1000.0
@@ -812,14 +824,8 @@ pub(crate) fn compute_gb_direct(
         return sparse_gb_route(poly_ring, generators, order, cancel);
     }
     let backup: Vec<Poly> = generators.iter().map(|p| p.clone()).collect();
-    compute_gb_buchberger(poly_ring, generators, cancel, order).unwrap_or_else(|e| {
-        if cancel.is_cancelled() {
-            backup
-        } else {
-            log::warn!("inner direct GB failed ({:?}); returning empty basis (Unknown)", e);
-            Vec::new()
-        }
-    })
+    let result = compute_gb_buchberger(poly_ring, generators, cancel, order);
+    finish_gb(result, cancel, backup, "inner direct GB")
 }
 
 /// Incremental GB extension. Computes GB of `<known_gb> + <new_polys>`
@@ -891,17 +897,12 @@ pub fn compute_gb_incremental_with_order(
         igb.add_generators(dense_new)?;
         Ok::<Vec<crate::ff::DensePoly>, crate::EngineError>(igb.basis())
     }));
-    match result {
-        Ok(Ok(basis)) => wrap_dense_vec(basis),
-        Ok(Err(_)) | Err(_) => {
-            if cancel.is_cancelled() {
-                backup
-            } else {
-                log::warn!("incremental GB failed; returning empty basis (Unknown)");
-                Vec::new()
-            }
-        }
-    }
+    let result: Result<Vec<Poly>, EngineError> = match result {
+        Ok(Ok(basis)) => Ok(wrap_dense_vec(basis)),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(EngineError::Internal("incremental GB panicked".into())),
+    };
+    finish_gb(result, cancel, backup, "incremental GB")
 }
 
 /// Traced variant: feeds Buchberger steps to `tracer` for UNSAT-core extraction.
@@ -927,16 +928,7 @@ pub fn compute_gb_with_order_traced(
     }
     let backup: Vec<Poly> = generators.iter().map(|p| p.clone()).collect();
     let result = compute_gb_dispatch(poly_ring, generators, cancel, order, Some(tracer));
-    result.unwrap_or_else(|e| {
-        if cancel.is_cancelled() {
-            backup
-        } else {
-            // Genuine failure: empty basis, not a fake GB (see
-            // `compute_gb_with_order`).
-            log::warn!("traced GB dispatch failed ({:?}); returning empty basis (Unknown)", e);
-            Vec::new()
-        }
-    })
+    finish_gb(result, cancel, backup, "traced GB dispatch")
 }
 
 /// Raw traced Buchberger entry point. Counterpart to

@@ -233,18 +233,8 @@ impl BooleanQuery {
                             builder.add_equality(combined);
                         }
                         Literal::Neq(a, b) => {
-                            let d_name = format!("__diseq_d_{}", diseq_seq);
-                            diseq_seq += 1;
-                            let d_idx = builder.var(&d_name);
-                            let zero = match zero_idx {
-                                Some(z) => z,
-                                None => {
-                                    let z = builder.var("__zero");
-                                    builder.add_assignment(z, BigUint::zero());
-                                    zero_idx = Some(z);
-                                    z
-                                }
-                            };
+                            let (d_idx, zero) =
+                                builder.fresh_disequality_vars(&mut diseq_seq, &mut zero_idx);
                             // def = d - a + b
                             let mut def: Vec<PolyTerm> = vec![PolyTerm {
                                 coeff: BigUint::from(1u32),
