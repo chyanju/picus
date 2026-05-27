@@ -262,6 +262,59 @@ fn encode_bitsum_routing() {
     assert!(enc.var_map.contains_key("__bitsum_0"));
 }
 
+/// End-to-end with both a disequality (n_diseq > 0) and an
+/// auto-extracted bitsum. The `__bitsum_N` aux variables are appended
+/// after the Rabinowitsch witnesses, so the extractor's predicted aux
+/// index and the encoder's allocated slot must agree on the `+ n_diseq`
+/// offset for the decomposition to solve. The diseq-only and bitsum-only
+/// tests never exercise that offset.
+#[test]
+fn encode_bitsum_with_diseq_solves_unique_decomp() {
+    use crate::core::{solve_encoded, SolveOutcome};
+    let prime: u32 = 11;
+    let p = BigUint::from(prime);
+    let pm1 = &p - BigUint::from(1u32);
+    let target: u32 = 5; // 101b -> b0=1, b1=0, b2=1
+    let mut b = empty_builder(prime);
+    let bs: Vec<VarIdx> = (0..3).map(|i| b.var(&format!("b{}", i))).collect();
+    for &bi in &bs {
+        b.add_equality(vec![
+            idx_term(1, &[(bi, 2)]),
+            PolyTerm { coeff: pm1.clone(), vars: vec![(bi, 1)] },
+        ]);
+    }
+    let mut sum = Vec::new();
+    let mut c = BigUint::from(1u32);
+    let two = BigUint::from(2u32);
+    for &bi in &bs {
+        sum.push(PolyTerm { coeff: c.clone(), vars: vec![(bi, 1)] });
+        c = (&c * &two) % &p;
+    }
+    sum.push(PolyTerm { coeff: &p - BigUint::from(target), vars: vec![] });
+    b.add_equality(sum);
+    // n_diseq = 1: the unique decomposition has b0=1, b1=0, so b0 != b1
+    // holds — the disequality is satisfiable and does not change the model.
+    b.add_disequality(bs[0], bs[1]);
+    let sys = b.build();
+
+    let enc = encode(&sys).expect("encode");
+    assert_eq!(enc.bitsum_polys.len(), 1, "one auto-extracted bitsum");
+    // Bitsum aux follows the single Rabinowitsch witness (the +n_diseq offset).
+    assert_eq!(
+        enc.var_map["__bitsum_0"],
+        enc.var_map["__w_diseq_0"] + 1,
+        "bitsum aux must be placed after the diseq witness"
+    );
+    match solve_encoded(&enc) {
+        SolveOutcome::Sat(m) => {
+            assert_eq!(m.get("b0"), Some(&BigUint::from(1u32)));
+            assert_eq!(m.get("b1"), Some(&BigUint::from(0u32)));
+            assert_eq!(m.get("b2"), Some(&BigUint::from(1u32)));
+        }
+        other => panic!("expected unique decomp Sat, got {:?}", other),
+    }
+}
+
 /// Same variable referenced twice in a builder collapses to one
 /// VarIdx; the encoded ring has only one variable.
 #[test]
