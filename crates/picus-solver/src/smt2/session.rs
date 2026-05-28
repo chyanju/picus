@@ -9,14 +9,14 @@
 //! into the in-tree CDCL(T) entry point [`crate::cdclt::solve_formula`].
 //! Per-check timeouts honour `(set-option :tlimit-per <ms>)`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use num_bigint::BigUint;
 
 use super::tokenizer::{parse_sexprs, tokenize, Sexpr};
 use super::{
-    assert_to_formula, classify_declare, finite_field_prime_str, parse_define_fun, MacroDef,
-    ParseCtx, ParseError, Polynomial, VarSort,
+    assert_to_formula, classify_declare, collect_ff_literal_primes, finite_field_prime_str,
+    has_ff_op, parse_define_fun, MacroDef, ParseCtx, ParseError, Polynomial, VarSort,
 };
 use crate::boolean::{Formula, Literal};
 use crate::frontend::encoder::{ConstraintSystemBuilder, PolyTerm};
@@ -186,6 +186,27 @@ impl SmtSession {
                 // wrapper. Any other attribute on `!` is silently
                 // ignored; the inner term is used as the assertion.
                 let (inner, name) = strip_named_annotation(&list[1]);
+                // If the session has no prime yet, infer it from this
+                // assert's `#fNmP` literals (every literal carries its
+                // modulus); reject `ff.*` ops with no literal hint so the
+                // term is not silently encoded under the builder's prime-2
+                // default. Mirrors the one-shot parsers.
+                if self.prime.is_none() {
+                    let mut lit_primes: BTreeSet<BigUint> = BTreeSet::new();
+                    collect_ff_literal_primes(inner, &mut lit_primes);
+                    if lit_primes.len() > 1 {
+                        return Err(ParseError::Malformed(format!(
+                            "multiple FF primes in literals: {:?}",
+                            lit_primes.iter().collect::<Vec<_>>()
+                        )));
+                    }
+                    if let Some(p) = lit_primes.into_iter().next() {
+                        self.builder.set_prime(p.clone());
+                        self.prime = Some(p);
+                    } else if has_ff_op(inner) {
+                        return Err(ParseError::MissingPrime);
+                    }
+                }
                 let mut ctx = self.borrow_ctx();
                 let formula = match assert_to_formula(inner, &mut ctx) {
                     Ok(f) => f,
