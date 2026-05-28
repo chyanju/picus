@@ -1012,4 +1012,99 @@ mod tests {
         let out = stateless_solve(&cs, &CancelToken::none());
         assert!(matches!(out, SolveOutcome::Unsat(_)));
     }
+
+    // ────────── continue_partial direct invocation ──────────
+
+    /// Build a `PartialBuild` for a small constraint system and feed it
+    /// to `continue_partial`. Mirrors what `rebuild_base` would save on
+    /// cancellation, but constructed deterministically so the resume
+    /// path is exercised without timing tricks.
+    fn make_partial_build(cs: &ConstraintSystem) -> PartialBuild {
+        let encoded = encode_constraint_side(cs).expect("encode");
+        let (gens, _) = build_partitions(
+            &encoded.poly_ring,
+            &encoded.polynomials,
+            &encoded.bitsum_polys,
+        );
+        let ring = ring_for_order(&encoded.poly_ring, MonomialOrder::DegRevLex);
+        let bcfg = BuchbergerConfig {
+            order: MonomialOrder::DegRevLex,
+            cancel_token: None,
+            abort_on_trivial: true,
+            use_f4: false,
+        };
+        let inflight = vec![
+            IncrementalGB::new(ring.clone(), bcfg.clone()),
+            IncrementalGB::new(ring, bcfg),
+        ];
+        let bit_prop_state = {
+            let bp = BitProp::new(&encoded.poly_ring);
+            bp.to_state()
+        };
+        PartialBuild {
+            digest: digest_constraint_side(cs),
+            poly_ring: Arc::new(encoded.poly_ring),
+            var_map: encoded.var_map,
+            constraint_polys: encoded.polynomials,
+            bitsum_polys: encoded.bitsum_polys,
+            bit_prop_state,
+            inflight,
+            pending: gens,
+            contains_memo: std::collections::HashSet::new(),
+        }
+    }
+
+    #[test]
+    fn continue_partial_completes_on_simple_sat_system() {
+        let cs = lin_eq_with_diseq();
+        let mut partial = make_partial_build(&cs);
+        let out = continue_partial(&mut partial, &CancelToken::none());
+        assert!(
+            matches!(out, ResumeOutcome::Complete(_)),
+            "expected Complete on simple system, got something else"
+        );
+    }
+
+    #[test]
+    fn continue_partial_completes_on_unsat_system() {
+        let cs = lin_unsat_sys();
+        let mut partial = make_partial_build(&cs);
+        let out = continue_partial(&mut partial, &CancelToken::none());
+        // UNSAT is detected as whole-ring during the GB build; `continue_partial`
+        // still completes (the cache stores the trivial basis).
+        assert!(matches!(out, ResumeOutcome::Complete(_)));
+    }
+
+    #[test]
+    fn continue_partial_returns_still_partial_on_cancel() {
+        let cs = nonlinear_sat();
+        let mut partial = make_partial_build(&cs);
+        // Pre-cancelled token: the resume loop should observe cancel and
+        // return StillPartial without completing.
+        let cancel = CancelToken::cancelled();
+        let out = continue_partial(&mut partial, &cancel);
+        assert!(matches!(out, ResumeOutcome::StillPartial));
+    }
+
+    // ────────── resume path via full IncrementalSolverContext::solve ──────────
+
+    #[test]
+    fn solve_resumes_from_saved_partial_build() {
+        // Drive a sequence: solve, solve (builds cache), invalidate cache
+        // (but keep last_digest), inject a manual partial_build with the
+        // same digest, solve → continue_partial path.
+        let mut ctx = IncrementalSolverContext::new();
+        let cs = lin_eq_with_diseq();
+        let _ = ctx.solve(&cs, &CancelToken::none());
+        let _ = ctx.solve(&cs, &CancelToken::none());
+        // Now ctx.cached_base is Some. Replace it with a partial_build at
+        // the same digest to force the resume path.
+        ctx.cached_base = None;
+        ctx.partial_build = Some(make_partial_build(&cs));
+        // ctx.last_digest already matches; partial_matches will be true.
+        let out = ctx.solve(&cs, &CancelToken::none());
+        assert!(matches!(out, SolveOutcome::Sat(_)));
+        // Cache should now be built from the resumed partial.
+        assert!(ctx.cached_base.is_some());
+    }
 }
