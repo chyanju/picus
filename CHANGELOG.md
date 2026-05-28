@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/). Entries are telegraphic: one line per change — what changed plus the key term/API — with no narrative, mechanism explanations, or "no verdict change" boilerplate.
 
+## [1.8.13] - 2026-05-27
+- Soundness backstops: cached SAT verdicts now re-verify the model against `bitsum_polys` (the non-cached `core::solve_split_gb_cancel` path already did); `verify_model` returns `false` on a model missing an appearing variable (was defaulted to zero, which could vacuously pass a narrow check).
+- `R1csFile::constraint_to_string` returns a placeholder on an out-of-range id (was index panic); F4 S-poly extraction debug-asserts on the unreachable "leads on a reducer column" branch (silent skip would drop a generator and weaken the ideal); `cvc5_compare` arg parser reports a usage error on a trailing flag with no value (was index panic).
+- Maintainability: single-sourced the split-GB propagation iteration cap (`max_fixpoint_iters`), the SMT-LIB `declare-fun`/`declare-const` scan (`classify_declare`), and the CDCL(T) UNSAT-core back-mapping (`map_core_to_atoms`); removed unused `GbTracer` API (`checkpoint`/`restore`/`next_input_idx`/`unsat_core_for_trivial`/`deps_of`); documented the `SolverKind` dispatch-vs-selection checklist.
+
 ## [1.8.12] - 2026-05-27
 - `DensePoly::from_raw_sorted` drops the total-degree-monotonicity debug assert (invalid under Lex) — fixes a debug/test-build panic on the Lex model-extraction reduction path.
 - SMT-LIB term builders (`build_poly`/`build_poly_with_ctx`) reject a zero-argument `-` instead of indexing out of bounds (was a `run_smt2` process abort).
