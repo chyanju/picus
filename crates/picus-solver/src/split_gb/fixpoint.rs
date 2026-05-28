@@ -31,6 +31,7 @@ use crate::gb::tracer::GbTracer;
 
 use super::{classify_propagation, max_fixpoint_iters, seed_self_membership, Propagate, SplitGb};
 use crate::metric;
+use crate::profile::SPLIT_GB;
 
 /// Compute a split GB from scratch.
 ///
@@ -57,20 +58,13 @@ pub fn split_gb_cancel<'r>(
     bit_prop: &mut BitProp<'r>,
     cancel: &CancelToken,
 ) -> Result<SplitGb<'r>, Cancelled> {
-    let stats_on = crate::profile::gb_stats_enabled();
-    let trace_on = crate::profile::gb_trace_enabled();
-    let call_idx = if stats_on {
-        crate::profile::SPLIT_GB.split_gb_extend_calls
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
-    } else { 0 };
     let k = generator_sets.len();
     let starting: SplitGb<'r> = (0..k)
         .map(|_| Ideal::from_gb(poly_ring, Vec::new()))
         .collect();
     run_fixpoint(
         poly_ring, starting, generator_sets, bit_prop, cancel,
-        "split_gb_cancel", "split-gb-cancel-trace", call_idx,
-        stats_on, trace_on,
+        "split_gb_cancel", "split-gb-cancel-trace",
     )
 }
 
@@ -89,18 +83,11 @@ pub(crate) fn split_gb_extend_cancel<'r>(
     bit_prop: &mut BitProp<'r>,
     cancel: &CancelToken,
 ) -> Result<SplitGb<'r>, Cancelled> {
-    let stats_on = crate::profile::gb_stats_enabled();
-    let trace_on = crate::profile::gb_trace_enabled();
-    let call_idx = if stats_on {
-        crate::profile::SPLIT_GB.split_gb_extend_calls
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
-    } else { 0 };
     debug_assert_eq!(starting.len(), new_polys.len(),
         "split_gb_extend_cancel: starting and new_polys must have same length");
     run_fixpoint(
         poly_ring, starting, new_polys, bit_prop, cancel,
-        "split_gb_extend_cancel", "split-gb-trace", call_idx,
-        stats_on, trace_on,
+        "split_gb_extend_cancel", "split-gb-trace",
     )
 }
 
@@ -117,15 +104,14 @@ fn run_fixpoint<'r>(
     cancel: &CancelToken,
     fn_name: &'static str,
     trace_tag: &'static str,
-    call_idx: u64,
-    stats_on: bool,
-    trace_on: bool,
 ) -> Result<SplitGb<'r>, Cancelled> {
-    use std::sync::atomic::Ordering::Relaxed;
-
     let k = starting.len();
     let mut split_basis: SplitGb<'r> = starting;
     let mut new_polys: Vec<Vec<Poly>> = new_polys;
+
+    // Per-call sequence id for the gb-trace tag (post-increment of the shared
+    // call counter; 0 when gb-stats is off).
+    metric::def!(call_idx = metric::next!(SPLIT_GB.split_gb_extend_calls));
 
     // Cross-iteration memoisation of positive `contains` results.
     // Key: `(content_hash(p), basis_idx)`. Sound because once `p in
@@ -145,31 +131,27 @@ fn run_fixpoint<'r>(
             log::warn!("{}: fixpoint iteration cap ({}) reached", fn_name, iter_cap);
             break;
         }
-        let iter_t0 = if trace_on { Some(std::time::Instant::now()) } else { None };
+        metric::clock!(iter_clock);
 
         // Extend each basis with its new polys via incremental Buchberger.
-        let extend_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
-        let mut iter_polys_in: u64 = 0;
-        for i in 0..k {
-            if !new_polys[i].is_empty() {
-                iter_polys_in += new_polys[i].len() as u64;
-                let added = std::mem::take(&mut new_polys[i]);
-                let existing = std::mem::replace(
-                    &mut split_basis[i],
-                    Ideal::from_gb(poly_ring, Vec::new()),
-                );
-                split_basis[i] = existing.extend_with_cancel(added, cancel)?;
+        metric::def!(iter_polys_in);
+        {
+            metric::timer!(SPLIT_GB.time_in_extend_with_cancel_ns);
+            for i in 0..k {
+                if !new_polys[i].is_empty() {
+                    metric::bump!(iter_polys_in, new_polys[i].len() as u64);
+                    let added = std::mem::take(&mut new_polys[i]);
+                    let existing = std::mem::replace(
+                        &mut split_basis[i],
+                        Ideal::from_gb(poly_ring, Vec::new()),
+                    );
+                    split_basis[i] = existing.extend_with_cancel(added, cancel)?;
+                }
             }
         }
-        if let Some(t0) = extend_t0 {
-            let dt = t0.elapsed().as_nanos() as u64;
-            crate::profile::SPLIT_GB.time_in_extend_with_cancel_ns
-                .fetch_add(dt, Relaxed);
-        }
 
-        if stats_on {
-            let g = &crate::profile::SPLIT_GB;
-            g.fixpoint_iters_total.fetch_add(1, Relaxed);
+        metric::scope! {
+            metric::incr!(SPLIT_GB.fixpoint_iters_total);
             let mut max_basis = 0u64;
             let mut total_terms = 0u64;
             for b in &split_basis {
@@ -179,8 +161,8 @@ fn run_fixpoint<'r>(
                     total_terms += p.num_terms() as u64;
                 }
             }
-            g.observe_basis_size_max(max_basis);
-            g.observe_basis_terms_max(total_terms);
+            metric::max!(SPLIT_GB.basis_size_max, max_basis);
+            metric::max!(SPLIT_GB.basis_size_total_terms_max, total_terms);
         }
 
         if split_basis.iter().any(|b| b.is_whole_ring()) {
@@ -191,15 +173,11 @@ fn run_fixpoint<'r>(
         // trivially `contains(p, j) = true`.
         seed_self_membership(&mut contains_memo, &split_basis);
 
-        let bit_eq_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
-        let mut to_propagate =
-            bit_prop.get_bit_equalities_with_cancel(&split_basis, Some(cancel));
-        if let Some(t0) = bit_eq_t0 {
-            let dt = t0.elapsed().as_nanos() as u64;
-            crate::profile::SPLIT_GB.time_in_bit_eq_ns.fetch_add(dt, Relaxed);
-            crate::profile::SPLIT_GB.bit_eq_emitted_total
-                .fetch_add(to_propagate.len() as u64, Relaxed);
-        }
+        let mut to_propagate = {
+            metric::timer!(SPLIT_GB.time_in_bit_eq_ns);
+            bit_prop.get_bit_equalities_with_cancel(&split_basis, Some(cancel))
+        };
+        metric::add!(SPLIT_GB.bit_eq_emitted_total, to_propagate.len() as u64);
         if cancel.is_cancelled() { return Err(Cancelled); }
         for b in &split_basis {
             for p in &b.basis {
@@ -207,55 +185,56 @@ fn run_fixpoint<'r>(
             }
         }
 
-        let mut iter_contains_calls: u64 = 0;
-        let mut iter_contains_true: u64 = 0;
-        let mut iter_memo_hits: u64 = 0;
-        let mut iter_polys_out: u64 = 0;
-        let contains_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
+        // Profiling-local accumulators (shared by the gb-stats flush below
+        // and the gb-trace line): plain `+=` in the hot loop, no atomics.
+        metric::def!(iter_contains_calls);
+        metric::def!(iter_contains_true);
+        metric::def!(iter_memo_hits);
+        metric::def!(iter_polys_out);
+        metric::def!(iter_admit_passes);
         let mut any_new = false;
-        for p in &to_propagate {
-            if cancel.is_cancelled() { return Err(Cancelled); }
-            let p_hash = p.content_hash();
-            for j in 0..k {
-                let outcome = classify_propagation(
-                    poly_ring, &split_basis[j], j, p, p_hash, &mut contains_memo, cancel,
-                );
-                if stats_on && outcome != Propagate::NotAdmitted {
-                    crate::profile::SPLIT_GB.propagate_admit_passes.fetch_add(1, Relaxed);
-                }
-                match outcome {
-                    Propagate::NotAdmitted => {}
-                    Propagate::MemoHit => iter_memo_hits += 1,
-                    Propagate::InBasis => {
-                        iter_contains_calls += 1;
-                        iter_contains_true += 1;
+        {
+            metric::timer!(SPLIT_GB.time_in_contains_ns);
+            for p in &to_propagate {
+                if cancel.is_cancelled() { return Err(Cancelled); }
+                let p_hash = p.content_hash();
+                for j in 0..k {
+                    let outcome = classify_propagation(
+                        poly_ring, &split_basis[j], j, p, p_hash, &mut contains_memo, cancel,
+                    );
+                    if outcome != Propagate::NotAdmitted {
+                        metric::bump!(iter_admit_passes);
                     }
-                    Propagate::NewGenerator => {
-                        iter_contains_calls += 1;
-                        new_polys[j].push(poly_ring.ring.clone_el(p));
-                        iter_polys_out += 1;
-                        any_new = true;
+                    match outcome {
+                        Propagate::NotAdmitted => {}
+                        Propagate::MemoHit => { metric::bump!(iter_memo_hits); }
+                        Propagate::InBasis => {
+                            metric::bump!(iter_contains_calls);
+                            metric::bump!(iter_contains_true);
+                        }
+                        Propagate::NewGenerator => {
+                            metric::bump!(iter_contains_calls);
+                            new_polys[j].push(poly_ring.ring.clone_el(p));
+                            metric::bump!(iter_polys_out);
+                            any_new = true;
+                        }
                     }
                 }
             }
         }
-        if let Some(t0) = contains_t0 {
-            let dt = t0.elapsed().as_nanos() as u64;
-            let g = &crate::profile::SPLIT_GB;
-            g.time_in_contains_ns.fetch_add(dt, Relaxed);
-            g.propagate_candidates_total
-                .fetch_add(to_propagate.len() as u64, Relaxed);
-            g.propagate_contains_calls.fetch_add(iter_contains_calls, Relaxed);
-            g.propagate_contains_true.fetch_add(iter_contains_true, Relaxed);
-            g.propagate_contains_false
-                .fetch_add(iter_contains_calls - iter_contains_true, Relaxed);
-            g.propagate_memo_hits.fetch_add(iter_memo_hits, Relaxed);
-            g.new_polys_added_total.fetch_add(iter_polys_out, Relaxed);
-            g.observe_polys_per_iter_max(iter_polys_out);
+        metric::scope! {
+            metric::add!(SPLIT_GB.propagate_admit_passes, iter_admit_passes);
+            metric::add!(SPLIT_GB.propagate_candidates_total, to_propagate.len() as u64);
+            metric::add!(SPLIT_GB.propagate_contains_calls, iter_contains_calls);
+            metric::add!(SPLIT_GB.propagate_contains_true, iter_contains_true);
+            metric::add!(SPLIT_GB.propagate_contains_false, iter_contains_calls - iter_contains_true);
+            metric::add!(SPLIT_GB.propagate_memo_hits, iter_memo_hits);
+            metric::add!(SPLIT_GB.new_polys_added_total, iter_polys_out);
+            metric::max!(SPLIT_GB.new_polys_per_iter_max, iter_polys_out);
         }
 
-        if let Some(t0) = iter_t0 {
-            let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        metric::trace! {
+            let elapsed_ms = iter_clock.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
             let basis_sizes: Vec<usize> = split_basis.iter().map(|b| b.basis.len()).collect();
             eprintln!(
                 "[{} call={} iter={}] basis_sizes={:?} polys_in={} polys_out={} contains={} contains_true={} memo_hits={} elapsed_ms={:.2}",
@@ -269,9 +248,7 @@ fn run_fixpoint<'r>(
         if !any_new { break; }
     }
 
-    if stats_on {
-        crate::profile::SPLIT_GB.observe_iters_max(fixpoint_iter);
-    }
+    metric::max!(SPLIT_GB.fixpoint_iters_per_call_max, fixpoint_iter);
 
     Ok(split_basis)
 }

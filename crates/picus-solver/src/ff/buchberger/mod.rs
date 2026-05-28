@@ -797,27 +797,26 @@ impl BuchbergerState {
             return self.run_f4(observer);
         }
         if self.trivial && self.cfg.abort_on_trivial { return Ok(()); }
-        // Granular per-phase timing inside the main loop.
-        let stats_on = crate::profile::gb_stats_enabled();
-        let mut t_spoly_ns: u64 = 0;
-        let mut t_reduce_ns: u64 = 0;
-        let mut t_genpairs_ns: u64 = 0;
-        let initial_open_size = self.open.len();
-        let run_start = std::time::Instant::now();
+        // Granular per-phase timing for the gb-stats dump (profiling locals).
+        metric::def!(t_spoly_ns);
+        metric::def!(t_reduce_ns);
+        metric::def!(t_genpairs_ns);
+        metric::def!(initial_open_size = self.open.len() as u64);
+        metric::stopwatch!(run_start);
         // self.open is sorted descending — `pop()` returns the smallest pair
         // (lowest sugar, then lcm_deg, then age).
         while let Some(pair) = self.open.pop() {
             if let Err(e) = self.check_cancel() {
-                if stats_on {
+                metric::scope! {
                     let s = &self.stats;
-                    let total_ns = run_start.elapsed().as_nanos() as u64;
+                    let total_ms = run_start.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
                     let active_count = self.basis.iter().filter(|e| e.active).count();
                     eprintln!(
                         "[picus-gb-stats CANCELLED] pairs={} cop={} gm={} b={} red={} useful={} useless={} initial_open={} remaining_open={} basis_size={} active={} time_run_ms={:.2} time_spoly_ms={:.2} time_reduce_ms={:.2} time_genpairs_ms={:.2}",
                         s.pairs_generated, s.pairs_killed_coprime, s.pairs_killed_gm, s.pairs_killed_b,
                         s.reductions_total, s.reductions_useful, s.reductions_useless,
                         initial_open_size, self.open.len(), self.basis.len(), active_count,
-                        total_ns as f64 / 1e6,
+                        total_ms,
                         t_spoly_ns as f64 / 1e6,
                         t_reduce_ns as f64 / 1e6,
                         t_genpairs_ns as f64 / 1e6,
@@ -834,11 +833,10 @@ impl BuchbergerState {
             // pair-generation time, so coprime and dominated pairs do
             // not reach this loop.
 
-            let t_spoly_start = if stats_on { Some(std::time::Instant::now()) } else { None };
-            let s_poly = self.build_spoly(&pair);
-            if let Some(t0) = t_spoly_start {
-                t_spoly_ns += t0.elapsed().as_nanos() as u64;
-            }
+            let s_poly = {
+                metric::timer_local!(t_spoly_ns);
+                self.build_spoly(&pair)
+            };
 
             // Reduce against the current active basis. Reference-based
             // reduction avoids cloning every active polynomial for each
@@ -847,33 +845,32 @@ impl BuchbergerState {
             // honoured. Above `USE_COUNT_SORT_THRESHOLD`, divisors are
             // tried in `use_count` descending order; the inner stable
             // sort by LT degree preserves this for equal-degree ties.
-            let t_red_start = if stats_on { Some(std::time::Instant::now()) } else { None };
             // Reduce against the active basis. With `reducer_index_cache` on
             // this reuses a cached divisor index across reductions whose
             // active set is unchanged (see `reduce_spoly_against_active`).
-            let (nf_reduced, active_idxs, use_counts) =
-                self.reduce_spoly_against_active(&s_poly);
-            let mut nf = nf_reduced;
-            for (slot, &basis_i) in active_idxs.iter().enumerate() {
-                self.basis[basis_i].use_count = self.basis[basis_i]
-                    .use_count
-                    .saturating_add(use_counts[slot]);
-            }
-            if let Some(t0) = t_red_start {
-                t_reduce_ns += t0.elapsed().as_nanos() as u64;
-            }
+            let (mut nf, active_idxs, use_counts) = {
+                metric::timer_local!(t_reduce_ns);
+                let (nf_reduced, active_idxs, use_counts) =
+                    self.reduce_spoly_against_active(&s_poly);
+                for (slot, &basis_i) in active_idxs.iter().enumerate() {
+                    self.basis[basis_i].use_count = self.basis[basis_i]
+                        .use_count
+                        .saturating_add(use_counts[slot]);
+                }
+                (nf_reduced, active_idxs, use_counts)
+            };
             if let Some(c) = &self.cfg.cancel_token {
                 if c.is_cancelled() {
-                    if stats_on {
+                    metric::scope! {
                         let s = &self.stats;
-                        let total_ns = run_start.elapsed().as_nanos() as u64;
+                        let total_ms = run_start.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
                         let active_count = self.basis.iter().filter(|e| e.active).count();
                         eprintln!(
                             "[picus-gb-stats CANCELLED-MIDLOOP] pairs={} cop={} gm={} b={} red={} useful={} useless={} initial_open={} remaining_open={} basis_size={} active={} time_run_ms={:.2} time_spoly_ms={:.2} time_reduce_ms={:.2} time_genpairs_ms={:.2}",
                             s.pairs_generated, s.pairs_killed_coprime, s.pairs_killed_gm, s.pairs_killed_b,
                             s.reductions_total, s.reductions_useful, s.reductions_useless,
                             initial_open_size, self.open.len(), self.basis.len(), active_count,
-                            total_ns as f64 / 1e6,
+                            total_ms,
                             t_spoly_ns as f64 / 1e6,
                             t_reduce_ns as f64 / 1e6,
                             t_genpairs_ns as f64 / 1e6,
@@ -926,10 +923,9 @@ impl BuchbergerState {
             // Non-strict deactivation.
             // Generate new pairs FIRST, so we don't drop pairs against
             // elements about to be deactivated.
-            let t_genpairs_start = if stats_on { Some(std::time::Instant::now()) } else { None };
-            self.generate_pairs_against(new_idx, &lt, sugar);
-            if let Some(t0) = t_genpairs_start {
-                t_genpairs_ns += t0.elapsed().as_nanos() as u64;
+            {
+                metric::timer_local!(t_genpairs_ns);
+                self.generate_pairs_against(new_idx, &lt, sugar);
             }
             self.deactivate_superseded(new_idx, &lt);
             self.basis.push(BasisElement { poly: nf, lt, lt_divmask, active: true, sugar, use_count: 0 });
@@ -948,13 +944,10 @@ impl BuchbergerState {
                 }
             }
         }
-        // Optional GB-engine telemetry: only emit when the user opts in
-        // via `RuntimeConfig::gb_stats_enabled`. Mirrors the
-        // `RuntimeConfig::profile_enabled` pattern; default behavior
-        // is unchanged.
-        if crate::config::with(|c| c.gb_stats_enabled) {
+        // Optional GB-engine telemetry: emitted only when gb-stats is on.
+        metric::scope! {
             let s = &self.stats;
-            let total_ns = run_start.elapsed().as_nanos() as u64;
+            let total_ms = run_start.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
             let active_count = self.basis.iter().filter(|e| e.active).count();
             eprintln!(
                 "[picus-gb-stats] pairs={} cop={} gm={} b={} red={} useful={} useless={} interreduces={} basis_size={} active={} initial_open={} time_run_ms={:.2} time_spoly_ms={:.2} time_reduce_ms={:.2} time_genpairs_ms={:.2}",
@@ -969,7 +962,7 @@ impl BuchbergerState {
                 self.basis.len(),
                 active_count,
                 initial_open_size,
-                total_ns as f64 / 1e6,
+                total_ms,
                 t_spoly_ns as f64 / 1e6,
                 t_reduce_ns as f64 / 1e6,
                 t_genpairs_ns as f64 / 1e6,
@@ -1088,21 +1081,19 @@ impl BuchbergerState {
         if self.trivial && self.cfg.abort_on_trivial {
             return Ok(());
         }
-        let stats_on = crate::profile::gb_stats_enabled();
-        let run_start = std::time::Instant::now();
-        let initial_open_size = self.open.len();
+        metric::stopwatch!(run_start);
+        metric::def!(initial_open_size = self.open.len() as u64);
 
         // Per-run reducer cache: monomials whose reducer-row was
         // computed in an earlier batch are reused when the cached
         // basis element is still active. See [`super::f4::F4Workspace`].
         let mut f4_workspace = super::f4::F4Workspace::new();
-        // F4 counters accumulate on `self.stats`; readable from
-        // tests via `IncrementalGB::engine_stats()`. Snapshot the
-        // entry values so the trailing `[picus-gb-stats F4]`
-        // `eprintln!` emits per-run deltas.
-        let f4_batches_entry = self.stats.f4_batches;
-        let f4_pair_total_entry = self.stats.f4_pair_total;
-        let f4_fallback_pairs_entry = self.stats.f4_fallback_pairs;
+        // F4 counters accumulate on `self.stats`; readable from tests via
+        // `IncrementalGB::engine_stats()`. Snapshot the entry values so the
+        // trailing `[picus-gb-stats F4]` dump emits per-run deltas.
+        metric::def!(f4_batches_entry = self.stats.f4_batches);
+        metric::def!(f4_pair_total_entry = self.stats.f4_pair_total);
+        metric::def!(f4_fallback_pairs_entry = self.stats.f4_fallback_pairs);
 
         loop {
             self.check_cancel()?;
@@ -1262,9 +1253,9 @@ impl BuchbergerState {
             }
         }
 
-        if stats_on {
+        metric::scope! {
             let s = &self.stats;
-            let total_ns = run_start.elapsed().as_nanos() as u64;
+            let total_ms = run_start.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
             let active_count = self.basis.iter().filter(|e| e.active).count();
             // Per-run deltas; the stats struct accumulates across all
             // `run_f4` invocations on the same `BuchbergerState`.
@@ -1296,7 +1287,7 @@ impl BuchbergerState {
                 ws.reducer_hits,
                 ws.reducer_misses,
                 ws.reducer_stale,
-                total_ns as f64 / 1e6,
+                total_ms,
             );
         }
         Ok(())
