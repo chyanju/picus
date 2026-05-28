@@ -22,6 +22,8 @@ use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
 use crate::ff::monomial::MonomialOrder;
 use crate::gb::ideal::{interreduce_basis, ring_for_order, unwrap_dense_vec, wrap_dense_vec, Ideal};
 use crate::gb::model;
+use crate::metric;
+use crate::profile::NATIVE_FF;
 use crate::poly::{FfPolyRing, Poly};
 use crate::split_gb::{
     admit, build_partitions, classify_propagation, max_fixpoint_iters, seed_self_membership,
@@ -90,7 +92,6 @@ impl IncrementalSolverContext {
     }
 
     pub fn solve(&mut self, cs: &ConstraintSystem, cancel: &CancelToken) -> SolveOutcome {
-        let stats_on = crate::profile::gb_stats_enabled();
         let digest = digest_constraint_side(cs);
 
         let cache_matches = matches!(&self.cached_base, Some(c) if c.digest == digest);
@@ -109,30 +110,15 @@ impl IncrementalSolverContext {
 
         // Resume an in-flight partial build.
         if !cache_matches && partial_matches {
-            if stats_on {
-                use std::sync::atomic::Ordering::Relaxed;
-                crate::profile::NATIVE_FF
-                    .cache_partial_resumes
-                    .fetch_add(1, Relaxed);
-            }
-            let t0 = std::time::Instant::now();
+            metric::incr!(NATIVE_FF.cache_partial_resumes);
             let mut partial = self.partial_build.take().unwrap();
-            let outcome = continue_partial(&mut partial, cancel);
-            let dt = t0.elapsed().as_nanos() as u64;
-            if stats_on {
-                use std::sync::atomic::Ordering::Relaxed;
-                crate::profile::NATIVE_FF
-                    .cache_rebuild_time_ns
-                    .fetch_add(dt, Relaxed);
-            }
+            let outcome = {
+                metric::timer!(NATIVE_FF.cache_rebuild_time_ns);
+                continue_partial(&mut partial, cancel)
+            };
             match outcome {
                 ResumeOutcome::Complete(cached) => {
-                    if stats_on {
-                        use std::sync::atomic::Ordering::Relaxed;
-                        crate::profile::NATIVE_FF
-                            .cache_partial_completions
-                            .fetch_add(1, Relaxed);
-                    }
+                    metric::incr!(NATIVE_FF.cache_partial_completions);
                     self.cached_base = Some(cached);
                 }
                 ResumeOutcome::StillPartial => {
@@ -145,46 +131,30 @@ impl IncrementalSolverContext {
             }
         } else if !cache_matches {
             // Fresh build attempt via the fast path.
-            if stats_on {
-                use std::sync::atomic::Ordering::Relaxed;
-                crate::profile::NATIVE_FF
-                    .distinct_cs_digests
-                    .fetch_add(1, Relaxed);
-            }
-            let t0 = std::time::Instant::now();
-            match self.rebuild_base(cs, digest, cancel) {
-                Ok(()) => {}
-                Err(()) => {
-                    return stateless_solve(cs, cancel);
+            metric::incr!(NATIVE_FF.distinct_cs_digests);
+            {
+                metric::timer!(NATIVE_FF.cache_rebuild_time_ns);
+                match self.rebuild_base(cs, digest, cancel) {
+                    Ok(()) => {}
+                    Err(()) => {
+                        return stateless_solve(cs, cancel);
+                    }
                 }
-            }
-            if stats_on {
-                use std::sync::atomic::Ordering::Relaxed;
-                let dt = t0.elapsed().as_nanos() as u64;
-                crate::profile::NATIVE_FF
-                    .cache_rebuild_time_ns
-                    .fetch_add(dt, Relaxed);
             }
             // If the rebuild was cancelled, `rebuild_base` left
             // `partial_build` populated for resumption.
             if self.partial_build.is_some() && self.cached_base.is_none() {
                 return SolveOutcome::Unknown;
             }
-        } else if stats_on {
-            use std::sync::atomic::Ordering::Relaxed;
-            crate::profile::NATIVE_FF.cache_hits.fetch_add(1, Relaxed);
+        } else {
+            metric::incr!(NATIVE_FF.cache_hits);
         }
 
         let cached = self.cached_base.as_ref().expect("cache must be built");
-        let t0 = std::time::Instant::now();
-        let outcome = solve_with_cached(cached, cs, cancel);
-        if stats_on {
-            use std::sync::atomic::Ordering::Relaxed;
-            let dt = t0.elapsed().as_nanos() as u64;
-            crate::profile::NATIVE_FF
-                .cache_query_diff_time_ns
-                .fetch_add(dt, Relaxed);
-        }
+        let outcome = {
+            metric::timer!(NATIVE_FF.cache_query_diff_time_ns);
+            solve_with_cached(cached, cs, cancel)
+        };
         outcome
     }
 

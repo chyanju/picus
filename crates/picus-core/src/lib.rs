@@ -27,6 +27,6 @@ pub mod metric {
     pub use crate::{
         __metric_add as add, __metric_bump as bump, __metric_def as def,
         __metric_flush as flush, __metric_incr as incr, __metric_max as max,
-        __metric_timer as timer,
+        __metric_scope as scope, __metric_timer as timer,
     };
 }

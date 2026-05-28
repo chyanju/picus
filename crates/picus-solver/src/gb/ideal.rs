@@ -84,18 +84,12 @@ impl<'r> Ideal<'r> {
         cancel: &CancelToken,
     ) -> Result<Self, Cancelled> {
         if cancel.is_cancelled() { return Err(Cancelled); }
-        if crate::profile::gb_stats_enabled() {
-            crate::profile::SPLIT_GB.extend_with_cancel_calls
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
+        metric::incr!(crate::profile::SPLIT_GB.extend_with_cancel_calls);
         let new_polys: Vec<Poly> = new_polys.into_iter()
             .filter(|f| !f.is_zero())
             .collect();
         if new_polys.is_empty() {
-            if crate::profile::gb_stats_enabled() {
-                crate::profile::SPLIT_GB.extend_no_op_skips
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
+            metric::incr!(crate::profile::SPLIT_GB.extend_no_op_skips);
             return Ok(self);
         }
         // Pre-reduce new generators against the existing reduced GB.
@@ -114,10 +108,7 @@ impl<'r> Ideal<'r> {
         };
         if cancel.is_cancelled() { return Err(Cancelled); }
         if surviving.is_empty() {
-            if crate::profile::gb_stats_enabled() {
-                crate::profile::SPLIT_GB.extend_no_op_skips
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
+            metric::incr!(crate::profile::SPLIT_GB.extend_no_op_skips);
             return Ok(self);
         }
         let Ideal { poly_ring, basis: known_gb } = self;

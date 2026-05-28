@@ -357,6 +357,20 @@ macro_rules! __metric_flush {
     };
 }
 
+/// Impl of `metric::scope! { ... }` — run a pure-profiling block only when
+/// gb-stats is on. For telemetry that is more than one counter (stats-only
+/// computation feeding several counters, a per-run dump): the block contains
+/// ONLY profiling, so wrapping it buries no business logic, and the
+/// `metric::scope!` opener marks the whole region as profiling.
+#[macro_export]
+macro_rules! __metric_scope {
+    ($($body:tt)*) => {
+        if $crate::profile::gb_stats_enabled() {
+            $($body)*
+        }
+    };
+}
+
 /// Print SplitDfs/SplitGb counters to stderr. Called from the top-level
 /// `solve_encoded` (or `picus-cli`) at termination when `gb_stats` is enabled.
 pub fn dump_split_stats_to_stderr() {
