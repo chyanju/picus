@@ -10,6 +10,7 @@ members = [
     "crates/picus-cli",
     "crates/picus-solver",
     "crates/picus-core",
+    "crates/picus-metric-macros",
 ]
 # Default build set: native crates only. The cvc5 / z3 backend crates are
 # excluded here so the default commands (`cargo build`, `cargo test`,
@@ -25,6 +26,7 @@ default-members = [
     "crates/picus-cli",
     "crates/picus-solver",
     "crates/picus-core",
+    "crates/picus-metric-macros",
 ]
 
 [workspace.package]
@@ -48,3 +50,6 @@ inventory = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

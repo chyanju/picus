@@ -684,6 +684,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "picus-metric-macros"
+version = "1.8.14"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "picus-r1cs"
 version = "1.8.14"
 dependencies = [
@@ -720,6 +729,7 @@ dependencies = [
  "num-traits",
  "oorandom",
  "picus-core",
+ "picus-metric-macros",
  "rug",
  "thiserror",
 ]

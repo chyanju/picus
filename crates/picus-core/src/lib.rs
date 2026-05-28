@@ -16,3 +16,17 @@ pub mod ff;
 pub mod poly;
 pub mod profile;
 pub mod timeout;
+
+/// Namespaced gb-stats instrumentation vocabulary: `metric::incr!`,
+/// `metric::add!`, `metric::max!`, `metric::timer!`. Every profiling call site
+/// goes through this `metric::` namespace (paired with the `#[metric]`
+/// attribute), so `grep -E 'metric::|#\[metric\]'` finds exactly the profiling
+/// and nothing in main logic. Backed by [`profile`] (`record_add` / `MetricTimer`
+/// / `GbStatsLayer`).
+pub mod metric {
+    pub use crate::{
+        __metric_add as add, __metric_bump as bump, __metric_def as def,
+        __metric_flush as flush, __metric_incr as incr, __metric_max as max,
+        __metric_timer as timer,
+    };
+}

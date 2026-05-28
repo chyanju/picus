@@ -26,6 +26,8 @@ use crate::timeout::CancelToken;
 use super::branching::apply_rule_multi;
 use super::fixpoint::split_gb_extend_cancel;
 use super::{PartialPoint, SplitGb, ZeroExtendResult};
+use crate::metric;
+use crate::profile::SPLIT_DFS;
 
 /// Try to extend `cur_r` into a complete zero of the ideal whose generators
 /// are `orig_polys`.
@@ -44,6 +46,7 @@ pub fn split_zero_extend<'r>(
 /// Uses an explicit stack instead of recursion to avoid stack overflow
 /// on deep searches. See the module docs for the phase-saving and
 /// nogood-cache pruning aids.
+#[metric]
 pub fn split_zero_extend_cancel<'r>(
     poly_ring: &'r FfPolyRing,
     orig_polys: &[Poly],
@@ -52,12 +55,7 @@ pub fn split_zero_extend_cancel<'r>(
     bit_prop: &mut BitProp<'r>,
     cancel: &CancelToken,
 ) -> ZeroExtendResult {
-    let _t = crate::profile::ScopedTimer::new("split_zero_extend_cancel");
-    let stats_on = crate::profile::gb_stats_enabled();
-    if stats_on {
-        crate::profile::SPLIT_DFS.split_zero_extend_calls
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
+    metric::incr!(SPLIT_DFS.split_zero_extend_calls);
     // Each stack frame holds: (bases, partial_assignment, brancher)
     struct Frame<'r> {
         bases: SplitGb<'r>,
@@ -175,9 +173,7 @@ pub fn split_zero_extend_cancel<'r>(
                 iter_count, stack.len()
             );
         }
-        if stats_on {
-            crate::profile::SPLIT_DFS.observe_max_depth(stack.len() as u64);
-        }
+        metric::max!(SPLIT_DFS.max_dfs_depth, stack.len() as u64);
 
         if stack.is_empty() {
             return ZeroExtendResult::NoZero { exhaustive: !bounded_search_used };
@@ -207,10 +203,7 @@ pub fn split_zero_extend_cancel<'r>(
         // conflict) also leaves the trail in a consistent state.
         stack[frame_idx].last_tried = Some((var, poly_ring.field().clone_el(&val)));
 
-        if stats_on {
-            crate::profile::SPLIT_DFS.branches_tried
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
+        metric::incr!(SPLIT_DFS.branches_tried);
 
         let mut new_r = stack[frame_idx].r.clone();
         new_r[var] = Some(poly_ring.field().clone_el(&val));
@@ -220,46 +213,34 @@ pub fn split_zero_extend_cancel<'r>(
         // of the candidate's partial assignment `new_r`, this candidate
         // is already known UNSAT — skip without recomputing GB.
         if nogoods.iter().any(|ng| point_covers(ng, &new_r)) {
-            if stats_on {
-                crate::profile::SPLIT_DFS.nogood_subsumption_hits
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
+            metric::incr!(SPLIT_DFS.nogood_subsumption_hits);
             continue;
         }
 
         // Quick UNSAT check: if substituting val for var in any basis
         // poly yields a nonzero constant, the branch is immediately
         // UNSAT.
-        let qe_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
         let mut quick_unsat = false;
-        for b in &stack[frame_idx].bases {
-            for p in &b.basis {
-                if let Some(v) = evaluate_full(poly_ring, p, &new_r) {
-                    if !poly_ring.field().is_zero(&v) {
-                        quick_unsat = true;
-                        break;
+        {
+            metric::timer!(SPLIT_DFS.time_in_quick_eval_unsat_ns);
+            for b in &stack[frame_idx].bases {
+                for p in &b.basis {
+                    if let Some(v) = evaluate_full(poly_ring, p, &new_r) {
+                        if !poly_ring.field().is_zero(&v) {
+                            quick_unsat = true;
+                            break;
+                        }
                     }
                 }
+                if quick_unsat { break; }
             }
-            if quick_unsat { break; }
-        }
-        if let Some(t0) = qe_t0 {
-            let dt = t0.elapsed().as_nanos() as u64;
-            crate::profile::SPLIT_DFS.time_in_quick_eval_unsat_ns
-                .fetch_add(dt, std::sync::atomic::Ordering::Relaxed);
         }
         if quick_unsat {
-            if stats_on {
-                crate::profile::SPLIT_DFS.quick_eval_unsat_hits
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
+            metric::incr!(SPLIT_DFS.quick_eval_unsat_hits);
             for p in orig_polys {
                 if let Some(val) = evaluate_full(poly_ring, p, &new_r) {
                     if !poly_ring.field().is_zero(&val) && !stack[frame_idx].bases[0].contains(p) {
-                        if stats_on {
-                            crate::profile::SPLIT_DFS.conflicts_returned
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        }
+                        metric::incr!(SPLIT_DFS.conflicts_returned);
                         return ZeroExtendResult::Conflict(poly_ring.ring.clone_el(p));
                     }
                 }
@@ -279,20 +260,13 @@ pub fn split_zero_extend_cancel<'r>(
         // `assign_poly mod lin_basis` is a non-zero constant iff the
         // augmented ideal is the whole ring.
         if !stack[frame_idx].bases.is_empty() {
-            let lq_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
-            let nf = stack[frame_idx].bases[0]
-                .reduce_with_cancel(&assign_poly, cancel);
-            if let Some(t0) = lq_t0 {
-                let dt = t0.elapsed().as_nanos() as u64;
-                crate::profile::SPLIT_DFS.time_in_linear_quick_unsat_ns
-                    .fetch_add(dt, std::sync::atomic::Ordering::Relaxed);
-            }
+            let nf = {
+                metric::timer!(SPLIT_DFS.time_in_linear_quick_unsat_ns);
+                stack[frame_idx].bases[0].reduce_with_cancel(&assign_poly, cancel)
+            };
             if cancel.is_cancelled() { return ZeroExtendResult::Cancelled; }
             if !nf.is_zero() && nf.is_constant() {
-                if stats_on {
-                    crate::profile::SPLIT_DFS.linear_quick_unsat_hits
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
+                metric::incr!(SPLIT_DFS.linear_quick_unsat_hits);
                 // Linear basis ∪ {assign_poly} ⊇ {1} → whole ring → UNSAT.
                 if nogoods.len() < MAX_NOGOODS {
                     nogoods.push(point_to_map(&new_r, &poly_ring.field()));
@@ -306,47 +280,38 @@ pub fn split_zero_extend_cancel<'r>(
         // new generator. The bit-prop fixpoint loop is preserved; only
         // the per-iteration GB recompute is replaced with incremental
         // Buchberger.
-        let clone_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
-        let starting: SplitGb<'r> = stack[frame_idx].bases.iter()
-            .map(|b| {
-                let cloned: Vec<Poly> = b.basis.iter()
-                    .map(|p| poly_ring.ring.clone_el(p))
-                    .collect();
-                Ideal::from_gb(poly_ring, cloned)
-            })
-            .collect();
-        let new_polys_per_split: Vec<Vec<Poly>> = (0..stack[frame_idx].bases.len())
-            .map(|_| vec![poly_ring.ring.clone_el(&assign_poly)])
-            .collect();
-        if let Some(t0) = clone_t0 {
-            let dt = t0.elapsed().as_nanos() as u64;
-            crate::profile::SPLIT_DFS.time_in_basis_clone_ns
-                .fetch_add(dt, std::sync::atomic::Ordering::Relaxed);
-            crate::profile::SPLIT_DFS.branches_to_full_extend
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        let extend_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
-        let new_bases = match split_gb_extend_cancel(
-            poly_ring, starting, new_polys_per_split, bit_prop, cancel,
-        ) {
-            Ok(b) => b,
-            Err(_) => return ZeroExtendResult::Cancelled,
+        let (starting, new_polys_per_split): (SplitGb<'r>, Vec<Vec<Poly>>) = {
+            metric::timer!(SPLIT_DFS.time_in_basis_clone_ns);
+            let starting: SplitGb<'r> = stack[frame_idx].bases.iter()
+                .map(|b| {
+                    let cloned: Vec<Poly> = b.basis.iter()
+                        .map(|p| poly_ring.ring.clone_el(p))
+                        .collect();
+                    Ideal::from_gb(poly_ring, cloned)
+                })
+                .collect();
+            let new_polys_per_split: Vec<Vec<Poly>> = (0..stack[frame_idx].bases.len())
+                .map(|_| vec![poly_ring.ring.clone_el(&assign_poly)])
+                .collect();
+            (starting, new_polys_per_split)
         };
-        if let Some(t0) = extend_t0 {
-            let dt = t0.elapsed().as_nanos() as u64;
-            crate::profile::SPLIT_DFS.time_in_split_gb_extend_ns
-                .fetch_add(dt, std::sync::atomic::Ordering::Relaxed);
-        }
+        metric::incr!(SPLIT_DFS.branches_to_full_extend);
+        let new_bases = {
+            metric::timer!(SPLIT_DFS.time_in_split_gb_extend_ns);
+            match split_gb_extend_cancel(
+                poly_ring, starting, new_polys_per_split, bit_prop, cancel,
+            ) {
+                Ok(b) => b,
+                Err(_) => return ZeroExtendResult::Cancelled,
+            }
+        };
 
         if new_bases.iter().any(|b| b.is_whole_ring()) {
             // UNSAT at this branch → look for conflict poly.
             for p in orig_polys {
                 if let Some(val) = evaluate_full(poly_ring, p, &new_r) {
                     if !poly_ring.field().is_zero(&val) && !new_bases[0].contains(p) {
-                        if stats_on {
-                            crate::profile::SPLIT_DFS.conflicts_returned
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        }
+                        metric::incr!(SPLIT_DFS.conflicts_returned);
                         return ZeroExtendResult::Conflict(poly_ring.ring.clone_el(p));
                     }
                 }
@@ -360,10 +325,7 @@ pub fn split_zero_extend_cancel<'r>(
 
         let n_assigned = new_r.iter().filter(|v| v.is_some()).count();
         if n_assigned == poly_ring.n_vars() {
-            if stats_on {
-                crate::profile::SPLIT_DFS.points_returned
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
+            metric::incr!(SPLIT_DFS.points_returned);
             let out: Vec<FieldElem> = new_r.into_iter().map(|v| v.unwrap()).collect();
             return ZeroExtendResult::Point(out);
         }
@@ -761,11 +723,38 @@ mod tests {
     }
 
     #[test]
+    fn stats_enabled_actually_advances_global_counters() {
+        // End-to-end check that `metric::incr!` feeds the global SPLIT_DFS
+        // counters in a real run. branches_tried is monotonic, so a
+        // before/after delta is robust against concurrent stats-on tests:
+        // our multi-frame search contributes ≥1, so `after > before` holds.
+        use std::sync::atomic::Ordering::Relaxed;
+        let _g = crate::config::ConfigGuard::with_override(|c| c.gb_stats_enabled = true);
+        let before = crate::profile::SPLIT_DFS.branches_tried.load(Relaxed);
+        {
+            let pr = ring2();
+            let f = pr.field();
+            // UNSAT split → the DFS enumerates branches (drives branches_tried).
+            let x_plus_y = pr.add(pr.var(0), pr.var(1));
+            let xy_minus_1 = pr.sub(pr.mul(pr.var(0), pr.var(1)), pr.constant(f.one()));
+            let bases = vec![
+                Ideal::from_gb(&pr, vec![x_plus_y]),
+                Ideal::from_gb(&pr, vec![xy_minus_1]),
+            ];
+            let r: PartialPoint = vec![None, None];
+            let mut bp = BitProp::new(&pr);
+            let _ = split_zero_extend(&pr, &[], bases, r, &mut bp);
+        }
+        let after = crate::profile::SPLIT_DFS.branches_tried.load(Relaxed);
+        assert!(after > before, "metric::incr!(SPLIT_DFS.branches_tried) must advance the counter");
+    }
+
+    #[test]
     fn stats_enabled_drives_counters_without_changing_verdict() {
-        // Same satisfiable instance as `descends_through_frames…`, but with
-        // gb_stats_enabled so every `if stats_on` counter-update branch in
-        // the DFS loop executes. The verdict must be identical (instrumentation
-        // is side-effect-only).
+        // Same satisfiable instance as `descends_through_frames…`, but with the
+        // gb-stats subscriber installed and the flag on, so every metric!
+        // event is emitted and routed. The verdict must be identical
+        // (instrumentation is side-effect-only).
         let _g = crate::config::ConfigGuard::with_override(|c| c.gb_stats_enabled = true);
         let pr = ring2();
         let f = pr.field();
