@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/). Entries are telegraphic: one line per change — what changed plus the key term/API — with no narrative, mechanism explanations, or "no verdict change" boilerplate.
 
+## [1.8.14] - 2026-05-28
+- Soundness: `linsolve::eliminate_linear` passes through on an empty linear GB without cancellation (engine error); SMT-LIB parsers (`parse`/`parse_boolean`/`SmtSession`) infer the session prime from `#fNmP` literal moduli and reject `ff.*` without an inferable prime (was: defaulted to 2); `parse_ff_const` validates the literal's `P` matches.
+- `sat::Solver::analyze`/`::propagate` route 1-UIP trail exhaustion and watched-literal enqueue-of-non-Undef through `give_up`→Unknown in release (was `debug_assert!`-only).
+- Doc: `sparse_gb::groebner_basis(_incremental)` cancel return is a sub-ideal; `digest_constraint_side` ~2⁻¹²⁸ is benign-collision only (`DefaultHasher` fixed key).
+
 ## [1.8.13] - 2026-05-27
 - Soundness backstops: cached SAT verdicts now re-verify the model against `bitsum_polys` (the non-cached `core::solve_split_gb_cancel` path already did); `verify_model` returns `false` on a model missing an appearing variable (was defaulted to zero, which could vacuously pass a narrow check).
 - `R1csFile::constraint_to_string` returns a placeholder on an out-of-range id (was index panic); F4 S-poly extraction debug-asserts on the unreachable "leads on a reducer column" branch (silent skip would drop a generator and weaken the ideal); `cvc5_compare` arg parser reports a usage error on a trailing flag with no value (was index panic).
