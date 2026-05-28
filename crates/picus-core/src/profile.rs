@@ -217,7 +217,9 @@ impl SplitGbCounters {
     pub fn observe_basis_terms_max(&self, v: u64) { observe_max(&self.basis_size_total_terms_max, v); }
 }
 
-fn observe_max(slot: &AtomicU64, v: u64) {
+/// Atomic running-max update (CAS loop). Public so `metric::max!` can lower to
+/// `observe_max(&PATH, v)` against any `AtomicU64` counter field.
+pub fn observe_max(slot: &AtomicU64, v: u64) {
     let mut cur = slot.load(Ordering::Relaxed);
     while v > cur {
         match slot.compare_exchange_weak(cur, v, Ordering::Relaxed, Ordering::Relaxed) {
@@ -235,6 +237,124 @@ pub fn gb_stats_enabled() -> bool {
 #[inline]
 pub fn gb_trace_enabled() -> bool {
     crate::config::with(|c| c.gb_trace_enabled)
+}
+
+// ─────────────────────────── metric:: instrumentation ──────────────────────
+//
+// gb-stats instrumentation is invoked through the `metric::` namespace
+// (`metric::incr!`, `metric::add!`, `metric::max!`, `metric::timer!`) plus the
+// `#[metric]` attribute, so every profiling site is syntactically
+// self-identifying and never borrows main-logic syntax (`let`, `+=`, `if`):
+// `grep -E 'metric::|#\[metric\]'` finds exactly the profiling.
+//
+// Each macro takes the *typed counter path* (e.g.
+// `SPLIT_GB.fixpoint_iters_total`) and lowers to a direct,
+// `gb_stats_enabled`-gated atomic update — compiler-checked, no name dispatch.
+// The `__metric_*` macros are the `#[macro_export]` implementations,
+// re-exported under clean names by the `metric` module in `lib.rs`; call sites
+// use `metric::incr!(PATH)` etc., not these directly.
+
+/// Impl of `metric::incr!(counter)` — `counter += 1` when gb-stats is on.
+#[macro_export]
+macro_rules! __metric_incr {
+    ($c:expr) => {
+        if $crate::profile::gb_stats_enabled() {
+            $c.fetch_add(1, ::std::sync::atomic::Ordering::Relaxed);
+        }
+    };
+}
+
+/// Impl of `metric::add!(counter, n)` — `counter += n` when gb-stats is on.
+#[macro_export]
+macro_rules! __metric_add {
+    ($c:expr, $n:expr) => {
+        if $crate::profile::gb_stats_enabled() {
+            $c.fetch_add($n, ::std::sync::atomic::Ordering::Relaxed);
+        }
+    };
+}
+
+/// Impl of `metric::max!(counter, v)` — `counter = max(counter, v)` when on.
+#[macro_export]
+macro_rules! __metric_max {
+    ($c:expr, $v:expr) => {
+        if $crate::profile::gb_stats_enabled() {
+            $crate::profile::observe_max(&$c, $v);
+        }
+    };
+}
+
+/// RAII timer that adds its elapsed wall-clock (ns) to `slot` on drop. Takes a
+/// timestamp only when [`gb_stats_enabled`] (checked once at construction), so
+/// it is a no-op in production. Construct via `metric::timer!`.
+pub struct MetricTimer<'a> {
+    slot: Option<(&'a AtomicU64, Instant)>,
+}
+
+impl<'a> MetricTimer<'a> {
+    #[inline]
+    pub fn new(slot: &'a AtomicU64) -> Self {
+        if gb_stats_enabled() {
+            MetricTimer { slot: Some((slot, Instant::now())) }
+        } else {
+            MetricTimer { slot: None }
+        }
+    }
+}
+
+impl Drop for MetricTimer<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        if let Some((slot, start)) = self.slot {
+            slot.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Impl of `metric::timer!(counter);` — statement-form RAII timer. Expands to a
+/// hidden, block-scoped guard (no bare `let` at the call site); on drop it adds
+/// the elapsed ns to `counter`. Times "this line → end of enclosing block".
+#[macro_export]
+macro_rules! __metric_timer {
+    ($c:expr) => {
+        let _metric_guard = $crate::profile::MetricTimer::new(&$c);
+    };
+}
+
+// Local-accumulator vocabulary for hot loops: keep per-iteration work to a
+// plain local `+=` (no atomic), then flush once. `def`/`bump` are always-on
+// (a local `u64`, negligible when stats are off); only `flush` is gated. The
+// `metric::` spelling keeps these visibly profiling rather than bare `let
+// mut acc = 0` / `acc += 1` that read as logic.
+
+/// Impl of `metric::def!(acc);` — declare a profiling-local accumulator `acc`.
+#[macro_export]
+macro_rules! __metric_def {
+    ($name:ident) => {
+        let mut $name: u64 = 0;
+    };
+}
+
+/// Impl of `metric::bump!(acc)` / `metric::bump!(acc, n)` — local `acc += 1|n`.
+#[macro_export]
+macro_rules! __metric_bump {
+    ($name:ident) => {
+        $name += 1;
+    };
+    ($name:ident, $n:expr) => {
+        $name += $n;
+    };
+}
+
+/// Impl of `metric::flush!(acc => counter);` — add the accumulator to the
+/// global `counter` once, when gb-stats is on.
+#[macro_export]
+macro_rules! __metric_flush {
+    ($name:ident => $c:expr) => {
+        if $crate::profile::gb_stats_enabled() {
+            $c.fetch_add($name, ::std::sync::atomic::Ordering::Relaxed);
+        }
+    };
 }
 
 /// Print SplitDfs/SplitGb counters to stderr. Called from the top-level
@@ -495,4 +615,72 @@ pub fn dump_to_stderr(header: &str) {
         }
     }
     eprintln!("=== end profile ({:.2}ms completed wall) ===", total.as_secs_f64() * 1e3);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ConfigGuard;
+
+    // `metric::*!` take the typed counter path and lower to a gated direct
+    // atomic update. Per-test gating is the thread-local gb_stats flag; each
+    // test uses a *distinct* SPLIT_DFS counter (no other picus-core test
+    // touches these), so an exact before/after delta is reliable.
+    fn load(c: &AtomicU64) -> u64 {
+        c.load(Ordering::Relaxed)
+    }
+
+    #[test]
+    fn metric_incr_adds_one_to_typed_counter() {
+        let _g = ConfigGuard::with_override(|c| c.gb_stats_enabled = true);
+        let before = load(&SPLIT_DFS.branches_tried);
+        crate::metric::incr!(SPLIT_DFS.branches_tried);
+        crate::metric::incr!(SPLIT_DFS.branches_tried);
+        assert_eq!(load(&SPLIT_DFS.branches_tried) - before, 2);
+    }
+
+    #[test]
+    fn metric_add_adds_n_to_typed_counter() {
+        let _g = ConfigGuard::with_override(|c| c.gb_stats_enabled = true);
+        let before = load(&SPLIT_DFS.nogood_subsumption_hits);
+        crate::metric::add!(SPLIT_DFS.nogood_subsumption_hits, 5u64);
+        assert_eq!(load(&SPLIT_DFS.nogood_subsumption_hits) - before, 5);
+    }
+
+    #[test]
+    fn metric_max_takes_running_max_not_sum() {
+        let _g = ConfigGuard::with_override(|c| c.gb_stats_enabled = true);
+        // Use a fresh maximum so no concurrent writer interferes (this is the
+        // only test touching max_dfs_depth in this binary).
+        let base = load(&SPLIT_DFS.max_dfs_depth);
+        crate::metric::max!(SPLIT_DFS.max_dfs_depth, base + 100);
+        assert_eq!(load(&SPLIT_DFS.max_dfs_depth), base + 100, "took the larger");
+        crate::metric::max!(SPLIT_DFS.max_dfs_depth, base + 50);
+        assert_eq!(load(&SPLIT_DFS.max_dfs_depth), base + 100, "ignored the smaller (max, not sum)");
+    }
+
+    #[test]
+    fn metric_timer_adds_elapsed_to_typed_counter() {
+        let _g = ConfigGuard::with_override(|c| c.gb_stats_enabled = true);
+        let before = load(&SPLIT_DFS.time_in_basis_clone_ns);
+        {
+            crate::metric::timer!(SPLIT_DFS.time_in_basis_clone_ns);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(load(&SPLIT_DFS.time_in_basis_clone_ns) > before,
+            "timer must add a positive elapsed-ns on drop");
+    }
+
+    #[test]
+    fn metric_with_flag_off_is_a_noop() {
+        // No ConfigGuard ⇒ gb_stats off on this thread. points_returned is
+        // touched by no other picus-core test, so the delta must be exactly 0.
+        let before = load(&SPLIT_DFS.points_returned);
+        crate::metric::incr!(SPLIT_DFS.points_returned);
+        {
+            crate::metric::timer!(SPLIT_DFS.time_in_split_gb_extend_ns);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(load(&SPLIT_DFS.points_returned), before, "flag off ⇒ no event");
+    }
 }

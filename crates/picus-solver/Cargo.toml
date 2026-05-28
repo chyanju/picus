@@ -16,6 +16,7 @@ log.workspace = true
 thiserror.workspace = true
 oorandom = "11.1"
 picus-core = { path = "../picus-core" }
+picus-metric-macros = { path = "../picus-metric-macros" }
 
 [dev-dependencies]
 env_logger = "0.11"
