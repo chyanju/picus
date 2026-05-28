@@ -124,7 +124,7 @@ impl AtomKey {
     /// Returns `None` for atoms with multiple variables, variables of
     /// degree > 1, or the trivial empty (`0 = 0`) polynomial. Since
     /// `prime` is prime, every non-zero coefficient is invertible, so
-    /// we handle any non-zero `a` (not just `±1`).
+    /// any non-zero `a` is handled (not just `±1`).
     pub fn as_single_var_eq(&self, prime: &BigUint) -> Option<(String, BigUint)> {
         if self.terms.is_empty() {
             return None;

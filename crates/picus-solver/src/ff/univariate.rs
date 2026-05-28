@@ -244,10 +244,10 @@ fn squarefree(poly: &UnivariatePoly, field: &PrimeField) -> UnivariatePoly {
     }
     let d = poly.derivative(field);
     if d.is_zero() {
-        // f' = 0: in characteristic p, f is a polynomial in x^p; for our use
-        // case (single squarefree decomposition before root extraction) we
-        // simply return f itself — Cantor–Zassenhaus will still find linear
-        // factors via `x^p - x`.
+        // f' = 0: in characteristic p, f is a polynomial in x^p. For the
+        // squarefree-decomposition-before-root-extraction use here, return
+        // f itself — Cantor–Zassenhaus will still find linear factors via
+        // `x^p - x`.
         return poly.make_monic(field);
     }
     let g = poly.gcd(&d, field);

@@ -260,7 +260,7 @@ fn try_extract_full_assignment(
 }
 
 /// Compute branching candidates using the same 3-case strategy as cvc5's
-/// `applyRule` (and our `split_gb::apply_rule`).
+/// `applyRule` (and the in-tree `split_gb::apply_rule`).
 fn compute_candidates(
     poly_ring: &FfPolyRing,
     ideal: &Ideal,

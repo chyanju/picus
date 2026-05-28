@@ -4,14 +4,14 @@
 //!
 //! The key observation: if a polynomial `b = b_0 + 2*b_1 + ... + 2^k*b_k`
 //! is known (via the GB) to equal a constant `v`, **and** all `b_i` are
-//! bit-constrained, then we can immediately propagate the bit decomposition:
-//! `b_i = (i-th bit of v)`.  Similarly, if two bitsums `a` and `b` are known
+//! bit-constrained, the bit decomposition propagates immediately:
+//! `b_i = (i-th bit of v)`. Similarly, if two bitsums `a` and `b` are known
 //! to be equal and all their inputs are bits, then `a_i = b_i` for all `i`.
 //!
 //! Overflow: if `v >= 2^k`, the bitsum cannot represent `v`, so the
-//! conjunction is UNSAT.  We signal this by emitting the constant `1` as
-//! a propagated polynomial -- a downstream GB call will produce the trivial
-//! ideal.
+//! conjunction is UNSAT. This is signalled by emitting the constant `1`
+//! as a propagated polynomial; a downstream GB call then produces the
+//! trivial ideal.
 
 use std::collections::HashSet;
 

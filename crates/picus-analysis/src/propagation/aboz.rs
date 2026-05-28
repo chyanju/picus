@@ -3,7 +3,7 @@
 //! In R1CS shape the original pattern is two `A * B = 0` constraints
 //! plus a linear "constant-and-mux-bits" sum that ties them together;
 //! after polynomial lowering each `A * B = 0` is a single bilinear
-//! monomial. We look for triples
+//! monomial. The lemma looks for triples
 //!     `x * y0 = 0`,  `x * y1 = 0`,  `x + y0 + y1 + c = 0`
 //! where `x` and `c` are known. From `x * y_i = 0` and `x ≠ 0` we
 //! conclude `y_i = 0`. The lemma only fires when `x`'s range proves

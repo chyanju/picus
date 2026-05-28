@@ -44,10 +44,8 @@ fn pterm(coeff: u64, vars: &[&str]) -> NamedTerm {
 
 // ===== Simple tests over GF(17) =====
 
-/// cvc5: negneg.smt2 — double negation: -(-(x)) = x → UNSAT (tautology)
-/// We encode: x + (-(-x)) should be identically zero.
-/// Actually negneg tests that neg(neg(x)) - x = 0. In field terms this is always true.
-/// A trivially satisfiable system.
+/// cvc5: negneg.smt2 — `neg(neg(x)) - x = 0` is a field tautology, so a
+/// query asserting its negation is UNSAT.
 #[test]
 fn test_negneg_field_identity() {
     // Over GF(17): x exists s.t. x ≠ 0 → sat
@@ -145,8 +143,8 @@ fn test_is_zero_sound_bit_constraint() {
     assert_eq!(solve_system(&system), "unsat");
 }
 
-/// field_poly.smt2: a^3 = a over GF(3) → a^p = a for all a (Fermat's little theorem)
-/// We test: a^3 - a ≠ 0 → UNSAT
+/// field_poly.smt2: by Fermat's little theorem `a^3 = a` over GF(3), so
+/// the query asserting `a^3 - a ≠ 0` is UNSAT.
 #[test]
 fn test_field_poly_gf3() {
     let p = BigUint::from(3u32);

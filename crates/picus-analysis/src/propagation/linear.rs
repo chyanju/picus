@@ -5,9 +5,9 @@
 //! actually appear into linear-only (every term containing them has
 //! total degree 1) and nonlinear (appear in at least one term of total
 //! degree ≥ 2). A purely-linear variable `v` can be eliminated as soon
-//! as every other variable in `p` is known, so we record the implication
-//! `deps(p, v) → wire(v)`. The lemma applies the implications to a
-//! fixed point each iteration.
+//! as every other variable in `p` is known, so the implication
+//! `deps(p, v) → wire(v)` is recorded. The lemma applies the implications
+//! to a fixed point each iteration.
 //!
 //! Wire-keyed: promoting a wire to known relies on the matched constraint
 //! being mirrored in both copies (the copy-symmetry invariant documented

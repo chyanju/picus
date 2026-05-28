@@ -294,7 +294,7 @@ pub fn r1cs_to_poly_ir(
     // Inputs share their value across copies. `block_to_linear` emits
     // `x_i` (not `y_i`) for input wires in alt-copy constraints, so no
     // explicit `x_i - y_i = 0` equality is required: `y_i` for input
-    // wires is simply never referenced.
+    // wires is never referenced.
 
     // R1CS lowering populates the general-purpose GB query fields
     // for the uniqueness query: a single disequality at the target

@@ -174,9 +174,9 @@ fn time_solve_median(cs: &NamedSystem, iters: usize) -> (u128, &'static str) {
     (total_times[iters / 2], verdict)
 }
 
-/// Bitdecomp solve timing across K ∈ {6, 8, 10, 12}. `encode`
-/// always runs `auto_extract_bitsums`, so the prior
-/// auto-on-vs-off comparison no longer applies.
+/// Bitdecomp solve timing across K ∈ {6, 8, 10, 12}. Marked `#[ignore]`:
+/// `encode` runs `auto_extract_bitsums` unconditionally, so there is no
+/// on/off toggle to compare against.
 #[test]
 #[ignore]
 fn bench_bitdecomp_auto_extract() {
