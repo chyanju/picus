@@ -119,6 +119,38 @@ pub(in crate::smt2) fn finite_field_prime_str(sort: &Sexpr) -> Option<&str> {
     None
 }
 
+/// Extract `(name, sort, inferred prime)` from a `declare-fun` /
+/// `declare-const` form: `name` is the declared symbol, `sort` its
+/// classified sort (`None` if unrecognised), and `inferred prime` the
+/// modulus parsed from an inline `(_ FiniteField p)` sort, if present.
+/// Returns `None` when the form is too short or the name is not an atom.
+/// Centralises the declaration scan shared by the conjunctive parser, the
+/// Boolean parser, and the incremental session; each caller applies its own
+/// policy to the result (reject Bool, default to `Ff`, thread the prime,
+/// track declaration order).
+pub(in crate::smt2) fn classify_declare(
+    head: &str,
+    list: &[Sexpr],
+) -> Option<(String, Option<VarSort>, Option<BigUint>)> {
+    if list.len() < 2 {
+        return None;
+    }
+    let name = match &list[1] {
+        Sexpr::Atom(n) => n.clone(),
+        _ => return None,
+    };
+    let sort_sexpr = if head == "declare-fun" {
+        list.get(3)
+    } else {
+        list.get(2)
+    };
+    let sort = classify_sort(sort_sexpr);
+    let inferred_prime = sort_sexpr
+        .and_then(finite_field_prime_str)
+        .and_then(|p| p.parse::<BigUint>().ok());
+    Some((name, sort, inferred_prime))
+}
+
 // ─────────────────────── Polynomial-expression builder ───────────────────
 
 pub(in crate::smt2) type Polynomial = Vec<PolyTerm>;
@@ -435,29 +467,16 @@ pub fn parse(src: &str) -> Result<ConstraintSystem, ParseError> {
                 }
             }
             "declare-fun" | "declare-const" => {
-                if list.len() < 2 {
-                    continue;
-                }
-                let name = match &list[1] {
-                    Sexpr::Atom(n) => n.clone(),
-                    _ => continue,
-                };
-                let sort_sexpr = if head == "declare-fun" {
-                    list.get(3)
-                } else {
-                    list.get(2)
-                };
-                let sort = classify_sort(sort_sexpr);
-                if matches!(sort, Some(VarSort::Bool)) {
-                    return Err(ParseError::Malformed(format!(
-                        "Bool sort '{}' not supported by conjunctive parser; use parse_boolean",
-                        name
-                    )));
-                }
-                vars.insert(name, VarSort::Ff);
-                if prime.is_none() {
-                    if let Some(p) = sort_sexpr.and_then(finite_field_prime_str) {
-                        if let Ok(n) = p.parse::<BigUint>() {
+                if let Some((name, sort, inferred)) = classify_declare(head, list) {
+                    if matches!(sort, Some(VarSort::Bool)) {
+                        return Err(ParseError::Malformed(format!(
+                            "Bool sort '{}' not supported by conjunctive parser; use parse_boolean",
+                            name
+                        )));
+                    }
+                    vars.insert(name, VarSort::Ff);
+                    if prime.is_none() {
+                        if let Some(n) = inferred {
                             prime = Some(n);
                         }
                     }
@@ -1101,23 +1120,10 @@ pub fn parse_boolean(src: &str) -> Result<BooleanQuery, ParseError> {
                 }
             }
             "declare-fun" | "declare-const" => {
-                if list.len() < 2 {
-                    continue;
-                }
-                let name = match &list[1] {
-                    Sexpr::Atom(n) => n.clone(),
-                    _ => continue,
-                };
-                let sort_sexpr = if head == "declare-fun" {
-                    list.get(3)
-                } else {
-                    list.get(2)
-                };
-                let sort = classify_sort(sort_sexpr).unwrap_or(VarSort::Ff);
-                vars.insert(name, sort);
-                if prime.is_none() {
-                    if let Some(p) = sort_sexpr.and_then(finite_field_prime_str) {
-                        if let Ok(n) = p.parse::<BigUint>() {
+                if let Some((name, sort, inferred)) = classify_declare(head, list) {
+                    vars.insert(name, sort.unwrap_or(VarSort::Ff));
+                    if prime.is_none() {
+                        if let Some(n) = inferred {
                             prime = Some(n);
                         }
                     }
