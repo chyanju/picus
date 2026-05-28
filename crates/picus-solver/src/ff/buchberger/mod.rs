@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use crate::timeout::CancelToken;
 use crate::EngineError;
+use crate::metric;
 
 use super::divmask::DivMask;
 use super::field::FieldElem;
@@ -132,15 +133,8 @@ pub fn groebner_basis(
 ) -> Result<GBasis, EngineError> {
     let mut state = BuchbergerState::new(ring.clone(), config.clone());
     let mut obs = NoObserver;
-    {
-        let _t = crate::profile::ScopedTimer::new("buchberger::add_generators");
-        state.add_generators(generators, &mut obs)?;
-    }
-    {
-        let _t = crate::profile::ScopedTimer::new("buchberger::run");
-        state.run(&mut obs)?;
-    }
-    let _t = crate::profile::ScopedTimer::new("buchberger::finalize_basis");
+    state.add_generators(generators, &mut obs)?;
+    state.run(&mut obs)?;
     let basis = state.finalize_basis();
     Ok(GBasis { basis, order: ring.order })
 }
@@ -396,6 +390,7 @@ impl BuchbergerState {
         }
     }
 
+    #[metric("buchberger::add_generators")]
     pub(super) fn add_generators<O: BuchbergerObserver>(
         &mut self,
         generators: Vec<DensePoly>,
@@ -796,6 +791,7 @@ impl BuchbergerState {
         (nf, active_idxs, use_counts)
     }
 
+    #[metric("buchberger::run")]
     pub(super) fn run<O: BuchbergerObserver>(&mut self, observer: &mut O) -> Result<(), EngineError> {
         if self.cfg.use_f4 {
             return self.run_f4(observer);
@@ -982,6 +978,7 @@ impl BuchbergerState {
         Ok(())
     }
 
+    #[metric("buchberger::finalize_basis")]
     fn finalize_basis(self) -> Vec<DensePoly> {
         // Take active polynomials and inter-reduce once.
         let active: Vec<DensePoly> = self

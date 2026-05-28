@@ -21,6 +21,7 @@ use num_traits::Zero;
 use crate::ff::field::FieldElem;
 use crate::frontend::encoder::bitsum_fits;
 use crate::gb::ideal::Ideal;
+use crate::metric;
 use crate::poly::{FfPolyRing, Poly};
 use crate::timeout::CancelToken;
 
@@ -112,12 +113,12 @@ impl<'r> BitProp<'r> {
     /// variable that is a bit only on the current DFS branch be treated as
     /// a global bit on a sibling branch — so the no-mutation contract is
     /// enforced by the type rather than by prose.
+    #[metric("bitprop::get_bit_equalities")]
     pub fn get_bit_equalities_with_cancel(
         &self,
         split_basis: &[Ideal<'r>],
         cancel: Option<&CancelToken>,
     ) -> Vec<Poly> {
-        let _t = crate::profile::ScopedTimer::new("bitprop::get_bit_equalities");
         let pr = self.poly_ring;
         let ring = &pr.ring;
         let fp = &pr.field();

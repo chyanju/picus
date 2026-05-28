@@ -12,6 +12,7 @@ use crate::ff::monomial::MonomialOrder as FfOrder;
 use crate::gb::tracer::GbTracer;
 use crate::poly::{FfPolyRing, Poly};
 use crate::timeout::CancelToken;
+use crate::metric;
 use crate::EngineError;
 
 /// Pluggable Groebner-basis algorithm.
@@ -345,13 +346,13 @@ fn finish_gb(
     })
 }
 
+#[metric]
 pub fn compute_gb_with_order(
     poly_ring: &FfPolyRing,
     generators: Vec<Poly>,
     cancel: &CancelToken,
     order: FfOrder,
 ) -> Vec<Poly> {
-    let _t = crate::profile::ScopedTimer::new("compute_gb_with_order");
     if generators.is_empty() {
         return Vec::new();
     }
@@ -388,13 +389,13 @@ pub fn compute_gb_with_order(
 /// is used by algorithm implementations themselves (e.g.
 /// `BuchbergerByHomog` calls this from its inner GB step on `P[h]`).
 /// External callers should prefer [`compute_gb_with_order`].
+#[metric]
 pub(crate) fn compute_gb_buchberger(
     poly_ring: &FfPolyRing,
     generators: Vec<Poly>,
     cancel: &CancelToken,
     order: FfOrder,
 ) -> Result<Vec<Poly>, EngineError> {
-    let _t = crate::profile::ScopedTimer::new("compute_gb_buchberger");
     if generators.is_empty() {
         return Ok(Vec::new());
     }
@@ -449,6 +450,7 @@ pub(crate) fn compute_gb_direct(
 /// `known_gb` are skipped (Buchberger criterion), and only S-pairs
 /// between `known_gb` × `new_polys` and among `new_polys` themselves
 /// are generated and discharged.
+#[metric]
 pub fn compute_gb_incremental_with_order(
     poly_ring: &FfPolyRing,
     known_gb: Vec<Poly>,
@@ -456,7 +458,6 @@ pub fn compute_gb_incremental_with_order(
     cancel: &CancelToken,
     order: FfOrder,
 ) -> Vec<Poly> {
-    let _t = crate::profile::ScopedTimer::new("compute_gb_incremental_with_order");
     if new_polys.is_empty() {
         return known_gb;
     }
@@ -545,6 +546,7 @@ pub fn compute_gb_incremental_with_order(
 /// [`compute_gb_dispatch`] with `Some(tracer)`; if the dispatched
 /// algorithm doesn't support tracing, dispatch silently falls back
 /// to [`BuchbergerDirect`] for that call.
+#[metric]
 pub fn compute_gb_with_order_traced(
     poly_ring: &FfPolyRing,
     generators: Vec<Poly>,
@@ -552,7 +554,6 @@ pub fn compute_gb_with_order_traced(
     order: FfOrder,
     tracer: &mut crate::gb::tracer::GbTracer,
 ) -> Vec<Poly> {
-    let _t = crate::profile::ScopedTimer::new("compute_gb_with_order_traced");
     if generators.is_empty() {
         return Vec::new();
     }
@@ -564,6 +565,7 @@ pub fn compute_gb_with_order_traced(
 /// Raw traced Buchberger entry point. Counterpart to
 /// [`compute_gb_buchberger`]. Used by [`BuchbergerDirect::compute_traced`]
 /// and by future algorithms that opt into tracing.
+#[metric]
 pub(crate) fn compute_gb_buchberger_traced(
     poly_ring: &FfPolyRing,
     generators: Vec<Poly>,
@@ -571,7 +573,6 @@ pub(crate) fn compute_gb_buchberger_traced(
     order: FfOrder,
     tracer: &mut crate::gb::tracer::GbTracer,
 ) -> Result<Vec<Poly>, EngineError> {
-    let _t = crate::profile::ScopedTimer::new("compute_gb_buchberger_traced");
     if generators.is_empty() {
         return Ok(Vec::new());
     }
@@ -604,6 +605,7 @@ pub(crate) fn compute_gb_buchberger_traced(
 /// Each generator pushed to the basis is registered against the tracer
 /// in order — first all `known_gb` elements, then all `new_polys` —
 /// matching the ordinal used by a fresh `GbTracer`.
+#[metric]
 pub fn compute_gb_incremental_with_order_traced(
     poly_ring: &FfPolyRing,
     known_gb: Vec<Poly>,
@@ -612,7 +614,6 @@ pub fn compute_gb_incremental_with_order_traced(
     order: FfOrder,
     tracer: &mut crate::gb::tracer::GbTracer,
 ) -> Vec<Poly> {
-    let _t = crate::profile::ScopedTimer::new("compute_gb_incremental_with_order_traced");
     if new_polys.is_empty() {
         return known_gb;
     }

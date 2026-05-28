@@ -30,6 +30,7 @@ use crate::timeout::{CancelToken, Cancelled};
 use crate::gb::tracer::GbTracer;
 
 use super::{classify_propagation, max_fixpoint_iters, seed_self_membership, Propagate, SplitGb};
+use crate::metric;
 
 /// Compute a split GB from scratch.
 ///
@@ -49,13 +50,13 @@ pub fn split_gb<'r>(
 }
 
 /// Cancel-aware split GB computation.
+#[metric]
 pub fn split_gb_cancel<'r>(
     poly_ring: &'r FfPolyRing,
     generator_sets: Vec<Vec<Poly>>,
     bit_prop: &mut BitProp<'r>,
     cancel: &CancelToken,
 ) -> Result<SplitGb<'r>, Cancelled> {
-    let _t = crate::profile::ScopedTimer::new("split_gb_cancel");
     let stats_on = crate::profile::gb_stats_enabled();
     let trace_on = crate::profile::gb_trace_enabled();
     let call_idx = if stats_on {
@@ -80,6 +81,7 @@ pub fn split_gb_cancel<'r>(
 /// fixpoint using [`Ideal::extend_with_cancel`] instead of full GB
 /// recomputes. Equivalent to a full recomputation on the union of
 /// generators.
+#[metric]
 pub(crate) fn split_gb_extend_cancel<'r>(
     poly_ring: &'r FfPolyRing,
     starting: SplitGb<'r>,
@@ -87,7 +89,6 @@ pub(crate) fn split_gb_extend_cancel<'r>(
     bit_prop: &mut BitProp<'r>,
     cancel: &CancelToken,
 ) -> Result<SplitGb<'r>, Cancelled> {
-    let _t = crate::profile::ScopedTimer::new("split_gb_extend_cancel");
     let stats_on = crate::profile::gb_stats_enabled();
     let trace_on = crate::profile::gb_trace_enabled();
     let call_idx = if stats_on {
@@ -294,6 +295,7 @@ pub struct TracedSplitGb<'r> {
 /// `generator_sets[k][i]` depends on. Inputs that should not contribute
 /// to the user-facing UNSAT core (e.g. encoder-introduced bitsum
 /// definitions) should have an empty dep set.
+#[metric]
 pub fn split_gb_cancel_traced<'r>(
     poly_ring: &'r FfPolyRing,
     generator_sets: Vec<Vec<Poly>>,
@@ -301,7 +303,6 @@ pub fn split_gb_cancel_traced<'r>(
     bit_prop: &mut BitProp<'r>,
     cancel: &CancelToken,
 ) -> Result<TracedSplitGb<'r>, Cancelled> {
-    let _t = crate::profile::ScopedTimer::new("split_gb_cancel_traced");
     debug_assert_eq!(generator_sets.len(), initial_deps.len());
     for (gens, deps) in generator_sets.iter().zip(initial_deps.iter()) {
         debug_assert_eq!(gens.len(), deps.len());

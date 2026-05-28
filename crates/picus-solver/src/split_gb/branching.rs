@@ -13,6 +13,7 @@
 
 use crate::gb::brancher::{univariate_coeffs, Brancher};
 use crate::gb::ideal::Ideal;
+use crate::metric;
 use crate::poly::FfPolyRing;
 
 use super::PartialPoint;
@@ -86,12 +87,12 @@ pub fn apply_rule<'r>(
 /// Like [`apply_rule`] but checks every basis for univariate / zero-dim
 /// structure. The detected branching structure is mathematically valid
 /// in any of the bases.
+#[metric]
 pub(super) fn apply_rule_multi<'r>(
     poly_ring: &'r FfPolyRing,
     bases: &[Ideal<'r>],
     r: &PartialPoint,
 ) -> Brancher {
-    let _t = crate::profile::ScopedTimer::new("apply_rule_multi");
     let ring = &poly_ring.ring;
     let field = &poly_ring.field();
 
