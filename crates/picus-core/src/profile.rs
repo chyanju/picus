@@ -253,6 +253,23 @@ pub fn gb_trace_enabled() -> bool {
 // The `__metric_*` macros are the `#[macro_export]` implementations,
 // re-exported under clean names by the `metric` module in `lib.rs`; call sites
 // use `metric::incr!(PATH)` etc., not these directly.
+//
+// Full vocabulary: incr! / add! / max! (counters), timer! (RAII into a global
+// counter), timer_local! (RAII into a local u64 tally) / stopwatch! (gb-stats
+// Option<Instant> read at several points), def! / bump! / flush! (local
+// accumulators: declare / `+= ` / drain to a global), next! (increment-and-
+// return for a counter-as-id), scope! { } (a gb-stats-gated pure-profiling
+// block), trace! { } / clock! (the gb-*trace* sink — verbose per-step output,
+// distinct flag from gb-stats).
+//
+// One deliberate exception: the per-monomial fine-grained reducer timing in
+// `ff::polynomial::dense_reduce` and `ff::geobucket::sub_scaled` keeps a single
+// cached `gb_stats_enabled()` bool gating its inner-loop `Instant::now()`,
+// rather than a `metric::*!` form. There a self-gating macro would do a
+// thread-local config read on every monomial of the hottest loop; the cached
+// bool is the deliberate perf choice (counters there are still plain locals
+// summed once at the end). It is clearly-profiling (named `stats_on` /
+// `*_ns`), just not in the macro form.
 
 /// Impl of `metric::incr!(counter)` — `counter += 1` when gb-stats is on.
 #[macro_export]
