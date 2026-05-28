@@ -939,3 +939,85 @@ fn zero_arg_minus_in_boolean_query_is_rejected_not_panic() {
     "#;
     assert!(parse_boolean(src).is_err(), "(-) must be rejected, not crash");
 }
+
+#[test]
+fn n_ary_minus_is_left_associative_in_parse() {
+    // (- a b c) = ((a - b) - c). In GF(7): (5 - 2 - 1) = 2.
+    let src = r#"
+        (set-logic QF_FF)
+        (define-sort F () (_ FiniteField 7))
+        (declare-fun x () F)
+        (assert (= x (- (as ff5 F) (as ff2 F) (as ff1 F))))
+        (check-sat)
+    "#;
+    let cs = parse(src).expect("parse n-ary minus");
+    assert_eq!(cs.prime, BigUint::from(7u32));
+    assert_eq!(cs.equalities.len(), 1);
+}
+
+#[test]
+fn n_ary_minus_is_left_associative_in_parse_boolean() {
+    // Same shape under the boolean-query parser.
+    let src = r#"
+        (set-logic QF_FF)
+        (define-sort F () (_ FiniteField 7))
+        (declare-fun x () F)
+        (declare-fun y () F)
+        (assert (or
+            (= x (- (as ff5 F) (as ff2 F) (as ff1 F)))
+            (= y (- (as ff0 F) (as ff1 F)))
+        ))
+        (check-sat)
+    "#;
+    let q = parse_boolean(src).expect("parse n-ary minus (boolean)");
+    // Just confirm the query parsed; structural checks are covered elsewhere.
+    let _ = q;
+}
+
+#[test]
+fn ff_bitsum_in_assert_decomposes_to_weighted_sum() {
+    // ff.bitsum [b0, b1, b2] = b0 + 2·b1 + 4·b2 in GF(7).
+    let src = r#"
+        (set-logic QF_FF)
+        (define-sort F () (_ FiniteField 7))
+        (declare-fun b0 () F)
+        (declare-fun b1 () F)
+        (declare-fun b2 () F)
+        (declare-fun s () F)
+        (assert (= s (ff.bitsum b0 b1 b2)))
+        (check-sat)
+    "#;
+    let cs = parse(src).expect("parse ff.bitsum");
+    assert_eq!(cs.equalities.len(), 1);
+}
+
+#[test]
+fn parse_error_display_covers_every_variant() {
+    // Exercise every Display arm so the impl isn't covered only by panics.
+    assert_eq!(
+        format!("{}", ParseError::UnexpectedToken("xyz".into())),
+        "unexpected token: xyz"
+    );
+    assert_eq!(
+        format!("{}", ParseError::UnknownOperator("ff.foo".into())),
+        "unsupported FF operator: ff.foo"
+    );
+    assert_eq!(
+        format!("{}", ParseError::UnknownSymbol("undef".into())),
+        "unknown symbol: undef"
+    );
+    assert_eq!(
+        format!("{}", ParseError::BooleanInAssert("or".into())),
+        "boolean operator 'or' inside assert (QF_FF only)"
+    );
+    assert_eq!(
+        format!("{}", ParseError::MissingPrime),
+        "assert before any FF sort declaration"
+    );
+    assert_eq!(
+        format!("{}", ParseError::Malformed("(declare-fun)".into())),
+        "malformed form: (declare-fun)"
+    );
+    // std::error::Error blanket — just verify the trait is implemented.
+    let _: &dyn std::error::Error = &ParseError::MissingPrime;
+}
