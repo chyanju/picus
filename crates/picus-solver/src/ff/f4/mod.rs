@@ -367,8 +367,13 @@ pub fn process_batch_with_workspace(
         let lt_col = row[0].0;
         if reducer_cols.contains(&lt_col) {
             // Correct echelon eliminates any row whose LT matches a
-            // reducer pivot. This branch is unreachable from sound
-            // input; skip rather than emit a redundant generator.
+            // reducer pivot. This branch is unreachable from sound input;
+            // assert in debug so an echelon regression surfaces loudly
+            // (a dropped generator would weaken the ideal), skip in release.
+            debug_assert!(
+                false,
+                "F4: reduced S-poly row leads on reducer column {lt_col}"
+            );
             continue;
         }
         let poly = sparse_row_to_poly(row, &col_to_monomial, ring);

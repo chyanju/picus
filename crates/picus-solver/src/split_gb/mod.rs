@@ -193,6 +193,16 @@ pub(crate) fn seed_self_membership(
     }
 }
 
+/// Iteration cap for the split-GB propagation fixpoint as a function of
+/// the partition count `k`. A safety bound against pathological
+/// propagation loops on degenerate inputs: the cancel token also bounds
+/// the loop, but this cap gives a deterministic exit independent of wall
+/// time. Single source for the three fixpoint drivers (`run_fixpoint`,
+/// `run_fixpoint_traced`, and `incremental_context::continue_partial`).
+pub(crate) fn max_fixpoint_iters(k: usize) -> u64 {
+    (k * 64).max(256) as u64
+}
+
 /// Total degree of a polynomial.
 pub fn total_degree(p: &Poly) -> usize {
     p.total_degree() as usize

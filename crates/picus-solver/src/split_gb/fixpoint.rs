@@ -29,7 +29,7 @@ use crate::poly::{FfPolyRing, Poly};
 use crate::timeout::{CancelToken, Cancelled};
 use crate::gb::tracer::GbTracer;
 
-use super::{classify_propagation, seed_self_membership, Propagate, SplitGb};
+use super::{classify_propagation, max_fixpoint_iters, seed_self_membership, Propagate, SplitGb};
 
 /// Compute a split GB from scratch.
 ///
@@ -134,17 +134,14 @@ fn run_fixpoint<'r>(
     let mut contains_memo: std::collections::HashSet<(u64, usize)> =
         std::collections::HashSet::new();
 
-    // Safety bound against pathological propagation loops on degenerate
-    // inputs. The cancel token would also bound the loop; this cap
-    // produces a deterministic exit independent of wall time.
-    let max_fixpoint_iters = (k * 64).max(256);
+    let iter_cap = max_fixpoint_iters(k);
     let mut fixpoint_iter: u64 = 0;
 
     loop {
         if cancel.is_cancelled() { return Err(Cancelled); }
         fixpoint_iter += 1;
-        if fixpoint_iter > max_fixpoint_iters as u64 {
-            log::warn!("{}: fixpoint iteration cap ({}) reached", fn_name, max_fixpoint_iters);
+        if fixpoint_iter > iter_cap {
+            log::warn!("{}: fixpoint iteration cap ({}) reached", fn_name, iter_cap);
             break;
         }
         let iter_t0 = if trace_on { Some(std::time::Instant::now()) } else { None };
@@ -344,7 +341,7 @@ fn run_fixpoint_traced<'r>(
     let mut contains_memo: std::collections::HashSet<(u64, usize)> =
         std::collections::HashSet::new();
 
-    let max_fixpoint_iters = (k * 64).max(256);
+    let iter_cap = max_fixpoint_iters(k);
     let mut fixpoint_iter: u64 = 0;
 
     loop {
@@ -352,7 +349,7 @@ fn run_fixpoint_traced<'r>(
             return Err(Cancelled);
         }
         fixpoint_iter += 1;
-        if fixpoint_iter > max_fixpoint_iters as u64 {
+        if fixpoint_iter > iter_cap {
             break;
         }
 

@@ -9,6 +9,16 @@ pub const SUBP_CONSTANT_NAMES: &[&str] =
     &["p", "ps1", "ps2", "ps3", "ps4", "ps5", "zero", "one"];
 
 /// Solver backend selection.
+///
+/// Making a backend selectable via `--solver <name>` touches several
+/// sites — registering a descriptor alone is dispatchable but not
+/// name-selectable:
+///   1. a variant here, with its `as_str` arm below;
+///   2. a `SolverKind::from_str` arm (this file) mapping the name;
+///   3. `validate_combination` (this file) for any rejected theory pairing;
+///   4. an `inventory::submit!` of a `backends::SolverBackendDescriptor`
+///      in the backend module, so `create_backend_by_name` can build it;
+///   5. the `solver_display` match in `picus-cli` for the human-readable header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SolverKind {
     Z3,

@@ -24,8 +24,8 @@ use crate::gb::ideal::{interreduce_basis, ring_for_order, unwrap_dense_vec, wrap
 use crate::gb::model;
 use crate::poly::{FfPolyRing, Poly};
 use crate::split_gb::{
-    admit, build_partitions, classify_propagation, seed_self_membership, split_find_zero_cancel,
-    split_gb_cancel, split_gb_extend_cancel, Propagate, SplitFindZeroOutcome,
+    admit, build_partitions, classify_propagation, max_fixpoint_iters, seed_self_membership,
+    split_find_zero_cancel, split_gb_cancel, split_gb_extend_cancel, Propagate, SplitFindZeroOutcome,
 };
 use crate::timeout::CancelToken;
 
@@ -307,7 +307,7 @@ fn continue_partial(partial: &mut PartialBuild, cancel: &CancelToken) -> ResumeO
     let k = partial.inflight.len();
     let bit_prop = BitProp::from_state(poly_ring, partial.bit_prop_state.clone());
 
-    let max_fixpoint_iters = (k * 64).max(256);
+    let iter_cap = max_fixpoint_iters(k);
     let mut fixpoint_iter: u64 = 0;
     loop {
         if cancel.is_cancelled() {
@@ -315,7 +315,7 @@ fn continue_partial(partial: &mut PartialBuild, cancel: &CancelToken) -> ResumeO
             return ResumeOutcome::StillPartial;
         }
         fixpoint_iter += 1;
-        if fixpoint_iter > max_fixpoint_iters as u64 {
+        if fixpoint_iter > iter_cap {
             log::warn!("continue_partial: fixpoint cap reached");
             break;
         }
@@ -588,6 +588,13 @@ fn solve_with_cached(
                 .map(|p| poly_ring.ring.clone_el(p))
                 .collect();
             for p in &query_polys {
+                full_polys.push(poly_ring.ring.clone_el(p));
+            }
+            // Verify against the bitsum definitions as well, matching the
+            // non-cached path (core::solve_split_gb_cancel): the model
+            // search extends bases seeded with these, so a sound model must
+            // satisfy them too.
+            for p in &cached.bitsum_polys {
                 full_polys.push(poly_ring.ring.clone_el(p));
             }
             if model::verify_model(poly_ring, &full_polys, &model_map) {
