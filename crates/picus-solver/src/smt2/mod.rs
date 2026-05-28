@@ -26,7 +26,7 @@ mod tokenizer;
 
 pub use session::{SessionOutput, SessionVerdict, SmtSession};
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 
 use num_bigint::BigUint;
@@ -231,10 +231,51 @@ fn parse_ff_const(sym: &str, prime: &BigUint) -> Option<BigUint> {
     if let Some(rest) = sym.strip_prefix("#f") {
         let mut split = rest.splitn(2, 'm');
         let n_str = split.next()?;
-        let _ = split.next()?;
+        let p_str = split.next()?;
+        // `#fNmP` carries its modulus in the literal; validate that P parses
+        // and matches the active session prime. A mismatch is malformed
+        // input — return None so the caller surfaces it rather than silently
+        // encoding `N mod session_prime` (a different field element).
+        let p_parsed: BigUint = p_str.parse().ok()?;
+        if &p_parsed != prime {
+            return None;
+        }
         return parse_signed(n_str);
     }
     None
+}
+
+/// Collect the modulus P from every `#fNmP` literal in `s` (recursively).
+/// Used by the pre-scan to infer the session prime when no FF sort
+/// declaration is present.
+pub(in crate::smt2) fn collect_ff_literal_primes(s: &Sexpr, primes: &mut BTreeSet<BigUint>) {
+    match s {
+        Sexpr::Atom(a) => {
+            if let Some(rest) = a.strip_prefix("#f") {
+                if let Some(m_pos) = rest.find('m') {
+                    let p_str = &rest[m_pos + 1..];
+                    if let Ok(p) = p_str.parse::<BigUint>() {
+                        primes.insert(p);
+                    }
+                }
+            }
+        }
+        Sexpr::List(elts) => {
+            for e in elts {
+                collect_ff_literal_primes(e, primes);
+            }
+        }
+    }
+}
+
+/// Recursively check whether `s` mentions any `ff.<op>` atom (`ff.add`,
+/// `ff.mul`, `ff.bitsum`, `ff.neg`, etc.) — a non-`define-fun` form's
+/// strongest signal that the session is FF-typed.
+pub(in crate::smt2) fn has_ff_op(s: &Sexpr) -> bool {
+    match s {
+        Sexpr::Atom(a) => a.starts_with("ff."),
+        Sexpr::List(elts) => elts.iter().any(has_ff_op),
+    }
 }
 
 fn build_poly(
@@ -486,7 +527,25 @@ pub fn parse(src: &str) -> Result<ConstraintSystem, ParseError> {
         }
     }
 
-    let prime_val = prime.ok_or(ParseError::MissingPrime)?;
+    // Fall back to literal-based prime inference when no FF sort
+    // declaration supplied one: every `#fNmP` carries its modulus in the
+    // suffix. Multiple distinct moduli are malformed (single-prime
+    // session); none at all keeps the existing `MissingPrime` error.
+    let prime_val = if let Some(p) = prime {
+        p
+    } else {
+        let mut lit_primes: BTreeSet<BigUint> = BTreeSet::new();
+        for s in &sexprs {
+            collect_ff_literal_primes(s, &mut lit_primes);
+        }
+        if lit_primes.len() > 1 {
+            return Err(ParseError::Malformed(format!(
+                "multiple FF primes in literals: {:?}",
+                lit_primes.iter().collect::<Vec<_>>()
+            )));
+        }
+        lit_primes.into_iter().next().ok_or(ParseError::MissingPrime)?
+    };
     let mut builder = ConstraintSystemBuilder::new(prime_val.clone());
     let mut diseq_counter = 0usize;
     let mut diseq_zero: Option<VarIdx> = None;
@@ -1137,8 +1196,35 @@ pub fn parse_boolean(src: &str) -> Result<BooleanQuery, ParseError> {
         }
     }
 
-    // Default prime if only Bool decls appeared (still need *some* field).
-    let prime = prime.unwrap_or_else(|| BigUint::from(2u32));
+    // No FF sort declared? Try literal-based inference: every `#fNmP`
+    // carries its modulus in the suffix, so a file using only literals
+    // (no sort declarations) still pins the session prime. Multiple
+    // distinct moduli are malformed (Picus is single-prime per session).
+    // If neither sorts nor literals supply a prime, the session is
+    // either Bool-only (GF(2) default is harmless) or it uses `ff.*`
+    // operators on variables that lack a sort — reject the latter as
+    // MissingPrime so an `ff.bitsum` is not silently encoded mod 2.
+    let prime = if let Some(p) = prime {
+        p
+    } else {
+        let mut lit_primes: BTreeSet<BigUint> = BTreeSet::new();
+        for s in &sexprs {
+            collect_ff_literal_primes(s, &mut lit_primes);
+        }
+        if lit_primes.len() > 1 {
+            return Err(ParseError::Malformed(format!(
+                "multiple FF primes in literals: {:?}",
+                lit_primes.iter().collect::<Vec<_>>()
+            )));
+        }
+        if let Some(p) = lit_primes.into_iter().next() {
+            p
+        } else if sexprs.iter().any(has_ff_op) {
+            return Err(ParseError::MissingPrime);
+        } else {
+            BigUint::from(2u32)
+        }
+    };
 
     let mut ctx = ParseCtx {
         prime: prime.clone(),
