@@ -252,8 +252,8 @@ mod tests {
     use super::*;
 
     /// Drift guard: every `EngineOverlay` field must be consumed by
-    /// `apply_overlay`. We set every overlay field to a value distinct from
-    /// the compiled default and assert the merged config equals an explicit
+    /// `apply_overlay`. Sets every overlay field to a value distinct from
+    /// the compiled default and asserts the merged config equals an explicit
     /// all-overridden `expected`. If a knob is added to `RuntimeConfig` /
     /// `EngineOverlay` but not wired into `apply_overlay`, that field stays
     /// at its default and the assert fails. The explicit struct literals

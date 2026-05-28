@@ -368,7 +368,7 @@ fn exit_error(msg: &str) -> ! {
 }
 
 /// On SIGTERM/SIGINT, dump profile counters to stderr before exiting.
-/// Lets us profile runs that don't terminate cleanly. The dumps are
+/// Enables profiling of runs that don't terminate cleanly. The dumps are
 /// no-ops when no profile/stats data has been recorded.
 fn install_profile_signal_handler() {
     use signal_hook::consts::{SIGINT, SIGTERM};

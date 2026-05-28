@@ -1,9 +1,9 @@
 //! Pattern detection on polynomials.
 //!
 //! Mirrors cvc5's FF pattern detection, but operates on the **semantic**
-//! polynomial form (i.e. on a `Poly` already encoded in our `FfPolyRing`)
-//! rather than on SMT AST nodes.  This is sufficient for our pipeline, which
-//! has already encoded all input constraints into polynomials.
+//! polynomial form (i.e. on a `Poly` already encoded in the `FfPolyRing`)
+//! rather than on SMT AST nodes. Input constraints are lowered to
+//! polynomials before reaching the patterns here.
 //!
 //! The functions here are pure: they inspect a polynomial and try to
 //! recognise specific structural patterns commonly emitted by Circom and

@@ -1,8 +1,8 @@
 //! Soundness regression tests for propagation lemmas.
 //!
-//! Each test constructs a synthetic R1CS that previously triggered a
-//! lemma misfire (the lemma marking wires uniquely-determined when
-//! they aren't) and asserts that the analyzer either:
+//! Each test constructs a synthetic R1CS that exercises a lemma misfire
+//! pattern (the lemma marking wires uniquely-determined when they
+//! aren't) and asserts that the analyzer either:
 //!   * with `SolverKind::None`: does NOT report `Safe` — propagation
 //!     alone must not overpromote, and
 //!   * with `SolverKind::Native` / `SolverKind::Cvc5`: reports

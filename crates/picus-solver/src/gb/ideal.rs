@@ -385,7 +385,7 @@ impl<'r> Ideal<'r> {
 ///
 /// The order parameter is accepted for API compatibility; the polynomial's
 /// own ring already stores terms in canonical descending order
-/// (`PolyRing.order`), so we just return the first term's monomial.
+/// (`PolyRing.order`), so the first term's monomial is returned directly.
 pub fn leading_monomial(
     ring: &PolyRingType,
     p: &Poly,

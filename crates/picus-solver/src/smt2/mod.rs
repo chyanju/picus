@@ -619,7 +619,7 @@ fn substitute_sexpr(s: &Sexpr, bindings: &HashMap<String, Sexpr>) -> Sexpr {
 fn is_bool_expr(s: &Sexpr, ctx: &ParseCtx, depth: usize) -> bool {
     // A cyclic `define-fun` would otherwise recurse without bound here via
     // the macro-body arm below. Past the cap, decline to classify as Bool;
-    // the malformed/recursive macro then fails cleanly in the build pass.
+    // the malformed/recursive macro is then rejected in the build pass.
     if depth > MAX_MACRO_DEPTH {
         return false;
     }

@@ -621,7 +621,7 @@ impl BuchbergerState {
     ///
     /// If a polynomial reduces to zero, it is deactivated (and all bookkeeping
     /// invariants — including `Checkpoint::active_snapshot` — remain stable
-    /// because we never resize `self.basis`).
+    /// because `self.basis` is never resized).
     pub(super) fn tail_reduce_active(&mut self, track: bool) -> Vec<(usize, Vec<usize>)> {
         // Snapshot the active indices and clone their polys ONCE into a
         // workspace. We then reduce each workspace[i] by &workspace[j] for
