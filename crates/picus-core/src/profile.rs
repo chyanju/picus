@@ -321,6 +321,58 @@ macro_rules! __metric_timer {
     };
 }
 
+/// RAII timer that accumulates its elapsed ns into a **local** `u64` (not a
+/// global counter) on drop, gated by gb-stats. For per-phase time tallies that
+/// are summed into a local across a loop and printed in a `metric::scope!`
+/// dump. Construct via `metric::timer_local!`.
+pub struct LocalTimer<'a> {
+    slot: Option<(&'a mut u64, Instant)>,
+}
+
+impl<'a> LocalTimer<'a> {
+    #[inline]
+    pub fn new(slot: &'a mut u64) -> Self {
+        if gb_stats_enabled() {
+            LocalTimer { slot: Some((slot, Instant::now())) }
+        } else {
+            LocalTimer { slot: None }
+        }
+    }
+}
+
+impl Drop for LocalTimer<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        if let Some((slot, start)) = &mut self.slot {
+            **slot += start.elapsed().as_nanos() as u64;
+        }
+    }
+}
+
+/// Impl of `metric::timer_local!(local);` — block-scoped RAII timer adding
+/// elapsed ns to the local `u64` accumulator `local` on drop. See [`LocalTimer`].
+#[macro_export]
+macro_rules! __metric_timer_local {
+    ($local:expr) => {
+        let _metric_guard = $crate::profile::LocalTimer::new(&mut $local);
+    };
+}
+
+/// Impl of `metric::stopwatch!(name);` — declare an `Option<Instant>` profiling
+/// local that is `Some(now)` only when gb-stats is on, readable at several
+/// later `metric::scope!` dump points via `name.map(|t| t.elapsed())`. The
+/// gb-stats analogue of [`metric::clock!`] (which is gb-trace).
+#[macro_export]
+macro_rules! __metric_stopwatch {
+    ($name:ident) => {
+        let $name = if $crate::profile::gb_stats_enabled() {
+            ::core::option::Option::Some(::std::time::Instant::now())
+        } else {
+            ::core::option::Option::None
+        };
+    };
+}
+
 // Local-accumulator vocabulary for hot loops: keep per-iteration work to a
 // plain local `+=` (no atomic), then flush once. `def`/`bump` are always-on
 // (a local `u64`, negligible when stats are off); only `flush` is gated. The
