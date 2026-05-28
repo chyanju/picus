@@ -495,5 +495,93 @@ mod tests {
         let prod = (&model["x"] * &model["y"]) % BigUint::from(7u32);
         assert_eq!(prod, BigUint::from(1u32));
     }
+
+    // ────────── verify_model edge cases ──────────
+
+    #[test]
+    fn verify_model_empty_polys_is_vacuous_true() {
+        let pr = FfPolyRing::new(
+            PrimeField::new(BigUint::from(7u32)),
+            vec!["x".into()],
+        );
+        let model: HashMap<String, BigUint> = HashMap::new();
+        assert!(verify_model(&pr, &[], &model));
+    }
+
+    #[test]
+    fn verify_model_satisfying_assignment_returns_true() {
+        // p = x - 3 with x=3.
+        let pr = FfPolyRing::new(
+            PrimeField::new(BigUint::from(7u32)),
+            vec!["x".into()],
+        );
+        let p = pr.sub(pr.var(0), pr.constant(pr.field().from_int(3)));
+        let mut model = HashMap::new();
+        model.insert("x".into(), BigUint::from(3u32));
+        assert!(verify_model(&pr, &[p], &model));
+    }
+
+    #[test]
+    fn verify_model_violating_assignment_returns_false() {
+        // p = x - 3 with x=5.
+        let pr = FfPolyRing::new(
+            PrimeField::new(BigUint::from(7u32)),
+            vec!["x".into()],
+        );
+        let p = pr.sub(pr.var(0), pr.constant(pr.field().from_int(3)));
+        let mut model = HashMap::new();
+        model.insert("x".into(), BigUint::from(5u32));
+        assert!(!verify_model(&pr, &[p], &model));
+    }
+
+    #[test]
+    fn verify_model_missing_variable_fails_closed() {
+        // p = x - 3 with empty model: appearing variable absent → false.
+        let pr = FfPolyRing::new(
+            PrimeField::new(BigUint::from(7u32)),
+            vec!["x".into()],
+        );
+        let p = pr.sub(pr.var(0), pr.constant(pr.field().from_int(3)));
+        let model: HashMap<String, BigUint> = HashMap::new();
+        assert!(!verify_model(&pr, &[p], &model),
+            "missing variable must fail closed, not vacuously pass");
+    }
+
+    #[test]
+    fn verify_model_quadratic_with_correct_witness() {
+        // p = x*y - 6 over GF(7); witness x=2, y=3 satisfies (6 ≡ 6 mod 7).
+        let pr = FfPolyRing::new(
+            PrimeField::new(BigUint::from(7u32)),
+            vec!["x".into(), "y".into()],
+        );
+        let xy = pr.mul(pr.var(0), pr.var(1));
+        let p = pr.sub(xy, pr.constant(pr.field().from_int(6)));
+        let mut model = HashMap::new();
+        model.insert("x".into(), BigUint::from(2u32));
+        model.insert("y".into(), BigUint::from(3u32));
+        assert!(verify_model(&pr, &[p], &model));
+    }
+
+    // ────────── find_zero_cancel ──────────
+
+    #[test]
+    fn find_zero_cancel_pre_cancelled_returns_unknown() {
+        // Pre-cancelled token + a quadratic that needs branching: the
+        // search returns Unknown without exploring.
+        let pr = FfPolyRing::new(
+            PrimeField::new(BigUint::from(7u32)),
+            vec!["x".into()],
+        );
+        let x2 = pr.mul(pr.var(0), pr.var(0));
+        let p = pr.sub(x2, pr.one()); // x^2 = 1
+        let cancel = CancelToken::cancelled();
+        // Either Unknown (cancel hit before any model found) or Sat
+        // (triangular fast path completed before the cancel check); the
+        // contract is "not panic + not Unsat".
+        match find_zero_cancel(&pr, &[p], &cancel) {
+            FindZeroOutcome::Unknown | FindZeroOutcome::Sat(_) => {}
+            FindZeroOutcome::Unsat => panic!("cancellation must not infer Unsat"),
+        }
+    }
 }
 
