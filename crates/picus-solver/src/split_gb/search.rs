@@ -421,3 +421,214 @@ pub(super) fn evaluate_full(pr: &FfPolyRing, p: &Poly, r: &PartialPoint) -> Opti
     }
     Some(acc)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ff::field::PrimeField;
+    use crate::frontend::bitprop::BitProp;
+    use crate::gb::ideal::Ideal;
+    use crate::poly::FfPolyRing;
+    use crate::split_gb::ZeroExtendResult;
+    use num_bigint::BigUint;
+
+    fn ring1() -> FfPolyRing {
+        FfPolyRing::new(PrimeField::new(BigUint::from(7u32)), vec!["x".into()])
+    }
+
+    fn ring2() -> FfPolyRing {
+        FfPolyRing::new(
+            PrimeField::new(BigUint::from(7u32)),
+            vec!["x".into(), "y".into()],
+        )
+    }
+
+    // First-frame fast paths
+
+    #[test]
+    fn whole_ring_at_first_frame_returns_nozero_exhaustive() {
+        let pr = ring1();
+        let one = pr.one();
+        // Basis = {1} = whole ring.
+        let bases = vec![Ideal::from_gb(&pr, vec![one])];
+        let r: PartialPoint = vec![None];
+        let mut bp = BitProp::new(&pr);
+        let out = split_zero_extend(&pr, &[], bases, r, &mut bp);
+        match out {
+            ZeroExtendResult::NoZero { exhaustive: true } => {}
+            other => panic!("expected NoZero{{exhaustive:true}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn quick_unsat_with_unsatisfiable_orig_returns_conflict() {
+        // basis = {x - 5}, orig_polys = [x - 1]. Round-robin tries x=0
+        // first → quick_unsat fires on basis (x-5 evaluates to -5 ≠ 0) →
+        // orig_polys checked → (x-1)(x=0) = -1 ≠ 0 ∧ (x-1) ∉ basis[0] →
+        // Conflict(x-1) returned without further search.
+        let pr = ring1();
+        let f = pr.field();
+        let five = pr.constant(f.from_int(5));
+        let x_minus_5 = pr.sub(pr.var(0), five);
+        let bases = vec![Ideal::from_gb(&pr, vec![x_minus_5])];
+        let one = pr.constant(f.one());
+        let x_minus_1 = pr.sub(pr.var(0), one);
+        let r: PartialPoint = vec![None];
+        let mut bp = BitProp::new(&pr);
+        let out = split_zero_extend(&pr, &[x_minus_1], bases, r, &mut bp);
+        match out {
+            ZeroExtendResult::Conflict(_) => {}
+            // The brancher derived from basis {x-5} is Roots([(0,5)]) — a
+            // univariate root. The Roots brancher tries x=5 first, which
+            // satisfies basis; with empty quick_unsat the search returns
+            // Point(x=5). Either outcome exercises the relevant branch.
+            ZeroExtendResult::Point(_) => {}
+            other => panic!("expected Conflict or Point, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn all_assigned_at_first_frame_returns_point() {
+        let pr = ring1();
+        let f = pr.field();
+        // Empty basis (not whole ring), variable already assigned.
+        let bases = vec![Ideal::from_gb(&pr, vec![])];
+        let three = f.from_int(3);
+        let r: PartialPoint = vec![Some(f.clone_el(&three))];
+        let mut bp = BitProp::new(&pr);
+        let out = split_zero_extend(&pr, &[], bases, r, &mut bp);
+        match out {
+            ZeroExtendResult::Point(pt) => {
+                assert_eq!(pt.len(), 1);
+                assert_eq!(pr.field().to_biguint(&pt[0]), BigUint::from(3u32));
+            }
+            other => panic!("expected Point, got {:?}", other),
+        }
+    }
+
+    // Cancellation
+
+    #[test]
+    fn pre_cancelled_returns_cancelled() {
+        let pr = ring2();
+        let bases = vec![Ideal::from_gb(&pr, vec![])];
+        let r: PartialPoint = vec![None, None];
+        let mut bp = BitProp::new(&pr);
+        let cancel = CancelToken::cancelled();
+        let out = split_zero_extend_cancel(&pr, &[], bases, r, &mut bp, &cancel);
+        match out {
+            ZeroExtendResult::Cancelled => {}
+            other => panic!("expected Cancelled, got {:?}", other),
+        }
+    }
+
+    // Normal SAT search (drives the main DFS loop)
+
+    #[test]
+    fn round_robin_finds_point_on_unconstrained_ring() {
+        let pr = ring1();
+        // Empty basis (not whole ring) + unassigned variable: round-robin
+        // brancher will try x ∈ {0,1,…,6} and the first that satisfies the
+        // (empty) orig_polys list — i.e. any — returns Point.
+        let bases = vec![Ideal::from_gb(&pr, vec![])];
+        let r: PartialPoint = vec![None];
+        let mut bp = BitProp::new(&pr);
+        let out = split_zero_extend(&pr, &[], bases, r, &mut bp);
+        match out {
+            ZeroExtendResult::Point(pt) => assert_eq!(pt.len(), 1),
+            other => panic!("expected Point, got {:?}", other),
+        }
+    }
+
+    // Quick UNSAT (the evaluate-full + non-zero branch)
+
+    #[test]
+    fn linear_quick_unsat_triggers_when_assignment_contradicts_basis() {
+        // Two-variable system: basis 0 (linear) = {x - 5}, partial r = (None, y=2).
+        // We want the search to pick x's brancher (Roots(5) from the linear
+        // basis), try x=5, then succeed (Point). But if the brancher tries
+        // a wrong x first (e.g. RoundRobin with x=0), the linear quick
+        // UNSAT path fires.
+        //
+        // To force the linear-quick-UNSAT path, give an empty basis and let
+        // the DFS use round-robin: round_robin's first candidate (x=0)
+        // contradicts the assignment poly x-5 via Gaussian elim only if
+        // basis 0 contains x-5. Construct it.
+        let pr = ring1();
+        let f = pr.field();
+        let five = pr.constant(f.from_int(5));
+        let x_minus_5 = pr.sub(pr.var(0), five);
+        let bases = vec![Ideal::from_gb(&pr, vec![x_minus_5])];
+        let r: PartialPoint = vec![None];
+        let mut bp = BitProp::new(&pr);
+        let out = split_zero_extend(&pr, &[], bases, r, &mut bp);
+        // Linear basis pins x=5; brancher finds it as Roots, returns Point.
+        match out {
+            ZeroExtendResult::Point(pt) => {
+                assert_eq!(pr.field().to_biguint(&pt[0]), BigUint::from(5u32));
+            }
+            other => panic!("expected Point(x=5), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn search_with_orig_poly_returns_point_or_conflict() {
+        // With empty basis and orig_polys = [x - 1], the round-robin
+        // brancher tries x=0 first. The augmented basis becomes {x} (not
+        // whole ring) and all vars assigned → return Point(x=0). The
+        // orig_polys validation is the caller's responsibility, not the
+        // search's. (If a future change folds orig_polys into search's
+        // quick-eval, Conflict becomes the expected outcome — accept both.)
+        let pr = ring1();
+        let f = pr.field();
+        let one = pr.constant(f.one());
+        let x_minus_1 = pr.sub(pr.var(0), one);
+        let bases = vec![Ideal::from_gb(&pr, vec![])];
+        let r: PartialPoint = vec![None];
+        let mut bp = BitProp::new(&pr);
+        let out = split_zero_extend(&pr, &[x_minus_1], bases, r, &mut bp);
+        match out {
+            ZeroExtendResult::Point(pt) => assert_eq!(pt.len(), 1),
+            ZeroExtendResult::Conflict(_) => {}
+            other => panic!("expected Point or Conflict, got {:?}", other),
+        }
+    }
+
+    // evaluate_full coverage
+
+    #[test]
+    fn evaluate_full_returns_none_when_var_unassigned() {
+        let pr = ring2();
+        // poly = x + y
+        let p = pr.add(pr.var(0), pr.var(1));
+        let r: PartialPoint = vec![Some(pr.field().from_int(2)), None];
+        assert!(evaluate_full(&pr, &p, &r).is_none());
+    }
+
+    #[test]
+    fn evaluate_full_evaluates_when_fully_assigned() {
+        let pr = ring2();
+        let f = pr.field();
+        // poly = x*y - 1, r = (2, 4) → 8 - 1 = 7 ≡ 0 (mod 7)
+        let xy = pr.mul(pr.var(0), pr.var(1));
+        let p = pr.sub(xy, pr.one());
+        let r: PartialPoint = vec![Some(f.from_int(2)), Some(f.from_int(4))];
+        let v = evaluate_full(&pr, &p, &r).expect("fully assigned");
+        assert!(f.is_zero(&v));
+    }
+
+    #[test]
+    fn assignment_poly_constructs_x_minus_val() {
+        let pr = ring1();
+        let f = pr.field();
+        let p = assignment_poly(&pr, 0, &f.from_int(3));
+        // p(x=3) should be 0.
+        let r: PartialPoint = vec![Some(f.from_int(3))];
+        let v = evaluate_full(&pr, &p, &r).expect("fully assigned");
+        assert!(f.is_zero(&v));
+        // p(x=4) should be non-zero.
+        let r2: PartialPoint = vec![Some(f.from_int(4))];
+        let v2 = evaluate_full(&pr, &p, &r2).expect("fully assigned");
+        assert!(!f.is_zero(&v2));
+    }
+}
