@@ -17,6 +17,7 @@ use std::cmp::Ordering;
 use super::field::FieldElem;
 use super::geobucket_params::{BASE_CAPACITY, MAX_BUCKETS, RATIO};
 use super::polynomial::{PolyRing, DensePoly};
+use crate::metric;
 
 pub struct Geobucket<'r> {
     buckets: Vec<DensePoly>,
@@ -169,44 +170,43 @@ impl<'r> Geobucket<'r> {
         if div_len <= 1 || self.ring.field.is_zero(neg_coeff) {
             return;
         }
-        let stats_on = crate::profile::gb_stats_enabled();
-        let setup_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
-        let n = self.ring.n_vars;
-        let mul_deg: u32 = mul_exps.iter().map(|&e| e as u32).sum();
-        let tail_len = div_len - 1;
-        self.scratch_exps.clear();
-        self.scratch_coeffs.clear();
-        self.scratch_degs.clear();
-        self.scratch_exps.reserve(tail_len * n);
-        self.scratch_coeffs.reserve(tail_len);
-        self.scratch_degs.reserve(tail_len);
-        let d_exps = divisor.raw_exponents();
-        let d_coeffs = divisor.raw_coeffs();
-        let d_degs = divisor.raw_total_degs();
-        for i in 1..div_len {
-            let base = &d_exps[i * n..(i + 1) * n];
-            for k in 0..n {
-                let sum = base[k].checked_add(mul_exps[k])
-                    .expect("exponent overflow in sub_scaled_tail");
-                self.scratch_exps.push(sum);
+        // One cached gb-stats read for both sub-region timers (this is a hot
+        // reduction step); the gated `metric::timer!`s below add no per-call
+        // thread-local config read.
+        metric::gate!(stats);
+        let scaled_tail = {
+            metric::timer!(stats, crate::profile::SPLIT_GB.time_sub_scaled_setup_ns);
+            let n = self.ring.n_vars;
+            let mul_deg: u32 = mul_exps.iter().map(|&e| e as u32).sum();
+            let tail_len = div_len - 1;
+            self.scratch_exps.clear();
+            self.scratch_coeffs.clear();
+            self.scratch_degs.clear();
+            self.scratch_exps.reserve(tail_len * n);
+            self.scratch_coeffs.reserve(tail_len);
+            self.scratch_degs.reserve(tail_len);
+            let d_exps = divisor.raw_exponents();
+            let d_coeffs = divisor.raw_coeffs();
+            let d_degs = divisor.raw_total_degs();
+            for i in 1..div_len {
+                let base = &d_exps[i * n..(i + 1) * n];
+                for k in 0..n {
+                    let sum = base[k].checked_add(mul_exps[k])
+                        .expect("exponent overflow in sub_scaled_tail");
+                    self.scratch_exps.push(sum);
+                }
+                self.scratch_coeffs.push(self.ring.field.mul(&d_coeffs[i], neg_coeff));
+                self.scratch_degs.push(d_degs[i] + mul_deg);
             }
-            self.scratch_coeffs.push(self.ring.field.mul(&d_coeffs[i], neg_coeff));
-            self.scratch_degs.push(d_degs[i] + mul_deg);
-        }
-        let scaled_tail = DensePoly::from_raw_sorted(
-            std::mem::take(&mut self.scratch_exps),
-            std::mem::take(&mut self.scratch_coeffs),
-            std::mem::take(&mut self.scratch_degs),
-        );
-        if let Some(t0) = setup_t0 {
-            crate::profile::SPLIT_GB.time_sub_scaled_setup_ns
-                .fetch_add(t0.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
-        }
-        let add_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
-        self.add_poly(scaled_tail);
-        if let Some(t0) = add_t0 {
-            crate::profile::SPLIT_GB.time_sub_scaled_addpoly_ns
-                .fetch_add(t0.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+            DensePoly::from_raw_sorted(
+                std::mem::take(&mut self.scratch_exps),
+                std::mem::take(&mut self.scratch_coeffs),
+                std::mem::take(&mut self.scratch_degs),
+            )
+        };
+        {
+            metric::timer!(stats, crate::profile::SPLIT_GB.time_sub_scaled_addpoly_ns);
+            self.add_poly(scaled_tail);
         }
     }
 

@@ -126,7 +126,7 @@ impl SolverBackend for NativeFfBackend {
             // Repeat-detection over consecutive constraint sides: a stats-only
             // mini-algorithm (an expensive digest plus persisted last-digest
             // state), so it lives in a metric::scope! block rather than a bare
-            // `if stats_on { .. }`.
+            // hand-written gb-stats `if`-gate.
             let d = digest_native_constraint_side(&indexed);
             if self.last_cs_digest == Some(d) {
                 metric::incr!(NATIVE_FF.repeated_cs_digest_streak);

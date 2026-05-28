@@ -6,6 +6,7 @@
 //! `DensePoly::reduce_by_refs*` call sites are unchanged.
 
 use super::*;
+use crate::metric;
 
 impl DensePoly {
     /// Like `reduce_by` but takes references to divisors — avoids cloning
@@ -132,12 +133,11 @@ impl DensePoly {
         div_dms: Option<&[crate::ff::divmask::DivMask]>,
     ) -> DensePoly {
         let n = ring.n_vars;
-        let stats_on = crate::profile::gb_stats_enabled();
-        if stats_on {
-            crate::profile::SPLIT_GB.reduce_calls
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        let setup_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
+        // Cached gb-stats gate: read once, used by the per-monomial timers in
+        // the hot loop below without re-reading the thread-local config.
+        metric::gate!(stats);
+        metric::incr!(crate::profile::SPLIT_GB.reduce_calls);
+        metric::stopwatch!(setup_sw);
 
         // Precompute LT info for each divisor: exponent slice (BORROWED,
         // no per-divisor Vec allocation), total degree, and DivMask. The
@@ -214,16 +214,16 @@ impl DensePoly {
         let mut result_degs: Vec<u32> = Vec::new();
         let mut shift = vec![0u16; n];
 
-        if let Some(t0) = setup_t0 {
-            crate::profile::SPLIT_GB.time_div_lt_setup_ns
-                .fetch_add(t0.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        metric::scope! {
+            let dt = setup_sw.map(|t| t.elapsed().as_nanos() as u64).unwrap_or(0);
+            metric::add!(crate::profile::SPLIT_GB.time_div_lt_setup_ns, dt);
         }
-        let mut local_pops: u64 = 0;
-        let mut local_lookups: u64 = 0;
-        let mut local_sub_scaled: u64 = 0;
-        let mut local_pop_ns: u64 = 0;
-        let mut local_lookup_ns: u64 = 0;
-        let mut local_sub_ns: u64 = 0;
+        metric::def!(local_pops);
+        metric::def!(local_lookups);
+        metric::def!(local_sub_scaled);
+        metric::def!(local_pop_ns);
+        metric::def!(local_lookup_ns);
+        metric::def!(local_sub_ns);
 
         // Throttle the cancel check coarsely. Checking the atomic on
         // every iteration measurably slows reduction; period = 4096
@@ -235,16 +235,15 @@ impl DensePoly {
         // path doesn't re-pattern-match the Option.
         let cancel_ref = cancel;
         loop {
-            let pop_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
-            let popped = gb.pop_leading_term();
-            if let Some(t0) = pop_t0 {
-                local_pop_ns += t0.elapsed().as_nanos() as u64;
-            }
+            let popped = {
+                metric::timer_local!(stats, local_pop_ns);
+                gb.pop_leading_term()
+            };
             let (lt_exps, lt_deg, lt_coeff) = match popped {
                 Some(t) => t,
                 None => break,
             };
-            local_pops += 1;
+            metric::bump!(local_pops);
             iter_counter = iter_counter.wrapping_add(1);
             if iter_counter & (CANCEL_CHECK_PERIOD - 1) == 0 {
                 if let Some(c) = cancel_ref {
@@ -262,22 +261,23 @@ impl DensePoly {
                             result_coeffs.push(c2);
                             result_degs.push(d);
                         }
-                        if stats_on {
+                        metric::scope! {
                             let g = &crate::profile::SPLIT_GB;
-                            g.reduce_lt_pops.fetch_add(local_pops, std::sync::atomic::Ordering::Relaxed);
-                            g.reduce_div_lookups.fetch_add(local_lookups, std::sync::atomic::Ordering::Relaxed);
-                            g.reduce_sub_scaled_calls.fetch_add(local_sub_scaled, std::sync::atomic::Ordering::Relaxed);
-                            g.time_pop_lt_ns.fetch_add(local_pop_ns, std::sync::atomic::Ordering::Relaxed);
-                            g.time_div_lookup_ns.fetch_add(local_lookup_ns, std::sync::atomic::Ordering::Relaxed);
-                            g.time_sub_scaled_ns.fetch_add(local_sub_ns, std::sync::atomic::Ordering::Relaxed);
+                            metric::add!(g.reduce_lt_pops, local_pops);
+                            metric::add!(g.reduce_div_lookups, local_lookups);
+                            metric::add!(g.reduce_sub_scaled_calls, local_sub_scaled);
+                            metric::add!(g.time_pop_lt_ns, local_pop_ns);
+                            metric::add!(g.time_div_lookup_ns, local_lookup_ns);
+                            metric::add!(g.time_sub_scaled_ns, local_sub_ns);
                         }
                         return DensePoly::from_raw_sorted(result_exps, result_coeffs, result_degs);
                     }
                 }
             }
-            let lookup_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
             let cur_dm = ring.divmask.compute_from_slice(&lt_exps);
             let mut chosen: Option<usize> = None;
+            {
+            metric::timer_local!(stats, local_lookup_ns);
             if let Some(buckets) = &bucket_index_opt {
                 // Hash-bucketed divisor lookup. Iterate only buckets
                 // whose mask is a submask of `cur_dm` — others contain
@@ -294,7 +294,7 @@ impl DensePoly {
                         continue;
                     }
                     for &di in indices {
-                        local_lookups += 1;
+                        metric::bump!(local_lookups);
                         if let Some((d_exps, d_deg, _)) = &div_lt[di] {
                             if *d_deg > lt_deg {
                                 // Bucket is sorted by LT degree ascending;
@@ -320,7 +320,7 @@ impl DensePoly {
                 // Sorted-ascending iteration with early break on
                 // exceeded-degree divisors.
                 for &di in order {
-                    local_lookups += 1;
+                    metric::bump!(local_lookups);
                     if let Some((d_exps, d_deg, d_dm)) = &div_lt[di] {
                         if *d_deg > lt_deg {
                             break;
@@ -343,7 +343,7 @@ impl DensePoly {
                 }
             } else {
                 for (di, lt_opt) in div_lt.iter().enumerate() {
-                    local_lookups += 1;
+                    metric::bump!(local_lookups);
                     if let Some((d_exps, d_deg, d_dm)) = lt_opt {
                         if *d_deg > lt_deg {
                             continue;
@@ -365,12 +365,10 @@ impl DensePoly {
                     }
                 }
             }
-            if let Some(t0) = lookup_t0 {
-                local_lookup_ns += t0.elapsed().as_nanos() as u64;
             }
 
             if let Some(di) = chosen {
-                let sub_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
+                metric::timer_local!(stats, local_sub_ns);
                 let (d_exps, _d_deg, _) = div_lt[di].as_ref().unwrap();
                 // Read the divisor's leading coefficient lazily (only the
                 // selected divisor needs it), avoiding a per-divisor clone
@@ -382,12 +380,9 @@ impl DensePoly {
                     shift[k] = lt_exps[k] - d_exps[k];
                 }
                 gb.sub_scaled_tail(&shift, &neg_coeff, divisors[di]);
-                local_sub_scaled += 1;
+                metric::bump!(local_sub_scaled);
                 if let Some(counts) = use_counts.as_deref_mut() {
                     counts[di] = counts[di].saturating_add(1);
-                }
-                if let Some(t0) = sub_t0 {
-                    local_sub_ns += t0.elapsed().as_nanos() as u64;
                 }
             } else {
                 result_exps.extend_from_slice(&lt_exps);
@@ -396,20 +391,18 @@ impl DensePoly {
             }
         }
 
-        let fin_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
-        let result = DensePoly::from_raw_sorted(result_exps, result_coeffs, result_degs);
-        if let Some(t0) = fin_t0 {
-            crate::profile::SPLIT_GB.time_finalize_ns
-                .fetch_add(t0.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
-        }
-        if stats_on {
+        let result = {
+            metric::timer!(crate::profile::SPLIT_GB.time_finalize_ns);
+            DensePoly::from_raw_sorted(result_exps, result_coeffs, result_degs)
+        };
+        metric::scope! {
             let g = &crate::profile::SPLIT_GB;
-            g.reduce_lt_pops.fetch_add(local_pops, std::sync::atomic::Ordering::Relaxed);
-            g.reduce_div_lookups.fetch_add(local_lookups, std::sync::atomic::Ordering::Relaxed);
-            g.reduce_sub_scaled_calls.fetch_add(local_sub_scaled, std::sync::atomic::Ordering::Relaxed);
-            g.time_pop_lt_ns.fetch_add(local_pop_ns, std::sync::atomic::Ordering::Relaxed);
-            g.time_div_lookup_ns.fetch_add(local_lookup_ns, std::sync::atomic::Ordering::Relaxed);
-            g.time_sub_scaled_ns.fetch_add(local_sub_ns, std::sync::atomic::Ordering::Relaxed);
+            metric::add!(g.reduce_lt_pops, local_pops);
+            metric::add!(g.reduce_div_lookups, local_lookups);
+            metric::add!(g.reduce_sub_scaled_calls, local_sub_scaled);
+            metric::add!(g.time_pop_lt_ns, local_pop_ns);
+            metric::add!(g.time_div_lookup_ns, local_lookup_ns);
+            metric::add!(g.time_sub_scaled_ns, local_sub_ns);
         }
         result
     }
@@ -433,10 +426,7 @@ impl DensePoly {
         let n = ring.n_vars;
         debug_assert_eq!(index.div_lt.len(), divisors.len(),
             "ReducerIndex size must match the divisor slice");
-        if crate::profile::gb_stats_enabled() {
-            crate::profile::SPLIT_GB.reduce_calls
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
+        metric::incr!(crate::profile::SPLIT_GB.reduce_calls);
         let div_lt = &index.div_lt;
         let mut gb = crate::ff::geobucket::Geobucket::from_poly(self.clone(), ring);
         let mut result_exps: Vec<u16> = Vec::new();

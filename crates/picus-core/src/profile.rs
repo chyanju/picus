@@ -255,21 +255,21 @@ pub fn gb_trace_enabled() -> bool {
 // use `metric::incr!(PATH)` etc., not these directly.
 //
 // Full vocabulary: incr! / add! / max! (counters), timer! (RAII into a global
-// counter), timer_local! (RAII into a local u64 tally) / stopwatch! (gb-stats
-// Option<Instant> read at several points), def! / bump! / flush! (local
-// accumulators: declare / `+= ` / drain to a global), next! (increment-and-
-// return for a counter-as-id), scope! { } (a gb-stats-gated pure-profiling
-// block), trace! { } / clock! (the gb-*trace* sink — verbose per-step output,
-// distinct flag from gb-stats).
+// counter) / timer_local! (RAII into a local u64 tally) / stopwatch! (gb-stats
+// Option<Instant> read at several points), gate! (read the flag once into a
+// cached Gate for a hot loop/step, then pass it to a gated timer!/timer_local!),
+// def! / bump! / flush! (local accumulators: declare / `+=` / drain to a
+// global), next! (increment-and-return for a counter-as-id), scope! { } (a
+// gb-stats-gated pure-profiling block), trace! { } / clock! (the gb-*trace*
+// sink — verbose per-step output, distinct flag from gb-stats).
 //
-// One deliberate exception: the per-monomial fine-grained reducer timing in
-// `ff::polynomial::dense_reduce` and `ff::geobucket::sub_scaled` keeps a single
-// cached `gb_stats_enabled()` bool gating its inner-loop `Instant::now()`,
-// rather than a `metric::*!` form. There a self-gating macro would do a
-// thread-local config read on every monomial of the hottest loop; the cached
-// bool is the deliberate perf choice (counters there are still plain locals
-// summed once at the end). It is clearly-profiling (named `stats_on` /
-// `*_ns`), just not in the macro form.
+// Hot-loop gating: the per-monomial reducer timing in `ff::polynomial::
+// dense_reduce` and the per-step sub-region timing in `ff::geobucket::
+// sub_scaled_tail` must not do a thread-local config read on every iteration.
+// They use `metric::gate!(g)` to read `gb_stats_enabled()` once, then gate the
+// inner timers on the cached bool via `metric::timer_local!(g, ..)` /
+// `metric::timer!(g, ..)`. This keeps the read-once perf of a hand-cached flag
+// while staying entirely in the DSL — no bare `if gb_stats_enabled()` survives.
 
 /// Impl of `metric::incr!(counter)` — `counter += 1` when gb-stats is on.
 #[macro_export]
@@ -311,7 +311,16 @@ pub struct MetricTimer<'a> {
 impl<'a> MetricTimer<'a> {
     #[inline]
     pub fn new(slot: &'a AtomicU64) -> Self {
-        if gb_stats_enabled() {
+        Self::new_gated(gb_stats_enabled(), slot)
+    }
+
+    /// Like [`Self::new`] but takes a pre-read gb-stats flag (a cached
+    /// [`Gate`]), so a caller timing two sub-regions of one hot step reads
+    /// the thread-local config once rather than per `metric::timer!`. See
+    /// `metric::timer!(gate, counter)`.
+    #[inline]
+    pub fn new_gated(on: bool, slot: &'a AtomicU64) -> Self {
+        if on {
             MetricTimer { slot: Some((slot, Instant::now())) }
         } else {
             MetricTimer { slot: None }
@@ -328,13 +337,19 @@ impl Drop for MetricTimer<'_> {
     }
 }
 
-/// Impl of `metric::timer!(counter);` — statement-form RAII timer. Expands to a
-/// hidden, block-scoped guard (no bare `let` at the call site); on drop it adds
-/// the elapsed ns to `counter`. Times "this line → end of enclosing block".
+/// Impl of `metric::timer!(counter);` (re-reads the gb-stats flag) or
+/// `metric::timer!(gate, counter);` (uses a pre-read [`Gate`], for a hot step
+/// that times two sub-regions without re-reading the thread-local config).
+/// Statement-form RAII timer: expands to a hidden, block-scoped guard (no bare
+/// `let` at the call site); on drop it adds the elapsed ns to `counter`. Times
+/// "this line → end of enclosing block".
 #[macro_export]
 macro_rules! __metric_timer {
     ($c:expr) => {
         let _metric_guard = $crate::profile::MetricTimer::new(&$c);
+    };
+    ($gate:expr, $c:expr) => {
+        let _metric_guard = $crate::profile::MetricTimer::new_gated($gate.on, &$c);
     };
 }
 
@@ -349,11 +364,41 @@ pub struct LocalTimer<'a> {
 impl<'a> LocalTimer<'a> {
     #[inline]
     pub fn new(slot: &'a mut u64) -> Self {
-        if gb_stats_enabled() {
+        Self::new_gated(gb_stats_enabled(), slot)
+    }
+
+    /// Like [`Self::new`] but takes a pre-read gb-stats flag (a cached
+    /// [`Gate`]), so a hot loop does not re-read the thread-local config on
+    /// every iteration. See `metric::timer_local!(gate, local)`.
+    #[inline]
+    pub fn new_gated(on: bool, slot: &'a mut u64) -> Self {
+        if on {
             LocalTimer { slot: Some((slot, Instant::now())) }
         } else {
             LocalTimer { slot: None }
         }
+    }
+}
+
+/// A cached gb-stats gate. Read `gb_stats_enabled()` once (e.g. at the top of a
+/// hot reducer loop) via `metric::gate!(g)`, then pass `g` to the per-iteration
+/// `metric::timer_local!(g, ..)` so the hottest loop reads a cached bool field
+/// rather than re-doing a thread-local config lookup every iteration.
+#[derive(Clone, Copy)]
+pub struct Gate {
+    pub on: bool,
+}
+
+impl Gate {
+    #[inline]
+    pub fn new() -> Self {
+        Gate { on: gb_stats_enabled() }
+    }
+}
+
+impl Default for Gate {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -366,12 +411,27 @@ impl Drop for LocalTimer<'_> {
     }
 }
 
-/// Impl of `metric::timer_local!(local);` — block-scoped RAII timer adding
-/// elapsed ns to the local `u64` accumulator `local` on drop. See [`LocalTimer`].
+/// Impl of `metric::timer_local!(local);` (re-reads the gb-stats flag) or
+/// `metric::timer_local!(gate, local);` (uses a pre-read [`Gate`], for hot
+/// loops). Block-scoped RAII timer adding elapsed ns to the local `u64`
+/// accumulator on drop. See [`LocalTimer`].
 #[macro_export]
 macro_rules! __metric_timer_local {
     ($local:expr) => {
         let _metric_guard = $crate::profile::LocalTimer::new(&mut $local);
+    };
+    ($gate:expr, $local:expr) => {
+        let _metric_guard = $crate::profile::LocalTimer::new_gated($gate.on, &mut $local);
+    };
+}
+
+/// Impl of `metric::gate!(g);` — read the gb-stats flag once into a cached
+/// [`Gate`] for a hot loop, then gate per-iteration `metric::timer_local!(g, ..)`
+/// on the cached bool instead of re-reading the thread-local config.
+#[macro_export]
+macro_rules! __metric_gate {
+    ($name:ident) => {
+        let $name = $crate::profile::Gate::new();
     };
 }
 

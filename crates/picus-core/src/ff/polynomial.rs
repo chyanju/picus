@@ -21,6 +21,7 @@ use super::repr::MonomialRepr;
 use super::sparse_monomial::SparseMonomial;
 use super::sparse_polynomial::SparsePolynomial;
 use crate::config::ReprKind;
+use crate::metric;
 
 /// Shared context describing the polynomial ring `GF(p)[x_0, ..., x_{n-1}]`.
 ///
@@ -819,12 +820,13 @@ impl DensePoly {
         if other.is_zero() {
             return self;
         }
-        if crate::profile::gb_stats_enabled() {
-            crate::profile::SPLIT_GB.merge_owned_calls
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            crate::profile::SPLIT_GB.merge_owned_terms_total
-                .fetch_add((self.coeffs.len() + other.coeffs.len()) as u64,
-                    std::sync::atomic::Ordering::Relaxed);
+        // Two counters under one gb-stats read (this is a hot cascade-merge
+        // path); same single-read batching as the reducer flush.
+        metric::scope! {
+            let g = &crate::profile::SPLIT_GB;
+            metric::add!(g.merge_owned_calls, 1);
+            metric::add!(g.merge_owned_terms_total,
+                (self.coeffs.len() + other.coeffs.len()) as u64);
         }
         let n = ring.n_vars;
         let la = self.coeffs.len();
