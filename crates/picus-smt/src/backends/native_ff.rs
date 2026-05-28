@@ -19,6 +19,8 @@ use picus_solver::core::{solve_encoded_with_cancel, SolveOutcome};
 use picus_solver::frontend::encoder::ConstraintSystem;
 use picus_solver::incremental_context::IncrementalSolverContext;
 use picus_core::timeout::CancelToken;
+use picus_core::metric;
+use picus_core::profile::NATIVE_FF;
 
 thread_local! {
     /// When true on the current thread, the installed panic hook stays
@@ -119,25 +121,19 @@ impl SolverBackend for NativeFfBackend {
         };
         let ir: &PolyIR = reduced_ir.as_ref().unwrap_or(ir);
         let indexed = ir.to_constraint_system();
-        let stats_on = picus_core::profile::gb_stats_enabled();
-        let cs_digest = if stats_on {
-            Some(digest_native_constraint_side(&indexed))
-        } else {
-            None
-        };
-        if stats_on {
-            use std::sync::atomic::Ordering::Relaxed;
-            let nf = &picus_core::profile::NATIVE_FF;
-            nf.solve_calls.fetch_add(1, Relaxed);
-            if let Some(d) = cs_digest {
-                if self.last_cs_digest == Some(d) {
-                    nf.repeated_cs_digest_streak.fetch_add(1, Relaxed);
-                }
-                // `distinct_cs_digests` is incremented inside
-                // `IncrementalSolverContext::solve` on rebuild — single
-                // source of truth.
-                self.last_cs_digest = Some(d);
+        metric::incr!(NATIVE_FF.solve_calls);
+        metric::scope! {
+            // Repeat-detection over consecutive constraint sides: a stats-only
+            // mini-algorithm (an expensive digest plus persisted last-digest
+            // state), so it lives in a metric::scope! block rather than a bare
+            // `if stats_on { .. }`.
+            let d = digest_native_constraint_side(&indexed);
+            if self.last_cs_digest == Some(d) {
+                metric::incr!(NATIVE_FF.repeated_cs_digest_streak);
             }
+            // `distinct_cs_digests` is incremented inside
+            // `IncrementalSolverContext::solve` on rebuild — single source of truth.
+            self.last_cs_digest = Some(d);
         }
 
         // Wrap encode + solve in catch_unwind as a safety net for any
@@ -154,11 +150,7 @@ impl SolverBackend for NativeFfBackend {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let timeout_tok = CancelToken::with_timeout(std::time::Duration::from_millis(timeout_ms));
             let cancel = CancelToken::either(&external, &timeout_tok);
-            let solve_t0 = if stats_on {
-                Some(std::time::Instant::now())
-            } else {
-                None
-            };
+            metric::timer!(NATIVE_FF.solve_inner_time_ns);
             let outcome = if !ir.disjunctions.is_empty() {
                 // Disjunction-aware path: route the whole query
                 // (conjunctive constraints + `or` clauses + target
@@ -178,23 +170,14 @@ impl SolverBackend for NativeFfBackend {
             } else if cache_enabled {
                 cache.solve(&indexed, &cancel)
             } else {
-                let enc_t0 = if stats_on {
-                    Some(std::time::Instant::now())
-                } else {
-                    None
-                };
                 // Stateless path: encode directly via `PolyIR::encode`.
-                let encoded = ir.encode().map_err(|e| SolverError::Internal(e))?;
-                if let Some(t0) = enc_t0 {
-                    use std::sync::atomic::Ordering::Relaxed;
-                    let dt = t0.elapsed().as_nanos() as u64;
-                    let nf = &picus_core::profile::NATIVE_FF;
-                    nf.encode_time_ns.fetch_add(dt, Relaxed);
-                    nf.encoded_polys_total
-                        .fetch_add(encoded.polynomials.len() as u64, Relaxed);
-                    nf.observe_polys_max(encoded.polynomials.len() as u64);
-                    nf.observe_vars_max(encoded.poly_ring.n_vars() as u64);
-                }
+                let encoded = {
+                    metric::timer!(NATIVE_FF.encode_time_ns);
+                    ir.encode().map_err(|e| SolverError::Internal(e))?
+                };
+                metric::add!(NATIVE_FF.encoded_polys_total, encoded.polynomials.len() as u64);
+                metric::max!(NATIVE_FF.encoded_polys_max, encoded.polynomials.len() as u64);
+                metric::max!(NATIVE_FF.encoded_vars_max, encoded.poly_ring.n_vars() as u64);
                 log::debug!(
                     "native-ff: {} polynomials, {} variables",
                     encoded.polynomials.len(),
@@ -202,14 +185,6 @@ impl SolverBackend for NativeFfBackend {
                 );
                 solve_encoded_with_cancel(&encoded, &cancel)
             };
-            if let Some(t0) = solve_t0 {
-                use std::sync::atomic::Ordering::Relaxed;
-                let dt = t0.elapsed().as_nanos() as u64;
-                picus_core::profile::NATIVE_FF
-                    .solve_inner_time_ns
-                    .fetch_add(dt, Relaxed);
-            }
-
             match outcome {
                 SolveOutcome::Sat(model) => Ok(SolverResult::Sat(model)),
                 SolveOutcome::Unsat(_) => Ok(SolverResult::Unsat),

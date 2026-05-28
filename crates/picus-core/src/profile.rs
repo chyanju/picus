@@ -327,11 +327,60 @@ macro_rules! __metric_timer {
 // `metric::` spelling keeps these visibly profiling rather than bare `let
 // mut acc = 0` / `acc += 1` that read as logic.
 
-/// Impl of `metric::def!(acc);` — declare a profiling-local accumulator `acc`.
+/// Impl of `metric::def!(acc);` (accumulator `= 0`) or
+/// `metric::def!(name = expr);` (a profiling-local seeded from `expr`, e.g. an
+/// entry snapshot of a counter, or `metric::next!`). The `metric::def!`
+/// spelling keeps it visibly a profiling local, not a bare `let` that reads as
+/// main logic.
 #[macro_export]
 macro_rules! __metric_def {
     ($name:ident) => {
         let mut $name: u64 = 0;
+    };
+    ($name:ident = $init:expr) => {
+        let $name = $init;
+    };
+}
+
+/// Impl of `metric::next!(counter)` — increment `counter` and return the new
+/// value (a per-call sequence id) when gb-stats is on, else `0`. For
+/// profiling ids that need the post-increment value, which `metric::incr!`
+/// discards.
+#[macro_export]
+macro_rules! __metric_next {
+    ($c:expr) => {
+        if $crate::profile::gb_stats_enabled() {
+            $c.fetch_add(1, ::std::sync::atomic::Ordering::Relaxed) + 1
+        } else {
+            0
+        }
+    };
+}
+
+/// Impl of `metric::trace! { ... }` — run a pure gb-*trace* block (gated by
+/// `gb_trace_enabled`, the verbose per-step diagnostic sink, distinct from the
+/// gb-stats `metric::scope!`). Keeps trace output in the metric DSL rather than
+/// a bare `if trace_on { eprintln!(..) }`.
+#[macro_export]
+macro_rules! __metric_trace {
+    ($($body:tt)*) => {
+        if $crate::profile::gb_trace_enabled() {
+            $($body)*
+        }
+    };
+}
+
+/// Impl of `metric::clock!(name);` — declare an `Option<Instant>` profiling
+/// local that is `Some(now)` only when gb-trace is on, for a
+/// `metric::trace!`-printed elapsed. No `Instant::now()` cost when trace is off.
+#[macro_export]
+macro_rules! __metric_clock {
+    ($name:ident) => {
+        let $name = if $crate::profile::gb_trace_enabled() {
+            ::core::option::Option::Some(::std::time::Instant::now())
+        } else {
+            ::core::option::Option::None
+        };
     };
 }
 
