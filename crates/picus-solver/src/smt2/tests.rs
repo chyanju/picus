@@ -991,6 +991,179 @@ fn ff_bitsum_in_assert_decomposes_to_weighted_sum() {
     assert_eq!(cs.equalities.len(), 1);
 }
 
+// ────────── parse() malformed-input rejection (robustness) ──────────
+
+/// Standard GF(7) preamble + one body assert, for malformed-assert tests.
+fn parse_with_assert(body: &str) -> Result<ConstraintSystem, ParseError> {
+    let src = format!(
+        "(set-logic QF_FF)\n\
+         (define-sort F () (_ FiniteField 7))\n\
+         (declare-fun x () F)\n\
+         (declare-fun y () F)\n\
+         (assert {})\n\
+         (check-sat)\n",
+        body
+    );
+    parse(&src)
+}
+
+#[test]
+fn eq_with_wrong_arity_is_malformed() {
+    // (= x) has arity 1, not 2.
+    assert!(matches!(parse_with_assert("(= x)"), Err(ParseError::Malformed(_))));
+    // (= x y x) has arity 3.
+    assert!(matches!(parse_with_assert("(= x y x)"), Err(ParseError::Malformed(_))));
+}
+
+#[test]
+fn not_with_non_equality_inner_is_malformed() {
+    // (not (ff.mul x y)) — inner head is not '='.
+    assert!(matches!(
+        parse_with_assert("(not (ff.mul x y))"),
+        Err(ParseError::Malformed(_))
+    ));
+}
+
+#[test]
+fn not_with_atom_inner_is_malformed() {
+    // (not x) — inner is an atom, not a list.
+    assert!(matches!(parse_with_assert("(not x)"), Err(ParseError::Malformed(_))));
+}
+
+#[test]
+fn not_with_inner_equality_wrong_arity_is_malformed() {
+    // (not (= x)) — inner '=' has arity 1.
+    assert!(matches!(parse_with_assert("(not (= x))"), Err(ParseError::Malformed(_))));
+}
+
+#[test]
+fn unsupported_assert_head_is_malformed() {
+    // (assert (foo x y)) — 'foo' is neither '=' nor 'not' nor a boolean op.
+    assert!(matches!(parse_with_assert("(bar x y)"), Err(ParseError::Malformed(_))));
+}
+
+#[test]
+fn non_list_assert_body_is_malformed() {
+    // (assert x) — the body is an atom, not a list.
+    assert!(matches!(parse_with_assert("x"), Err(ParseError::Malformed(_))));
+}
+
+#[test]
+fn assert_with_wrong_arity_is_malformed() {
+    let src = "(set-logic QF_FF)\n\
+               (define-sort F () (_ FiniteField 7))\n\
+               (declare-fun x () F)\n\
+               (assert)\n\
+               (check-sat)\n";
+    assert!(matches!(parse(src), Err(ParseError::Malformed(_))));
+}
+
+#[test]
+fn bool_declaration_in_conjunctive_parser_is_malformed() {
+    // The conjunctive parser rejects Bool-sorted declarations (use parse_boolean).
+    let src = "(set-logic QF_FF)\n\
+               (define-sort F () (_ FiniteField 7))\n\
+               (declare-fun b () Bool)\n\
+               (check-sat)\n";
+    assert!(matches!(parse(src), Err(ParseError::Malformed(_))));
+}
+
+#[test]
+fn multiple_distinct_ff_literal_primes_is_malformed() {
+    // No FF sort declaration ⇒ literal-based prime inference; two distinct
+    // moduli (#f3m7 vs #f3m11) is a malformed single-prime session.
+    let src = "(set-logic QF_FF)\n\
+               (declare-fun x () F)\n\
+               (declare-fun y () F)\n\
+               (assert (= x #f3m7))\n\
+               (assert (= y #f3m11))\n\
+               (check-sat)\n";
+    assert!(matches!(parse(src), Err(ParseError::Malformed(_))));
+}
+
+#[test]
+fn no_prime_anywhere_is_missing_prime() {
+    // No FF sort, no FF literals ⇒ MissingPrime (distinct from Malformed).
+    let src = "(set-logic QF_FF)\n(check-sat)\n";
+    assert!(matches!(parse(src), Err(ParseError::MissingPrime)));
+}
+
+// ────────── parse_boolean() FF-term builder edge / error paths ──────────
+
+/// parse_boolean preamble with FF vars x, y and a Bool var b, plus one
+/// body assert.
+fn parse_boolean_with_assert(body: &str) -> Result<crate::boolean::BooleanQuery, ParseError> {
+    let src = format!(
+        "(set-logic QF_FF)\n\
+         (define-sort F () (_ FiniteField 7))\n\
+         (declare-fun x () F)\n\
+         (declare-fun y () F)\n\
+         (declare-fun b () Bool)\n\
+         (assert {})\n\
+         (check-sat)\n",
+        body
+    );
+    parse_boolean(&src)
+}
+
+#[test]
+fn boolean_macro_arity_mismatch_is_malformed() {
+    let src = "(set-logic QF_FF)\n\
+               (define-sort F () (_ FiniteField 7))\n\
+               (declare-fun x () F)\n\
+               (define-fun g ((a F)) F (ff.add a a))\n\
+               (assert (= x (g x x)))\n\
+               (check-sat)\n";
+    // g expects 1 arg, called with 2.
+    assert!(matches!(parse_boolean(src), Err(ParseError::Malformed(_))));
+}
+
+#[test]
+fn boolean_equality_mixing_bool_and_ff_is_malformed() {
+    // (= x b): x is FF, b is Bool — the chain sort check rejects the mix.
+    assert!(matches!(
+        parse_boolean_with_assert("(= x b)"),
+        Err(ParseError::Malformed(_))
+    ));
+}
+
+#[test]
+fn boolean_as_constant_wrong_arity_is_malformed() {
+    // (as ff1) has arity 2, not 3.
+    assert!(matches!(
+        parse_boolean_with_assert("(= x (as ff1))"),
+        Err(ParseError::Malformed(_))
+    ));
+}
+
+#[test]
+fn boolean_ff_neg_wrong_arity_is_malformed() {
+    assert!(matches!(
+        parse_boolean_with_assert("(= x (ff.neg x y))"),
+        Err(ParseError::Malformed(_))
+    ));
+}
+
+#[test]
+fn boolean_unknown_ff_operator_is_unknown_operator() {
+    assert!(matches!(
+        parse_boolean_with_assert("(= x (ff.frobnicate x))"),
+        Err(ParseError::UnknownOperator(_))
+    ));
+}
+
+#[test]
+fn boolean_unary_minus_in_ff_term_parses() {
+    // (- y) drives the binary '-' (negation) arm of build_poly_with_ctx.
+    assert!(parse_boolean_with_assert("(= x (- y))").is_ok());
+}
+
+#[test]
+fn boolean_decimal_literal_in_ff_term_parses() {
+    // A bare decimal in an FF term is reduced mod prime.
+    assert!(parse_boolean_with_assert("(= x 5)").is_ok());
+}
+
 #[test]
 fn parse_error_display_covers_every_variant() {
     // Exercise every Display arm so the impl isn't covered only by panics.
