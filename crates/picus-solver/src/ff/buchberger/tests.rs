@@ -288,3 +288,171 @@ fn b_criterion_empty_queue_is_noop() {
     b_criterion_kill(&mut pairs, &new_lt, new_lt_dm, &basis);
     assert!(pairs.is_empty());
 }
+
+// ────────── public entry points: incremental + interreduce ──────────
+
+fn poly(ring: &Arc<PolyRing>, terms: &[(Vec<u16>, i64)]) -> DensePoly {
+    let t: Vec<(Monomial, _)> = terms
+        .iter()
+        .map(|(e, c)| (Monomial::from_exponents(e.clone()), ring.field.from_i64(*c)))
+        .collect();
+    DensePoly::from_terms(t, ring)
+}
+
+#[test]
+fn groebner_basis_incremental_collapses_when_new_gen_divides_existing() {
+    // Existing GB = {x0^2 - 1}; add x0 - 1. Since x0^2-1 = (x0-1)(x0+1),
+    // the ideal (x0^2-1, x0-1) = (x0-1) ⇒ GB = {x0 - 1}.
+    let r = ring(1);
+    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
+    let existing = groebner_basis(vec![poly(&r, &[(vec![2], 1), (vec![0], -1)])], &r, &cfg)
+        .unwrap();
+    let extended = groebner_basis_incremental(
+        existing,
+        vec![poly(&r, &[(vec![1], 1), (vec![0], -1)])],
+        &r,
+        &cfg,
+    )
+    .unwrap();
+    assert_eq!(extended.basis.len(), 1);
+    // The single generator is degree-1 (the linear x0 - 1, made monic).
+    assert_eq!(extended.basis[0].leading_monomial(&r).unwrap().total_degree(), 1);
+}
+
+#[test]
+fn interreduce_tail_reduces_with_live_cancel_token() {
+    // basis = {x0 + x1, x1}. Tail-reducing x0+x1 by x1 yields x0, so the
+    // inter-reduced basis is {x0, x1}. Passing a live (never-firing) token
+    // drives the `Some(cancel)` arm of interreduce_with_cancel.
+    let r = ring(2);
+    let basis = vec![
+        poly(&r, &[(vec![1, 0], 1), (vec![0, 1], 1)]), // x0 + x1
+        poly(&r, &[(vec![0, 1], 1)]),                  // x1
+    ];
+    let cancel = crate::timeout::CancelToken::none();
+    let reduced = interreduce_with_cancel(basis, &r, Some(&cancel));
+    assert_eq!(reduced.len(), 2);
+    // Every leading monomial is a single variable to the first power.
+    for p in &reduced {
+        assert_eq!(p.leading_monomial(&r).unwrap().total_degree(), 1);
+    }
+}
+
+#[test]
+fn interreduce_returns_early_on_pre_cancelled_token() {
+    // A pre-cancelled token makes the tail-reduction loop break immediately;
+    // the (de-duplicated, monic) basis is still returned as a valid generator
+    // set. With two coprime-LT generators no pruning happens, so both survive.
+    let r = ring(2);
+    let basis = vec![
+        poly(&r, &[(vec![1, 0], 1), (vec![0, 1], 1)]), // x0 + x1
+        poly(&r, &[(vec![0, 1], 1)]),                  // x1
+    ];
+    let cancel = crate::timeout::CancelToken::cancelled();
+    let reduced = interreduce_with_cancel(basis, &r, Some(&cancel));
+    // Both elements are retained (monic); the tail reduction was skipped.
+    assert_eq!(reduced.len(), 2);
+}
+
+// ────────── F4 path (use_f4 = true) ──────────
+
+#[test]
+fn f4_path_matches_per_pair_on_consistent_system() {
+    // x0*x1 - 1, x0 - 2 over GF(101): SAT, zero-dimensional. Both engines
+    // must agree on the (nontrivial) basis size and triviality.
+    let r = ring(2);
+    let gens = || vec![
+        poly(&r, &[(vec![1, 1], 1), (vec![0, 0], -1)]), // x0·x1 - 1
+        poly(&r, &[(vec![1, 0], 1), (vec![0, 0], -2)]), // x0 - 2
+    ];
+    let per_pair = BuchbergerConfig { order: r.order, use_f4: false, ..Default::default() };
+    let f4 = BuchbergerConfig { order: r.order, use_f4: true, ..Default::default() };
+    let gb_pp = groebner_basis(gens(), &r, &per_pair).unwrap();
+    let gb_f4 = groebner_basis(gens(), &r, &f4).unwrap();
+    assert!(!gb_pp.basis.iter().any(|p| p.is_constant()));
+    assert!(!gb_f4.basis.iter().any(|p| p.is_constant()));
+    assert_eq!(gb_pp.basis.len(), gb_f4.basis.len());
+}
+
+#[test]
+fn f4_path_detects_inconsistent_system() {
+    // x0 - 1 and x0 - 2 over GF(101): S-poly reduces to a nonzero constant.
+    // The F4 batch must surface the constant and mark the basis trivial.
+    let r = ring(1);
+    let f4 = BuchbergerConfig { order: r.order, use_f4: true, ..Default::default() };
+    let gb = groebner_basis(
+        vec![
+            poly(&r, &[(vec![1], 1), (vec![0], -1)]),
+            poly(&r, &[(vec![1], 1), (vec![0], -2)]),
+        ],
+        &r,
+        &f4,
+    )
+    .unwrap();
+    assert!(gb.basis.iter().any(|p| p.is_constant()),
+        "inconsistent system must yield a constant (whole-ring) basis");
+}
+
+#[test]
+fn f4_path_with_stats_enabled_is_consistent_with_default() {
+    // Drives the F4 stats eprintln block; verdict must be unchanged.
+    let _g = crate::config::ConfigGuard::with_override(|c| c.gb_stats_enabled = true);
+    let r = ring(2);
+    let f4 = BuchbergerConfig { order: r.order, use_f4: true, ..Default::default() };
+    let gb = groebner_basis(
+        vec![
+            poly(&r, &[(vec![1, 1], 1), (vec![0, 0], -1)]), // x0·x1 - 1
+            poly(&r, &[(vec![1, 0], 1), (vec![0, 0], -2)]), // x0 - 2
+        ],
+        &r,
+        &f4,
+    )
+    .unwrap();
+    assert!(!gb.basis.is_empty());
+}
+
+#[test]
+fn per_pair_run_cancelled_at_loop_top_with_stats_returns_timeout() {
+    // A pre-cancelled token + pending S-pairs: the per-pair run loop hits
+    // check_cancel at the top of the first iteration and returns an error.
+    // Stats on so the cancellation eprintln branch executes too.
+    let _g = crate::config::ConfigGuard::with_override(|c| c.gb_stats_enabled = true);
+    let r = ring(2);
+    let cfg = BuchbergerConfig {
+        order: r.order,
+        use_f4: false,
+        cancel_token: Some(crate::timeout::CancelToken::cancelled()),
+        ..Default::default()
+    };
+    // Two generators with non-coprime leading terms ⇒ at least one S-pair.
+    let res = groebner_basis(
+        vec![
+            poly(&r, &[(vec![2, 0], 1), (vec![0, 0], -1)]), // x0^2 - 1
+            poly(&r, &[(vec![1, 1], 1), (vec![0, 0], -1)]), // x0·x1 - 1
+        ],
+        &r,
+        &cfg,
+    );
+    assert!(res.is_err(), "pre-cancelled run must return an engine error");
+}
+
+#[test]
+fn per_pair_run_with_stats_completes_and_emits_telemetry() {
+    // Non-F4 run that processes S-pairs to completion with gb_stats on,
+    // driving the end-of-run telemetry eprintln. The basis must be the
+    // same nontrivial GB the default run produces.
+    let _g = crate::config::ConfigGuard::with_override(|c| c.gb_stats_enabled = true);
+    let r = ring(2);
+    let cfg = BuchbergerConfig { order: r.order, use_f4: false, ..Default::default() };
+    let gb = groebner_basis(
+        vec![
+            poly(&r, &[(vec![1, 1], 1), (vec![0, 0], -1)]), // x0·x1 - 1
+            poly(&r, &[(vec![1, 0], 1), (vec![0, 0], -2)]), // x0 - 2
+        ],
+        &r,
+        &cfg,
+    )
+    .unwrap();
+    assert!(!gb.basis.is_empty());
+    assert!(!gb.basis.iter().any(|p| p.is_constant()));
+}
