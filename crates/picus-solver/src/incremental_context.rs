@@ -590,6 +590,13 @@ fn solve_with_cached(
             for p in &query_polys {
                 full_polys.push(poly_ring.ring.clone_el(p));
             }
+            // Verify against the bitsum definitions as well, matching the
+            // non-cached path (core::solve_split_gb_cancel): the model
+            // search extends bases seeded with these, so a sound model must
+            // satisfy them too.
+            for p in &cached.bitsum_polys {
+                full_polys.push(poly_ring.ring.clone_el(p));
+            }
             if model::verify_model(poly_ring, &full_polys, &model_map) {
                 SolveOutcome::Sat(model_map)
             } else {
