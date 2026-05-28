@@ -185,7 +185,7 @@ fn run_fixpoint<'r>(
             }
         }
 
-        // Profiling-local accumulators (shared by the gb-stats flush below
+        // Profiling-local accumulators (shared by the gb-stats drain below
         // and the gb-trace line): plain `+=` in the hot loop, no atomics.
         metric::def!(iter_contains_calls);
         metric::def!(iter_contains_true);

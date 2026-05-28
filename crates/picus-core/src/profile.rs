@@ -141,8 +141,6 @@ impl NativeFfBackendCounters {
             cache_partial_completions: AtomicU64::new(0),
         }
     }
-    pub fn observe_polys_max(&self, v: u64) { observe_max(&self.encoded_polys_max, v); }
-    pub fn observe_vars_max(&self, v: u64) { observe_max(&self.encoded_vars_max, v); }
 }
 
 impl SplitDfsCounters {
@@ -161,15 +159,6 @@ impl SplitDfsCounters {
             time_in_linear_quick_unsat_ns: AtomicU64::new(0),
             points_returned: AtomicU64::new(0),
             split_zero_extend_calls: AtomicU64::new(0),
-        }
-    }
-    pub fn observe_max_depth(&self, d: u64) {
-        let mut cur = self.max_dfs_depth.load(Ordering::Relaxed);
-        while d > cur {
-            match self.max_dfs_depth.compare_exchange_weak(cur, d, Ordering::Relaxed, Ordering::Relaxed) {
-                Ok(_) => break,
-                Err(now) => cur = now,
-            }
         }
     }
 }
@@ -211,10 +200,6 @@ impl SplitGbCounters {
             merge_owned_terms_total: AtomicU64::new(0),
         }
     }
-    pub fn observe_iters_max(&self, v: u64) { observe_max(&self.fixpoint_iters_per_call_max, v); }
-    pub fn observe_polys_per_iter_max(&self, v: u64) { observe_max(&self.new_polys_per_iter_max, v); }
-    pub fn observe_basis_size_max(&self, v: u64) { observe_max(&self.basis_size_max, v); }
-    pub fn observe_basis_terms_max(&self, v: u64) { observe_max(&self.basis_size_total_terms_max, v); }
 }
 
 /// Atomic running-max update (CAS loop). Public so `metric::max!` can lower to
@@ -258,8 +243,9 @@ pub fn gb_trace_enabled() -> bool {
 // counter) / timer_local! (RAII into a local u64 tally) / stopwatch! (gb-stats
 // Option<Instant> read at several points), gate! (read the flag once into a
 // cached Gate for a hot loop/step, then pass it to a gated timer!/timer_local!),
-// def! / bump! / flush! (local accumulators: declare / `+=` / drain to a
-// global), next! (increment-and-return for a counter-as-id), scope! { } (a
+// def! / bump! (local accumulators: declare / `+=`, drained once via a
+// gb-stats-gated scope! + add!), next! (increment-and-return for a
+// counter-as-id), scope! { } (a
 // gb-stats-gated pure-profiling block), trace! { } / clock! (the gb-*trace*
 // sink — verbose per-step output, distinct flag from gb-stats).
 //
@@ -451,8 +437,9 @@ macro_rules! __metric_stopwatch {
 }
 
 // Local-accumulator vocabulary for hot loops: keep per-iteration work to a
-// plain local `+=` (no atomic), then flush once. `def`/`bump` are always-on
-// (a local `u64`, negligible when stats are off); only `flush` is gated. The
+// plain local `+=` (no atomic), then drain once via a gb-stats-gated
+// `metric::scope!` + `metric::add!`. `def`/`bump` are always-on (a local
+// `u64`, negligible when stats are off); only the drain block is gated. The
 // `metric::` spelling keeps these visibly profiling rather than bare `let
 // mut acc = 0` / `acc += 1` that read as logic.
 
@@ -521,17 +508,6 @@ macro_rules! __metric_bump {
     };
     ($name:ident, $n:expr) => {
         $name += $n;
-    };
-}
-
-/// Impl of `metric::flush!(acc => counter);` — add the accumulator to the
-/// global `counter` once, when gb-stats is on.
-#[macro_export]
-macro_rules! __metric_flush {
-    ($name:ident => $c:expr) => {
-        if $crate::profile::gb_stats_enabled() {
-            $c.fetch_add($name, ::std::sync::atomic::Ordering::Relaxed);
-        }
     };
 }
 

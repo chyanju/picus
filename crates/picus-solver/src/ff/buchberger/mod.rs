@@ -262,11 +262,16 @@ impl crate::ff::spair_criteria::LeadingTerms for Vec<BasisElement> {
 
 // ────────────────────────────── Buchberger ─────────────────────────────────
 
-/// Per-run engine counters. Filled unconditionally during a GB run;
-/// printed to stderr at the end of [`BuchbergerState::run`] only when
-/// `gb_stats` is enabled (CLI `--gb-stats`).
+/// Per-run profiling counters — pure telemetry, no field read by engine
+/// logic. Written only through gb-stats-gated `metric::scope!` blocks, so
+/// when `gb_stats` is off they stay zero at no cost; printed to stderr at
+/// the end of [`BuchbergerState::run`] when enabled (CLI `--gb-stats`),
+/// and read by tests (which enable `gb_stats`). The interreduce schedule's
+/// useful-reduction count is a separate logic field
+/// [`BuchbergerState::useful_reductions`], deliberately NOT in this bundle
+/// so profiling can be disabled without perturbing the schedule.
 #[derive(Clone, Debug, Default)]
-pub struct GbEngineStats {
+pub struct GbProfileCounters {
     pub pairs_generated: u64,
     pub pairs_killed_coprime: u64,
     pub pairs_killed_gm: u64,
@@ -294,9 +299,15 @@ pub(super) struct BuchbergerState {
     pub(super) generation: u32,
     /// True once a constant (nonzero) has entered the basis.
     pub(super) trivial: bool,
-    /// GB-engine counters; written unconditionally, printed only when
-    /// `gb_stats` is enabled.
-    stats: GbEngineStats,
+    /// Running count of useful (non-zero) reductions — pure engine logic,
+    /// drives the periodic interreduce schedule in [`Self::run`]. Held
+    /// separate from [`GbProfileCounters`] so profiling can be turned off
+    /// without touching the schedule (same value as `profile.reductions_useful`,
+    /// but a distinct variable with a distinct role).
+    useful_reductions: u64,
+    /// Per-run profiling counters; written only through gb-stats-gated
+    /// `metric::scope!`, so disabling `gb_stats` makes them a no-op.
+    profile: GbProfileCounters,
     /// Set when every initial generator shares the same total degree.
     /// Enables periodic in-loop tail-reduction. Set by
     /// [`Self::add_generators`] based on input shape.
@@ -340,7 +351,8 @@ impl BuchbergerState {
             age_counter: 0,
             generation: 0,
             trivial: false,
-            stats: GbEngineStats::default(),
+            useful_reductions: 0,
+            profile: GbProfileCounters::default(),
             input_is_homog: false,
             red_index: None,
         }
@@ -508,16 +520,16 @@ impl BuchbergerState {
         //   5. Sort surviving new_pairs descending and merge into
         //      `self.open`.
         let mut new_pairs: Vec<SPair> = Vec::with_capacity(new_idx);
-        let mut pairs_built: u64 = 0;
-        let mut coprime_skipped: u64 = 0;
+        metric::def!(pairs_built);
+        metric::def!(coprime_skipped);
         for k in 0..new_idx {
             if !self.basis[k].active {
                 continue;
             }
-            pairs_built += 1;
+            metric::bump!(pairs_built);
             let basis_k_lt = &self.basis[k].lt;
             if new_lt.is_coprime(basis_k_lt) {
-                coprime_skipped += 1;
+                metric::bump!(coprime_skipped);
                 continue;
             }
             let lcm = new_lt.lcm(basis_k_lt);
@@ -541,19 +553,22 @@ impl BuchbergerState {
             };
             gm_insert(&mut new_pairs, pair);
         }
-        self.stats.pairs_generated += pairs_built;
-        self.stats.pairs_killed_coprime += coprime_skipped;
-        let after_gm = new_pairs.len() as u64;
-        let non_coprime = pairs_built.saturating_sub(coprime_skipped);
-        self.stats.pairs_killed_gm += non_coprime.saturating_sub(after_gm);
+        metric::scope! {
+            self.profile.pairs_generated += pairs_built;
+            self.profile.pairs_killed_coprime += coprime_skipped;
+            let after_gm = new_pairs.len() as u64;
+            let non_coprime = pairs_built.saturating_sub(coprime_skipped);
+            self.profile.pairs_killed_gm += non_coprime.saturating_sub(after_gm);
+        }
         // B-criterion: prune the existing open queue using the new
         // polynomial's leading term. Runs after `new_pairs` has been
         // built and filtered.
         let new_lt_divmask = self.ring.divmask.compute(new_lt);
-        let open_before_b = self.open.len() as u64;
+        metric::def!(open_before_b = self.open.len() as u64);
         b_criterion_kill(&mut self.open, new_lt, new_lt_divmask, &self.basis);
-        let open_after_b = self.open.len() as u64;
-        self.stats.pairs_killed_b += open_before_b.saturating_sub(open_after_b);
+        metric::scope! {
+            self.profile.pairs_killed_b += open_before_b.saturating_sub(self.open.len() as u64);
+        }
         // Merge into self.open while keeping descending sort (so pop_back
         // returns the smallest pair). new_pairs is currently in arbitrary
         // order from `gm_insert`; sort it once, then merge.
@@ -628,7 +643,7 @@ impl BuchbergerState {
         // actually reduced each one; the returned `(affected, reducers)`
         // pairs (basis positions) let the UNSAT-core tracer fold the
         // reducers' dependencies into the reduced element.
-        self.stats.interreduces_run += 1;
+        metric::scope! { self.profile.interreduces_run += 1; }
         let active_idx: Vec<usize> = self.basis.iter()
             .enumerate()
             .filter(|(_, e)| e.active)
@@ -808,7 +823,7 @@ impl BuchbergerState {
         while let Some(pair) = self.open.pop() {
             if let Err(e) = self.check_cancel() {
                 metric::scope! {
-                    let s = &self.stats;
+                    let s = &self.profile;
                     let total_ms = run_start.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
                     let active_count = self.basis.iter().filter(|e| e.active).count();
                     eprintln!(
@@ -862,7 +877,7 @@ impl BuchbergerState {
             if let Some(c) = &self.cfg.cancel_token {
                 if c.is_cancelled() {
                     metric::scope! {
-                        let s = &self.stats;
+                        let s = &self.profile;
                         let total_ms = run_start.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
                         let active_count = self.basis.iter().filter(|e| e.active).count();
                         eprintln!(
@@ -879,12 +894,18 @@ impl BuchbergerState {
                     return Err(EngineError::Timeout);
                 }
             }
-            self.stats.reductions_total += 1;
             if nf.is_zero() {
-                self.stats.reductions_useless += 1;
+                metric::scope! {
+                    self.profile.reductions_total += 1;
+                    self.profile.reductions_useless += 1;
+                }
                 continue;
             }
-            self.stats.reductions_useful += 1;
+            self.useful_reductions += 1;
+            metric::scope! {
+                self.profile.reductions_total += 1;
+                self.profile.reductions_useful += 1;
+            }
 
             nf = nf.make_monic(&self.ring);
 
@@ -934,8 +955,8 @@ impl BuchbergerState {
             // for non-homogeneous input it can perturb sugar-degree
             // pair selection, so it runs less often there.
             let interreduce_period: u64 = if self.input_is_homog { 32 } else { 128 };
-            if self.stats.reductions_useful > 0
-                && self.stats.reductions_useful % interreduce_period == 0
+            if self.useful_reductions > 0
+                && self.useful_reductions % interreduce_period == 0
             {
                 let track = observer.wants_inter_reduce_deps();
                 let log = self.tail_reduce_active(track);
@@ -946,7 +967,7 @@ impl BuchbergerState {
         }
         // Optional GB-engine telemetry: emitted only when gb-stats is on.
         metric::scope! {
-            let s = &self.stats;
+            let s = &self.profile;
             let total_ms = run_start.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
             let active_count = self.basis.iter().filter(|e| e.active).count();
             eprintln!(
@@ -1034,12 +1055,18 @@ impl BuchbergerState {
                 return Err(EngineError::Timeout);
             }
         }
-        self.stats.reductions_total += 1;
         if nf.is_zero() {
-            self.stats.reductions_useless += 1;
+            metric::scope! {
+                self.profile.reductions_total += 1;
+                self.profile.reductions_useless += 1;
+            }
             return Ok(());
         }
-        self.stats.reductions_useful += 1;
+        self.useful_reductions += 1;
+        metric::scope! {
+            self.profile.reductions_total += 1;
+            self.profile.reductions_useful += 1;
+        }
         nf = nf.make_monic(&self.ring);
 
         let new_idx = self.basis.len();
@@ -1088,12 +1115,12 @@ impl BuchbergerState {
         // computed in an earlier batch are reused when the cached
         // basis element is still active. See [`super::f4::F4Workspace`].
         let mut f4_workspace = super::f4::F4Workspace::new();
-        // F4 counters accumulate on `self.stats`; readable from tests via
+        // F4 counters accumulate on `self.profile`; readable from tests via
         // `IncrementalGB::engine_stats()`. Snapshot the entry values so the
         // trailing `[picus-gb-stats F4]` dump emits per-run deltas.
-        metric::def!(f4_batches_entry = self.stats.f4_batches);
-        metric::def!(f4_pair_total_entry = self.stats.f4_pair_total);
-        metric::def!(f4_fallback_pairs_entry = self.stats.f4_fallback_pairs);
+        metric::def!(f4_batches_entry = self.profile.f4_batches);
+        metric::def!(f4_pair_total_entry = self.profile.f4_pair_total);
+        metric::def!(f4_fallback_pairs_entry = self.profile.f4_fallback_pairs);
 
         loop {
             self.check_cancel()?;
@@ -1130,14 +1157,16 @@ impl BuchbergerState {
             // per-pair path while keeping cyclic-5 / cyclic-6
             // batches (avg 10–30 pairs) in the F4 path.
             if batch.len() < F4_MIN_BATCH {
-                self.stats.f4_fallback_pairs += batch.len() as u64;
+                metric::scope! { self.profile.f4_fallback_pairs += batch.len() as u64; }
                 for pair in batch {
                     self.process_pair_geobucket(pair, observer)?;
                 }
                 continue;
             }
-            self.stats.f4_batches += 1;
-            self.stats.f4_pair_total += batch.len() as u64;
+            metric::scope! {
+                self.profile.f4_batches += 1;
+                self.profile.f4_pair_total += batch.len() as u64;
+            }
 
             // Build F4BasisRef array (same indexing as self.basis).
             // `lt_divmask` is the precomputed divisibility fingerprint
@@ -1167,10 +1196,13 @@ impl BuchbergerState {
 
             // Stats: each batch entry counts as one reduction. Useful
             // = produced a new generator; useless = produced nothing.
-            self.stats.reductions_total += batch.len() as u64;
-            self.stats.reductions_useful += new_polys.len() as u64;
-            if batch.len() >= new_polys.len() {
-                self.stats.reductions_useless += (batch.len() - new_polys.len()) as u64;
+            self.useful_reductions += new_polys.len() as u64;
+            metric::scope! {
+                self.profile.reductions_total += batch.len() as u64;
+                self.profile.reductions_useful += new_polys.len() as u64;
+                if batch.len() >= new_polys.len() {
+                    self.profile.reductions_useless += (batch.len() - new_polys.len()) as u64;
+                }
             }
 
             // Integrate each new generator. F4 monic-normalises every
@@ -1254,14 +1286,14 @@ impl BuchbergerState {
         }
 
         metric::scope! {
-            let s = &self.stats;
+            let s = &self.profile;
             let total_ms = run_start.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
             let active_count = self.basis.iter().filter(|e| e.active).count();
             // Per-run deltas; the stats struct accumulates across all
             // `run_f4` invocations on the same `BuchbergerState`.
-            let f4_batches_delta = self.stats.f4_batches - f4_batches_entry;
-            let f4_pair_total_delta = self.stats.f4_pair_total - f4_pair_total_entry;
-            let f4_fallback_delta = self.stats.f4_fallback_pairs - f4_fallback_pairs_entry;
+            let f4_batches_delta = self.profile.f4_batches - f4_batches_entry;
+            let f4_pair_total_delta = self.profile.f4_pair_total - f4_pair_total_entry;
+            let f4_fallback_delta = self.profile.f4_fallback_pairs - f4_fallback_pairs_entry;
             let avg_batch = if f4_batches_delta > 0 {
                 f4_pair_total_delta as f64 / f4_batches_delta as f64
             } else {

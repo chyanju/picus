@@ -821,7 +821,7 @@ impl DensePoly {
             return self;
         }
         // Two counters under one gb-stats read (this is a hot cascade-merge
-        // path); same single-read batching as the reducer flush.
+        // path); same single-read batching as the reducer drain.
         metric::scope! {
             let g = &crate::profile::SPLIT_GB;
             metric::add!(g.merge_owned_calls, 1);
