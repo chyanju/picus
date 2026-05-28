@@ -133,8 +133,8 @@ impl<'r> Ideal<'r> {
     ///
     /// Feeds Buchberger observer events to the supplied `tracer`, which
     /// must be sized for at least `self.basis.len() + new_polys.len()` (after
-    /// the zero filter).  When the resulting ideal is the whole ring, callers
-    /// can extract a precise UNSAT core via `tracer.unsat_core_for_trivial`.
+    /// the zero filter). The caller drives UNSAT-core extraction from the
+    /// populated tracer.
     ///
     /// The tracer's input numbering matches the order generators are added:
     /// first all elements of `self.basis` (already a reduced GB), then all

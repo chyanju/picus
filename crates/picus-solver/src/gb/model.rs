@@ -353,8 +353,7 @@ fn build_model(
 /// missing from the model is treated as "not verified" (returns `false`)
 /// rather than defaulted to a value, so an incomplete model cannot
 /// vacuously pass this check — this function is the soundness backstop for
-/// SAT verdicts, so it fails closed. Current callers always pass a complete
-/// assignment over every ring variable.
+/// SAT verdicts, so it fails closed.
 pub fn verify_model(
     poly_ring: &FfPolyRing,
     polys: &[Poly],

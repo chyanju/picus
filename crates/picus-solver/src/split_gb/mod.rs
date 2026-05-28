@@ -197,8 +197,8 @@ pub(crate) fn seed_self_membership(
 /// the partition count `k`. A safety bound against pathological
 /// propagation loops on degenerate inputs: the cancel token also bounds
 /// the loop, but this cap gives a deterministic exit independent of wall
-/// time. Single source for the three fixpoint drivers (`run_fixpoint`,
-/// `run_fixpoint_traced`, and `incremental_context::continue_partial`).
+/// time. Shared by the from-scratch, traced, and incremental propagation
+/// drivers.
 pub(crate) fn max_fixpoint_iters(k: usize) -> u64 {
     (k * 64).max(256) as u64
 }
