@@ -469,7 +469,23 @@ impl Solver {
                     break 'next_clause;
                 }
                 let ok = self.enqueue(other, Some(cref));
-                debug_assert!(ok, "unit-propagated literal must be Undef");
+                if !ok {
+                    // The watched-literal logic above proves `other` is
+                    // Undef before this enqueue (False branched into the
+                    // conflict path; True continued); a False return signals
+                    // a broken SAT/theory layering invariant. Fail closed:
+                    // mark give_up and surface the current clause as a
+                    // conflict so the caller routes to Unknown rather than
+                    // silently dropping a propagation.
+                    self.give_up = true;
+                    while read < watchers.len() {
+                        watchers[write] = watchers[read];
+                        write += 1;
+                        read += 1;
+                    }
+                    conflict = Some(cref);
+                    break 'next_clause;
+                }
             }
             watchers.truncate(write);
             self.watches[neg_p_idx] = watchers;
@@ -643,7 +659,15 @@ impl Solver {
                 }
             }
             let next_lit = loop {
-                debug_assert!(trail_idx > 0, "trail exhausted before 1-UIP");
+                if trail_idx == 0 {
+                    // 1-UIP trail walk exhausted without finding the next
+                    // resolved literal — an invariant the SAT/theory layering
+                    // is expected to uphold. Fail closed: mark give_up and
+                    // bail so the caller routes to Unknown rather than
+                    // emitting a wrong verdict.
+                    self.give_up = true;
+                    return None;
+                }
                 trail_idx -= 1;
                 let l = self.trail[trail_idx];
                 if seen[l.var().index()] {

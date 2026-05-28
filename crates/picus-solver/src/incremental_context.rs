@@ -628,10 +628,12 @@ fn stateless_solve(cs: &ConstraintSystem, cancel: &CancelToken) -> SolveOutcome 
 /// reuse a prior split-GB without re-deriving it, and an UNSAT result
 /// from a cache hit is returned without a model re-check (unlike SAT,
 /// which `model::verify_model` validates). A two-distinct-constraint-side
-/// collision would therefore be an unsound UNSAT; 64 bits leaves a
-/// ~2^-64 residual, 128 bits makes it negligible against every other
-/// failure mode. Two SipHash passes with distinct domain prefixes are
-/// effectively independent, so a simultaneous collision is ~2^-128.
+/// collision would therefore be an unsound UNSAT. The two SipHash-1-3
+/// passes over distinct domain prefixes act as independent 64-bit PRF
+/// outputs on benign inputs, so a chance collision is ~2^-128. The
+/// hasher uses `std::collections`'s fixed key, so this resistance is
+/// against accidental collision on developer-controlled R1CS — not
+/// against an adversary tailoring `ConstraintSystem`s to collide.
 pub fn digest_constraint_side(cs: &crate::frontend::encoder::ConstraintSystem) -> u128 {
     let lo = hash_constraint_side(cs, 0x01);
     let hi = hash_constraint_side(cs, 0xA5);
