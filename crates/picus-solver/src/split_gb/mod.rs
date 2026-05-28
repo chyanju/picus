@@ -47,6 +47,7 @@ pub type SplitGb<'r> = Vec<Ideal<'r>>;
 pub type PartialPoint = Vec<Option<FieldElem>>;
 
 /// Result of [`split_zero_extend`].
+#[derive(Debug)]
 pub enum ZeroExtendResult {
     /// A complete assignment was found.
     Point(Vec<FieldElem>),
