@@ -77,6 +77,24 @@ pub fn eliminate_linear<'r>(
     }
 
     let lin_ideal = Ideal::new_with_cancel(poly_ring, linear, cancel)?;
+    // Fail-closed: `compute_gb_with_order` returns an empty basis on a
+    // genuine engine error (panic / internal failure caught by `finish_gb`),
+    // and a non-empty linear input cannot legitimately yield an empty basis
+    // without cancellation. Proceeding with the elimination here would
+    // silently drop every linear constraint and the substituted nonlinear
+    // generators reach the solver as the entire system; the downstream
+    // `verify_model` then checks against this reduced set (not the input),
+    // letting a model that satisfies only the nonlinear part be reported
+    // as SAT. Fall back to passing the input through unchanged so the GB
+    // engine sees the full system and `verify_model` gates correctly.
+    if lin_ideal.basis.is_empty() {
+        return Ok(LinElim {
+            reduced: polys.iter().map(|p| poly_ring.ring.clone_el(p)).collect(),
+            applied: false,
+            unsat: false,
+            n_eliminated: 0,
+        });
+    }
     if lin_ideal.is_whole_ring() {
         return Ok(LinElim { reduced: Vec::new(), applied: true, unsat: true, n_eliminated: 0 });
     }
