@@ -15,7 +15,7 @@ use num_bigint::BigUint;
 
 use super::tokenizer::{parse_sexprs, tokenize, Sexpr};
 use super::{
-    assert_to_formula, classify_sort, finite_field_prime_str, parse_define_fun, MacroDef,
+    assert_to_formula, classify_declare, finite_field_prime_str, parse_define_fun, MacroDef,
     ParseCtx, ParseError, Polynomial, VarSort,
 };
 use crate::boolean::{Formula, Literal};
@@ -436,31 +436,19 @@ impl SmtSession {
     }
 
     fn eval_declare(&mut self, head: &str, list: &[Sexpr]) -> Result<(), ParseError> {
-        if list.len() < 2 {
+        let Some((name, sort, inferred)) = classify_declare(head, list) else {
             return Ok(());
-        }
-        let name = match &list[1] {
-            Sexpr::Atom(n) => n.clone(),
-            _ => return Ok(()),
         };
-        let sort_sexpr = if head == "declare-fun" {
-            list.get(3)
-        } else {
-            list.get(2)
-        };
-        let sort = classify_sort(sort_sexpr).unwrap_or(VarSort::Ff);
         if self.prime.is_none() {
-            if let Some(p) = sort_sexpr.and_then(finite_field_prime_str) {
-                if let Ok(n) = p.parse::<BigUint>() {
-                    self.builder.set_prime(n.clone());
-                    self.prime = Some(n);
-                }
+            if let Some(n) = inferred {
+                self.builder.set_prime(n.clone());
+                self.prime = Some(n);
             }
         }
         if !self.vars.contains_key(&name) {
             self.var_order.push(name.clone());
         }
-        self.vars.insert(name, sort);
+        self.vars.insert(name, sort.unwrap_or(VarSort::Ff));
         Ok(())
     }
 
