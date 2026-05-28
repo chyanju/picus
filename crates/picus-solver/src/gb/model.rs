@@ -348,6 +348,13 @@ fn build_model(
 }
 
 /// Verify that an assignment satisfies all polynomials.
+///
+/// The model must assign every variable appearing in `polys`. A variable
+/// missing from the model is treated as "not verified" (returns `false`)
+/// rather than defaulted to a value, so an incomplete model cannot
+/// vacuously pass this check — this function is the soundness backstop for
+/// SAT verdicts, so it fails closed. Current callers always pass a complete
+/// assignment over every ring variable.
 pub fn verify_model(
     poly_ring: &FfPolyRing,
     polys: &[Poly],
@@ -366,7 +373,18 @@ pub fn verify_model(
                     let var_name = &poly_ring.var_names()[v];
                     let var_val = match model.get(var_name) {
                         Some(bv) => poly_ring.field().from_biguint(bv),
-                        None => fp.zero(), // unassigned → 0
+                        // Fail closed: an appearing variable absent from the
+                        // model means the model is incomplete, so we cannot
+                        // confirm it satisfies the system. Reject rather than
+                        // assume 0 (which could vacuously pass a narrow check).
+                        None => {
+                            log::warn!(
+                                "verify_model: variable {} missing from model; \
+                                 treating as unverified",
+                                var_name
+                            );
+                            return false;
+                        }
                     };
                     let pow = fp.pow_u64(&var_val, e as u64);
                     fp.mul_assign(&mut term_val, &pow);
