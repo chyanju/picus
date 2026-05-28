@@ -23,6 +23,7 @@
 use crate::ff::monomial::MonomialOrder;
 use crate::gb::homog_ring::HomogRing;
 use crate::gb::ideal::{compute_gb_direct, interreduce_basis};
+use crate::metric;
 use crate::poly::{FfPolyRing, Poly};
 use crate::timeout::CancelToken;
 
@@ -37,12 +38,12 @@ use crate::timeout::CancelToken;
 /// * Cancellation: the inner `compute_gb_direct` already honors
 ///   `cancel`; if it fires, returns whatever interreduced dehom basis is
 ///   available (possibly empty).
+#[metric]
 pub fn compute_gb_by_homog(
     pr: &FfPolyRing,
     gens: Vec<Poly>,
     cancel: &CancelToken,
 ) -> Vec<Poly> {
-    let _t = crate::profile::ScopedTimer::new("compute_gb_by_homog");
     if gens.is_empty() {
         return Vec::new();
     }

@@ -13,6 +13,7 @@ use crate::ff::polynomial::Polynomial;
 use crate::ff::monomial::Monomial;
 use crate::ff::monomial::MonomialOrder as FfOrder;
 use crate::ff::field::FieldElem;
+use crate::metric;
 use crate::poly::{FfPolyRing, Mono, Poly, PolyRingType};
 use crate::timeout::{CancelToken, Cancelled};
 
@@ -83,18 +84,12 @@ impl<'r> Ideal<'r> {
         cancel: &CancelToken,
     ) -> Result<Self, Cancelled> {
         if cancel.is_cancelled() { return Err(Cancelled); }
-        if crate::profile::gb_stats_enabled() {
-            crate::profile::SPLIT_GB.extend_with_cancel_calls
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
+        metric::incr!(crate::profile::SPLIT_GB.extend_with_cancel_calls);
         let new_polys: Vec<Poly> = new_polys.into_iter()
             .filter(|f| !f.is_zero())
             .collect();
         if new_polys.is_empty() {
-            if crate::profile::gb_stats_enabled() {
-                crate::profile::SPLIT_GB.extend_no_op_skips
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
+            metric::incr!(crate::profile::SPLIT_GB.extend_no_op_skips);
             return Ok(self);
         }
         // Pre-reduce new generators against the existing reduced GB.
@@ -113,10 +108,7 @@ impl<'r> Ideal<'r> {
         };
         if cancel.is_cancelled() { return Err(Cancelled); }
         if surviving.is_empty() {
-            if crate::profile::gb_stats_enabled() {
-                crate::profile::SPLIT_GB.extend_no_op_skips
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
+            metric::incr!(crate::profile::SPLIT_GB.extend_no_op_skips);
             return Ok(self);
         }
         let Ideal { poly_ring, basis: known_gb } = self;
@@ -285,8 +277,8 @@ impl<'r> Ideal<'r> {
     /// via Gaussian elimination on the normal forms of `1, x, x^2, ...`.
     /// Returns `None` if the ideal is not zero-dimensional or the search
     /// hits the degree cap.
+    #[metric("ideal::min_poly")]
     pub fn min_poly_cancel(&self, var_idx: usize, cancel: &CancelToken) -> Option<Vec<FieldElem>> {
-        let _t = crate::profile::ScopedTimer::new("ideal::min_poly");
         let ring = self.poly_ring.ctx();
         let f = &ring.field;
         if self.is_whole_ring() { return Some(vec![f.one()]); }
@@ -411,12 +403,12 @@ pub fn leading_coefficient(
 /// Interreduce a Groebner basis: replace each polynomial by its normal form
 /// modulo the others, drop zeros, and monic-normalize. Output is the
 /// *reduced* GB.
+#[metric("ideal::interreduce")]
 pub(crate) fn interreduce_basis(
     poly_ring: &FfPolyRing,
     basis: Vec<Poly>,
     cancel: &CancelToken,
 ) -> Vec<Poly> {
-    let _t = crate::profile::ScopedTimer::new("ideal::interreduce");
     if cancel.is_cancelled() {
         return basis;
     }

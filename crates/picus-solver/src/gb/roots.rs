@@ -10,6 +10,7 @@
 
 use crate::ff::univariate::{self, UnivariatePoly};
 use crate::ff::field::{FieldElem, PrimeField};
+use crate::metric;
 
 /// Find all roots of a univariate polynomial over GF(p).
 ///
@@ -23,8 +24,8 @@ pub fn find_roots(field: &PrimeField, coeffs: &[FieldElem]) -> Vec<FieldElem> {
 /// contract: when `complete == false` the returned roots are only a subset
 /// of the true root set, so callers must not treat exhausting them as proof
 /// of infeasibility.
+#[metric("find_roots")]
 pub fn find_roots_checked(field: &PrimeField, coeffs: &[FieldElem]) -> (Vec<FieldElem>, bool) {
-    let _t = crate::profile::ScopedTimer::new("find_roots");
     let fp = field;
     let owned: Vec<FieldElem> = coeffs.iter().map(|c| fp.clone_el(c)).collect();
     let poly = UnivariatePoly::from_coeffs(owned, fp);
