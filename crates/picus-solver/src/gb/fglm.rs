@@ -26,6 +26,7 @@ use std::collections::BTreeSet;
 use crate::ff::field::FieldElem;
 use crate::ff::monomial::{Monomial, MonomialOrder};
 use crate::gb::ideal::Ideal;
+use crate::metric;
 use crate::poly::Poly;
 
 /// Candidate monomial ordered by the target (Lex) order, for the BFS queue.
@@ -173,7 +174,7 @@ pub fn fglm_to_lex(ideal: &Ideal) -> Option<Vec<Poly>> {
     // basis that may not lie in I, return None so the caller falls back to
     // direct Buchberger Lex (sound). Runs in release, not just debug.
     let hilbert_dim = ideal.quotient_dimension();
-    if crate::config::with(|c| c.gb_stats_enabled) {
+    metric::scope! {
         eprintln!(
             "[picus-gb-stats] fglm_dim={} hilbert_dim={:?}",
             staircase.len(),

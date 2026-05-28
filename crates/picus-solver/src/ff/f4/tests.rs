@@ -885,6 +885,8 @@ fn f4_vs_per_pair_bn254_3vars() {
 /// F4 / per-pair leading-term-set agreement.
 #[test]
 fn f4_size_fallback_fires_on_small_batches() {
+    // f4_* counters are gb-stats-gated profiling; enable so engine_stats() is populated.
+    let _g = crate::config::ConfigGuard::with_override(|c| c.gb_stats_enabled = true);
     use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
     use std::collections::HashSet;
     let ring = ring_mod7(4);
@@ -970,6 +972,8 @@ fn f4_size_fallback_fires_on_small_batches() {
 /// Asserts `engine_stats().f4_batches > 0` and `f4_pair_total > 0`.
 #[test]
 fn f4_matrix_path_fires_on_cyclic_5() {
+    // f4_* counters are gb-stats-gated profiling; enable so engine_stats() is populated.
+    let _g = crate::config::ConfigGuard::with_override(|c| c.gb_stats_enabled = true);
     use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
     let ring = ring_mod7(5);
     let xs: Vec<DensePoly> = (0..5).map(|i| DensePoly::variable(i, &ring)).collect();
@@ -1032,6 +1036,8 @@ fn f4_matrix_path_fires_on_cyclic_5() {
 #[test]
 #[ignore]
 fn f4_large_batch_cyclic_6() {
+    // f4_* counters are gb-stats-gated profiling; enable so engine_stats() is populated.
+    let _g = crate::config::ConfigGuard::with_override(|c| c.gb_stats_enabled = true);
     use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
     use std::collections::HashSet;
     let n = 6usize;
@@ -1131,6 +1137,8 @@ fn f4_large_batch_cyclic_6() {
 /// and F4 / per-pair leading-term-set agreement.
 #[test]
 fn f4_large_batch_homog_5vars_deg2() {
+    // f4_* counters are gb-stats-gated profiling; enable so engine_stats() is populated.
+    let _g = crate::config::ConfigGuard::with_override(|c| c.gb_stats_enabled = true);
     use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
     use std::collections::HashSet;
     let ring = ring_mod7(5);

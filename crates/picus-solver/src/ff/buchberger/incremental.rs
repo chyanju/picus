@@ -173,11 +173,13 @@ impl IncrementalGB {
         self.trail.len()
     }
 
-    /// Engine-level counters accumulated across every
-    /// `add_generators` / `run_only` call. Same data emitted on
-    /// stderr when `gb_stats` is enabled, exposed here for tests.
-    pub fn engine_stats(&self) -> &super::GbEngineStats {
-        &self.state.stats
+    /// Per-run profiling counters accumulated across every
+    /// `add_generators` / `run_only` call. Emitted on stderr when
+    /// `gb_stats` is enabled; read here by tests (which enable `gb_stats`,
+    /// since the counters are gb-stats-gated). Pure telemetry — no field
+    /// drives engine logic.
+    pub fn engine_stats(&self) -> &super::GbProfileCounters {
+        &self.state.profile
     }
 }
 
@@ -336,7 +338,7 @@ mod tests {
         // Fresh stats — most counters are zero.
         // `assert_eq!(stats.reductions_total, 0)` is implementation-specific;
         // just ensure the accessor returns a reference.
-        let _: &super::super::GbEngineStats = stats;
+        let _: &super::super::GbProfileCounters = stats;
     }
 
     #[test]

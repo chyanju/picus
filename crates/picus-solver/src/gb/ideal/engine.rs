@@ -197,6 +197,7 @@ fn record_dispatched(name: &'static str) {
 /// Pick the configured [`GbAlgorithm`] and run it. When `tracer` is
 /// `Some` but the chosen algorithm cannot honour tracing, falls back
 /// to [`BuchbergerDirect`] so UNSAT-core extraction continues to work.
+#[metric]
 fn compute_gb_dispatch(
     pr: &FfPolyRing,
     gens: Vec<Poly>,
@@ -374,13 +375,11 @@ pub fn compute_gb_with_order(
     let n_gens = generators.len();
     let n_vars = poly_ring.n_vars();
     let backup: Vec<Poly> = generators.iter().map(|p| p.clone()).collect();
-    let start = std::time::Instant::now();
     let result = compute_gb_dispatch(poly_ring, generators, cancel, order, None);
-    let elapsed = start.elapsed();
     let basis = finish_gb(result, cancel, backup, "GB dispatch");
     log::trace!(
-        "GB call: {} gens, {} vars → {} basis elems in {:.1}ms",
-        n_gens, n_vars, basis.len(), elapsed.as_secs_f64() * 1000.0
+        "GB call: {} gens, {} vars → {} basis elems",
+        n_gens, n_vars, basis.len()
     );
     basis
 }
