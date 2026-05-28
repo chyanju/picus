@@ -631,4 +631,159 @@ mod tests {
         let v2 = evaluate_full(&pr, &p, &r2).expect("fully assigned");
         assert!(!f.is_zero(&v2));
     }
+
+    // ────────── Multi-frame DFS (descent / backtrack / verdict) ──────────
+
+    #[test]
+    fn descends_through_frames_to_a_complete_model() {
+        // bases = [{}, {x·y − 2}] over GF(7). No univariate / zero-dim
+        // structure ⇒ round-robin. The DFS prunes x=0 and y=0 (each makes
+        // the nonlinear partition the whole ring), descends on x=1, and at
+        // depth 1 the partition pins y=2 ⇒ Point. Exercises the descent /
+        // push path, the whole-ring-after-extend backtrack, and the
+        // all-assigned-after-descend Point return.
+        let pr = ring2();
+        let f = pr.field();
+        let xy = pr.mul(pr.var(0), pr.var(1));
+        let p = pr.sub(xy, pr.constant(f.from_int(2))); // x·y = 2
+        let bases = vec![
+            Ideal::from_gb(&pr, vec![]),
+            Ideal::from_gb(&pr, vec![pr.clone_poly(&p)]),
+        ];
+        let r: PartialPoint = vec![None, None];
+        let mut bp = BitProp::new(&pr);
+        match split_zero_extend(&pr, &[p], bases, r, &mut bp) {
+            ZeroExtendResult::Point(pt) => {
+                assert_eq!(pt.len(), 2);
+                let x = pr.field().to_biguint(&pt[0]);
+                let y = pr.field().to_biguint(&pt[1]);
+                assert_eq!((x * y) % BigUint::from(7u32), BigUint::from(2u32),
+                    "returned model must satisfy x·y = 2");
+            }
+            other => panic!("expected Point, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn exhaustive_search_of_unsatisfiable_split_returns_nozero() {
+        // bases = [{x + y}, {x·y − 1}] over GF(7): the conjunction
+        // x+y=0 ∧ x·y=1 forces x·(−x)=1 ⇒ x² = −1 = 6, which is a
+        // non-residue mod 7 ⇒ UNSAT. Both partitions are positive-
+        // dimensional individually, so apply_rule_multi yields round-robin
+        // and the DFS must enumerate the whole GF(7)² grid, exercising the
+        // brancher-exhausted / pop / phase-save backtrack path and the
+        // final stack-empty NoZero. Round-robin over a 3-bit prime is
+        // exhaustive, so the verdict is a definitive NoZero{exhaustive}.
+        let pr = ring2();
+        let f = pr.field();
+        let x_plus_y = pr.add(pr.var(0), pr.var(1));
+        let xy_minus_1 = pr.sub(pr.mul(pr.var(0), pr.var(1)), pr.constant(f.one()));
+        let bases = vec![
+            Ideal::from_gb(&pr, vec![x_plus_y]),
+            Ideal::from_gb(&pr, vec![xy_minus_1]),
+        ];
+        let r: PartialPoint = vec![None, None];
+        let mut bp = BitProp::new(&pr);
+        match split_zero_extend(&pr, &[], bases, r, &mut bp) {
+            ZeroExtendResult::NoZero { exhaustive } => {
+                assert!(exhaustive, "GF(7) round-robin is exhaustive ⇒ definitive UNSAT");
+            }
+            other => panic!("expected NoZero, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn whole_ring_partition_with_assigned_point_reports_conflicting_original() {
+        // First-frame whole-ring fast path with a *complete* assignment:
+        // partition 1 is the whole ring (UNSAT) while partition 0 = {x−5}
+        // is not, x is pinned to 3, and orig_polys = [x−1] evaluates to a
+        // nonzero constant and is not in partition 0 ⇒ Conflict(x−1).
+        // This is the only way to reach the conflict-extraction loop in the
+        // first-frame whole-ring branch (it needs an original that fully
+        // evaluates, hence a complete r).
+        let pr = ring1();
+        let f = pr.field();
+        let x_minus_5 = pr.sub(pr.var(0), pr.constant(f.from_int(5)));
+        let one_poly = pr.one(); // constant 1 ⇒ whole-ring partition
+        let bases = vec![
+            Ideal::from_gb(&pr, vec![x_minus_5]),
+            Ideal::from_gb(&pr, vec![one_poly]),
+        ];
+        let x_minus_1 = pr.sub(pr.var(0), pr.constant(f.one()));
+        let r: PartialPoint = vec![Some(f.from_int(3))]; // x = 3 (complete)
+        let mut bp = BitProp::new(&pr);
+        match split_zero_extend(&pr, &[x_minus_1], bases, r, &mut bp) {
+            ZeroExtendResult::Conflict(p) => {
+                // The conflict poly is the original x−1: evaluate at x=3 ⇒ 2 ≠ 0.
+                let v = evaluate_full(&pr, &p, &vec![Some(f.from_int(3))]).unwrap();
+                assert!(!f.is_zero(&v));
+            }
+            other => panic!("expected Conflict(x−1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn in_loop_quick_unsat_with_violated_original_returns_conflict() {
+        // bases = [{x+y}, {x·y−1}] over GF(7) with orig = [y−1]. The DFS
+        // descends on x=1; partition 0 pins y = −1 = 6 (a Roots candidate),
+        // but partition 1 then requires y = 1. At the leaf (x=1, y=6) a
+        // partition-1 poly evaluates to a nonzero constant ⇒ in-loop
+        // quick-UNSAT fires, and since the original y−1 is also violated and
+        // not contained in partition 0, the search returns Conflict(y−1).
+        // Stats are enabled so the counter-update branches inside the
+        // quick-UNSAT block also execute. The conflict poly is an *original*
+        // constraint, so re-injecting it (what the caller does) is sound.
+        let _g = crate::config::ConfigGuard::with_override(|c| c.gb_stats_enabled = true);
+        let pr = ring2();
+        let f = pr.field();
+        let x_plus_y = pr.add(pr.var(0), pr.var(1));
+        let xy_minus_1 = pr.sub(pr.mul(pr.var(0), pr.var(1)), pr.constant(f.one()));
+        let y_minus_1 = pr.sub(pr.var(1), pr.constant(f.one()));
+        let bases = vec![
+            Ideal::from_gb(&pr, vec![x_plus_y]),
+            Ideal::from_gb(&pr, vec![xy_minus_1]),
+        ];
+        let r: PartialPoint = vec![None, None];
+        let mut bp = BitProp::new(&pr);
+        match split_zero_extend(&pr, &[y_minus_1], bases, r, &mut bp) {
+            ZeroExtendResult::Conflict(c) => {
+                // The conflict witness is the original y−1: zero at y=1,
+                // nonzero at y=6 (the violated leaf value).
+                let at_1 = evaluate_full(&pr, &c,
+                    &vec![Some(f.from_int(0)), Some(f.from_int(1))]).unwrap();
+                let at_6 = evaluate_full(&pr, &c,
+                    &vec![Some(f.from_int(0)), Some(f.from_int(6))]).unwrap();
+                assert!(f.is_zero(&at_1), "conflict poly must vanish at y=1");
+                assert!(!f.is_zero(&at_6), "conflict poly must be violated at y=6");
+            }
+            other => panic!("expected Conflict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn stats_enabled_drives_counters_without_changing_verdict() {
+        // Same satisfiable instance as `descends_through_frames…`, but with
+        // gb_stats_enabled so every `if stats_on` counter-update branch in
+        // the DFS loop executes. The verdict must be identical (instrumentation
+        // is side-effect-only).
+        let _g = crate::config::ConfigGuard::with_override(|c| c.gb_stats_enabled = true);
+        let pr = ring2();
+        let f = pr.field();
+        let xy = pr.mul(pr.var(0), pr.var(1));
+        let p = pr.sub(xy, pr.constant(f.from_int(2)));
+        let bases = vec![
+            Ideal::from_gb(&pr, vec![]),
+            Ideal::from_gb(&pr, vec![pr.clone_poly(&p)]),
+        ];
+        let r: PartialPoint = vec![None, None];
+        let mut bp = BitProp::new(&pr);
+        match split_zero_extend(&pr, &[p], bases, r, &mut bp) {
+            ZeroExtendResult::Point(pt) => {
+                let x = pr.field().to_biguint(&pt[0]);
+                let y = pr.field().to_biguint(&pt[1]);
+                assert_eq!((x * y) % BigUint::from(7u32), BigUint::from(2u32));
+            }
+            other => panic!("expected Point under stats, got {:?}", other),
+        }
+    }
 }
