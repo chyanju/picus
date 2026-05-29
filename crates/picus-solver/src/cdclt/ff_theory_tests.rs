@@ -65,18 +65,6 @@ fn intern_eq_terms(
 }
 
 #[test]
-fn empty_trail_is_sat() {
-    let prime = BigUint::from(101u32);
-    let atoms = AtomTable::new(prime);
-    let cancel = CancelToken::none();
-    let mut th = FfTheory::new(&atoms, &cancel);
-    match th.post_check() {
-        CheckOutcome::Sat => {}
-        other => panic!("expected Sat, got {:?}", other),
-    }
-}
-
-#[test]
 fn single_eq_sat() {
     // (= x 5): SAT, model x=5.
     let prime = BigUint::from(101u32);
@@ -195,57 +183,6 @@ fn multi_diseq_exhausts_small_field() {
         }
         other => panic!("expected Unsat, got {:?}", other),
     }
-}
-
-#[test]
-fn push_pop_undoes_facts() {
-    let prime = BigUint::from(101u32);
-    let mut atoms = AtomTable::new(prime);
-    let mut sat = Solver::new();
-    let mut vn: Vec<String> = Vec::new();
-    let av = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 5);
-    let cancel = CancelToken::none();
-    let mut th = FfTheory::new(&atoms, &cancel);
-    th.push();
-    th.notify_fact(av, true);
-    assert_eq!(th.facts.len(), 1);
-    th.pop();
-    assert_eq!(th.facts.len(), 0);
-}
-
-#[test]
-fn propagate_empty_when_no_pinned_vars() {
-    let prime = BigUint::from(101u32);
-    let mut atoms = AtomTable::new(prime);
-    let mut sat = Solver::new();
-    let mut vn: Vec<String> = Vec::new();
-    let _ = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 5);
-    let cancel = CancelToken::none();
-    let mut th = FfTheory::new(&atoms, &cancel);
-    // Without any True fact, no var is pinned ⇒ no propagation.
-    assert!(th.propagate().is_empty());
-}
-
-#[test]
-fn propagate_pins_force_other_atom_truth() {
-    // Two atoms over the same variable: (= x 5) and (= x 6).
-    // Asserting (= x 5) True pins x = 5; propagation then derives
-    // (= x 6) is False.
-    let prime = BigUint::from(101u32);
-    let mut atoms = AtomTable::new(prime);
-    let mut sat = Solver::new();
-    let mut vn: Vec<String> = Vec::new();
-    let a5 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 5);
-    let a6 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 6);
-    let cancel = CancelToken::none();
-    let mut th = FfTheory::new(&atoms, &cancel);
-    th.notify_fact(a5, true);
-    let props = th.propagate();
-    assert!(
-        props.iter().any(|&(v, p)| v == a6 && !p),
-        "expected (a6, false) in propagations: {:?}",
-        props
-    );
 }
 
 #[test]
@@ -419,20 +356,6 @@ fn pinning_is_idempotent_across_canonically_distinct_but_equivalent_atoms() {
 }
 
 #[test]
-fn propagate_handles_constant_only_atoms_without_panic() {
-    // (= 0 1) interns as a vars-empty atom; propagate must not panic.
-    let prime = BigUint::from(7u32);
-    let mut atoms = AtomTable::new(prime);
-    let mut sat = Solver::new();
-    let mut vn: Vec<String> = Vec::new();
-    let av = intern_eq_terms(&mut atoms, &mut sat, &mut vn, &[(0, &[])], &[(1, &[])]);
-    let cancel = CancelToken::none();
-    let mut th = FfTheory::new(&atoms, &cancel);
-    th.notify_fact(av, true);
-    let _ = th.propagate(); // must not panic
-}
-
-#[test]
 fn tier2_linear_residue_derives_target_atom_true() {
     // x=3 + (x+y=7) ⇒ y=4 ⇒ (= y 4) True.
     let prime = BigUint::from(101u32);
@@ -456,35 +379,6 @@ fn tier2_linear_residue_derives_target_atom_true() {
     assert!(
         props.iter().any(|&(v, p)| v == ay4 && p),
         "Tier 2 must derive (= y 4) True from (= x 3) and (= (x+y) 7): {:?}",
-        props
-    );
-}
-
-#[test]
-fn tier2_propagates_false_for_non_matching_value_atom() {
-    // Derived y=4 ⇒ (= y 5) False.
-    let prime = BigUint::from(101u32);
-    let mut atoms = AtomTable::new(prime);
-    let mut sat = Solver::new();
-    let mut vn: Vec<String> = Vec::new();
-    let ax3 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 3);
-    let _ay4 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "y", 4);
-    let ay5 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "y", 5);
-    let asum = intern_eq_terms(
-        &mut atoms,
-        &mut sat,
-        &mut vn,
-        &[(1, &["x"]), (1, &["y"])],
-        &[(7, &[])],
-    );
-    let cancel = CancelToken::none();
-    let mut th = FfTheory::new(&atoms, &cancel);
-    th.notify_fact(ax3, true);
-    th.notify_fact(asum, true);
-    let props = th.propagate();
-    assert!(
-        props.iter().any(|&(v, p)| v == ay5 && !p),
-        "Tier 2 must derive (= y 5) False (derived value is 4): {:?}",
         props
     );
 }

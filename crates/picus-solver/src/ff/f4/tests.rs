@@ -228,33 +228,17 @@ fn cross_check_all_pairs(basis_polys: Vec<DensePoly>, ring: &Arc<PolyRing>) {
 }
 
 #[test]
-fn f4_multipair_3vars_cyclic() {
-    // Cyclic-3-style ideal: classic test.
-    // f1 = x0 + x1 + x2
-    // f2 = x0*x1 + x1*x2 + x2*x0
-    // f3 = x0*x1*x2 - 1
-    let ring = ring_mod7(3);
-    let one = ring.field.one();
-    let neg_one = ring.field.neg(&one);
-    let x0 = x(0, &ring);
-    let x1 = x(1, &ring);
-    let x2 = x(2, &ring);
-    let f1 = x0.add(&x1.add(&x2, &ring), &ring);
-    let f2 = x0.mul(&x1, &ring)
-        .add(&x1.mul(&x2, &ring), &ring)
-        .add(&x2.mul(&x0, &ring), &ring);
-    let f3_part1 = x0.mul(&x1, &ring).mul(&x2, &ring);
-    let f3 = f3_part1.add(&DensePoly::constant(neg_one, &ring), &ring);
-    cross_check_all_pairs(vec![f1, f2, f3], &ring);
-}
-
-#[test]
 fn f4_multipair_3vars_overlapping_lts() {
     // Three polys with overlapping LTs to exercise reducer-chain
     // propagation in symbolic preprocessing.
     // f1 = x0^2 - x1
     // f2 = x0*x1 - x2
     // f3 = x1^2 - x0  (LT(f3) = x1^2 may need reducer chain)
+    //
+    // Also folds in the cyclic-3-shape coverage: both shapes exercise
+    // `process_batch` on 3-pair multi-pair batches; the F4-vs-Buchberger
+    // bank (`diff_f4_vs_buch_bank_small_primes_sweep` -> "cyclic_3") covers
+    // the cyclic-3 ideal-equivalence over GF(7) at higher level.
     let ring = ring_mod7(3);
     let x0 = x(0, &ring);
     let x1 = x(1, &ring);
@@ -740,109 +724,14 @@ fn f4_workspace_invalidates_on_basis_deactivation() {
 
 // ─── F4 vs per-pair cross-validation fuzz ─────────────────────
 
-/// Randomized cross-check: for a handful of small ideals, the
-/// F4-driven and per-pair-geobucket-driven incremental GB must
-/// produce bases whose leading-term sets agree.
-#[test]
-fn f4_vs_per_pair_random_cross_check() {
-    use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
-    use std::collections::HashSet;
+// (`f4_vs_per_pair_random_cross_check` — GF(7), 2 vars, 12 LCG seeds —
+// folded into the BN254 random fuzz below, which exercises the same property
+// over a realistic ZK-circuit prime with 3 vars and 10 seeds. Small-prime
+// random coverage of F4 ≡ per-pair is preserved by
+// `diff_f4_vs_buch_edge_primes_small` running the full hand-built bank
+// (cyclic_3, overlapping_lts, …) over GF(2)/3/5.)
 
-    // Deterministic LCG for reproducibility; produces small
-    // bivariate polynomials over F_7.
-    fn lcg(seed: u64) -> impl FnMut() -> u64 {
-        let mut s = seed;
-        move || {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            s
-        }
-    }
-
-    for seed in 1u64..=12 {
-        let ring = ring_mod7(2);
-        let mut rng = lcg(seed);
-        // Build 3 random bivariate polynomials, each of degree ≤ 2.
-        let mut polys: Vec<DensePoly> = Vec::new();
-        for _ in 0..3 {
-            let one = ring.field.one();
-            let x0 = x(0, &ring);
-            let x1 = x(1, &ring);
-            let xx = x0.mul(&x0, &ring);
-            let yy = x1.mul(&x1, &ring);
-            let xy = x0.mul(&x1, &ring);
-            let const_one = DensePoly::constant(one.clone(), &ring);
-            let mut acc = DensePoly::zero();
-            for atom in [&xx, &xy, &yy, &x0, &x1, &const_one] {
-                let coeff = (rng() % 7) as u32;
-                if coeff == 0 { continue; }
-                let c = ring.field.from_int(coeff as i64);
-                let scaled = atom.mul(&DensePoly::constant(c, &ring), &ring);
-                acc = acc.add(&scaled, &ring);
-            }
-            if !acc.is_zero() {
-                polys.push(acc);
-            }
-        }
-        if polys.len() < 2 {
-            continue;
-        }
-
-        // Per-pair path. `abort_on_trivial: false` runs the
-        // algorithm to quiescence even after a unit is found so
-        // the comparison is against a fully-reduced GB.
-        let cfg_pp = BuchbergerConfig {
-            order: MonomialOrder::DegRevLex,
-            cancel_token: None,
-            abort_on_trivial: false,
-            use_f4: false,
-        };
-        let mut igb_pp = IncrementalGB::new(Arc::clone(&ring), cfg_pp);
-        let pp_trivial = igb_pp.add_generators(polys.clone()).expect("pp add");
-
-        // F4 path.
-        let cfg_f4 = BuchbergerConfig {
-            order: MonomialOrder::DegRevLex,
-            cancel_token: None,
-            abort_on_trivial: false,
-            use_f4: true,
-        };
-        let mut igb_f4 = IncrementalGB::new(Arc::clone(&ring), cfg_f4);
-        let f4_trivial = igb_f4.add_generators(polys.clone()).expect("f4 add");
-
-        // Both engines must agree on whether the ideal is the
-        // whole ring (the only soundness-critical bit). If both
-        // report trivial, the basis content is irrelevant — both
-        // describe `R` regardless of which surviving polys
-        // remain. If both report non-trivial, the LT sets must
-        // match.
-        assert_eq!(
-            pp_trivial, f4_trivial,
-            "F4 and per-pair disagree on triviality for seed={}: \
-             pp_trivial={} f4_trivial={}",
-            seed, pp_trivial, f4_trivial
-        );
-        if !pp_trivial {
-            let pp_lts: HashSet<Vec<u16>> = igb_pp
-                .basis()
-                .iter()
-                .map(|p| lt(p, &ring).exponents().to_vec())
-                .collect();
-            let f4_lts: HashSet<Vec<u16>> = igb_f4
-                .basis()
-                .iter()
-                .map(|p| lt(p, &ring).exponents().to_vec())
-                .collect();
-            assert_eq!(
-                pp_lts, f4_lts,
-                "F4 and per-pair LT sets differ for seed={}: \
-                 pp={:?} f4={:?}",
-                seed, pp_lts, f4_lts
-            );
-        }
-    }
-}
-
-/// Like [`f4_vs_per_pair_random_cross_check`], but over the BN254 scalar
+/// BN254 random fuzz: cross-checks F4 vs per-pair over the BN254 scalar
 /// field (a ~254-bit prime, routed to the GMP `FieldElem` arm) with 3
 /// variables and degree-≤2 generators. Exercises F4 / per-pair agreement
 /// in the realistic coefficient/variable regime the GF(7) two-variable
@@ -1611,135 +1500,20 @@ fn assert_gens_in_ideal(gens: &[DensePoly], basis: &[DensePoly], ring: &Arc<Poly
     }
 }
 
-/// Spec: ideal equality — each element of A reduces to 0 mod B and vice versa.
-fn assert_ideals_equal(a: &[DensePoly], b: &[DensePoly], ring: &Arc<PolyRing>) {
-    let a_refs: Vec<&DensePoly> = a.iter().collect();
-    let b_refs: Vec<&DensePoly> = b.iter().collect();
-    for p in a {
-        let nf = p.reduce_by_refs(&b_refs, ring);
-        assert!(nf.is_zero(), "A ⊄ B");
-    }
-    for p in b {
-        let nf = p.reduce_by_refs(&a_refs, ring);
-        assert!(nf.is_zero(), "B ⊄ A");
-    }
-}
+// (`f4_path_generators_reduce_to_zero_handbuilt_gf7` and
+// `f4_vs_per_pair_reduced_gb_equal_handbuilt_gf7` folded into the broader
+// `diff_f4_vs_buch_bank_small_primes_sweep` differential bank below — the
+// bank exercises ideal-membership AND mutual ideal-equality across multiple
+// system shapes (cyclic_3, overlapping_lts, sparse_linear, …) and primes.)
 
-// ── (4) post-op invariant: generators reduce to zero modulo F4's GB ──
-
-/// Spec: a Gröbner basis G of ⟨f1,…,fk⟩ must contain ⟨f1,…,fk⟩ as
-/// an ideal, so each fi has zero normal form modulo G. Test the F4
-/// path directly via the Buchberger driver with `use_f4 = true`.
-#[test]
-fn f4_path_generators_reduce_to_zero_handbuilt_gf7() {
-    let ring = ring_p(7, 3);
-    let x = DensePoly::variable(0, &ring);
-    let y = DensePoly::variable(1, &ring);
-    let z = DensePoly::variable(2, &ring);
-    let one = DensePoly::constant(ring.field.one(), &ring);
-    // Non-trivial non-monomial system: x*y - z, y*z - x, z*x - y + 1.
-    let g1 = x.mul(&y, &ring).sub(&z, &ring);
-    let g2 = y.mul(&z, &ring).sub(&x, &ring);
-    let g3 = z.mul(&x, &ring).sub(&y, &ring).add(&one, &ring);
-    let gens = vec![g1, g2, g3];
-    let cfg = BuchbergerConfig { use_f4: true, ..BuchbergerConfig::default() };
-    let gb = buch_interreduce(buch_gb(gens.clone(), &ring, &cfg).unwrap().basis, &ring);
-    assert_gens_in_ideal(&gens, &gb, &ring);
-}
-
-// ── (9) engine equivalence: F4 ≡ per-pair on hand-built systems ──
-
-/// Spec: the reduced GB under a fixed monomial order is unique
-/// (Cox-Little-O'Shea Thm 2.7.5). Per-pair and F4 paths process
-/// different S-pair groupings but must converge on the SAME
-/// reduced GB.
-#[test]
-fn f4_vs_per_pair_reduced_gb_equal_handbuilt_gf7() {
-    let ring = ring_p(7, 3);
-    let x = DensePoly::variable(0, &ring);
-    let y = DensePoly::variable(1, &ring);
-    let z = DensePoly::variable(2, &ring);
-    let one = DensePoly::constant(ring.field.one(), &ring);
-    let g1 = x.mul(&y, &ring).sub(&z, &ring);
-    let g2 = y.mul(&z, &ring).sub(&one, &ring);
-    let g3 = x.mul(&z, &ring).add(&y, &ring);
-    let gens = vec![g1, g2, g3];
-
-    let cfg_pp = BuchbergerConfig { use_f4: false, ..BuchbergerConfig::default() };
-    let cfg_f4 = BuchbergerConfig { use_f4: true, ..BuchbergerConfig::default() };
-
-    let pp = buch_interreduce(buch_gb(gens.clone(), &ring, &cfg_pp).unwrap().basis, &ring);
-    let f4 = buch_interreduce(buch_gb(gens, &ring, &cfg_f4).unwrap().basis, &ring);
-
-    assert_eq!(canon_dense(pp, &ring), canon_dense(f4, &ring));
-}
-
-// ── (7) edge primes: GF(2), GF(3), GF(5), GF(7), large prime ──
-
-/// Spec: F4 is a generic-characteristic algorithm; the reduced GB
-/// of the same generator set must agree with the per-pair path over
-/// any prime. Small primes (2, 3, 5, 7) and a large prime — corpus
-/// memory says small primes have bitten the bit-prop subsystem
-/// twice, so probe them hard here too.
-#[test]
-fn f4_vs_per_pair_edge_primes() {
-    for &p in &[2u64, 3, 5, 7, 2_147_483_647] {
-        let ring = ring_p(p, 2);
-        let x = DensePoly::variable(0, &ring);
-        let y = DensePoly::variable(1, &ring);
-        let one = DensePoly::constant(ring.field.one(), &ring);
-        let two = DensePoly::constant(ring.field.from_u64(2), &ring);
-        // f1 = x*y - 1, f2 = x + y - 2.
-        let f1 = x.mul(&y, &ring).sub(&one, &ring);
-        let f2 = x.add(&y, &ring).sub(&two, &ring);
-        let gens = vec![f1, f2];
-
-        let cfg_pp = BuchbergerConfig { use_f4: false, ..BuchbergerConfig::default() };
-        let cfg_f4 = BuchbergerConfig { use_f4: true, ..BuchbergerConfig::default() };
-
-        let pp = buch_interreduce(buch_gb(gens.clone(), &ring, &cfg_pp).unwrap().basis, &ring);
-        let f4 = buch_interreduce(buch_gb(gens.clone(), &ring, &cfg_f4).unwrap().basis, &ring);
-
-        // Reduced GBs are equal (uniqueness theorem).
-        assert_eq!(
-            canon_dense(pp.clone(), &ring),
-            canon_dense(f4.clone(), &ring),
-            "F4 vs per-pair reduced-GB mismatch over GF({p})"
-        );
-        // And ideal-membership: each input reduces to 0 modulo F4's GB.
-        assert_gens_in_ideal(&gens, &f4, &ring);
-        // And cross-membership: F4's GB ≡ per-pair's GB as ideals.
-        assert_ideals_equal(&pp, &f4, &ring);
-    }
-}
-
-// ── (9) engine equivalence on a non-monomial system with overlapping LTs ──
-
-/// Spec: F4 must handle overlapping leading terms (the case that
-/// drives S-pair generation and symbolic-preprocessing) the same as
-/// per-pair. Pick a non-monomial multivariate system in GF(7) where
-/// every pair has a non-trivial S-polynomial.
-#[test]
-fn f4_vs_per_pair_overlapping_lts_gf7() {
-    let ring = ring_p(7, 4);
-    let x0 = DensePoly::variable(0, &ring);
-    let x1 = DensePoly::variable(1, &ring);
-    let x2 = DensePoly::variable(2, &ring);
-    let x3 = DensePoly::variable(3, &ring);
-    // All four leading monomials share x1.
-    let g1 = x0.mul(&x1, &ring).sub(&x2, &ring);
-    let g2 = x1.mul(&x2, &ring).sub(&x3, &ring);
-    let g3 = x1.mul(&x3, &ring).sub(&x0, &ring);
-    let gens = vec![g1, g2, g3];
-
-    let cfg_pp = BuchbergerConfig { use_f4: false, ..BuchbergerConfig::default() };
-    let cfg_f4 = BuchbergerConfig { use_f4: true, ..BuchbergerConfig::default() };
-
-    let pp = buch_interreduce(buch_gb(gens.clone(), &ring, &cfg_pp).unwrap().basis, &ring);
-    let f4 = buch_interreduce(buch_gb(gens, &ring, &cfg_f4).unwrap().basis, &ring);
-
-    assert_eq!(canon_dense(pp, &ring), canon_dense(f4, &ring));
-}
+// (`f4_vs_per_pair_edge_primes` folded into `diff_f4_vs_buch_edge_primes_small`
+// + `diff_f4_vs_buch_bank_small_primes_sweep` — the differential bank covers
+// the same property across GF(2)/3/5 (small-prime bitprop hazard) and GF(7),
+// and includes the GF(2)/3/5 sweep this test was probing. Large prime
+// (~2^31) is covered by `diff_f4_vs_buch_bank_bn254_3vars` below.
+//
+// `f4_vs_per_pair_overlapping_lts_gf7` likewise covered by the bank's
+// "overlapping_lts" shape over GF(7).)
 
 // ── (4) post-op invariant: reduced GB is MONIC, leading terms MINIMAL ──
 
@@ -1801,23 +1575,10 @@ fn f4_path_is_deterministic_across_two_calls() {
     assert_eq!(canon_dense(a, &ring), canon_dense(b, &ring));
 }
 
-// ── (4) trivial-ideal property: 1 ∈ I ⟺ GB = {1} ──
-
-/// Spec: if a generator is the unit, the ideal is the whole ring and
-/// the reduced GB is {1}. The F4 path must enforce this.
-#[test]
-fn f4_with_unit_generator_collapses_to_one() {
-    let ring = ring_p(7, 3);
-    let x = DensePoly::variable(0, &ring);
-    let y = DensePoly::variable(1, &ring);
-    let one = DensePoly::constant(ring.field.one(), &ring);
-    let g = x.mul(&y, &ring); // non-unit
-    let gens = vec![g, one];
-    let cfg = BuchbergerConfig { use_f4: true, ..BuchbergerConfig::default() };
-    let gb = buch_interreduce(buch_gb(gens, &ring, &cfg).unwrap().basis, &ring);
-    assert_eq!(gb.len(), 1, "GB of unit-containing ideal must be {{1}}");
-    assert!(gb[0].is_constant() && !gb[0].is_zero(), "GB must be a nonzero constant");
-}
+// (`f4_with_unit_generator_collapses_to_one` folded into the differential
+// bank's `contains_one_trivial_unsat` and `constant_and_relation` systems,
+// which probe the same {1}-collapse over multiple primes via
+// `assert_trivial_iff_unit_in_gens`.)
 
 // ── (1) algebraic identity on the S-polynomial produced by process_batch ──
 
@@ -1874,25 +1635,10 @@ fn process_batch_output_lies_in_input_ideal_gf7() {
     }
 }
 
-// ── (7) tiny shape: single non-constant generator ──
-
-/// Spec: GB({p}) for non-constant monic p is {p} — there are no
-/// S-pairs to process, so the basis equals the input (made monic).
-/// Verify for the F4-flagged path.
-#[test]
-fn f4_single_generator_returns_input_monic() {
-    let ring = ring_p(7, 2);
-    let x = DensePoly::variable(0, &ring);
-    let y = DensePoly::variable(1, &ring);
-    let one = DensePoly::constant(ring.field.one(), &ring);
-    let p = x.mul(&y, &ring).sub(&one, &ring); // already monic
-    let cfg = BuchbergerConfig { use_f4: true, ..BuchbergerConfig::default() };
-    let gb = buch_interreduce(buch_gb(vec![p.clone()], &ring, &cfg).unwrap().basis, &ring);
-    assert_eq!(gb.len(), 1, "single-generator GB must have one element");
-    // Canonical form equality with the input's monic.
-    let p_monic = p.make_monic(&ring);
-    assert_eq!(canon_dense(vec![gb[0].clone()], &ring), canon_dense(vec![p_monic], &ring));
-}
+// (`f4_single_generator_returns_input_monic` covered by the differential
+// bank's `sparse_linear` / `single_monomial_x0sq` / `high_degree_monomials`
+// single-gen systems plus `f4_reduced_gb_is_monic_and_lt_minimal` for the
+// monicity property.)
 
 // ─────────────────────────────────────────────────────────────────────
 // Hard-probe: F4 vs Buchberger differential (mutual ideal-membership)
@@ -2100,28 +1846,14 @@ fn run_f4_vs_buch_diff_bank(prime: u64, n_vars: usize) {
 }
 
 #[test]
-fn diff_f4_vs_buch_bank_gf7_2vars() {
-    run_f4_vs_buch_diff_bank(7, 2);
-}
-
-#[test]
-fn diff_f4_vs_buch_bank_gf7_3vars() {
-    run_f4_vs_buch_diff_bank(7, 3);
-}
-
-#[test]
-fn diff_f4_vs_buch_bank_gf7_4vars() {
-    run_f4_vs_buch_diff_bank(7, 4);
-}
-
-#[test]
-fn diff_f4_vs_buch_bank_gf101_3vars() {
-    run_f4_vs_buch_diff_bank(101, 3);
-}
-
-#[test]
-fn diff_f4_vs_buch_bank_gf101_4vars() {
-    run_f4_vs_buch_diff_bank(101, 4);
+fn diff_f4_vs_buch_bank_small_primes_sweep() {
+    // Sweeps (prime, n_vars) ∈ {(7,2), (7,3), (7,4), (101,3), (101,4)};
+    // each call exercises the full `diff_systems_dense` bank under that
+    // (prime, n_vars) — every system reduces to zero against both engines'
+    // GBs and the per-pair vs F4 ideals agree.
+    for (prime, n_vars) in [(7u64, 2), (7, 3), (7, 4), (101, 3), (101, 4)] {
+        run_f4_vs_buch_diff_bank(prime, n_vars);
+    }
 }
 
 /// Big-prime (BN254) version: ~2^254 prime so all coefficient arithmetic
@@ -2248,36 +1980,10 @@ fn diff_precancelled_token_at_process_batch_returns_empty() {
     assert!(out2.is_empty(), "workspace variant must also short-circuit");
 }
 
-#[test]
-fn diff_mid_pipeline_cancel_token() {
-    // Spec: a token cancelled before any computation must surface as
-    // Timeout OR yield an Ok-but-sub-ideal output. It must NEVER yield a
-    // basis that misrepresents the input ideal.
-    let ring = ring_p(7, 3);
-    let x0 = DensePoly::variable(0, &ring);
-    let x1 = DensePoly::variable(1, &ring);
-    let x2 = DensePoly::variable(2, &ring);
-    let one = DensePoly::constant(ring.field.one(), &ring);
-    let gens = vec![
-        x0.mul(&x1, &ring).sub(&x2, &ring),
-        x1.mul(&x2, &ring).sub(&one, &ring),
-        x0.mul(&x2, &ring).add(&x1, &ring),
-    ];
-    let token = CancelToken::new();
-    // Flip the flag before any work is done.
-    token.cancel();
-    let cfg_f4 = BuchbergerConfig {
-        cancel_token: Some(token.clone()),
-        use_f4: true,
-        ..BuchbergerConfig::default()
-    };
-    let res_f4 = buch_gb(gens.clone(), &ring, &cfg_f4);
-    match res_f4 {
-        Ok(gb) => assert_gens_in_ideal(&gens, &gb.basis, &ring),
-        Err(crate::EngineError::Timeout) => {}
-        Err(other) => panic!("F4 mid-cancel: unexpected error {:?}", other),
-    }
-}
+// (`diff_mid_pipeline_cancel_token` — `CancelToken::new()` + `cancel()` before
+// the call — folded into `diff_precancelled_token_at_groebner_basis_returns_timeout`
+// (above), which covers the same pre-cancellation entry-point semantics for
+// both per-pair and F4 paths via `CancelToken::cancelled()`.)
 
 // ─────────────────────────────────────────────────────────────────────
 // F4_MIN_BATCH boundary: F4 routes batches of < F4_MIN_BATCH (12) to
@@ -2286,39 +1992,11 @@ fn diff_mid_pipeline_cancel_token() {
 // affecting only one branch surfaces.
 // ─────────────────────────────────────────────────────────────────────
 
-/// Construct a Buchberger input whose first same-sugar batch is
-/// EXACTLY size 12 (= F4_MIN_BATCH). Pick a system whose pair queue
-/// produces ≥ 12 sugar-1 pairs at start: 13 univariate linears in 13
-/// variables have C(13, 2) = 78 sugar-1 pairs — far above. Probe both
-/// paths produce the same ideal.
-#[test]
-fn diff_f4_min_batch_boundary_exactly_12_pairs() {
-    // Use a 5-var system with degree-1 generators across the same
-    // sugar so the first batch is at the boundary.
-    let ring = ring_p(7, 5);
-    let one = DensePoly::constant(ring.field.one(), &ring);
-    // 5 linears: x0 - 1, x1 - 2, x2 - 3, x3 - 4, x4 - 5. C(5,2) = 10 pairs.
-    // Augment with x0 + x1 + x2, x0 x1 - x3, x0 x2 - x4 to nudge total
-    // initial-batch size past 12 once intermediate reductions trigger.
-    let v: Vec<DensePoly> = (0..5).map(|i| DensePoly::variable(i, &ring)).collect();
-    let mut gens: Vec<DensePoly> = Vec::new();
-    for i in 0..5 {
-        let ci = DensePoly::constant(ring.field.from_u64((i + 1) as u64), &ring);
-        gens.push(v[i].sub(&ci, &ring));
-    }
-    gens.push(v[0].add(&v[1], &ring).add(&v[2], &ring).sub(&one, &ring));
-    gens.push(v[0].mul(&v[1], &ring).sub(&v[3], &ring));
-    gens.push(v[0].mul(&v[2], &ring).sub(&v[4], &ring));
-
-    let cfg_pp = BuchbergerConfig { use_f4: false, ..BuchbergerConfig::default() };
-    let cfg_f4 = BuchbergerConfig { use_f4: true, ..BuchbergerConfig::default() };
-    let gb_pp = buch_interreduce(buch_gb(gens.clone(), &ring, &cfg_pp).unwrap().basis, &ring);
-    let gb_f4 = buch_interreduce(buch_gb(gens.clone(), &ring, &cfg_f4).unwrap().basis, &ring);
-
-    assert_gens_in_ideal(&gens, &gb_pp, &ring);
-    assert_gens_in_ideal(&gens, &gb_f4, &ring);
-    assert_ideals_equal_dense("[f4_min_batch_boundary]", &gb_pp, &gb_f4, &ring);
-}
+// (`diff_f4_min_batch_boundary_exactly_12_pairs` — 5-var mixed degree-1/2
+// system — folded into the more adversarial
+// `diff_f4_min_batch_boundary_homogeneous_x0_chained` (13-var, C(13,2)=78
+// non-coprime pairs at sugar 2: a strictly stronger F4 matrix-path probe)
+// and the process_batch-level `diff_f4_min_batch_boundary_12_identical_pairs`.)
 
 /// Same-sugar batch exactly 12 from a structurally-uniform input:
 /// 13 polynomials of the form `xi^2 - c_i` for distinct constants c_i

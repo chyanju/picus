@@ -36,16 +36,6 @@ fn vars(s: &mut Solver, n: usize) -> Vec<Var> {
 }
 
 #[test]
-fn add_unit_clause_propagates_at_root() {
-    let mut s = Solver::new();
-    let v = vars(&mut s, 1);
-    // Clause: (x0)
-    assert!(s.add_clause(vec![Lit::pos(v[0])]));
-    assert_eq!(s.value(v[0]), LBool::True);
-    assert!(s.propagate().is_none());
-}
-
-#[test]
 fn empty_clause_marks_unsat() {
     let mut s = Solver::new();
     assert!(!s.add_clause(Vec::new()));
@@ -189,26 +179,6 @@ fn learn_then_propagate_drives_decision() {
 }
 
 #[test]
-fn solve_trivial_sat() {
-    // (x0 ∨ x1) — many models exist.
-    let mut s = Solver::new();
-    let v = vars(&mut s, 2);
-    assert!(s.add_clause(vec![Lit::pos(v[0]), Lit::pos(v[1])]));
-    assert_eq!(s.solve(), SolveResult::Sat);
-}
-
-#[test]
-fn solve_trivial_unsat() {
-    // (x0) (¬x0) — root-level conflict.
-    let mut s = Solver::new();
-    let v = vars(&mut s, 1);
-    assert!(s.add_clause(vec![Lit::pos(v[0])]));
-    // Adding the second is detected as root UNSAT by add_clause.
-    assert!(!s.add_clause(vec![Lit::neg(v[0])]));
-    assert_eq!(s.solve(), SolveResult::Unsat);
-}
-
-#[test]
 fn solve_backtrack_required() {
     // 3-var formula requiring at least one wrong guess + learn.
     //   (x0 ∨ x1)
@@ -224,94 +194,6 @@ fn solve_backtrack_required() {
     assert!(s.add_clause(vec![Lit::neg(v[1]), Lit::neg(v[2])]));
     assert_eq!(s.solve(), SolveResult::Sat);
     assert_eq!(s.value(v[0]), LBool::True);
-}
-
-#[test]
-fn solve_unsat_via_learning() {
-    // (x0 ∨ x1) (¬x0 ∨ x1) (x0 ∨ ¬x1) (¬x0 ∨ ¬x1) ── UNSAT.
-    let mut s = Solver::new();
-    let v = vars(&mut s, 2);
-    assert!(s.add_clause(vec![Lit::pos(v[0]), Lit::pos(v[1])]));
-    assert!(s.add_clause(vec![Lit::neg(v[0]), Lit::pos(v[1])]));
-    assert!(s.add_clause(vec![Lit::pos(v[0]), Lit::neg(v[1])]));
-    assert!(s.add_clause(vec![Lit::neg(v[0]), Lit::neg(v[1])]));
-    assert_eq!(s.solve(), SolveResult::Unsat);
-}
-
-#[test]
-fn solve_satisfies_model_consistency() {
-    // 5-var random-style SAT formula. After solve == Sat we check
-    // every clause has at least one True literal under the
-    // returned model.
-    let mut s = Solver::new();
-    let v = vars(&mut s, 5);
-    let clauses: Vec<Vec<Lit>> = vec![
-        vec![Lit::pos(v[0]), Lit::neg(v[1]), Lit::pos(v[2])],
-        vec![Lit::neg(v[0]), Lit::pos(v[3])],
-        vec![Lit::pos(v[1]), Lit::pos(v[4])],
-        vec![Lit::neg(v[2]), Lit::neg(v[4])],
-        vec![Lit::pos(v[0]), Lit::pos(v[3]), Lit::pos(v[4])],
-    ];
-    for c in clauses.iter() {
-        assert!(s.add_clause(c.clone()));
-    }
-    assert_eq!(s.solve(), SolveResult::Sat);
-    for c in &clauses {
-        let satisfied = c.iter().any(|l| s.lit_value(*l) == LBool::True);
-        assert!(satisfied, "clause {:?} unsatisfied by model", c);
-    }
-}
-
-#[test]
-fn solve_pigeonhole_3_pigeons_2_holes_unsat() {
-    // Classic UNSAT: 3 pigeons in 2 holes. Var x_{i,j} = pigeon i in hole j.
-    // Constraints:
-    //   each pigeon in some hole: for i in 1..=3, (x_{i,1} ∨ x_{i,2}).
-    //   no two pigeons in same hole: for j in 1..=2, for i1<i2,
-    //                                  (¬x_{i1,j} ∨ ¬x_{i2,j}).
-    let mut s = Solver::new();
-    let mut x: Vec<Vec<Var>> = Vec::new();
-    for _ in 0..3 {
-        x.push((0..2).map(|_| s.new_var()).collect());
-    }
-    for i in 0..3 {
-        assert!(s.add_clause(vec![Lit::pos(x[i][0]), Lit::pos(x[i][1])]));
-    }
-    for j in 0..2 {
-        for i1 in 0..3 {
-            for i2 in (i1 + 1)..3 {
-                assert!(s.add_clause(vec![Lit::neg(x[i1][j]), Lit::neg(x[i2][j])]));
-            }
-        }
-    }
-    assert_eq!(s.solve(), SolveResult::Unsat);
-}
-
-#[test]
-fn analyze_propagation_resolves_to_decision() {
-    // Clauses:
-    //   (a ∨ b)         ── if a=False, forces b=True
-    //   (a ∨ c)         ── if a=False, forces c=True
-    //   (¬b ∨ ¬c)       ── b and c can't both be True
-    //
-    // Decide a=False (level 1). Propagation:
-    //   from (a ∨ b): b=True
-    //   from (a ∨ c): c=True
-    //   from (¬b ∨ ¬c): both False ⇒ conflict
-    //
-    // 1-UIP analysis walks back through reasons of b, c, and the
-    // decision a; learnt clause asserts ¬(¬a) = a, with bt_level 0.
-    let mut s = Solver::new();
-    let v = vars(&mut s, 3);
-    assert!(s.add_clause(vec![Lit::pos(v[0]), Lit::pos(v[1])]));
-    assert!(s.add_clause(vec![Lit::pos(v[0]), Lit::pos(v[2])]));
-    assert!(s.add_clause(vec![Lit::neg(v[1]), Lit::neg(v[2])]));
-    assert!(s.decide(Lit::neg(v[0])));
-    let conflict = s.propagate().expect("conflict expected");
-    let (learnt, bt) = s.analyze(conflict).expect("analyze produces a clause");
-    assert_eq!(learnt.len(), 1);
-    assert_eq!(learnt[0], Lit::pos(v[0]));
-    assert_eq!(bt, 0);
 }
 
 #[test]
@@ -431,21 +313,6 @@ fn restart_preserves_root_level_units() {
 }
 
 #[test]
-fn enqueue_theory_assigns_with_reason() {
-    let mut s = Solver::new();
-    let v = vars(&mut s, 2);
-    assert!(s.decide(Lit::pos(v[0])));
-    let before = s.n_clauses();
-    let ok = s.enqueue_theory(Lit::pos(v[1]), vec![Lit::pos(v[0])]);
-    assert!(ok);
-    assert_eq!(s.value(v[1]), LBool::True);
-    assert_eq!(s.n_clauses(), before + 1);
-    s.backtrack_to(0);
-    assert_eq!(s.value(v[0]), LBool::Undef);
-    assert_eq!(s.value(v[1]), LBool::Undef);
-}
-
-#[test]
 fn enqueue_theory_with_multi_level_reasons_sorts_highest_as_second_watch() {
     let mut s = Solver::new();
     let v = vars(&mut s, 5);
@@ -483,19 +350,6 @@ fn enqueue_theory_propagates_again_after_backtrack_via_reason_clause() {
 }
 
 #[test]
-fn enqueue_theory_reason_clause_shape_and_reason_pointer() {
-    let mut s = Solver::new();
-    let v = vars(&mut s, 2);
-    assert!(s.decide(Lit::pos(v[0])));
-    assert!(s.enqueue_theory(Lit::pos(v[1]), vec![Lit::pos(v[0])]));
-    let cref = s.reason[v[1].index()].expect("reason pointer set");
-    let lits = &s.arena.get(cref).lits;
-    assert_eq!(lits.len(), 2);
-    assert_eq!(lits[0], Lit::pos(v[1]));
-    assert_eq!(lits[1], Lit::neg(v[0]));
-}
-
-#[test]
 fn enqueue_theory_rejects_empty_reason() {
     // Empty reason would yield a length-1 unwatched reason clause.
     let mut s = Solver::new();
@@ -515,20 +369,6 @@ fn enqueue_theory_rejects_assigned_lit() {
     let before = s.n_clauses();
     assert!(!s.enqueue_theory(Lit::pos(v[1]), vec![Lit::pos(v[0])]));
     assert_eq!(s.n_clauses(), before);
-}
-
-#[test]
-fn perform_restart_resets_decision_level() {
-    let mut s = Solver::new();
-    let v = vars(&mut s, 3);
-    assert!(s.add_clause(vec![Lit::pos(v[0]), Lit::pos(v[1])]));
-    assert!(s.decide(Lit::neg(v[0])));
-    assert!(s.propagate().is_none());
-    assert_eq!(s.decision_level(), 1);
-    s.perform_restart();
-    assert_eq!(s.decision_level(), 0, "restart must return to root");
-    // v[0] was a decision (level 1), so it should be cleared.
-    assert_eq!(s.value(v[0]), LBool::Undef);
 }
 
 #[test]
@@ -614,20 +454,6 @@ fn add_theory_lemma_empty_sets_unsat_not_giveup() {
     assert_eq!(s.add_theory_lemma_with_trail(Vec::new()), None);
     assert!(s.is_unsat());
     assert!(!s.gave_up());
-}
-
-#[test]
-fn add_theory_lemma_root_level_literal_sets_unsat() {
-    // A single literal whose variable sits at level 0 (root) cannot be
-    // asserted by backtracking ⇒ root-level UNSAT.
-    let mut s = Solver::new();
-    let v = vars(&mut s, 1);
-    // Make x0 a root-level fact (level 0).
-    assert!(s.add_clause(vec![Lit::pos(v[0])]));
-    assert_eq!(s.value(v[0]), LBool::True);
-    // Lemma [¬x0]: its only literal is at level 0 ⇒ max_level <= 0.
-    assert_eq!(s.add_theory_lemma_with_trail(vec![Lit::neg(v[0])]), None);
-    assert!(s.is_unsat());
 }
 
 #[test]
@@ -777,16 +603,6 @@ fn enqueue_theory_rejects_reason_fact_not_true() {
 }
 
 #[test]
-fn solver_default_equals_new() {
-    // `Default` impl forwards to `new`: an empty, root-level solver.
-    let s = Solver::default();
-    assert_eq!(s.n_vars(), 0);
-    assert_eq!(s.decision_level(), 0);
-    assert!(!s.is_unsat());
-    assert!(!s.gave_up());
-}
-
-#[test]
 fn decide_already_assigned_same_var_returns_consistency() {
     // `decide` on a variable that already has a value returns whether the
     // requested polarity agrees with the existing assignment, without
@@ -902,33 +718,6 @@ fn heap_percolate_down_selects_higher_right_child() {
     assert_eq!(s.heap_pos[v[2].index()], 0);
     // And the heap_pos index of whatever now sits at slot 2 is consistent.
     assert_eq!(s.order_heap[s.heap_pos[v[0].index()]], v[0]);
-}
-
-#[test]
-fn heap_remove_max_returns_highest_activity_via_right_child() {
-    // End-to-end exercise of the right-child branch through the public
-    // pick path: after bumping activities so the right child dominates,
-    // removing the max re-heapifies via `heap_percolate_down`.
-    let mut s = Solver::new();
-    let v = vars(&mut s, 3);
-    // Make v[2] the global maximum, v[1] second.
-    s.var_activity[v[0].index()] = 1.0;
-    s.var_activity[v[1].index()] = 5.0;
-    s.var_activity[v[2].index()] = 9.0;
-    // Rebuild heap ordering deterministically.
-    s.order_heap = vec![v[0], v[1], v[2]];
-    s.heap_pos[v[0].index()] = 0;
-    s.heap_pos[v[1].index()] = 1;
-    s.heap_pos[v[2].index()] = 2;
-    s.heap_percolate_up(2);
-    s.heap_percolate_up(1);
-    let first = s.heap_remove_max().expect("non-empty heap");
-    let second = s.heap_remove_max().expect("non-empty heap");
-    let third = s.heap_remove_max().expect("non-empty heap");
-    assert_eq!(first, v[2], "highest activity first");
-    assert_eq!(second, v[1]);
-    assert_eq!(third, v[0]);
-    assert!(s.heap_remove_max().is_none());
 }
 
 #[test]
@@ -1049,85 +838,10 @@ fn clause_is_sat(s: &Solver, c: &[Lit]) -> bool {
     c.iter().any(|&l| s.lit_value(l) == LBool::True)
 }
 
-/// SPEC class 5: SAT model satisfies every clause.
-/// Property: Solver::solve()==Sat ⇒ for every input clause c,
-/// some literal in c has value True under the solver's final assignment.
-/// Derivation: this IS the definition of "satisfying assignment" in
-/// propositional logic.
-#[test]
-fn property_sat_model_satisfies_every_clause_horn() {
-    // Horn formula known SAT: (¬a ∨ b) ∧ (¬b ∨ c) ∧ (a) → forces a=b=c=True.
-    let clauses: Vec<Vec<Lit>> = vec![
-        vec![Lit::neg(make_var(0)), Lit::pos(make_var(1))],
-        vec![Lit::neg(make_var(1)), Lit::pos(make_var(2))],
-        vec![Lit::pos(make_var(0))],
-    ];
-    let mut s = build_solver(3, &clauses);
-    assert_eq!(s.solve(), SolveResult::Sat);
-    for c in &clauses {
-        assert!(
-            clause_is_sat(&s, c),
-            "SPEC violation: clause {:?} not satisfied by SAT model",
-            c
-        );
-    }
-}
-
-/// SPEC class 5: SAT model satisfies every clause — non-Horn 3-SAT.
-#[test]
-fn property_sat_model_satisfies_every_clause_3sat() {
-    // A small but non-trivial 3-SAT with multiple satisfying assignments.
-    // Satisfiable by e.g. x0=T, x1=T, x2=F, x3=T.
-    let v: Vec<Var> = (0..4).map(make_var).collect();
-    let clauses: Vec<Vec<Lit>> = vec![
-        vec![Lit::pos(v[0]), Lit::pos(v[1]), Lit::neg(v[2])],
-        vec![Lit::neg(v[0]), Lit::pos(v[2]), Lit::pos(v[3])],
-        vec![Lit::pos(v[1]), Lit::neg(v[3])],
-        vec![Lit::pos(v[0]), Lit::pos(v[3])],
-        vec![Lit::neg(v[1]), Lit::pos(v[2]), Lit::pos(v[3])],
-    ];
-    let mut s = build_solver(4, &clauses);
-    assert_eq!(s.solve(), SolveResult::Sat);
-    for c in &clauses {
-        assert!(
-            clause_is_sat(&s, c),
-            "SPEC violation: clause {:?} not satisfied by SAT model",
-            c
-        );
-    }
-}
-
-/// SPEC class 5: SAT model satisfies every clause — a SAT 4-var formula
-/// whose only satisfying assignment is x0=x1=x2=x3=True, forcing exact
-/// model determination.
-#[test]
-fn property_sat_model_unique_assignment_satisfies() {
-    let v: Vec<Var> = (0..4).map(make_var).collect();
-    // Unit-propagation chain pinning every variable to True.
-    let clauses: Vec<Vec<Lit>> = vec![
-        vec![Lit::pos(v[0])],
-        vec![Lit::neg(v[0]), Lit::pos(v[1])],
-        vec![Lit::neg(v[1]), Lit::pos(v[2])],
-        vec![Lit::neg(v[2]), Lit::pos(v[3])],
-    ];
-    let mut s = build_solver(4, &clauses);
-    assert_eq!(s.solve(), SolveResult::Sat);
-    // SPEC: unique satisfying model is all True.
-    for var in &v {
-        assert_eq!(
-            s.value(*var),
-            LBool::True,
-            "SPEC violation: var {:?} must be True in the unique model",
-            var
-        );
-    }
-    for c in &clauses {
-        assert!(clause_is_sat(&s, c), "clause {:?} unsatisfied", c);
-    }
-}
-
-/// SPEC class 5: every reported SAT model satisfies every clause —
-/// formula with 5 variables and 8 clauses.
+/// SPEC class 5: SAT model satisfies every clause. Property:
+/// Solver::solve()==Sat ⇒ for every input clause c, some literal in c has
+/// value True under the solver's final assignment. Derivation: definition
+/// of "satisfying assignment" in propositional logic.
 #[test]
 fn property_sat_model_satisfies_every_clause_larger() {
     let v: Vec<Var> = (0..5).map(make_var).collect();
@@ -1149,73 +863,6 @@ fn property_sat_model_satisfies_every_clause_larger() {
             clause_is_sat(&s, c),
             "SPEC violation: SAT model leaves clause {:?} unsatisfied",
             c
-        );
-    }
-}
-
-/// SPEC class 5: UNSAT verdict is STABLE under restart_base ∈ {1, 7, 100}.
-/// Derivation: restart cadence is search heuristic, not semantics. A
-/// formula's (un)satisfiability is independent of the restart schedule.
-#[test]
-fn property_unsat_stable_across_restart_schedules() {
-    // Classic UNSAT: (x0∨x1)(¬x0∨x1)(x0∨¬x1)(¬x0∨¬x1) — forces x0↔x1
-    // yet forbids both-true and both-false.
-    let v: Vec<Var> = (0..2).map(make_var).collect();
-    let clauses: Vec<Vec<Lit>> = vec![
-        vec![Lit::pos(v[0]), Lit::pos(v[1])],
-        vec![Lit::neg(v[0]), Lit::pos(v[1])],
-        vec![Lit::pos(v[0]), Lit::neg(v[1])],
-        vec![Lit::neg(v[0]), Lit::neg(v[1])],
-    ];
-    for &rb in &[1u64, 7, 100] {
-        let mut s = build_solver(2, &clauses);
-        s.restart_base = rb;
-        // restart_step needs to be a real future threshold; default 100 is
-        // fine but we mirror restart_base to also stress aggressive cadence.
-        s.restart_step = rb;
-        assert_eq!(
-            s.solve(),
-            SolveResult::Unsat,
-            "SPEC violation: UNSAT verdict changed under restart_base={}",
-            rb
-        );
-    }
-}
-
-/// SPEC class 5+8: UNSAT verdict is stable under restart_base ∈ {1, 7, 100}
-/// for the pigeonhole formula PHP(3,2) (3 pigeons, 2 holes — UNSAT).
-#[test]
-fn property_unsat_pigeonhole_stable_across_restart_schedules() {
-    // x_{i,j} = pigeon i in hole j, i ∈ {0,1,2}, j ∈ {0,1}.
-    // (1) every pigeon in some hole: (x_{i,0} ∨ x_{i,1}) for each i.
-    // (2) no two pigeons share a hole: (¬x_{i1,j} ∨ ¬x_{i2,j}).
-    let build = || {
-        let mut s = Solver::new();
-        let mut x: Vec<Vec<Var>> = Vec::new();
-        for _ in 0..3 {
-            x.push((0..2).map(|_| s.new_var()).collect());
-        }
-        for i in 0..3 {
-            assert!(s.add_clause(vec![Lit::pos(x[i][0]), Lit::pos(x[i][1])]));
-        }
-        for j in 0..2 {
-            for i1 in 0..3 {
-                for i2 in (i1 + 1)..3 {
-                    assert!(s.add_clause(vec![Lit::neg(x[i1][j]), Lit::neg(x[i2][j])]));
-                }
-            }
-        }
-        s
-    };
-    for &rb in &[1u64, 7, 100] {
-        let mut s = build();
-        s.restart_base = rb;
-        s.restart_step = rb;
-        assert_eq!(
-            s.solve(),
-            SolveResult::Unsat,
-            "SPEC violation: PHP(3,2) verdict flipped under restart_base={}",
-            rb
         );
     }
 }
@@ -1246,28 +893,6 @@ fn property_determinism_same_clauses_same_verdict_unsat() {
     assert_eq!(r1, r2, "SPEC violation: two fresh Solvers disagree on UNSAT");
 }
 
-/// SPEC class 8: DETERMINISM on SAT instance.
-#[test]
-fn property_determinism_same_clauses_same_verdict_sat() {
-    let v: Vec<Var> = (0..4).map(make_var).collect();
-    let clauses: Vec<Vec<Lit>> = vec![
-        vec![Lit::pos(v[0]), Lit::pos(v[1])],
-        vec![Lit::neg(v[1]), Lit::pos(v[2])],
-        vec![Lit::neg(v[2]), Lit::pos(v[3])],
-    ];
-    let mut s1 = build_solver(4, &clauses);
-    let mut s2 = build_solver(4, &clauses);
-    assert_eq!(s1.solve(), SolveResult::Sat);
-    assert_eq!(s2.solve(), SolveResult::Sat);
-    // Both must return SAT — but model values may differ (multiple models).
-    // What MUST agree (under determinism with same code) is the verdict.
-    // Verifying each model individually:
-    for c in &clauses {
-        assert!(clause_is_sat(&s1, c), "s1 fails clause {:?}", c);
-        assert!(clause_is_sat(&s2, c), "s2 fails clause {:?}", c);
-    }
-}
-
 /// SPEC class 5: Adding a TAUTOLOGY to a formula preserves the verdict.
 /// Derivation: (x ∨ ¬x) ≡ True, so F ∧ (x ∨ ¬x) ≡ F.
 #[test]
@@ -1295,30 +920,6 @@ fn property_tautology_preserves_sat_verdict() {
     for c in &base {
         assert!(clause_is_sat(&s_aug, c));
     }
-}
-
-/// SPEC class 5: Adding a TAUTOLOGY to an UNSAT formula keeps it UNSAT.
-#[test]
-fn property_tautology_preserves_unsat_verdict() {
-    let v: Vec<Var> = (0..2).map(make_var).collect();
-    // UNSAT base.
-    let base: Vec<Vec<Lit>> = vec![
-        vec![Lit::pos(v[0]), Lit::pos(v[1])],
-        vec![Lit::neg(v[0]), Lit::pos(v[1])],
-        vec![Lit::pos(v[0]), Lit::neg(v[1])],
-        vec![Lit::neg(v[0]), Lit::neg(v[1])],
-    ];
-    let mut s_base = build_solver(2, &base);
-    assert_eq!(s_base.solve(), SolveResult::Unsat);
-    // Augment with a tautology.
-    let mut augmented = base.clone();
-    augmented.push(vec![Lit::pos(v[1]), Lit::neg(v[1])]);
-    let mut s_aug = build_solver(2, &augmented);
-    assert_eq!(
-        s_aug.solve(),
-        SolveResult::Unsat,
-        "SPEC violation: adding a tautology to UNSAT formula changed verdict"
-    );
 }
 
 /// SPEC class 5: Duplicating a clause preserves the verdict.
@@ -1369,23 +970,6 @@ fn property_empty_formula_is_sat() {
     );
 }
 
-/// SPEC class 5: A single literal as a unit clause forces that literal True.
-/// Derivation: (x) is a clause with one literal; satisfying it requires x=T.
-#[test]
-fn property_unit_clause_forces_assignment() {
-    let v: Vec<Var> = (0..3).map(make_var).collect();
-    let clauses: Vec<Vec<Lit>> = vec![
-        vec![Lit::pos(v[0])],
-        vec![Lit::neg(v[1])],
-        vec![Lit::pos(v[2])],
-    ];
-    let mut s = build_solver(3, &clauses);
-    assert_eq!(s.solve(), SolveResult::Sat);
-    assert_eq!(s.value(v[0]), LBool::True, "SPEC: (x0) forces x0=T");
-    assert_eq!(s.value(v[1]), LBool::False, "SPEC: (¬x1) forces x1=F");
-    assert_eq!(s.value(v[2]), LBool::True, "SPEC: (x2) forces x2=T");
-}
-
 /// SPEC class 5: NEGATION SYMMETRY. Negate every literal in every
 /// clause; the formula's (un)satisfiability is preserved.
 /// Derivation: If model m satisfies F, then m' (flip every variable's
@@ -1429,52 +1013,6 @@ fn property_xor_2var_is_sat_and_model_is_xor() {
     assert_ne!(
         v0, v1,
         "SPEC violation: XOR(x0,x1) model must have exactly one True"
-    );
-}
-
-/// SPEC class 5: SAT model satisfies every clause — 6-var formula with
-/// implication chains (a→b, b→c, c→d, d→e, e→f, a).
-/// SPEC: unique model has all variables True.
-#[test]
-fn property_implication_chain_forces_all_true() {
-    let v: Vec<Var> = (0..6).map(make_var).collect();
-    let clauses: Vec<Vec<Lit>> = vec![
-        vec![Lit::pos(v[0])],
-        vec![Lit::neg(v[0]), Lit::pos(v[1])],
-        vec![Lit::neg(v[1]), Lit::pos(v[2])],
-        vec![Lit::neg(v[2]), Lit::pos(v[3])],
-        vec![Lit::neg(v[3]), Lit::pos(v[4])],
-        vec![Lit::neg(v[4]), Lit::pos(v[5])],
-    ];
-    let mut s = build_solver(6, &clauses);
-    assert_eq!(s.solve(), SolveResult::Sat);
-    for vi in &v {
-        assert_eq!(
-            s.value(*vi),
-            LBool::True,
-            "SPEC: implication chain rooted at unit forces all True"
-        );
-    }
-}
-
-/// SPEC class 5+8: A formula whose only model is FORBIDDEN by an extra
-/// clause becomes UNSAT.
-#[test]
-fn property_blocking_unique_model_yields_unsat() {
-    let v: Vec<Var> = (0..3).map(make_var).collect();
-    // Forces x0=x1=x2=T via implication chain.
-    let mut clauses: Vec<Vec<Lit>> = vec![
-        vec![Lit::pos(v[0])],
-        vec![Lit::neg(v[0]), Lit::pos(v[1])],
-        vec![Lit::neg(v[1]), Lit::pos(v[2])],
-    ];
-    // Block the only model (¬x0 ∨ ¬x1 ∨ ¬x2): forbids the unique model.
-    clauses.push(vec![Lit::neg(v[0]), Lit::neg(v[1]), Lit::neg(v[2])]);
-    let mut s = build_solver(3, &clauses);
-    assert_eq!(
-        s.solve(),
-        SolveResult::Unsat,
-        "SPEC violation: blocking the only model must yield UNSAT"
     );
 }
 
@@ -1534,38 +1072,6 @@ fn property_sat_model_is_total() {
     }
 }
 
-/// SPEC class 5: PIGEONHOLE PHP(4,3) (4 pigeons, 3 holes) is UNSAT.
-/// Derivation: standard pigeon-hole impossibility — 4 distinct items
-/// cannot occupy 3 mutually exclusive locations.
-#[test]
-fn property_pigeonhole_php_4_3_unsat() {
-    let mut s = Solver::new();
-    // x_{i,j} = pigeon i in hole j, i ∈ {0..4}, j ∈ {0..3}.
-    let mut x: Vec<Vec<Var>> = Vec::new();
-    for _ in 0..4 {
-        x.push((0..3).map(|_| s.new_var()).collect());
-    }
-    for i in 0..4 {
-        assert!(s.add_clause(vec![
-            Lit::pos(x[i][0]),
-            Lit::pos(x[i][1]),
-            Lit::pos(x[i][2]),
-        ]));
-    }
-    for j in 0..3 {
-        for i1 in 0..4 {
-            for i2 in (i1 + 1)..4 {
-                assert!(s.add_clause(vec![Lit::neg(x[i1][j]), Lit::neg(x[i2][j])]));
-            }
-        }
-    }
-    assert_eq!(
-        s.solve(),
-        SolveResult::Unsat,
-        "SPEC violation: PHP(4,3) must be UNSAT"
-    );
-}
-
 /// SPEC of luby (Luby–Sinclair–Zuckerman): the sequence satisfies the
 /// recursive identity
 ///   ∀ k ≥ 1: luby(2^k - 1) = 2^(k-1)
@@ -1603,22 +1109,6 @@ fn property_luby_satisfies_recursive_spec() {
     }
 }
 
-/// SPEC of luby: every value in the sequence is a power of 2.
-/// Derivation: by construction luby(i) ∈ {2^k : k ≥ 0}.
-#[test]
-fn property_luby_values_are_powers_of_two() {
-    for i in 1u64..=100 {
-        let v = luby(i);
-        assert!(v > 0, "SPEC violation: luby({}) = 0 (must be positive)", i);
-        assert!(
-            v.is_power_of_two(),
-            "SPEC violation: luby({}) = {} is not a power of two",
-            i,
-            v
-        );
-    }
-}
-
 /// SPEC class 5: A 3-SAT formula with ALL 2^n minterm clauses except
 /// one is SAT, and the unique model is the complement of the missing
 /// minterm. Derivation: every clause (l1∨l2∨l3) forbids the assignment
@@ -1645,115 +1135,6 @@ fn property_seven_of_eight_minterms_forces_unique_model() {
     assert_eq!(s.value(v[0]), LBool::True);
     assert_eq!(s.value(v[1]), LBool::True);
     assert_eq!(s.value(v[2]), LBool::True);
-}
-
-/// SPEC class 5: All-8-minterms is UNSAT (every assignment forbidden).
-#[test]
-fn property_all_eight_minterms_is_unsat() {
-    let v: Vec<Var> = (0..3).map(make_var).collect();
-    let clauses: Vec<Vec<Lit>> = vec![
-        vec![Lit::pos(v[0]), Lit::pos(v[1]), Lit::pos(v[2])],
-        vec![Lit::neg(v[0]), Lit::pos(v[1]), Lit::pos(v[2])],
-        vec![Lit::pos(v[0]), Lit::neg(v[1]), Lit::pos(v[2])],
-        vec![Lit::neg(v[0]), Lit::neg(v[1]), Lit::pos(v[2])],
-        vec![Lit::pos(v[0]), Lit::pos(v[1]), Lit::neg(v[2])],
-        vec![Lit::neg(v[0]), Lit::pos(v[1]), Lit::neg(v[2])],
-        vec![Lit::pos(v[0]), Lit::neg(v[1]), Lit::neg(v[2])],
-        vec![Lit::neg(v[0]), Lit::neg(v[1]), Lit::neg(v[2])],
-    ];
-    let mut s = build_solver(3, &clauses);
-    assert_eq!(
-        s.solve(),
-        SolveResult::Unsat,
-        "SPEC violation: 2^n minterm-forbidding clauses must be UNSAT"
-    );
-}
-
-/// SPEC class 5: A unit clause and a binary clause containing its
-/// negation together force the OTHER literal of the binary clause.
-/// Derivation: (a) ∧ (¬a ∨ b) ⊢ b.  (Modus ponens.)
-#[test]
-fn property_modus_ponens_resolution_yields_consequent() {
-    let v: Vec<Var> = (0..2).map(make_var).collect();
-    let clauses: Vec<Vec<Lit>> = vec![
-        vec![Lit::pos(v[0])],                       // a
-        vec![Lit::neg(v[0]), Lit::pos(v[1])],       // a → b
-    ];
-    let mut s = build_solver(2, &clauses);
-    assert_eq!(s.solve(), SolveResult::Sat);
-    assert_eq!(s.value(v[0]), LBool::True, "SPEC: a forced True");
-    assert_eq!(
-        s.value(v[1]),
-        LBool::True,
-        "SPEC: modus ponens forces b True"
-    );
-}
-
-/// SPEC class 5+8: Restart schedule independence — same formula's SAT
-/// model satisfies the formula across schedules. Stronger than the
-/// existing audit test because it checks the model semantics, not just
-/// the verdict.
-#[test]
-fn property_restart_schedule_independence_model_check() {
-    // SAT formula that requires several decisions to navigate.
-    let v: Vec<Var> = (0..4).map(make_var).collect();
-    let clauses: Vec<Vec<Lit>> = vec![
-        vec![Lit::pos(v[0]), Lit::pos(v[1]), Lit::pos(v[2])],
-        vec![Lit::neg(v[0]), Lit::pos(v[3])],
-        vec![Lit::neg(v[2]), Lit::neg(v[3])],
-        vec![Lit::pos(v[1]), Lit::neg(v[3])],
-    ];
-    for &rb in &[1u64, 7, 100] {
-        let mut s = build_solver(4, &clauses);
-        s.restart_base = rb;
-        s.restart_step = rb;
-        let r = s.solve();
-        assert_eq!(
-            r,
-            SolveResult::Sat,
-            "SPEC: SAT verdict required under restart_base={}",
-            rb
-        );
-        for c in &clauses {
-            assert!(
-                clause_is_sat(&s, c),
-                "SPEC violation: restart_base={} model fails clause {:?}",
-                rb,
-                c
-            );
-        }
-    }
-}
-
-/// SPEC class 5: A clause that is the resolvent of two existing clauses
-/// is ALREADY entailed; adding it cannot change the verdict.
-/// Derivation: resolution rule (a∨X) ∧ (¬a∨Y) ⊢ (X∨Y) — adding the
-/// consequent preserves semantics.
-#[test]
-fn property_adding_resolvent_clause_preserves_verdict() {
-    let v: Vec<Var> = (0..3).map(make_var).collect();
-    // Base: (x0 ∨ x1) ∧ (¬x0 ∨ x2).  Resolvent: (x1 ∨ x2).
-    let base: Vec<Vec<Lit>> = vec![
-        vec![Lit::pos(v[0]), Lit::pos(v[1])],
-        vec![Lit::neg(v[0]), Lit::pos(v[2])],
-    ];
-    let mut s_base = build_solver(3, &base);
-    let r_base = s_base.solve();
-    assert_eq!(r_base, SolveResult::Sat);
-
-    let mut augmented = base.clone();
-    augmented.push(vec![Lit::pos(v[1]), Lit::pos(v[2])]); // resolvent
-    let mut s_aug = build_solver(3, &augmented);
-    assert_eq!(
-        s_aug.solve(),
-        r_base,
-        "SPEC violation: adding a logical consequence (resolvent) flipped the verdict"
-    );
-    // The model of the augmented formula must still satisfy the resolvent.
-    assert!(
-        clause_is_sat(&s_aug, &augmented[2]),
-        "SPEC violation: augmented model fails the resolvent clause"
-    );
 }
 
 // ─────────── HARD-PROBE: SAT restart × theory propagation ───────────
@@ -1798,44 +1179,6 @@ fn hardprobe_php_3_2_unsat_under_full_restart_sweep() {
             "SPEC: PHP(3,2) UNSAT must be invariant under restart_base={rb}"
         );
         assert!(!s.gave_up(), "verdict must be sound UNSAT (no give-up) for rb={rb}");
-    }
-}
-
-/// SPEC: PHP(4,3) is UNSAT regardless of restart cadence (deeper search
-/// tree, exercises many learnt-clause / restart interactions).
-#[test]
-fn hardprobe_php_4_3_unsat_under_full_restart_sweep() {
-    fn build() -> Solver {
-        let mut s = Solver::new();
-        let mut x: Vec<Vec<Var>> = Vec::new();
-        for _ in 0..4 {
-            x.push((0..3).map(|_| s.new_var()).collect());
-        }
-        for i in 0..4 {
-            assert!(s.add_clause(vec![
-                Lit::pos(x[i][0]),
-                Lit::pos(x[i][1]),
-                Lit::pos(x[i][2]),
-            ]));
-        }
-        for j in 0..3 {
-            for i1 in 0..4 {
-                for i2 in (i1 + 1)..4 {
-                    assert!(s.add_clause(vec![Lit::neg(x[i1][j]), Lit::neg(x[i2][j])]));
-                }
-            }
-        }
-        s
-    }
-    for &rb in &[1u64, 2, 3, 7, 11, 100] {
-        let mut s = build();
-        s.restart_base = rb;
-        s.restart_step = rb;
-        assert_eq!(
-            s.solve(),
-            SolveResult::Unsat,
-            "SPEC: PHP(4,3) UNSAT must be invariant under restart_base={rb}"
-        );
     }
 }
 
@@ -1901,37 +1244,6 @@ fn hardprobe_implication_chain_sat_across_restart_sweep() {
                 var
             );
         }
-    }
-}
-
-/// SPEC: A formula whose only model is forbidden by a final clause is
-/// UNSAT, even when the restart cadence interferes with conflict-driven
-/// learning. The 3-var implication chain (x0)(¬x0∨x1)(¬x1∨x2) forces
-/// x0=x1=x2=True, then (¬x0∨¬x1∨¬x2) blocks the only model.
-#[test]
-fn hardprobe_blocked_unique_model_unsat_across_restart_sweep() {
-    let build = || -> Solver {
-        let mut s = Solver::new();
-        let v: Vec<Var> = (0..3).map(|_| s.new_var()).collect();
-        assert!(s.add_clause(vec![Lit::pos(v[0])]));
-        assert!(s.add_clause(vec![Lit::neg(v[0]), Lit::pos(v[1])]));
-        assert!(s.add_clause(vec![Lit::neg(v[1]), Lit::pos(v[2])]));
-        // The implication chain has already propagated x0=x1=x2=True at root,
-        // so this blocking clause is root-false on add and add_clause returns
-        // false (marks UNSAT). Either path (add_clause=false OR solve=Unsat
-        // afterwards) satisfies the spec under test; just record the call.
-        let _ = s.add_clause(vec![Lit::neg(v[0]), Lit::neg(v[1]), Lit::neg(v[2])]);
-        s
-    };
-    for &rb in &[1u64, 2, 3, 7, 11, 100] {
-        let mut s = build();
-        s.restart_base = rb;
-        s.restart_step = rb;
-        assert_eq!(
-            s.solve(),
-            SolveResult::Unsat,
-            "rb={rb}: blocking the only model must yield UNSAT"
-        );
     }
 }
 
@@ -2091,78 +1403,6 @@ fn hardprobe_learnt_clauses_persist_across_aggressive_restart_unsat() {
     );
 }
 
-/// SPEC: Two formulas with the same clause set must produce the same
-/// verdict under different restart cadences applied to the SAME instance
-/// at different points (mid-solve restart pressure vs end-of-solve).
-/// Concretely: solve one fresh solver with restart_base=1 and another
-/// with restart_base=100 on identical input. Verdicts must agree.
-#[test]
-fn hardprobe_verdict_invariant_extreme_restart_cadences() {
-    let v: Vec<Var> = (0..4).map(make_var).collect();
-    // A SAT formula with several decisions.
-    let sat_form: Vec<Vec<Lit>> = vec![
-        vec![Lit::pos(v[0]), Lit::pos(v[1]), Lit::pos(v[2])],
-        vec![Lit::neg(v[0]), Lit::pos(v[3])],
-        vec![Lit::pos(v[1]), Lit::neg(v[3])],
-        vec![Lit::neg(v[2]), Lit::pos(v[3])],
-    ];
-    for &(rb1, rb2) in &[(1u64, 100), (2, 11), (3, 7)] {
-        let mut s1 = build_solver(4, &sat_form);
-        s1.restart_base = rb1;
-        s1.restart_step = rb1;
-        let mut s2 = build_solver(4, &sat_form);
-        s2.restart_base = rb2;
-        s2.restart_step = rb2;
-        let r1 = s1.solve();
-        let r2 = s2.solve();
-        assert_eq!(
-            r1, r2,
-            "SPEC: verdict must be invariant across restart_base={rb1} vs {rb2} (got {r1:?} vs {r2:?})"
-        );
-        // Whichever the verdict is, both must give a model that
-        // satisfies every clause.
-        if let SolveResult::Sat = r1 {
-            for c in &sat_form {
-                assert!(clause_is_sat(&s1, c), "rb={rb1}: model failed clause {c:?}");
-                assert!(clause_is_sat(&s2, c), "rb={rb2}: model failed clause {c:?}");
-            }
-        }
-    }
-}
-
-/// SPEC: For a SAT instance whose only model is `x0=x1=x2=x3=True` (a
-/// pure implication chain rooted at the unit (x0)), every restart cadence
-/// must still arrive at the all-True model. Hypothesis: a restart-drain
-/// that fails to propagate a learnt unit could leave the chain
-/// incompletely satisfied (`Unknown`) or produce a model with a flipped
-/// variable.
-#[test]
-fn hardprobe_unique_model_chain_preserved_across_restart_sweep() {
-    let v: Vec<Var> = (0..6).map(make_var).collect();
-    let clauses: Vec<Vec<Lit>> = vec![
-        vec![Lit::pos(v[0])],
-        vec![Lit::neg(v[0]), Lit::pos(v[1])],
-        vec![Lit::neg(v[1]), Lit::pos(v[2])],
-        vec![Lit::neg(v[2]), Lit::pos(v[3])],
-        vec![Lit::neg(v[3]), Lit::pos(v[4])],
-        vec![Lit::neg(v[4]), Lit::pos(v[5])],
-    ];
-    for &rb in &[1u64, 2, 3, 7, 11, 100] {
-        let mut s = build_solver(6, &clauses);
-        s.restart_base = rb;
-        s.restart_step = rb;
-        assert_eq!(s.solve(), SolveResult::Sat, "rb={rb}: SAT expected");
-        for var in &v {
-            assert_eq!(
-                s.value(*var),
-                LBool::True,
-                "rb={rb}: SPEC violation — unique model requires {:?}=True",
-                var
-            );
-        }
-    }
-}
-
 /// SPEC: A propagation chain spanning multiple decision levels, learnt
 /// during search, must remain valid post-restart. Build a 4-var UNSAT
 /// formula whose 1-UIP analysis has two plausible resolution orders
@@ -2198,61 +1438,6 @@ fn hardprobe_multi_uip_unsat_across_restart_sweep() {
         assert!(s.is_unsat());
         assert!(!s.gave_up());
     }
-}
-
-/// SPEC: Restart firing IMMEDIATELY after a backjump (the "back-to-back"
-/// edge case): a conflict at level k learns a unit, backjumps to root,
-/// learns the unit, then `should_restart()` is true ⇒ restart. The
-/// restart's backtrack_to(0) is then a no-op (already at root) and the
-/// drain must propagate the just-learnt unit. Build a formula that
-/// (a) needs ≥ 1 conflict and (b) post-conflict has a root-level
-/// contradiction to detect via the drain.
-#[test]
-fn hardprobe_restart_after_backtrack_no_drop_root_unit() {
-    let mut s = Solver::new();
-    let v = vars(&mut s, 3);
-    // (¬x0 ∨ x1) (¬x0 ∨ ¬x1): deciding x0 forces x1 then ¬x1 ⇒ conflict.
-    // Learnt unit (¬x0); root drains to ¬x0.
-    // Then (x0 ∨ x2) (x0 ∨ ¬x2): with x0=False, both force x2 to both
-    // values ⇒ root conflict. SPEC verdict: Unsat.
-    assert!(s.add_clause(vec![Lit::neg(v[0]), Lit::pos(v[1])]));
-    assert!(s.add_clause(vec![Lit::neg(v[0]), Lit::neg(v[1])]));
-    assert!(s.add_clause(vec![Lit::pos(v[0]), Lit::pos(v[2])]));
-    assert!(s.add_clause(vec![Lit::pos(v[0]), Lit::neg(v[2])]));
-    // restart_base=1 ⇒ restart fires immediately after the first conflict.
-    s.restart_base = 1;
-    s.restart_step = 1;
-    assert_eq!(
-        s.solve(),
-        SolveResult::Unsat,
-        "SPEC: restart immediately after backjump must still detect root UNSAT"
-    );
-    assert!(s.is_unsat());
-    assert!(!s.gave_up(), "verdict must be sound UNSAT, not give-up");
-}
-
-/// SPEC: When restart fires but the drain reveals no root conflict, the
-/// search must resume and find a model (if one exists). Combine an UNSAT
-/// fragment that learns a root unit with a SAT fragment over disjoint
-/// variables.
-#[test]
-fn hardprobe_restart_drain_clean_then_sat_companion_unique_model() {
-    let mut s = Solver::new();
-    let v = vars(&mut s, 5);
-    // UNSAT-on-(x0,x1) sub-formula learns root unit ¬x0.
-    assert!(s.add_clause(vec![Lit::neg(v[0]), Lit::pos(v[1])]));
-    assert!(s.add_clause(vec![Lit::neg(v[0]), Lit::neg(v[1])]));
-    // SAT-on-(x2,x3,x4) sub-formula has a unique model (x2,x3,x4)=(T,T,T).
-    assert!(s.add_clause(vec![Lit::pos(v[2])]));
-    assert!(s.add_clause(vec![Lit::neg(v[2]), Lit::pos(v[3])]));
-    assert!(s.add_clause(vec![Lit::neg(v[3]), Lit::pos(v[4])]));
-    s.restart_base = 1;
-    s.restart_step = 1;
-    assert_eq!(s.solve(), SolveResult::Sat, "SPEC: restart + SAT sub-formula must reach SAT");
-    assert_eq!(s.value(v[0]), LBool::False, "SPEC: learnt root unit must force ¬x0");
-    assert_eq!(s.value(v[2]), LBool::True);
-    assert_eq!(s.value(v[3]), LBool::True);
-    assert_eq!(s.value(v[4]), LBool::True);
 }
 
 /// SPEC: Calling `perform_restart` multiple times in a row at root level

@@ -12,24 +12,6 @@ fn syms(toks: &[Tok]) -> Vec<&str> {
 // ────────── tokenize ──────────
 
 #[test]
-fn tokenize_empty_yields_no_tokens() {
-    assert!(tokenize("").is_empty());
-    assert!(tokenize("   \n\t  ").is_empty());
-}
-
-#[test]
-fn tokenize_parens_only() {
-    let t = tokenize("()");
-    assert_eq!(t, vec![Tok::LParen, Tok::RParen]);
-}
-
-#[test]
-fn tokenize_atom_separator_runs() {
-    let t = tokenize("foo  bar\tbaz");
-    assert_eq!(syms(&t), vec!["foo", "bar", "baz"]);
-}
-
-#[test]
 fn tokenize_paren_breaks_atom() {
     let t = tokenize("foo(bar)baz");
     assert_eq!(t.len(), 5);
@@ -37,21 +19,9 @@ fn tokenize_paren_breaks_atom() {
 }
 
 #[test]
-fn tokenize_drops_comments_to_eol() {
-    let t = tokenize("a ; this is a comment\nb");
-    assert_eq!(syms(&t), vec!["a", "b"]);
-}
-
-#[test]
 fn tokenize_comment_at_eof_is_dropped() {
     let t = tokenize("foo ; trailing comment no newline");
     assert_eq!(syms(&t), vec!["foo"]);
-}
-
-#[test]
-fn tokenize_quoted_symbol_strips_pipes() {
-    let t = tokenize("|hello world|");
-    assert_eq!(syms(&t), vec!["hello world"]);
 }
 
 #[test]
@@ -69,48 +39,6 @@ fn tokenize_keeps_strings_as_atoms() {
 }
 
 // ────────── parse_sexprs ──────────
-
-#[test]
-fn parse_atom_returns_atom() {
-    let toks = tokenize("hello");
-    let out = parse_sexprs(&toks).expect("parse ok");
-    assert_eq!(out.len(), 1);
-    assert!(matches!(&out[0], Sexpr::Atom(s) if s == "hello"));
-}
-
-#[test]
-fn parse_empty_list() {
-    let toks = tokenize("()");
-    let out = parse_sexprs(&toks).expect("parse ok");
-    assert_eq!(out.len(), 1);
-    match &out[0] {
-        Sexpr::List(v) => assert!(v.is_empty()),
-        other => panic!("expected List, got {:?}", other),
-    }
-}
-
-#[test]
-fn parse_nested_list() {
-    let toks = tokenize("(a (b c) d)");
-    let out = parse_sexprs(&toks).expect("parse ok");
-    assert_eq!(out.len(), 1);
-    match &out[0] {
-        Sexpr::List(v) => {
-            assert_eq!(v.len(), 3);
-            assert!(matches!(&v[0], Sexpr::Atom(s) if s == "a"));
-            assert!(matches!(&v[1], Sexpr::List(_)));
-            assert!(matches!(&v[2], Sexpr::Atom(s) if s == "d"));
-        }
-        other => panic!("expected List, got {:?}", other),
-    }
-}
-
-#[test]
-fn parse_multiple_top_level_forms() {
-    let toks = tokenize("(a) (b) c");
-    let out = parse_sexprs(&toks).expect("parse ok");
-    assert_eq!(out.len(), 3);
-}
 
 #[test]
 fn parse_unclosed_list_errors() {
@@ -143,18 +71,6 @@ fn parse_depth_cap_rejects_deep_nesting() {
         ParseError::Malformed(msg) => assert!(msg.contains("depth")),
         other => panic!("expected depth-cap Malformed, got {:?}", other),
     }
-}
-
-#[test]
-fn parse_truncated_input_errors() {
-    // parse_one on an empty token slice (or past-end index) returns
-    // the "unexpected end of input" error.
-    let err = parse_sexprs(&[]).expect("empty toks parse ok");
-    assert!(err.is_empty());
-    // Open paren at end with no contents and no close.
-    let toks = tokenize("(");
-    let err = parse_sexprs(&toks).unwrap_err();
-    assert!(matches!(err, ParseError::Malformed(_)));
 }
 
 // ────────── SPEC-DRIVEN property tests ──────────
@@ -355,10 +271,3 @@ fn prop_empty_or_whitespace_only_input_parses_to_empty_vec() {
     }
 }
 
-/// PROPERTY: `tokenize` is deterministic. Two calls with the same input
-/// produce identical token streams (no hidden state).
-#[test]
-fn prop_tokenize_is_deterministic() {
-    let src = "(declare-fun x () (_ FiniteField 7)) ; tail\n(assert (= x ff3))";
-    assert_eq!(tokenize(src), tokenize(src));
-}

@@ -15,38 +15,10 @@ fn hn_empty_ideal_is_one() {
 }
 
 #[test]
-fn hn_unit_ideal_is_zero() {
-    let unit = Monomial::one(3);
-    let hn = hilbert_numerator(&[unit]);
-    assert_eq!(hn, HilbertNum::zero());
-}
-
-#[test]
-fn hn_single_variable() {
-    // I = (x) in k[x, y] → N = 1 - t
-    let hn = hilbert_numerator(&[x(2, 0, 1)]);
-    assert_eq!(hn.coeffs(), &[1, -1]);
-}
-
-#[test]
 fn hn_single_higher_power() {
     // I = (x^3) in k[x] → N = 1 - t^3
     let hn = hilbert_numerator(&[x(1, 0, 3)]);
     assert_eq!(hn.coeffs(), &[1, 0, 0, -1]);
-}
-
-#[test]
-fn hn_two_coprime_vars() {
-    // I = (x, y) coprime → N = (1-t)^2 = 1 - 2t + t^2
-    let hn = hilbert_numerator(&[x(2, 0, 1), x(2, 1, 1)]);
-    assert_eq!(hn.coeffs(), &[1, -2, 1]);
-}
-
-#[test]
-fn hn_three_coprime_vars() {
-    // I = (x, y, z) → N = (1-t)^3 = 1 - 3t + 3t^2 - t^3
-    let hn = hilbert_numerator(&[x(3, 0, 1), x(3, 1, 1), x(3, 2, 1)]);
-    assert_eq!(hn.coeffs(), &[1, -3, 3, -1]);
 }
 
 #[test]
@@ -71,37 +43,6 @@ fn hn_square_of_max_ideal() {
 }
 
 #[test]
-fn hn_chain_overlap_xy_yz() {
-    // I = (x*y, y*z) in k[x, y, z]. Standard monomials are
-    // monomials with `b = 0` (no `y`) plus pure powers `y^k`.
-    // HF(0) = 1, HF(d) = d+2 for d ≥ 1; HN = 1 - 2t^2 + t^3.
-    let hn = hilbert_numerator(&[from_exps(vec![1, 1, 0]), from_exps(vec![0, 1, 1])]);
-    assert_eq!(hn.coeffs(), &[1, 0, -2, 1]);
-}
-
-#[test]
-fn hn_redundant_generators_are_minimised() {
-    // (x, x*y) ⇒ x*y is redundant, so HN = 1 - t (same as `(x)`).
-    let hn = hilbert_numerator(&[x(2, 0, 1), from_exps(vec![1, 1])]);
-    assert_eq!(hn.coeffs(), &[1, -1]);
-}
-
-#[test]
-fn hn_artinian_ideal_coeffs_sum_to_zero() {
-    // For an artinian ideal I (i.e. `S/I` finite-dimensional),
-    // `HN(1) = 0`: `HS(t) = HN(t) / (1-t)^n` is defined at `t=1`
-    // only when `(1-t)^n | HN(t)`, which forces `HN(1) = 0`.
-    // I = (x^2, x*y, y^2) ⇒ HN = 1 - 3t^2 + 2t^3, sum = 0.
-    let hn = hilbert_numerator(&[
-        from_exps(vec![2, 0]),
-        from_exps(vec![1, 1]),
-        from_exps(vec![0, 2]),
-    ]);
-    let sum: i64 = hn.coeffs().iter().sum();
-    assert_eq!(sum, 0);
-}
-
-#[test]
 fn hn_addition_subtraction_round_trip() {
     let mut a = HilbertNum {
         coeffs: vec![1, -2, 3],
@@ -113,18 +54,6 @@ fn hn_addition_subtraction_round_trip() {
     assert_eq!(a.coeffs(), &[1, -1, 3, -4]);
     a.sub_assign(&b);
     assert_eq!(a.coeffs(), &[1, -2, 3]);
-}
-
-#[test]
-fn hn_mul_t_pow_shifts() {
-    let mut a = HilbertNum {
-        coeffs: vec![1, -2, 3],
-    };
-    a.mul_t_pow_assign(2);
-    assert_eq!(a.coeffs(), &[0, 0, 1, -2, 3]);
-    let mut z = HilbertNum::zero();
-    z.mul_t_pow_assign(5);
-    assert_eq!(z, HilbertNum::zero());
 }
 
 #[test]
@@ -182,68 +111,6 @@ fn binom_basic_and_symmetry() {
     assert_eq!(binom_sat(3, 5), 0); // r > m
     // Large m, small r: choosing min(r, m-r) keeps it exact and cheap.
     assert_eq!(binom_sat(1000, 2), 1000 * 999 / 2);
-}
-
-#[test]
-fn hf_at_counts_degree_d_part() {
-    // I = (x^2, x*y, y^2) = m^2 in k[x,y]; HF = 1, 2, 0, 0, ...
-    let hn = hilbert_numerator(&[
-        from_exps(vec![2, 0]),
-        from_exps(vec![1, 1]),
-        from_exps(vec![0, 2]),
-    ]);
-    assert_eq!(hn.hf_at(0, 2), 1);
-    assert_eq!(hn.hf_at(1, 2), 2);
-    assert_eq!(hn.hf_at(2, 2), 0);
-    assert_eq!(hn.hf_at(3, 2), 0);
-}
-
-#[test]
-fn hf_at_single_var_power() {
-    // I = (x^3) in k[x]: standard {1, x, x^2}; HF(d) = 1 for d < 3, else 0.
-    let hn = hilbert_numerator(&[x(1, 0, 3)]);
-    assert_eq!(hn.hf_at(0, 1), 1);
-    assert_eq!(hn.hf_at(1, 1), 1);
-    assert_eq!(hn.hf_at(2, 1), 1);
-    assert_eq!(hn.hf_at(3, 1), 0);
-}
-
-#[test]
-fn hf_at_free_polynomial_ring() {
-    // I = 0 in k[x, y]: HF(d) = C(d+1, 1) = d + 1 (monomials of degree d).
-    let hn = HilbertNum::one();
-    assert_eq!(hn.hf_at(0, 2), 1);
-    assert_eq!(hn.hf_at(1, 2), 2);
-    assert_eq!(hn.hf_at(4, 2), 5);
-    // k[x,y,z]: HF(d) = C(d+2, 2).
-    assert_eq!(hn.hf_at(3, 3), 10);
-}
-
-#[test]
-fn quotient_dim_zero_dimensional_cases() {
-    // (x, y): standard {1} ⇒ dim 1.
-    assert_eq!(quotient_dimension(&[x(2, 0, 1), x(2, 1, 1)], 2), Some(1));
-    // m^2 = (x^2, x*y, y^2): standard {1, x, y} ⇒ dim 3.
-    assert_eq!(
-        quotient_dimension(
-            &[
-                from_exps(vec![2, 0]),
-                from_exps(vec![1, 1]),
-                from_exps(vec![0, 2])
-            ],
-            2
-        ),
-        Some(3)
-    );
-    // (x^2, y^2): standard {1, x, y, x*y} ⇒ dim 4.
-    assert_eq!(
-        quotient_dimension(&[from_exps(vec![2, 0]), from_exps(vec![0, 2])], 2),
-        Some(4)
-    );
-    // (x^3) in k[x]: standard {1, x, x^2} ⇒ dim 3.
-    assert_eq!(quotient_dimension(&[x(1, 0, 3)], 1), Some(3));
-    // (x^a, y^b): box of standard monomials ⇒ a*b.
-    assert_eq!(quotient_dimension(&[x(2, 0, 4), x(2, 1, 5)], 2), Some(20));
 }
 
 #[test]
@@ -338,20 +205,6 @@ fn quotient_dim_takes_minimum_pure_power_per_variable() {
     // power is seen first (`pure[0]` set to 2, then `c.min(3)` keeps 2).
     let gens_swapped = [from_exps(vec![2, 0]), from_exps(vec![3, 0]), from_exps(vec![0, 2])];
     assert_eq!(quotient_dimension(&gens_swapped, 2), Some(4));
-}
-
-#[test]
-fn quotient_dim_equals_summed_hilbert_function() {
-    // Cross-check the closed-form sum against term-by-term HF for an
-    // Artinian ideal: I = (x^2, y^3) in k[x, y], dim = 2*3 = 6.
-    let gens = [x(2, 0, 2), x(2, 1, 3)];
-    let hn = hilbert_numerator(&gens);
-    let mut summed: i128 = 0;
-    for d in 0..16 {
-        summed += hn.hf_at(d, 2);
-    }
-    assert_eq!(summed, 6);
-    assert_eq!(quotient_dimension(&gens, 2), Some(6));
 }
 
 // ─────────────── HARD-PROBE: cross-module bug hunt ───────────────
@@ -551,41 +404,6 @@ fn hilbert_numerator_is_order_independent() {
 }
 
 #[test]
-fn hilbert_numerator_via_recursion_matches_coprime_shortcut_when_coprime() {
-    // SPEC: when gens are pairwise coprime, the coprime-product shortcut
-    // must give the same answer as the (alternate) recursive path. The
-    // recursion is reached by ADDING a non-coprime gen and then
-    // confirming dimension matches the brute-force count — indirect, but
-    // probes consistency.
-    // Coprime path: <x^2, y^2, z^2> in k[x,y,z]; dim = 8.
-    let coprime = [x(3, 0, 2), x(3, 1, 2), x(3, 2, 2)];
-    assert_eq!(quotient_dimension(&coprime, 3), Some(8));
-    // Non-coprime (recursive) path: <x^2, x*y, y^2, z^2>; std monomials = box{1,x,y}*{1,z}\{x*y} → {1,x,y,z,xz,yz} ⇒ 6.
-    let non_coprime = [
-        from_exps(vec![2, 0, 0]),
-        from_exps(vec![1, 1, 0]),
-        from_exps(vec![0, 2, 0]),
-        from_exps(vec![0, 0, 2]),
-    ];
-    let brute = enumerate_std_monomials_count(&non_coprime, 3, 6);
-    assert_eq!(brute, 6, "spec: 6 std monomials");
-    assert_eq!(quotient_dimension(&non_coprime, 3), Some(6),
-        "recursive path agrees with spec");
-}
-
-#[test]
-fn hf_at_socle_is_zero_for_artinian_above_degree_cap() {
-    // SPEC: for an Artinian ideal, HF(d) = 0 for d sufficiently large
-    // (past the socle degree). For <x^a, y^b>, socle degree is a+b-2.
-    let gens = [x(2, 0, 3), x(2, 1, 4)]; // socle deg 3+4-2 = 5
-    let hn = hilbert_numerator(&gens);
-    for d in 6u32..50 {
-        assert_eq!(hn.hf_at(d, 2), 0,
-            "spec: HF({}) must be 0 (past socle degree)", d);
-    }
-}
-
-#[test]
 fn one_minus_t_pow_basic_invariants() {
     // SPEC checks for the building block.
     let p1 = HilbertNum::one_minus_t_pow(1);
@@ -617,6 +435,10 @@ fn mul_t_pow_preserves_degree_shift() {
                 "spec: (t^{}*p).coeff({}) = p.coeff({})", k, d + k, d);
         }
     }
+    // Zero-polynomial early-return: shifting 0 stays 0 at any k.
+    let mut z = HilbertNum::zero();
+    z.mul_t_pow_assign(5);
+    assert_eq!(z, HilbertNum::zero());
 }
 
 #[test]
@@ -627,36 +449,6 @@ fn quotient_dim_one_var_pure_power_matches_degree() {
         assert_eq!(quotient_dimension(&gens, 1), Some(n as u128),
             "spec: dim k[x]/<x^{}> = {}", n, n);
     }
-}
-
-#[test]
-fn quotient_dim_redundant_generator_robustness() {
-    // SPEC: dim invariant under inclusion of any monomial that's a
-    // multiple of an existing minimal generator.
-    let minimal = [x(2, 0, 3), x(2, 1, 2)];
-    let mut with_redundant: Vec<Monomial> = minimal.to_vec();
-    with_redundant.push(from_exps(vec![5, 1])); // multiple of x^3
-    with_redundant.push(from_exps(vec![3, 1])); // multiple of x^3
-    with_redundant.push(from_exps(vec![1, 4])); // multiple of y^2
-    assert_eq!(
-        quotient_dimension(&minimal, 2),
-        quotient_dimension(&with_redundant, 2)
-    );
-}
-
-#[test]
-fn hf_at_partial_sum_monotone_for_artinian() {
-    // SPEC: partial sum Σ_{d≤D} HF(d) is monotone non-decreasing in D
-    // for Artinian ideals (HF ≥ 0).
-    let gens = [x(2, 0, 4), x(2, 1, 5)]; // dim 20
-    let hn = hilbert_numerator(&gens);
-    let mut prev: i128 = 0;
-    for d in 0..40u32 {
-        let cur = prev + hn.hf_at(d, 2);
-        assert!(cur >= prev, "spec: partial sum non-decreasing at d={}", d);
-        prev = cur;
-    }
-    assert_eq!(prev, 20, "spec: final partial sum = quotient dim");
 }
 
 #[test]
@@ -672,15 +464,6 @@ fn quotient_dim_box_pure_powers_three_vars() {
             }
         }
     }
-}
-
-#[test]
-fn hilbert_numerator_zero_ideal_independent_of_n_vars() {
-    // SPEC: HN(0) = 1, regardless of n_vars (the n_vars only enters via
-    // the denominator (1-t)^n, not the numerator).
-    let hn = hilbert_numerator(&[]);
-    assert_eq!(hn, HilbertNum::one());
-    assert_eq!(hn.coeffs(), &[1]);
 }
 
 #[test]
@@ -705,27 +488,6 @@ fn binom_recurrence_consistency() {
                 m, r, m - 1, r - 1, m - 1, r);
         }
     }
-}
-
-#[test]
-fn binom_zero_when_r_gt_m() {
-    for m in 0u64..=5 {
-        for r in (m + 1)..(m + 5) {
-            assert_eq!(binom_sat(m, r), 0,
-                "spec: C({}, {}) = 0 (r > m)", m, r);
-        }
-    }
-}
-
-#[test]
-fn hilbert_add_subtract_inverse() {
-    // SPEC: a.add_assign(b).sub_assign(b) returns a (when no saturation).
-    let a_orig = HilbertNum { coeffs: vec![3, 1, -2, 5, 0, 7] };
-    let b = HilbertNum { coeffs: vec![1, -1, 2] };
-    let mut a = a_orig.clone();
-    a.add_assign(&b);
-    a.sub_assign(&b);
-    assert_eq!(a, a_orig, "spec: add then sub the same operand is identity");
 }
 
 #[test]

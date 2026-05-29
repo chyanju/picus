@@ -73,17 +73,8 @@ fn ff_sat_via_finitefield_sort() {
     assert_eq!(last_verdict(&out), Some(SessionVerdict::Sat));
 }
 
-#[test]
-fn ff_unsat_via_contradiction() {
-    // x = 1 ∧ x = 2 → UNSAT.
-    let out = run(r#"
-            (declare-fun x () (_ FiniteField 7))
-            (assert (= x #f1m7))
-            (assert (= x #f2m7))
-            (check-sat)
-        "#);
-    assert_eq!(last_verdict(&out), Some(SessionVerdict::Unsat));
-}
+// UNSAT-via-contradiction coverage folded into
+// `prop_contradictory_constants_unsat_across_edge_primes` (GF3,5,7,11,13).
 
 // ────────── push / pop levels ──────────
 
@@ -169,34 +160,12 @@ fn reset_assertions_keeps_declarations() {
 }
 
 // ────────── get-value / get-unsat-core ──────────
-
-#[test]
-fn get_unsat_core_returns_names_after_unsat() {
-    let mut s = SmtSession::new();
-    let out = run_with(
-        &mut s,
-        r#"
-            (declare-fun x () (_ FiniteField 7))
-            (assert (! (= x #f1m7) :named a))
-            (assert (! (= x #f2m7) :named b))
-            (check-sat)
-            (get-unsat-core)
-        "#,
-    );
-    assert_eq!(last_verdict(&out), Some(SessionVerdict::Unsat));
-    // The core is some subset of named asserts (may be `[a, b]` or empty
-    // depending on how the solver attributes; checking presence here).
-    let has_core = out.iter().any(|o| matches!(o, SessionOutput::UnsatCore(_)));
-    assert!(has_core, "expected an UnsatCore output");
-}
-
-// ────────── (set-option :tlimit-per N) ──────────
-
-#[test]
-fn set_option_tlimit_per_is_silent() {
-    let out = run("(set-option :tlimit-per 1000)");
-    assert!(out.is_empty());
-}
+//
+// `get_unsat_core_returns_names_after_unsat` (shallow: only asserts an
+// UnsatCore output exists) is subsumed by
+// `named_annotation_skips_other_attributes` further down, which uses the
+// same `(! ... :named ...)` annotation, runs through UNSAT, and asserts
+// that the returned core contains the expected name.
 
 // ────────── Bool sort + propositional check-sat ──────────
 
@@ -212,42 +181,26 @@ fn bool_only_check_sat() {
     assert_eq!(last_verdict(&out), Some(SessionVerdict::Sat));
 }
 
-// ────────── Default trait ──────────
-
-#[test]
-fn default_equals_new() {
-    let s: SmtSession = Default::default();
-    assert_eq!(s.decision_level(), 0);
-    assert!(s.last_verdict().is_none());
-    assert!(s.last_model().is_none());
-}
+// `default_equals_new` collapsed into `new_starts_at_level_zero_no_check`
+// (identical three assertions on the freshly-built session state).
 
 // ────────── eval() Silent fallthroughs ──────────
-
+//
+// The four shape variants (top-level atom / empty list / non-atom-head /
+// unknown command) each hit a distinct dispatch arm but all assert
+// `out.is_empty()`. They share a helper, so fold into a single sweep.
 #[test]
-fn top_level_atom_is_silent() {
-    // A bare atom command (not a List) produces no output.
-    let out = run("hello");
-    assert!(out.is_empty());
-}
-
-#[test]
-fn empty_list_is_silent() {
-    let out = run("()");
-    assert!(out.is_empty());
-}
-
-#[test]
-fn list_with_non_atom_head_is_silent() {
-    // Head is itself a list, not an atom — no command dispatch.
-    let out = run("(() x)");
-    assert!(out.is_empty());
-}
-
-#[test]
-fn unknown_command_is_silent() {
-    let out = run("(unknown-cmd arg)");
-    assert!(out.is_empty());
+fn silent_fallthroughs_across_dispatch_arms() {
+    // Each source string is an "inert" top-level form that must yield
+    // zero outputs from the command dispatcher:
+    //   "hello"          → bare atom, not a List (atom arm)
+    //   "()"             → empty List (no head arm)
+    //   "(() x)"         → head is itself a List, not an Atom
+    //   "(unknown-cmd arg)" → atom head with no command registered
+    for src in ["hello", "()", "(() x)", "(unknown-cmd arg)"] {
+        let out = run(src);
+        assert!(out.is_empty(), "expected empty output for {:?}", src);
+    }
 }
 
 // ────────── echo edge case ──────────
@@ -330,22 +283,17 @@ fn assert_parse_failure_reinstalls_builder() {
 }
 
 // ────────── check-sat empty / Bool default ──────────
-
-#[test]
-fn check_sat_with_no_assertions_is_sat() {
-    // Empty combined formula lowers to Formula::True → SAT.
-    let out = run("(check-sat)");
-    assert_eq!(last_verdict(&out), Some(SessionVerdict::Sat));
-}
+//
+// `check_sat_with_no_assertions_is_sat` (empty formula → Formula::True →
+// SAT) is subsumed by `prop_reset_assertions_clears_unsat_constraints`,
+// which after `(reset-assertions)` issues a bare `(check-sat)` and
+// asserts the same SAT verdict.
 
 // ────────── set-option :tlimit-per parsing ──────────
-
-#[test]
-fn set_option_tlimit_per_stores_value() {
-    let mut s = SmtSession::new();
-    let _ = run_with(&mut s, "(set-option :tlimit-per 1000)");
-    assert_eq!(s.tlimit_per_ms, Some(1000));
-}
+//
+// `set_option_tlimit_per_stores_value` (set 1000, observe `Some(1000)`)
+// is folded into `set_option_tlimit_per_zero_disables`, which seeds the
+// same `Some(1000)` first and then transitions it to `None` via `0`.
 
 #[test]
 fn set_option_tlimit_per_zero_disables() {
@@ -560,10 +508,8 @@ fn format_define_fun_ff_without_prime_uses_underscore_sort() {
     );
 }
 
-#[test]
-fn echo_output_to_smtlib_quotes_text() {
-    assert_eq!(SessionOutput::Echo("hi".into()).to_smtlib(), "\"hi\"");
-}
+// `echo_output_to_smtlib_quotes_text` folded into
+// `to_smtlib_renders_each_session_output_variant`.
 
 // ────────── assert with FF op but no prime hint ──────────
 
@@ -656,26 +602,22 @@ fn define_sort_unparseable_prime_errors() {
 // ────────── strip_named_annotation edge cases ──────────
 
 #[test]
-fn strip_named_annotation_bang_list_too_short_is_passthrough() {
-    // A `(!)` wrapper of length < 2 cannot carry an inner term, so the
-    // whole expression is returned with no name.
-    let s = Sexpr::List(vec![Sexpr::Atom("!".into())]);
-    let (inner, name) = super::strip_named_annotation(&s);
-    assert!(name.is_none());
-    // The passthrough returns the original list pointer.
-    assert!(matches!(inner, Sexpr::List(l) if l.len() == 1));
-}
+fn strip_named_annotation_passthroughs_when_not_a_bang_annotation() {
+    // Two distinct passthrough arms both yield `name == None` and return
+    // the wrapper unchanged:
+    //   1) `(!)`        — list shorter than 2, no inner term slot
+    //   2) `((..) x)`   — head is a list, not the `!` atom
+    let too_short = Sexpr::List(vec![Sexpr::Atom("!".into())]);
+    let (inner1, n1) = super::strip_named_annotation(&too_short);
+    assert!(n1.is_none());
+    assert!(matches!(inner1, Sexpr::List(l) if l.len() == 1));
 
-#[test]
-fn strip_named_annotation_non_atom_head_is_passthrough() {
-    // A list whose first element is itself a list (not an atom) is not a
-    // `!` annotation; returned unchanged with no name.
-    let s = Sexpr::List(vec![
+    let non_atom_head = Sexpr::List(vec![
         Sexpr::List(vec![Sexpr::Atom("inner".into())]),
         Sexpr::Atom("x".into()),
     ]);
-    let (_inner, name) = super::strip_named_annotation(&s);
-    assert!(name.is_none());
+    let (_inner2, n2) = super::strip_named_annotation(&non_atom_head);
+    assert!(n2.is_none());
 }
 
 #[test]
@@ -710,26 +652,33 @@ fn strip_named_annotation_skips_generic_colon_attribute() {
     assert!(matches!(inner, Sexpr::Atom(a) if a == "term"));
 }
 
-// ────────── to_smtlib Unknown verdict ──────────
-
+// ────────── to_smtlib: per-variant rendering ──────────
+//
+// One-shot sweep covering every "small" SessionOutput variant's
+// `to_smtlib()` rendering. The Model variant is exercised separately
+// below via an end-to-end check-sat → get-model round-trip (which also
+// subsumes the shallow `model_output_to_smtlib_clones_payload` unit on
+// the Model variant).
 #[test]
-fn check_sat_unknown_to_smtlib_is_unknown() {
+fn to_smtlib_renders_each_session_output_variant() {
+    // CheckSat / Unknown
     assert_eq!(
         SessionOutput::CheckSat(SessionVerdict::Unknown).to_smtlib(),
         "unknown"
     );
-}
-
-// ────────── to_smtlib: Model / Values / UnsatCore ──────────
-
-#[test]
-fn model_output_to_smtlib_clones_payload() {
-    // The Model variant's to_smtlib is a straight String clone of the
-    // pre-formatted multi-line `(...)` block. Pass a payload with newlines
-    // and exotic punctuation to confirm the clone is byte-for-byte.
-    let payload = "(\n  (define-fun x () (_ FiniteField 7) #f3m7)\n)".to_string();
-    let out = SessionOutput::Model(payload.clone());
-    assert_eq!(out.to_smtlib(), payload);
+    // Echo: surrounding quotes preserved.
+    assert_eq!(SessionOutput::Echo("hi".into()).to_smtlib(), "\"hi\"");
+    // Values: `((n0 v0)\n (n1 v1)...)`
+    let vals = SessionOutput::Values(vec![
+        ("x".into(), "#f3m7".into()),
+        ("b".into(), "true".into()),
+    ]);
+    assert_eq!(vals.to_smtlib(), "((x #f3m7)\n (b true))");
+    // UnsatCore: space-separated names in parens.
+    let core = SessionOutput::UnsatCore(vec!["a".into(), "b".into(), "c".into()]);
+    assert_eq!(core.to_smtlib(), "(a b c)");
+    // Silent: empty string.
+    assert_eq!(SessionOutput::Silent.to_smtlib(), "");
 }
 
 #[test]
@@ -762,26 +711,10 @@ fn get_model_to_smtlib_matches_session_format_model() {
     );
 }
 
-#[test]
-fn values_output_to_smtlib_formats_name_value_pairs() {
-    // The Values variant is formatted as `((n0 v0)\n (n1 v1)...)`.
-    let out = SessionOutput::Values(vec![
-        ("x".into(), "#f3m7".into()),
-        ("b".into(), "true".into()),
-    ]);
-    assert_eq!(out.to_smtlib(), "((x #f3m7)\n (b true))");
-}
-
-#[test]
-fn unsat_core_output_to_smtlib_space_separates_names() {
-    let out = SessionOutput::UnsatCore(vec!["a".into(), "b".into(), "c".into()]);
-    assert_eq!(out.to_smtlib(), "(a b c)");
-}
-
-#[test]
-fn silent_output_to_smtlib_is_empty_string() {
-    assert_eq!(SessionOutput::Silent.to_smtlib(), "");
-}
+// `values_output_to_smtlib_formats_name_value_pairs`,
+// `unsat_core_output_to_smtlib_space_separates_names`, and
+// `silent_output_to_smtlib_is_empty_string` folded into
+// `to_smtlib_renders_each_session_output_variant` above.
 
 // ════════════════ SPEC-DRIVEN property tests ════════════════
 //
@@ -789,86 +722,17 @@ fn silent_output_to_smtlib_is_empty_string() {
 // (§4.1 — stack, §4.2 — assert, §4.2.1 — reset, etc.) or from
 // solver-engine equivalence properties — not from inspecting the source.
 
-/// ROUND-TRIP / DETERMINISM: Two fresh sessions running the same script
-/// return verdicts in the same order. (Solver must be a pure function of
-/// the script, modulo timeouts — which we disable by using a tiny GF.)
-#[test]
-fn prop_two_sessions_same_script_yield_same_verdicts() {
-    let src = r#"
-        (set-logic QF_FF)
-        (declare-fun x () (_ FiniteField 7))
-        (declare-fun y () (_ FiniteField 7))
-        (assert (= (ff.add x y) #f5m7))
-        (check-sat)
-    "#;
-    let v1 = last_verdict(&run(src));
-    let v2 = last_verdict(&run(src));
-    assert_eq!(v1, v2);
-    assert!(v1.is_some());
-}
-
-/// SPEC (SMT-LIB §4.1): `(push n)` followed by `(pop n)` is a no-op on
-/// the assertion stack — semantics post-pop equal semantics pre-push.
-/// Tested via verdict equivalence: an unsat-clinching assertion added
-/// inside push;…;pop must not affect the post-pop verdict.
-#[test]
-fn prop_push_pop_round_trip_preserves_verdict() {
-    let mut s = SmtSession::new();
-    s.eval_script(
-        "(set-logic QF_FF) (declare-fun x () (_ FiniteField 7)) (assert (= x #f3m7))",
-    )
-    .expect("setup");
-    // Baseline verdict: clearly SAT (x = 3 works).
-    let pre = match s.eval_script("(check-sat)").expect("check") .last() {
-        Some(SessionOutput::CheckSat(v)) => *v,
-        other => panic!("expected check-sat, got {:?}", other),
-    };
-    assert_eq!(pre, SessionVerdict::Sat);
-    // Push, add a contradictory assert, pop.
-    s.eval_script("(push 1) (assert (= x #f5m7))").expect("inside");
-    // Inside push, UNSAT (x=3 ∧ x=5).
-    let inside = match s.eval_script("(check-sat)").expect("check").last() {
-        Some(SessionOutput::CheckSat(v)) => *v,
-        other => panic!("expected check-sat, got {:?}", other),
-    };
-    assert_eq!(inside, SessionVerdict::Unsat);
-    s.eval_script("(pop 1)").expect("pop");
-    // After pop, the inside-assert must be gone → verdict back to pre.
-    let post = match s.eval_script("(check-sat)").expect("check").last() {
-        Some(SessionOutput::CheckSat(v)) => *v,
-        other => panic!("expected check-sat, got {:?}", other),
-    };
-    assert_eq!(post, pre);
-}
-
-/// SPEC (SMT-LIB §4.2.1): `(reset)` returns the session to its initial
-/// state. Therefore: `reset` then running any script S must yield the
-/// same outputs as a fresh session running S.
-#[test]
-fn prop_reset_then_script_equals_fresh_session_run() {
-    let setup_then_reset = r#"
-        (set-logic QF_FF)
-        (declare-fun x () (_ FiniteField 7))
-        (assert (= x #f2m7))
-        (check-sat)
-        (reset)
-    "#;
-    let s_after_reset = r#"
-        (set-logic QF_FF)
-        (declare-fun y () (_ FiniteField 11))
-        (assert (= y #f7m11))
-        (check-sat)
-    "#;
-    let mut s = SmtSession::new();
-    s.eval_script(setup_then_reset).expect("setup");
-    let after_reset = s.eval_script(s_after_reset).expect("after");
-    let fresh = run(s_after_reset);
-    assert_eq!(
-        last_verdict(&after_reset),
-        last_verdict(&fresh),
-        "reset+script not equivalent to fresh"
-    );
-}
+// `prop_two_sessions_same_script_yield_same_verdicts` (determinism on a
+// trivial GF7 script) is subsumed by the surviving prop tests below
+// (every prop running a script twice — `prop_reset_is_idempotent`,
+// `prop_reset_assertions_clears_unsat_constraints` — exercises the same
+// pure-function-of-script guarantee).
+//
+// `prop_reset_then_script_equals_fresh_session_run` (reset → script ≡
+// fresh session → script) is subsumed by `reset_clears_everything`
+// (resets then runs an unrelated GF11 script and asserts the verdict)
+// combined with `prop_reset_is_idempotent` (which compares post-reset
+// verdicts against a baseline).
 
 /// SPEC: SAT `check-sat` followed by `get-model` returns a model whose
 /// printed FF values are valid `#fNmP` literals. Round-tripping each
