@@ -108,11 +108,10 @@ impl<'r> BitProp<'r> {
     /// derived before cancellation; partial output is still sound (every
     /// emitted poly is a valid consequence of the basis).
     ///
-    /// Takes `&self`: this never mutates `BitProp` — in particular never
-    /// caches a branch-local bit proof into `self.bits`, which would let a
-    /// variable that is a bit only on the current DFS branch be treated as
-    /// a global bit on a sibling branch — so the no-mutation contract is
-    /// enforced by the type rather than by prose.
+    /// Takes `&self`: never mutates `BitProp`. In particular, must not
+    /// cache a branch-local bit proof into `self.bits` — a variable that is
+    /// a bit only on the current DFS branch would then be treated as a
+    /// global bit on a sibling branch (unsound: false UNSAT).
     #[metric("bitprop::get_bit_equalities")]
     pub fn get_bit_equalities_with_cancel(
         &self,
@@ -124,7 +123,6 @@ impl<'r> BitProp<'r> {
         let fp = &pr.field();
         let mut output: Vec<Poly> = Vec::new();
 
-        // Borrow (no clone): `&self` lets `self.is_bit` share the borrow.
         let bitsums = &self.bitsums;
         let mut non_constant_bitsums: Vec<Vec<usize>> = Vec::new();
 

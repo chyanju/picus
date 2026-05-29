@@ -11,5 +11,4 @@ num-bigint.workspace = true
 num-traits.workspace = true
 num-integer.workspace = true
 rug.workspace = true
-log.workspace = true
 serde.workspace = true

@@ -21,11 +21,11 @@ pub mod split_gb;
 pub(crate) mod sat;
 
 // Shared substrate (runtime config, polynomial ring, profiler, cancellation)
-// lives in picus-core; re-bound so in-crate code uses
+// lives in picus-core; in-crate code refers to it as
 // `crate::{config, poly, profile, timeout}`.
 pub(crate) use picus_core::{config, poly, profile, timeout};
-// The `metric::` namespace (incr!/add!/max!/timer!) — re-bound so in-crate
-// call sites read `metric::incr!(..)` etc., syntactically distinct from logic.
+// The `metric::` namespace (incr!/add!/max!/timer!): in-crate call sites
+// read `metric::incr!(..)` etc., syntactically distinct from logic.
 // `metric` (module, type namespace) and the `#[metric]` attribute (macro
 // namespace) coexist under one name; `use crate::metric` brings both.
 pub(crate) use picus_core::metric;

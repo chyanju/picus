@@ -8,9 +8,8 @@
 //! 3. Run plain DegRevLex Buchberger on `Ph` via the repr-aware raw entry
 //!    [`crate::gb::ideal::compute_gb_direct`] (sparse or dense engine per the
 //!    active representation — so by-homog stays sparse under the sparse repr).
-//!    Calling the raw direct entry rather than the dispatching
-//!    `compute_gb_with_order` is deliberate: otherwise dispatch would recurse
-//!    back into ByHomog on the homogenised ring.
+//!    The raw direct entry (not the dispatching `compute_gb_with_order`)
+//!    avoids recursing back into ByHomog on the homogenised ring.
 //! 4. Dehomogenize each basis element back to `P` (`h := 1`).
 //! 5. Interreduce in `P` (drop LM-divisible duplicates, normal-form survivors).
 //!
@@ -67,14 +66,14 @@ pub fn compute_gb_by_homog(
     }
 
     // Step 3: plain DegRevLex Buchberger on Ph, routed to the sparse or
-    // dense engine per the active representation. Using the raw direct
-    // entry (not the dispatching `compute_gb_with_order`) so the chosen
-    // strategy doesn't bounce back into this routine.
+    // dense engine per the active representation. The raw direct entry
+    // (not the dispatching `compute_gb_with_order`) avoids recursing back
+    // into ByHomog on the homogenised ring.
     let gb_h = compute_gb_direct(&h.ext, gh, cancel, MonomialOrder::DegRevLex);
 
     if cancel.is_cancelled() {
-        // Best-effort: dehom + interreduce what we have; consumers will
-        // typically discard via the outer cancel check anyway.
+        // Best-effort: dehom + interreduce whatever the cancelled GB call
+        // produced; the outer cancel check generally discards it.
     }
 
     // Step 4: dehom each element back to P.

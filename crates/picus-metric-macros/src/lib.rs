@@ -17,13 +17,13 @@ use syn::{parse_macro_input, ItemFn, LitStr};
 /// * `#[metric]` — label is the function name.
 /// * `#[metric("custom_label")]` — explicit label.
 ///
-/// The guard is cheap when profiling is disabled (a single flag read), so the
-/// attribute is behaviour-preserving relative to a hand-written
-/// `let _t = ScopedTimer::new("fn");` as the first statement.
+/// The guard is cheap when profiling is disabled (a single flag read);
+/// equivalent to a hand-written `let _t = ScopedTimer::new("fn");` as the
+/// first statement.
 ///
 /// The expansion references `::picus_core::profile::ScopedTimer`, so the
-/// annotated item must live in a crate that depends on `picus-core`. (For use
-/// inside `picus-core` itself, add `extern crate self as picus_core;`.)
+/// annotated item must live in a crate that depends on `picus-core`. Inside
+/// `picus-core` itself, add `extern crate self as picus_core;`.
 ///
 /// [`ScopedTimer`]: ../picus_core/profile/struct.ScopedTimer.html
 #[proc_macro_attribute]

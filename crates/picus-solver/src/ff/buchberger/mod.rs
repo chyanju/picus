@@ -262,14 +262,14 @@ impl crate::ff::spair_criteria::LeadingTerms for Vec<BasisElement> {
 
 // ────────────────────────────── Buchberger ─────────────────────────────────
 
-/// Per-run profiling counters — pure telemetry, no field read by engine
-/// logic. Written only through gb-stats-gated `metric::scope!` blocks, so
-/// when `gb_stats` is off they stay zero at no cost; printed to stderr at
-/// the end of [`BuchbergerState::run`] when enabled (CLI `--gb-stats`),
-/// and read by tests (which enable `gb_stats`). The interreduce schedule's
-/// useful-reduction count is a separate logic field
-/// [`BuchbergerState::useful_reductions`], deliberately NOT in this bundle
-/// so profiling can be disabled without perturbing the schedule.
+/// Per-run profiling counters. Pure telemetry: no field is read by
+/// engine logic. Written only through gb-stats-gated `metric::scope!`
+/// blocks, so when `gb_stats` is off they stay zero at no cost. Printed
+/// to stderr at the end of [`BuchbergerState::run`] when enabled (CLI
+/// `--gb-stats`); also readable by tests that enable `gb_stats`.
+/// The interreduce schedule's useful-reduction count lives in the
+/// separate logic field [`BuchbergerState::useful_reductions`] so that
+/// disabling profiling cannot perturb the schedule.
 #[derive(Clone, Debug, Default)]
 pub struct GbProfileCounters {
     pub pairs_generated: u64,
@@ -299,13 +299,14 @@ pub(super) struct BuchbergerState {
     pub(super) generation: u32,
     /// True once a constant (nonzero) has entered the basis.
     pub(super) trivial: bool,
-    /// Running count of useful (non-zero) reductions — pure engine logic,
+    /// Running count of useful (non-zero) reductions. Pure engine logic:
     /// drives the periodic interreduce schedule in [`Self::run`]. Held
     /// separate from [`GbProfileCounters`] so profiling can be turned off
-    /// without touching the schedule (same value as `profile.reductions_useful`,
-    /// but a distinct variable with a distinct role).
+    /// without altering the schedule. Numerically equal to
+    /// `profile.reductions_useful` when profiling is on; distinct field
+    /// because the schedule must not depend on profiling state.
     useful_reductions: u64,
-    /// Per-run profiling counters; written only through gb-stats-gated
+    /// Per-run profiling counters. Written only through gb-stats-gated
     /// `metric::scope!`, so disabling `gb_stats` makes them a no-op.
     profile: GbProfileCounters,
     /// Set when every initial generator shares the same total degree.
@@ -1009,9 +1010,9 @@ impl BuchbergerState {
     }
 
     /// Per-pair S-poly construction + geobucket reduction. Shared
-    /// with `run()` so `run_f4` can fall back to it for size-1
-    /// batches (where F4's matrix amortization wins zero and the
-    /// safety-net reduction is pure overhead).
+    /// with `run()` so `run_f4` can fall back to it for batches
+    /// below [`F4_MIN_BATCH`], where the matrix-build overhead
+    /// outweighs the amortization gain.
     fn process_pair_geobucket<O: BuchbergerObserver>(
         &mut self,
         pair: SPair,
