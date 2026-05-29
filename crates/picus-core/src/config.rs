@@ -133,6 +133,14 @@ pub struct RuntimeConfig {
     /// f)` across multiple DFS branches. Off by default; flip on if PLDI
     /// total wall-clock drops.
     pub frobenius_cache: bool,
+    /// In multivariate model construction (`find_zero_cancel`), use the
+    /// incremental Buchberger driver (`compute_gb_incremental_with_order`)
+    /// to extend the basis with the new `(var − val)` constraint at every
+    /// DFS branch, instead of running a fresh full Buchberger over the
+    /// merged generator list. Result-preserving (same reduced GB modulo
+    /// canonicalisation) — only the work to reach it is amortized across
+    /// branches. Off by default; flip on if PLDI total wall-clock drops.
+    pub branching_incremental_gb: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -154,6 +162,7 @@ impl Default for RuntimeConfig {
             split_triangular: false,
             reducer_index_cache: false,
             frobenius_cache: true,
+            branching_incremental_gb: true,
         }
     }
 }
@@ -179,6 +188,7 @@ impl RuntimeConfig {
         if let Some(v) = o.split_triangular { self.split_triangular = v; }
         if let Some(v) = o.reducer_index_cache { self.reducer_index_cache = v; }
         if let Some(v) = o.frobenius_cache { self.frobenius_cache = v; }
+        if let Some(v) = o.branching_incremental_gb { self.branching_incremental_gb = v; }
     }
 }
 
@@ -210,6 +220,7 @@ pub struct EngineOverlay {
     pub split_triangular: Option<bool>,
     pub reducer_index_cache: Option<bool>,
     pub frobenius_cache: Option<bool>,
+    pub branching_incremental_gb: Option<bool>,
 }
 
 thread_local! {
