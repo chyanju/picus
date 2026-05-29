@@ -122,3 +122,7 @@ inventory::submit! {
         factory: || Box::new(Binary01Lemma::default()),
     }
 }
+
+#[cfg(test)]
+#[path = "binary01_tests.rs"]
+mod tests;

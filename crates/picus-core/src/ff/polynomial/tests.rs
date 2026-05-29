@@ -794,3 +794,856 @@ fn prop_dense_sparse_evaluate_agree() {
     let es = ps.evaluate(&v, &rs);
     assert!(f.eq(&ed, &es), "dense vs sparse evaluate disagree");
 }
+
+// ── (10) ADDITIONAL COVERAGE: appearing_variables / is_univariate ───────
+
+#[test]
+fn prop_appearing_variables_reports_max_exponent() {
+    // Spec: returns (var, max_exp) for every variable with nonzero exponent
+    // anywhere in the polynomial.
+    let r = small_ring();
+    let f = &r.field;
+    // p = 3*x0^2*x1 + x2 + 5  → var 0 max=2, var 1 max=1, var 2 max=1.
+    let p = DensePoly::from_terms(
+        vec![
+            (Monomial::from_exponents(vec![2, 1, 0]), f.from_u64(3)),
+            (Monomial::from_exponents(vec![0, 0, 1]), f.from_u64(1)),
+            (Monomial::from_exponents(vec![0, 0, 0]), f.from_u64(5)),
+        ],
+        &r,
+    );
+    let appearing = p.appearing_variables(&r);
+    assert_eq!(appearing, vec![(0, 2), (1, 1), (2, 1)]);
+}
+
+#[test]
+fn prop_appearing_variables_skips_zero_exponents() {
+    // Variables that never appear must not be listed.
+    let r = small_ring();
+    let f = &r.field;
+    // Only x1 appears
+    let p = DensePoly::from_terms(
+        vec![(Monomial::from_exponents(vec![0, 3, 0]), f.from_u64(2))],
+        &r,
+    );
+    let appearing = p.appearing_variables(&r);
+    assert_eq!(appearing, vec![(1, 3)]);
+}
+
+#[test]
+fn prop_appearing_variables_of_zero_is_empty() {
+    let r = small_ring();
+    let z = DensePoly::zero();
+    assert!(z.appearing_variables(&r).is_empty());
+}
+
+#[test]
+fn prop_is_univariate_iff_one_variable_appears() {
+    let r = small_ring();
+    let f = &r.field;
+    // x0^3 + x0 + 2 — univariate in x0
+    let p_uni = DensePoly::from_terms(
+        vec![
+            (Monomial::from_exponents(vec![3, 0, 0]), f.from_u64(1)),
+            (Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1)),
+            (Monomial::from_exponents(vec![0, 0, 0]), f.from_u64(2)),
+        ],
+        &r,
+    );
+    assert_eq!(p_uni.is_univariate(&r), Some(0));
+
+    // x0 + x1 — bivariate
+    let p_bi = DensePoly::from_terms(
+        vec![
+            (Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1)),
+            (Monomial::from_exponents(vec![0, 1, 0]), f.from_u64(1)),
+        ],
+        &r,
+    );
+    assert!(p_bi.is_univariate(&r).is_none());
+
+    // Constant — no variable appears → None.
+    let p_const = DensePoly::constant(f.from_u64(7), &r);
+    assert!(p_const.is_univariate(&r).is_none());
+
+    // Zero — no variables → None.
+    let z = DensePoly::zero();
+    assert!(z.is_univariate(&r).is_none());
+}
+
+// ── (11) mul_term ───────────────────────────────────────────────────────
+
+#[test]
+fn prop_mul_term_matches_mul_with_single_term_poly() {
+    // mul_term(t_exps, t_coeff) must equal mul(&poly_of_single_term).
+    let r = small_ring();
+    let f = &r.field;
+    let p = sample_p(&r);
+    let t_exps = vec![1u16, 2, 0];
+    let t_coeff = f.from_u64(3);
+    let by_term = p.mul_term(&t_exps, &t_coeff, &r);
+    let t_poly = DensePoly::from_terms(
+        vec![(Monomial::from_exponents(t_exps.clone()), t_coeff.clone())],
+        &r,
+    );
+    let by_mul = p.mul(&t_poly, &r);
+    assert!(poly_eq(&by_term, &by_mul, &r), "mul_term != mul-by-single-term");
+}
+
+#[test]
+fn prop_mul_term_zero_coeff_yields_zero() {
+    // Multiplying by zero coefficient yields the zero polynomial.
+    let r = small_ring();
+    let p = sample_p(&r);
+    let t_exps = vec![1u16, 0, 0];
+    let result = p.mul_term(&t_exps, &r.field.zero(), &r);
+    assert!(result.is_zero());
+}
+
+#[test]
+fn prop_mul_term_on_zero_poly_yields_zero() {
+    // Zero polynomial * any term == zero.
+    let r = small_ring();
+    let z = DensePoly::zero();
+    let t_exps = vec![1u16, 0, 0];
+    let result = z.mul_term(&t_exps, &r.field.from_u64(5), &r);
+    assert!(result.is_zero());
+}
+
+// ── (12) negate_in_place ────────────────────────────────────────────────
+
+#[test]
+fn prop_negate_in_place_matches_negate() {
+    // In-place negate produces the same coefficients as negate(&).
+    let r = small_ring();
+    let p = sample_p(&r);
+    let by_clone = p.negate(&r);
+    let mut p_mut = p.clone();
+    p_mut.negate_in_place(&r);
+    assert!(poly_eq(&p_mut, &by_clone, &r));
+}
+
+#[test]
+fn prop_negate_in_place_involution() {
+    // Double negate-in-place is identity.
+    let r = small_ring();
+    let p = sample_p(&r);
+    let mut p_mut = p.clone();
+    p_mut.negate_in_place(&r);
+    p_mut.negate_in_place(&r);
+    assert!(poly_eq(&p_mut, &p, &r));
+}
+
+// ── (13) cmp_term_at on lex vs degrevlex ────────────────────────────────
+
+#[test]
+fn prop_cmp_term_at_lex() {
+    // Lex: first differing exponent decides.
+    // [2,1] vs [2,0]: equal first, second (1>0) → Greater.
+    assert_eq!(
+        DensePoly::cmp_term_at(&[2, 1], 3, &[2, 0], 2, MonomialOrder::Lex),
+        std::cmp::Ordering::Greater
+    );
+    // [1, 5] vs [2, 0]: first differs (1 < 2) → Less.
+    assert_eq!(
+        DensePoly::cmp_term_at(&[1, 5], 6, &[2, 0], 2, MonomialOrder::Lex),
+        std::cmp::Ordering::Less
+    );
+}
+
+#[test]
+fn prop_cmp_term_at_degrevlex() {
+    // DegRevLex: degree wins first.
+    assert_eq!(
+        DensePoly::cmp_term_at(&[0, 5], 5, &[1, 1], 2, MonomialOrder::DegRevLex),
+        std::cmp::Ordering::Greater,
+        "deg 5 > deg 2"
+    );
+    // Same total degree (3): [2,1] vs [0,3]: revlex tie-break wins for [2,1].
+    // Trailing exponent: 1 < 3 → [2,1] is LARGER under DegRevLex.
+    assert_eq!(
+        DensePoly::cmp_term_at(&[2, 1], 3, &[0, 3], 3, MonomialOrder::DegRevLex),
+        std::cmp::Ordering::Greater
+    );
+}
+
+// ── (14) from_raw_sorted is a thin constructor ─────────────────────────
+
+#[test]
+fn prop_from_raw_sorted_roundtrip() {
+    // Round-tripping through raw_* readers + from_raw_sorted yields an
+    // equal polynomial — the constructor blindly trusts the inputs.
+    let r = small_ring();
+    let p = sample_p(&r);
+    let exps = p.raw_exponents().to_vec();
+    let coeffs = p.raw_coeffs().to_vec();
+    let degs = p.raw_total_degs().to_vec();
+    let q = DensePoly::from_raw_sorted(exps, coeffs, degs);
+    assert!(poly_eq(&p, &q, &r), "raw round-trip changed polynomial");
+}
+
+#[test]
+fn prop_from_raw_sorted_empty_is_zero() {
+    let q = DensePoly::from_raw_sorted(Vec::new(), Vec::new(), Vec::new());
+    assert!(q.is_zero());
+}
+
+// ── (15) terms() iterator order ─────────────────────────────────────────
+
+#[test]
+fn prop_terms_iterates_descending() {
+    // Per the file docstring: terms are stored descending under ring order;
+    // terms() iterates index 0 (= leading) forward.
+    let r = small_ring();
+    let p = sample_p(&r);
+    let mut prev: Option<Monomial> = None;
+    for t in p.terms(&r) {
+        let here = t.monomial();
+        if let Some(prev_m) = prev {
+            assert!(
+                prev_m.cmp_with_order(&here, r.order) == std::cmp::Ordering::Greater,
+                "terms() not strictly descending"
+            );
+        }
+        prev = Some(here);
+    }
+    // first term must equal leading term.
+    let lt = p.leading_term(&r).unwrap();
+    let first = p.term(0, &r);
+    assert_eq!(lt.exponents(), first.exponents());
+    assert_eq!(lt.coefficient(), first.coefficient());
+}
+
+// ── (16) merge_owned ────────────────────────────────────────────────────
+
+#[test]
+fn prop_merge_owned_matches_add() {
+    // merge_owned(a, b, negate_other=false) == add(a, b)
+    let r = small_ring();
+    let a = sample_p(&r);
+    let b = sample_q(&r);
+    let expected = a.add(&b, &r);
+    let merged = a.clone().merge_owned(b.clone(), &r, false);
+    assert!(poly_eq(&merged, &expected, &r));
+}
+
+#[test]
+fn prop_merge_owned_negate_matches_sub() {
+    // merge_owned(a, b, negate_other=true) == sub(a, b)
+    let r = small_ring();
+    let a = sample_p(&r);
+    let b = sample_q(&r);
+    let expected = a.sub(&b, &r);
+    let merged = a.clone().merge_owned(b.clone(), &r, true);
+    assert!(poly_eq(&merged, &expected, &r));
+}
+
+#[test]
+fn prop_merge_owned_zero_lhs() {
+    // merge_owned(0, b, false) = b; merge_owned(0, b, true) = -b.
+    let r = small_ring();
+    let b = sample_q(&r);
+    let z = DensePoly::zero();
+    let r1 = z.clone().merge_owned(b.clone(), &r, false);
+    assert!(poly_eq(&r1, &b, &r));
+    let r2 = z.merge_owned(b.clone(), &r, true);
+    let nb = b.negate(&r);
+    assert!(poly_eq(&r2, &nb, &r));
+}
+
+#[test]
+fn prop_merge_owned_zero_rhs() {
+    // merge_owned(a, 0, _) = a.
+    let r = small_ring();
+    let a = sample_p(&r);
+    let z = DensePoly::zero();
+    let merged = a.clone().merge_owned(z, &r, false);
+    assert!(poly_eq(&merged, &a, &r));
+}
+
+// ── (17) is_constant / num_terms ────────────────────────────────────────
+
+#[test]
+fn prop_is_constant_classification() {
+    let r = small_ring();
+    let f = &r.field;
+    // zero -> constant
+    assert!(DensePoly::zero().is_constant());
+    // nonzero constant -> constant
+    assert!(DensePoly::constant(f.from_u64(5), &r).is_constant());
+    // variable -> not constant
+    assert!(!DensePoly::variable(0, &r).is_constant());
+    // multi-term -> not constant
+    assert!(!sample_p(&r).is_constant());
+}
+
+#[test]
+fn prop_constant_zero_collapses() {
+    let r = small_ring();
+    let f = &r.field;
+    let zc = DensePoly::constant(f.zero(), &r);
+    assert!(zc.is_zero());
+    assert_eq!(zc.num_terms(), 0);
+    let nc = DensePoly::constant(f.from_u64(7), &r);
+    assert_eq!(nc.num_terms(), 1);
+    assert_eq!(nc.total_degree(), 0);
+}
+
+// ── (18) content_hash sensitivity to LC ─────────────────────────────────
+
+#[test]
+fn prop_content_hash_changes_with_leading_coefficient() {
+    // The docstring states: hash mixes in LC for sensitivity to coefficient
+    // changes between same-monomial polynomials. Verify two polys differing
+    // only in LC produce different hashes (not strictly required by spec,
+    // but the documented design intent).
+    let r = small_ring();
+    let f = &r.field;
+    let p1 = DensePoly::from_terms(
+        vec![(Monomial::from_exponents(vec![2, 0, 0]), f.from_u64(3))],
+        &r,
+    );
+    let p2 = DensePoly::from_terms(
+        vec![(Monomial::from_exponents(vec![2, 0, 0]), f.from_u64(7))],
+        &r,
+    );
+    // Different polynomials.
+    assert!(!poly_eq(&p1, &p2, &r));
+    // Hash should differ (design intent; not a soundness invariant).
+    assert_ne!(p1.content_hash(), p2.content_hash());
+}
+
+#[test]
+fn prop_content_hash_zero_is_stable() {
+    // Zero polynomial's content_hash is deterministic across calls and
+    // independent of the ring.
+    let z = DensePoly::zero();
+    let h1 = z.content_hash();
+    let h2 = z.content_hash();
+    assert_eq!(h1, h2);
+}
+
+// ── (19) Polynomial enum surface ────────────────────────────────────────
+
+#[test]
+fn prop_polynomial_zero_is_zero() {
+    // Polynomial::zero() reports is_zero true and has num_terms 0.
+    let z = Polynomial::zero();
+    assert!(z.is_zero());
+    assert_eq!(z.num_terms(), 0);
+}
+
+#[test]
+fn prop_polynomial_variable_total_degree_one() {
+    use crate::config::ReprKind;
+    let rd = ring_repr(101, 3, ReprKind::Dense);
+    let rs = ring_repr(101, 3, ReprKind::Sparse);
+    for r in [&rd, &rs] {
+        let v = Polynomial::variable(1, r);
+        assert!(!v.is_zero());
+        assert_eq!(v.total_degree(), 1);
+        assert_eq!(v.num_terms(), 1);
+        // LC of a single variable is 1.
+        assert!(r.field.is_one(v.leading_coefficient().unwrap()));
+    }
+}
+
+#[test]
+fn prop_polynomial_constant_total_degree_zero() {
+    use crate::config::ReprKind;
+    let rd = ring_repr(101, 3, ReprKind::Dense);
+    let rs = ring_repr(101, 3, ReprKind::Sparse);
+    for r in [&rd, &rs] {
+        let c = Polynomial::constant(r.field.from_u64(5), r);
+        assert!(!c.is_zero());
+        assert!(c.is_constant());
+        assert_eq!(c.total_degree(), 0);
+    }
+}
+
+#[test]
+fn prop_polynomial_constant_zero_collapses() {
+    use crate::config::ReprKind;
+    let rd = ring_repr(101, 3, ReprKind::Dense);
+    let rs = ring_repr(101, 3, ReprKind::Sparse);
+    for r in [&rd, &rs] {
+        let z = Polynomial::constant(r.field.zero(), r);
+        assert!(z.is_zero());
+    }
+}
+
+#[test]
+fn prop_polynomial_as_dense_roundtrip() {
+    use crate::config::ReprKind;
+    // as_dense on a Dense arm borrows; on Sparse materialises. Either way
+    // the dense reading must agree with the polynomial's terms.
+    let rs = ring_repr(101, 3, ReprKind::Sparse);
+    let f = &rs.field;
+    let ps = Polynomial::from_terms(
+        vec![
+            (Monomial::from_exponents(vec![2, 0, 0]), f.from_u64(3)),
+            (Monomial::from_exponents(vec![0, 1, 0]), f.from_u64(5)),
+        ],
+        &rs,
+    );
+    let dense = ps.as_dense(&rs).into_owned();
+    assert_eq!(dense.num_terms(), 2);
+    assert!(!dense.is_zero());
+}
+
+#[test]
+fn prop_polynomial_to_sparse_then_back_preserves() {
+    use crate::config::ReprKind;
+    let rd = ring_repr(101, 3, ReprKind::Dense);
+    let p = Polynomial::from_terms(
+        vec![
+            (Monomial::from_exponents(vec![2, 0, 0]), rd.field.from_u64(3)),
+            (Monomial::from_exponents(vec![1, 1, 0]), rd.field.from_u64(2)),
+        ],
+        &rd,
+    );
+    let sparse = p.to_sparse(&rd);
+    // Materialise it back via as_dense; coefficient set must match.
+    let back = Polynomial::Sparse(sparse).as_dense(&rd).into_owned();
+    let original = p.as_dense(&rd).into_owned();
+    assert!(poly_eq(&original, &back, &rd));
+}
+
+#[test]
+fn prop_polynomial_arithmetic_dispatch_smoke() {
+    use crate::config::ReprKind;
+    // add/sub/mul/scale/negate/make_monic all dispatch over both arms
+    // and round-trip through the basic ring identities.
+    for &repr in &[ReprKind::Dense, ReprKind::Sparse] {
+        let r = ring_repr(101, 3, repr);
+        let f = &r.field;
+        let a = Polynomial::from_terms(
+            vec![
+                (Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(2)),
+                (Monomial::from_exponents(vec![0, 0, 0]), f.from_u64(1)),
+            ],
+            &r,
+        );
+        let b = Polynomial::from_terms(
+            vec![
+                (Monomial::from_exponents(vec![0, 1, 0]), f.from_u64(3)),
+                (Monomial::from_exponents(vec![0, 0, 0]), f.from_u64(5)),
+            ],
+            &r,
+        );
+        // a + b - b = a
+        let s = a.add(&b, &r);
+        let back = s.sub(&b, &r);
+        let back_d = back.as_dense(&r).into_owned();
+        let a_d = a.as_dense(&r).into_owned();
+        assert!(
+            poly_eq(&back_d, &a_d, &r),
+            "(a+b)-b != a (repr {:?})", repr
+        );
+        // negate twice -> original
+        let nn = a.negate(&r).negate(&r);
+        let nn_d = nn.as_dense(&r).into_owned();
+        assert!(poly_eq(&nn_d, &a_d, &r));
+        // scale(1) is identity
+        let s1 = a.scale(&f.one(), &r);
+        let s1_d = s1.as_dense(&r).into_owned();
+        assert!(poly_eq(&s1_d, &a_d, &r));
+        // make_monic gives LC 1
+        let m = a.make_monic(&r);
+        assert!(f.is_one(m.leading_coefficient().unwrap()));
+    }
+}
+
+#[test]
+fn prop_polynomial_leading_monomial_matches_dispatch() {
+    use crate::config::ReprKind;
+    let rd = ring_repr(101, 3, ReprKind::Dense);
+    let rs = ring_repr(101, 3, ReprKind::Sparse);
+    let build = |r: &PolyRing| -> Polynomial {
+        Polynomial::from_terms(
+            vec![
+                (Monomial::from_exponents(vec![2, 1, 0]), r.field.from_u64(1)),
+                (Monomial::from_exponents(vec![1, 0, 0]), r.field.from_u64(3)),
+            ],
+            r,
+        )
+    };
+    let pd = build(&rd);
+    let ps = build(&rs);
+    let lmd = pd.leading_monomial(&rd).unwrap();
+    let lms = ps.leading_monomial(&rs).unwrap();
+    assert_eq!(lmd.exponents(), lms.exponents());
+    assert_eq!(lmd.exponents(), &[2, 1, 0]);
+}
+
+#[test]
+fn prop_polynomial_evaluate_dispatches_correctly() {
+    use crate::config::ReprKind;
+    // For an explicit poly, evaluation agrees with hand computation.
+    for &repr in &[ReprKind::Dense, ReprKind::Sparse] {
+        let r = ring_repr(101, 2, repr);
+        let f = &r.field;
+        // p(x0, x1) = 2*x0^2 + 3*x1 + 5; at (x0=4, x1=7): 2*16 + 21 + 5 = 58
+        let p = Polynomial::from_terms(
+            vec![
+                (Monomial::from_exponents(vec![2, 0]), f.from_u64(2)),
+                (Monomial::from_exponents(vec![0, 1]), f.from_u64(3)),
+                (Monomial::from_exponents(vec![0, 0]), f.from_u64(5)),
+            ],
+            &r,
+        );
+        let v = vec![f.from_u64(4), f.from_u64(7)];
+        let e = p.evaluate(&v, &r);
+        assert_eq!(e, f.from_u64(58));
+    }
+}
+
+#[test]
+fn prop_polynomial_appearing_variables_matches() {
+    use crate::config::ReprKind;
+    for &repr in &[ReprKind::Dense, ReprKind::Sparse] {
+        let r = ring_repr(101, 3, repr);
+        let f = &r.field;
+        let p = Polynomial::from_terms(
+            vec![
+                (Monomial::from_exponents(vec![2, 0, 0]), f.from_u64(1)),
+                (Monomial::from_exponents(vec![0, 0, 3]), f.from_u64(1)),
+            ],
+            &r,
+        );
+        let av = p.appearing_variables(&r);
+        // Both reps must agree on the set of (var, max_exp) pairs.
+        let mut sorted = av.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec![(0, 2), (2, 3)]);
+    }
+}
+
+#[test]
+fn prop_polynomial_substitute_var_concrete() {
+    use crate::config::ReprKind;
+    // p(x0, x1, x2) = x0 + x1 + x2; substitute x1 = 3 → x0 + 3 + x2.
+    for &repr in &[ReprKind::Dense, ReprKind::Sparse] {
+        let r = ring_repr(101, 3, repr);
+        let f = &r.field;
+        let p = Polynomial::from_terms(
+            vec![
+                (Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1)),
+                (Monomial::from_exponents(vec![0, 1, 0]), f.from_u64(1)),
+                (Monomial::from_exponents(vec![0, 0, 1]), f.from_u64(1)),
+            ],
+            &r,
+        );
+        let q = p.substitute_var(1, &f.from_u64(3), &r);
+        assert_eq!(q.num_terms(), 3, "substitute repr {:?}", repr);
+    }
+}
+
+#[test]
+fn prop_polynomial_is_univariate_dispatch() {
+    use crate::config::ReprKind;
+    for &repr in &[ReprKind::Dense, ReprKind::Sparse] {
+        let r = ring_repr(101, 3, repr);
+        let f = &r.field;
+        let uni = Polynomial::from_terms(
+            vec![
+                (Monomial::from_exponents(vec![2, 0, 0]), f.from_u64(1)),
+                (Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(3)),
+            ],
+            &r,
+        );
+        assert_eq!(uni.is_univariate(&r), Some(0));
+        let bi = Polynomial::from_terms(
+            vec![
+                (Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1)),
+                (Monomial::from_exponents(vec![0, 1, 0]), f.from_u64(1)),
+            ],
+            &r,
+        );
+        assert!(bi.is_univariate(&r).is_none());
+    }
+}
+
+#[test]
+fn prop_polynomial_content_hash_consistent() {
+    use crate::config::ReprKind;
+    for &repr in &[ReprKind::Dense, ReprKind::Sparse] {
+        let r = ring_repr(101, 3, repr);
+        let p = Polynomial::from_terms(
+            vec![
+                (Monomial::from_exponents(vec![2, 1, 0]), r.field.from_u64(2)),
+                (Monomial::from_exponents(vec![0, 0, 0]), r.field.from_u64(7)),
+            ],
+            &r,
+        );
+        let h1 = p.content_hash();
+        let h2 = p.content_hash();
+        assert_eq!(h1, h2, "content_hash not deterministic ({repr:?})");
+    }
+}
+
+#[test]
+fn prop_polynomial_collect_terms_idx_round_trip_count() {
+    use crate::config::ReprKind;
+    for &repr in &[ReprKind::Dense, ReprKind::Sparse] {
+        let r = ring_repr(101, 3, repr);
+        let f = &r.field;
+        // 3 terms; the constant term should yield empty vars slice.
+        let p = Polynomial::from_terms(
+            vec![
+                (Monomial::from_exponents(vec![2, 1, 0]), f.from_u64(2)),
+                (Monomial::from_exponents(vec![0, 0, 1]), f.from_u64(3)),
+                (Monomial::from_exponents(vec![0, 0, 0]), f.from_u64(7)),
+            ],
+            &r,
+        );
+        let terms = p.collect_terms_idx(&r);
+        assert_eq!(terms.len(), 3);
+        // Each (coeff, vars) entry: coeff is nonzero, vars has only nonzero exps.
+        for (coeff, vars) in &terms {
+            assert!(coeff > &num_bigint::BigUint::from(0u32));
+            for &(_, e) in vars {
+                assert!(e > 0, "collect_terms_idx must list only nonzero exps");
+            }
+        }
+    }
+}
+
+// ── (20) ReducerIndex: matches_active / size queries ────────────────────
+
+#[test]
+fn prop_reducer_index_len_matches_divisors() {
+    // ReducerIndex::build produces a `len()` equal to divisors.len().
+    let r = small_ring();
+    let f = &r.field;
+    let d1 = DensePoly::from_terms(
+        vec![(Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1))],
+        &r,
+    );
+    let d2 = DensePoly::from_terms(
+        vec![(Monomial::from_exponents(vec![0, 1, 0]), f.from_u64(1))],
+        &r,
+    );
+    let divs: Vec<&DensePoly> = vec![&d1, &d2];
+    let idx = super::ReducerIndex::build(&divs, &r, None);
+    assert_eq!(idx.len(), 2);
+    assert!(!idx.is_empty());
+}
+
+#[test]
+fn prop_reducer_index_empty() {
+    let r = small_ring();
+    let idx = super::ReducerIndex::build(&[], &r, None);
+    assert_eq!(idx.len(), 0);
+    assert!(idx.is_empty());
+}
+
+#[test]
+fn prop_reducer_index_matches_active_self() {
+    // An index built from a divisor set matches that same set.
+    let r = small_ring();
+    let f = &r.field;
+    let d = DensePoly::from_terms(
+        vec![(Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1))],
+        &r,
+    );
+    let divs: Vec<&DensePoly> = vec![&d];
+    let idx = super::ReducerIndex::build(&divs, &r, None);
+    assert!(idx.matches_active(&divs, &r));
+}
+
+#[test]
+fn prop_reducer_index_matches_active_rejects_resized() {
+    // Length mismatch must yield false.
+    let r = small_ring();
+    let f = &r.field;
+    let d = DensePoly::from_terms(
+        vec![(Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1))],
+        &r,
+    );
+    let divs1: Vec<&DensePoly> = vec![&d];
+    let divs2: Vec<&DensePoly> = vec![&d, &d];
+    let idx = super::ReducerIndex::build(&divs1, &r, None);
+    assert!(!idx.matches_active(&divs2, &r), "size mismatch must fail");
+}
+
+#[test]
+fn prop_reducer_index_matches_active_rejects_changed_lt() {
+    // If a divisor's leading term changes, matches_active must return false.
+    let r = small_ring();
+    let f = &r.field;
+    let d_a = DensePoly::from_terms(
+        vec![(Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1))],
+        &r,
+    );
+    let d_b = DensePoly::from_terms(
+        vec![(Monomial::from_exponents(vec![0, 1, 0]), f.from_u64(1))],
+        &r,
+    );
+    let divs_old: Vec<&DensePoly> = vec![&d_a];
+    let divs_new: Vec<&DensePoly> = vec![&d_b];
+    let idx = super::ReducerIndex::build(&divs_old, &r, None);
+    assert!(!idx.matches_active(&divs_new, &r));
+}
+
+// ── (21) reduce_by_refs_counted / _cancel / cancellation surface ────────
+
+#[test]
+fn prop_reduce_by_refs_counted_counts_picks() {
+    // The use_counts vector is incremented once per reduction step using
+    // the selected divisor. Build a polynomial that requires 2 picks of d.
+    let r = small_ring();
+    let f = &r.field;
+    let d = DensePoly::from_terms(
+        vec![(Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1))],
+        &r,
+    );
+    // p = x^2 + x — leading is x^2 (reducible by x), then becomes 0 + x
+    // (still reducible by x). Expected use_count: 2.
+    let p = DensePoly::from_terms(
+        vec![
+            (Monomial::from_exponents(vec![2, 0, 0]), f.from_u64(1)),
+            (Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1)),
+        ],
+        &r,
+    );
+    let mut counts = vec![0u64; 1];
+    let divs: Vec<&DensePoly> = vec![&d];
+    let nf = p.reduce_by_refs_counted(&divs, &r, &mut counts);
+    assert!(nf.is_zero(), "x^2 + x mod x must be 0");
+    assert_eq!(counts[0], 2, "expected 2 picks of divisor");
+}
+
+#[test]
+fn prop_reduce_by_refs_counted_no_pick_zero_counts() {
+    // If no divisor matches anything, no pick happens; counts stay 0.
+    let r = small_ring();
+    let f = &r.field;
+    // Divisor x^3 doesn't divide leading term x or constant in p = x + 5.
+    let d = DensePoly::from_terms(
+        vec![(Monomial::from_exponents(vec![3, 0, 0]), f.from_u64(1))],
+        &r,
+    );
+    let p = DensePoly::from_terms(
+        vec![
+            (Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1)),
+            (Monomial::from_exponents(vec![0, 0, 0]), f.from_u64(5)),
+        ],
+        &r,
+    );
+    let mut counts = vec![0u64; 1];
+    let divs: Vec<&DensePoly> = vec![&d];
+    let nf = p.reduce_by_refs_counted(&divs, &r, &mut counts);
+    assert_eq!(counts[0], 0);
+    // p was unchanged.
+    assert!(poly_eq(&nf, &p, &r));
+}
+
+#[test]
+fn prop_reduce_by_refs_cancel_no_cancel_matches_uncancelled() {
+    // With a fresh (uncancelled) token, reduce_by_refs_cancel == reduce_by_refs.
+    let r = small_ring();
+    let f = &r.field;
+    let d = DensePoly::from_terms(
+        vec![
+            (Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1)),
+            (Monomial::from_exponents(vec![0, 0, 0]), f.from_i64(-1)),
+        ],
+        &r,
+    );
+    let p = DensePoly::from_terms(
+        vec![
+            (Monomial::from_exponents(vec![3, 0, 0]), f.from_u64(1)),
+            (Monomial::from_exponents(vec![0, 0, 0]), f.from_i64(-1)),
+        ],
+        &r,
+    );
+    let cancel = crate::timeout::CancelToken::new();
+    let divs: Vec<&DensePoly> = vec![&d];
+    let a = p.reduce_by_refs(&divs, &r);
+    let b = p.reduce_by_refs_cancel(&divs, &r, &cancel);
+    assert!(poly_eq(&a, &b, &r));
+}
+
+#[test]
+fn prop_reduce_by_refs_cancel_already_cancelled_returns_input_coset() {
+    // With a pre-cancelled token, the reducer may bail out before doing
+    // significant work; the result must remain in the same coset.
+    // Concretely: residue evaluated at any value must equal p evaluated
+    // there modulo the ideal (we just check the result is a valid poly
+    // and the call returns without panicking).
+    let r = small_ring();
+    let f = &r.field;
+    let d = DensePoly::from_terms(
+        vec![(Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1))],
+        &r,
+    );
+    let p = sample_p(&r);
+    let cancel = crate::timeout::CancelToken::cancelled();
+    let divs: Vec<&DensePoly> = vec![&d];
+    // Doesn't matter exactly what we get back; the call must terminate
+    // and produce a valid descending polynomial. The first cancel-check
+    // is at iteration 4096, so for small inputs we still get the full nf.
+    let _ = p.reduce_by_refs_cancel(&divs, &r, &cancel);
+}
+
+// ── (22) reduce_by_refs on zero / empty edges ───────────────────────────
+
+#[test]
+fn prop_reduce_by_refs_zero_input_is_zero() {
+    let r = small_ring();
+    let f = &r.field;
+    let d = DensePoly::from_terms(
+        vec![(Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1))],
+        &r,
+    );
+    let divs: Vec<&DensePoly> = vec![&d];
+    let nf = DensePoly::zero().reduce_by_refs(&divs, &r);
+    assert!(nf.is_zero());
+}
+
+#[test]
+fn prop_reduce_by_refs_empty_divisors_is_identity() {
+    let r = small_ring();
+    let p = sample_p(&r);
+    let nf = p.reduce_by_refs(&[], &r);
+    assert!(poly_eq(&nf, &p, &r));
+}
+
+#[test]
+fn prop_reduce_by_refs_geobucket_with_zero_divisor_skips_it() {
+    // A zero divisor in the list cannot match any LT and must be ignored.
+    let r = small_ring();
+    let f = &r.field;
+    let zero = DensePoly::zero();
+    let d = DensePoly::from_terms(
+        vec![(Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1))],
+        &r,
+    );
+    let p = DensePoly::from_terms(
+        vec![
+            (Monomial::from_exponents(vec![2, 0, 0]), f.from_u64(1)),
+            (Monomial::from_exponents(vec![0, 0, 0]), f.from_u64(1)),
+        ],
+        &r,
+    );
+    let divs: Vec<&DensePoly> = vec![&zero, &d];
+    let nf = p.reduce_by_refs_geobucket(&divs, &r, None, None, None);
+    // p = x^2 + 1 mod x = 1
+    assert_eq!(nf.num_terms(), 1);
+    assert_eq!(nf.leading_term(&r).unwrap().exponents(), &[0, 0, 0]);
+}
+
+// ── (23) cross-prime sweep on reduce ────────────────────────────────────
+
+#[test]
+fn prop_reduce_self_yields_zero_across_primes() {
+    // Reducing any nonzero polynomial by itself must yield zero.
+    for &p_val in &[2u64, 3, 5, 7, 101] {
+        let r = ring_with(p_val, 3, MonomialOrder::DegRevLex);
+        let p = sample_p(&r);
+        let divs: Vec<&DensePoly> = vec![&p];
+        let nf = p.reduce_by_refs(&divs, &r);
+        assert!(nf.is_zero(), "p mod p != 0 in GF({p_val})");
+    }
+}

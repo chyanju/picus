@@ -166,3 +166,7 @@ inventory::submit! {
         factory: || Box::new(BimLemma::default()),
     }
 }
+
+#[cfg(test)]
+#[path = "bim_tests.rs"]
+mod tests;

@@ -407,3 +407,7 @@ fn pair_key(a: usize, b: usize) -> (usize, usize) {
     }
 }
 
+#[cfg(test)]
+#[path = "compconstant_tests.rs"]
+mod tests;
+

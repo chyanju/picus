@@ -106,3 +106,7 @@ pub fn initial_ranges() -> HashMap<usize, RangeValue> {
     );
     ranges
 }
+
+#[cfg(test)]
+#[path = "range_tests.rs"]
+mod tests;

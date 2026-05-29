@@ -154,3 +154,7 @@ inventory::submit! {
         factory: || Box::new(LinearLemma::default()),
     }
 }
+
+#[cfg(test)]
+#[path = "linear_tests.rs"]
+mod tests;

@@ -596,3 +596,7 @@ impl DensePoly {
         DensePoly::from_raw_sorted(result_exps, result_coeffs, result_degs)
     }
 }
+
+#[cfg(test)]
+#[path = "dense_reduce_tests.rs"]
+mod tests;

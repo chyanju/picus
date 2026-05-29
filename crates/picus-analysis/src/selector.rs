@@ -84,3 +84,7 @@ pub enum SolverFeedback {
     /// Signal was skipped (SAT for non-target, timeout, or error).
     Skip,
 }
+
+#[cfg(test)]
+#[path = "selector_tests.rs"]
+mod tests;

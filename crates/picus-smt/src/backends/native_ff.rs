@@ -259,3 +259,7 @@ inventory::submit! {
         factory: || Box::new(NativeFfBackend::new()),
     }
 }
+
+#[cfg(test)]
+#[path = "native_ff_tests.rs"]
+mod tests;

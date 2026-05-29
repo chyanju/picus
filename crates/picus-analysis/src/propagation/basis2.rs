@@ -205,3 +205,7 @@ inventory::submit! {
         factory: || Box::new(Basis2Lemma::default()),
     }
 }
+
+#[cfg(test)]
+#[path = "basis2_tests.rs"]
+mod tests;

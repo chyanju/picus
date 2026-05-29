@@ -193,3 +193,6 @@ pub fn poly_to_smtlib_ff(ir: &PolyIR, poly: &picus_core::poly::IrPoly) -> String
         _ => format!("(ff.add {})", parts.join(" ")),
     }
 }
+
+#[cfg(test)]
+mod tests;
