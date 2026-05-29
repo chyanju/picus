@@ -341,8 +341,6 @@ fn prop_basis2_does_not_promote_when_bits_not_pinned_binary() {
 fn prop_basis2_soundness_gate_blocks_when_two_pow_n_exceeds_prime_no_companion() {
     // GF(11), 4 bits → 2^4 = 16 > 11. With no companion, the gate
     // MUST stay closed even when target is known and bits are binary.
-    // This is the unit-level mirror of the integration soundness test
-    // `bug_basis2_does_not_overreport_when_bitwidth_exceeds_prime`.
     let r = basis2_r1cs(11, 4, /*target_is_input=*/ true);
     let ir = r1cs_to_poly_ir(&r, &HashSet::new(), 1).expect("lowering");
     let (mut known, mut unknown, mut ranges, mut learned, mut learned_disj) =
@@ -422,10 +420,10 @@ fn prop_basis2_lemma_set_includes_basis2() {
     assert!(all_names().iter().any(|n| *n == "basis2"));
 }
 
-// ── extra coverage: candidate-loop exhaustion paths ────────────────
+// ── candidate-loop exhaustion paths ────────────────────────────────
 
-/// Coverage: when NO term has the ±1 target coefficient, `match_decomp`
-/// must exhaust every candidate and return None.
+/// When NO term has the ±1 target coefficient, `match_decomp` exhausts
+/// every candidate and returns None.
 /// Example: `2 b_0 + 4 b_1 + 2 t = 0` over GF(11). Coefficients
 /// {2, 4, 2}. Neither `+1` (1) nor `-1` (10) is in the set ⇒ every
 /// candidate `continue`s. With every candidate rejected, the function
@@ -447,7 +445,7 @@ fn test_basis2_match_decomp_rejects_when_no_pm1_target_coeff() {
     assert!(first_decomp(&ir).is_none(), "no ±1 coefficient ⇒ no match");
 }
 
-/// Coverage: `match_decomp` rejects polys with a non-linear monomial.
+/// `match_decomp` rejects polys with a non-linear monomial.
 /// `(x1 * x2) * 1 = 0` lowers to a single bilinear term ⇒ inner check
 /// `vars.len() != 1 || vars[0].1 != 1` returns None.
 #[test]
@@ -463,10 +461,10 @@ fn test_basis2_match_decomp_rejects_nonlinear_term() {
     assert!(first_decomp(&ir).is_none(), "bilinear poly cannot be a basis2 decomp");
 }
 
-/// Coverage: `match_decomp` rejects polys with a non-zero CONSTANT
-/// term. Constants are tolerated only when exactly zero
+/// `match_decomp` rejects polys with a non-zero CONSTANT term.
+/// Constants are tolerated only when exactly zero
 /// (see `if !coeff.is_zero() { return None; }`).
-/// We construct `(weights) * 1 = 1`: the equality becomes
+/// Construct `(weights) * 1 = 1`: the equality becomes
 /// `b_0 + 2 b_1 - 1 = 0` (non-zero constant `-1` remains after C=1).
 #[test]
 fn test_basis2_match_decomp_rejects_nonzero_constant() {

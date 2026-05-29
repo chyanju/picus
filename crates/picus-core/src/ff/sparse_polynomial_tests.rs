@@ -1,10 +1,8 @@
-//! Spec-driven property tests for [`SparsePolynomial`].
-//!
-//! Expected values are derived from RING AXIOMS (commutativity, associativity,
-//! distributivity, identities, inverses) and CROSS-VALIDATION against the
-//! independently implemented [`DensePoly`] arm. A failure here indicates a
-//! bug in the sparse implementation (the dense arm is the differential
-//! oracle for the sparse engine, per `repr_oracle`).
+//! Property tests for [`SparsePolynomial`]. Expected values come from ring
+//! axioms (commutativity, associativity, distributivity, identities,
+//! inverses) and cross-validation against the independently implemented
+//! [`DensePoly`] arm — the dense engine is the differential oracle per
+//! `repr_oracle`.
 
 use crate::ff::field::PrimeField;
 use crate::ff::monomial::{Monomial, MonomialOrder};
@@ -85,11 +83,11 @@ fn sample_r(ring: &PolyRing) -> SparsePolynomial {
     )
 }
 
-// ── (1) RING AXIOMS ─────────────────────────────────────────────────────
+// ── RING AXIOMS ─────────────────────────────────────────────────────────
 
 #[test]
 fn prop_sparse_additive_group_axioms() {
-    // Folded additive group axioms over representative primes:
+    // Additive group axioms over representative primes:
     //   a+0=a, a+(-a)=0, a-a=0, -(-a)=a, a+b=b+a, (a+b)+c=a+(b+c).
     for &prime in &[2u64, 3, 5, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
@@ -112,7 +110,7 @@ fn prop_sparse_additive_group_axioms() {
 
 #[test]
 fn prop_sparse_multiplicative_monoid_axioms() {
-    // Folded: a*1=a, a*0=0, a*b=b*a; and (a*b)*c=a*(b*c) on a smaller
+    // a*1=a, a*0=0, a*b=b*a; and (a*b)*c=a*(b*c) on a smaller
     // prime set (the cubic-cost associativity case).
     for &prime in &[2u64, 3, 5, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
@@ -193,7 +191,7 @@ fn prop_sparse_leading_term_of_product() {
 
 #[test]
 fn prop_sparse_scale_axioms() {
-    // Folded: scale(a,1)=a, scale(a,0)=0, scale(scale(a,c),c^-1)=a (c!=0).
+    // scale(a,1)=a, scale(a,0)=0, scale(scale(a,c),c^-1)=a (c!=0).
     for &prime in &[3u64, 5, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let a = sample_p(&r);
@@ -211,11 +209,11 @@ fn prop_sparse_scale_axioms() {
     assert!(a.scale(&r.field.zero(), &r).is_zero(), "s0 GF(2)");
 }
 
-// ── (3) IDEMPOTENCE ─────────────────────────────────────────────────────
+// ── IDEMPOTENCE ─────────────────────────────────────────────────────────
 
 #[test]
 fn prop_sparse_make_monic() {
-    // Folded: idempotence monic(monic(p))=monic(p), LC(monic(p))=1,
+    // idempotence monic(monic(p))=monic(p), LC(monic(p))=1,
     // monic(0)=0 (no LC to divide by).
     for &prime in &[3u64, 5, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
@@ -229,11 +227,11 @@ fn prop_sparse_make_monic() {
     assert!(SparsePolynomial::zero().make_monic(&r).is_zero(), "monic(0)=0");
 }
 
-// ── (4) INVARIANTS ──────────────────────────────────────────────────────
+// ── INVARIANTS ──────────────────────────────────────────────────────────
 
 #[test]
 fn prop_sparse_evaluate_ring_hom() {
-    // Folded: E(a+b)=E(a)+E(b), E(a*b)=E(a)*E(b),
+    // E(a+b)=E(a)+E(b), E(a*b)=E(a)*E(b),
     // E(constant c)=c, E(x_i)(v)=v_i.
     for &prime in &[3u64, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
@@ -274,11 +272,11 @@ fn prop_sparse_fermat_eval_zero() {
     }
 }
 
-// ── (4) REDUCTION INVARIANTS ────────────────────────────────────────────
+// ── REDUCTION INVARIANTS ────────────────────────────────────────────────
 
 #[test]
 fn prop_sparse_reduce_invariants() {
-    // Folded: 0 reduced by anything = 0, p mod [p] = 0, (q*p) mod [p] = 0.
+    // 0 reduced by anything = 0, p mod [p] = 0, (q*p) mod [p] = 0.
     let r = ring_with(101, 3, MonomialOrder::DegRevLex);
     let d = sample_p(&r);
     let dr: Vec<&SparsePolynomial> = vec![&d];
@@ -319,11 +317,11 @@ fn prop_sparse_reduce_naive_matches_geobucket() {
         "naive reducer disagrees with geobucket");
 }
 
-// ── (7) EDGE CASES ──────────────────────────────────────────────────────
+// ── EDGE CASES ──────────────────────────────────────────────────────────
 
 #[test]
 fn prop_sparse_zero_poly_invariants() {
-    // Folded: zero poly has no LC/LM, num_terms=0, total_degree=0;
+    // Zero poly has no LC/LM, num_terms=0, total_degree=0;
     // constant(0) collapses to zero across primes.
     let z = SparsePolynomial::zero();
     assert!(z.is_zero());
@@ -365,7 +363,7 @@ fn prop_sparse_one_var_ring() {
     assert!(sparse_eq(&prod, &expected, &r), "(x+1)(x-1) != x^2-1");
 }
 
-// ── (2) ROUND-TRIP: dense <-> sparse ────────────────────────────────────
+// ── ROUND-TRIP: dense <-> sparse ────────────────────────────────────────
 
 #[test]
 fn prop_sparse_dense_roundtrip() {
@@ -397,7 +395,7 @@ fn prop_sparse_dense_roundtrip() {
     }
 }
 
-// ── (9) ENGINE EQUIVALENCE: sparse vs dense match term-by-term ──────────
+// ── ENGINE EQUIVALENCE: sparse vs dense match term-by-term ──────────────
 
 /// Convert a sparse polynomial to a dense one and compare against the
 /// dense computation, for each binary op. The sparse engine MUST agree
@@ -405,9 +403,9 @@ fn prop_sparse_dense_roundtrip() {
 
 #[test]
 fn prop_sparse_dense_equivalence_add_mul() {
-    // Folded: sparse arm must agree with dense arm on add and mul over
-    // the same operands (engine equivalence, the dense arm is the
-    // differential oracle per `repr_oracle`).
+    // Sparse arm must agree with dense arm on add and mul over the same
+    // operands (engine equivalence; dense is the differential oracle per
+    // `repr_oracle`).
     let r = ring_with(101, 3, MonomialOrder::DegRevLex);
     let sa = sample_p(&r);
     let sb = sample_q(&r);
@@ -469,7 +467,7 @@ fn prop_sparse_dense_equivalence_reduce() {
     }
 }
 
-// ── (1) Lex specifics ───────────────────────────────────────────────────
+// ── Lex specifics ───────────────────────────────────────────────────────
 
 #[test]
 fn prop_sparse_lex_leading_term() {
@@ -491,7 +489,7 @@ fn prop_sparse_degrevlex_leading_term() {
     assert_eq!(exps, vec![0, 5], "DegRevLex LT should be x1^5");
 }
 
-// ── (additional) from_terms canonicalisation ────────────────────────────
+// ── from_terms canonicalisation ─────────────────────────────────────────
 
 #[test]
 fn prop_sparse_from_terms_drops_zero_coeffs() {
@@ -540,7 +538,7 @@ fn prop_sparse_from_terms_sorts_descending() {
     }
 }
 
-// ── (additional) is_constant ───────────────────────────────────────────
+// ── is_constant ─────────────────────────────────────────────────────────
 
 #[test]
 fn prop_sparse_is_constant() {
@@ -552,7 +550,7 @@ fn prop_sparse_is_constant() {
     assert!(!x0.is_constant(), "x0 not constant");
 }
 
-// ── (additional) appearing_variables ───────────────────────────────────
+// ── appearing_variables ─────────────────────────────────────────────────
 
 #[test]
 fn prop_sparse_appearing_variables() {
@@ -583,7 +581,7 @@ fn prop_sparse_appearing_variables_zero() {
     assert!(c.appearing_variables().is_empty());
 }
 
-// ── (additional) content_hash equality ─────────────────────────────────
+// ── content_hash equality ───────────────────────────────────────────────
 
 #[test]
 fn prop_sparse_content_hash_equal_for_equal_polys() {
@@ -604,7 +602,7 @@ fn prop_sparse_content_hash_equal_for_equal_polys() {
     assert_eq!(p1.content_hash(), p2.content_hash());
 }
 
-// ── (additional) from_sorted_terms invariant ───────────────────────────
+// ── from_sorted_terms invariant ─────────────────────────────────────────
 
 #[test]
 fn prop_sparse_from_sorted_terms_matches_from_terms() {
@@ -622,7 +620,7 @@ fn prop_sparse_from_sorted_terms_matches_from_terms() {
     assert!(sparse_eq(&p_fast, &p_slow, &r));
 }
 
-// ── (additional) sub via add(neg) identity ──────────────────────────────
+// ── sub via add(neg) identity ───────────────────────────────────────────
 
 #[test]
 fn prop_sparse_sub_equals_add_negate() {
@@ -637,7 +635,7 @@ fn prop_sparse_sub_equals_add_negate() {
     }
 }
 
-// ── (additional) leading_term consistency ──────────────────────────────
+// ── leading_term consistency ────────────────────────────────────────────
 
 #[test]
 fn prop_sparse_leading_term_coherent() {
@@ -649,7 +647,7 @@ fn prop_sparse_leading_term_coherent() {
     assert!(r.field.eq(lc, p.leading_coefficient().unwrap()));
 }
 
-// ── (additional) scale and negate consistency ──────────────────────────
+// ── scale and negate consistency ────────────────────────────────────────
 
 #[test]
 fn prop_sparse_negate_equals_scale_neg_one() {
@@ -664,7 +662,7 @@ fn prop_sparse_negate_equals_scale_neg_one() {
     }
 }
 
-// ── (additional) evaluate matches dense ────────────────────────────────
+// ── evaluate matches dense ──────────────────────────────────────────────
 
 #[test]
 fn prop_sparse_evaluate_matches_dense() {
@@ -679,7 +677,7 @@ fn prop_sparse_evaluate_matches_dense() {
     assert!(f.eq(&v_sparse, &v_dense), "sparse vs dense evaluate disagree");
 }
 
-// ── (additional) make_monic correctness ────────────────────────────────
+// ── make_monic correctness ──────────────────────────────────────────────
 
 #[test]
 fn prop_sparse_make_monic_preserves_value_set() {
@@ -698,7 +696,7 @@ fn prop_sparse_make_monic_preserves_value_set() {
     assert!(f.is_one(m.leading_coefficient().unwrap()));
 }
 
-// ── (additional) reduce: irreducible subject unchanged ─────────────────
+// ── reduce: irreducible subject unchanged ───────────────────────────────
 
 #[test]
 fn prop_sparse_reduce_irreducible_unchanged() {

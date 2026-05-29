@@ -60,8 +60,7 @@ fn capped_capacity(claimed: u64, data_len: usize) -> usize {
     by_data.min(by_claim).min(ABSOLUTE_COUNT_CAP)
 }
 
-/// Safe byte slice with explicit error. Replaces every `&data[a..b]`
-/// in the parser path that touched header-controlled lengths.
+/// Safe byte slice with explicit error for header-controlled lengths.
 fn slice<'a>(data: &'a [u8], start: usize, end: usize, ctx: &'static str) -> Result<&'a [u8], R1csParseError> {
     data.get(start..end).ok_or(R1csParseError::Truncated {
         ctx,

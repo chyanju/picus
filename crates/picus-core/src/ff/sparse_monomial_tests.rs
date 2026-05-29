@@ -1,11 +1,8 @@
-//! Spec-driven tests for [`SparseMonomial`].
-//!
-//! The doc says it stores only nonzero `(var, exp)` pairs, every operation
-//! is O(nnz), and the implementation is validated bit-for-bit against the
-//! dense [`Monomial`] by `repr_oracle`. Here we pin the invariants the doc
-//! states (canonical: ascending var, no zero exponents; equality/hash
-//! independent of internal layout) and the divisibility / lcm / gcd /
-//! ordering laws every monomial implementation has to obey.
+//! Tests for [`SparseMonomial`]. Pins the canonical form (only nonzero
+//! `(var, exp)` pairs, ascending by var; equality/hash independent of
+//! internal layout) and the divisibility / lcm / gcd / ordering laws every
+//! monomial implementation has to obey. The dense [`Monomial`] is the
+//! differential oracle via `repr_oracle`.
 
 use crate::ff::sparse_monomial::SparseMonomial;
 use crate::ff::monomial::MonomialOrder;
@@ -19,7 +16,7 @@ fn sm(exps: Vec<u16>) -> SparseMonomial {
     <SparseMonomial as MonomialRepr>::from_exponents(exps)
 }
 
-// ── (1) Canonical form: no zero exponents, ascending var ───────────────
+// ── Canonical form: no zero exponents, ascending var ───────────────────
 
 #[test]
 fn prop_from_exponents_drops_zero_exponents() {
@@ -112,7 +109,7 @@ fn prop_for_each_nonzero_ascending_and_complete() {
     assert_eq!(s, m.total_degree());
 }
 
-// ── (2) Multiplicative structure: mul / divides / div / lcm / gcd ───────
+// ── Multiplicative structure: mul / divides / div / lcm / gcd ──────────
 
 #[test]
 fn prop_mul_componentwise_sum() {
@@ -252,7 +249,7 @@ fn prop_is_coprime_matches_gcd() {
     assert!(!MonomialRepr::gcd(&a, &c).is_one());
 }
 
-// ── (3) Ordering: Lex and DegRevLex ─────────────────────────────────────
+// ── Ordering: Lex and DegRevLex ─────────────────────────────────────────
 
 #[test]
 fn prop_lex_picks_lowest_differing_var() {
@@ -351,7 +348,7 @@ fn prop_degrevlex_order_is_total_strict_antisymmetric() {
     }
 }
 
-// ── (4) DivMask soundness: never rejects a true divisor ─────────────────
+// ── DivMask soundness: never rejects a true divisor ─────────────────────
 
 #[test]
 fn prop_divmask_consistent_with_actual_divisibility() {
@@ -384,7 +381,7 @@ fn prop_divmask_one_is_empty_bits() {
     assert_eq!(one.divmask(), DivMask::empty());
 }
 
-// ── (5) Edge cases ──────────────────────────────────────────────────────
+// ── Edge cases ──────────────────────────────────────────────────────────
 
 #[test]
 fn prop_zero_var_monomial() {

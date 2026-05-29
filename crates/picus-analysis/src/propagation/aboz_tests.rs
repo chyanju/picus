@@ -175,9 +175,7 @@ fn prop_aboz_promotes_when_selector_excludes_zero() {
 
 /// Soundness gate: when the selector's range INCLUDES zero (or is
 /// absent), `y0`/`y1` are NOT uniquely determined and must NOT be
-/// promoted. (This is the bug the synthetic-trap test in
-/// `tests/soundness.rs` regression-guards at the DPVL level — here we
-/// pin it at the lemma level.)
+/// promoted.
 #[test]
 fn prop_aboz_does_not_promote_when_selector_can_be_zero() {
     // Disable disjunction emission so we observe ONLY the promote/no-promote
@@ -417,8 +415,8 @@ fn prop_aboz_dedup_across_repeat_runs() {
     );
 }
 
-/// Coverage: with no linear sum in the IR, even with two bilinear
-/// products the lemma cannot fire.
+/// With no linear sum in the IR, even with two bilinear products the
+/// lemma cannot fire.
 #[test]
 fn test_aboz_no_progress_without_linear_sum() {
     // Drop the third constraint (the linear sum) by constructing a
@@ -546,11 +544,9 @@ fn prop_aboz_bilinear_rejects_squared_term() {
     assert!(!progress, "x^2 = 0 alone is not an ABOZ shape");
 }
 
-// ── extra coverage: shared-wire branches in `run` ──────────────────
-
-/// Coverage: the `a0 == a1` branch of the shared-wire match. Choose a
-/// wiring where `sel` is the smallest of {sel, y0, y1} so the
-/// canonicalised (min,max) products both have `sel` in position `a`.
+/// The `a0 == a1` branch of the shared-wire match. `sel` is the smallest
+/// of {sel, y0, y1} so the canonicalised (min,max) products both have
+/// `sel` in position `a`.
 /// Wires: 0 = one, 1 = sel (input), 2 = y0 (output), 3 = c_extra (input),
 ///        4 = y1 (output). bilinears canonicalise to (1,2) and (1,4).
 #[test]
@@ -615,10 +611,10 @@ fn test_aboz_shared_arm_a0_eq_a1() {
     assert!(known_set.contains(&4));
 }
 
-/// Coverage: when neither product shares a wire (no shared selector),
-/// the inner `let Some((x, y0, y1)) = shared else { continue }` fires
-/// the `None` branch. Two disjoint bilinear-zero constraints + a
-/// linear sum that mentions everything.
+/// When neither product shares a wire (no shared selector), the inner
+/// `let Some((x, y0, y1)) = shared else { continue }` fires the `None`
+/// branch. Two disjoint bilinear-zero constraints + a linear sum that
+/// mentions everything.
 /// Wires: 0=one, 1=a, 2=b, 3=c, 4=d (a*b=0, c*d=0 — no shared wire).
 #[test]
 fn test_aboz_shared_arm_none_no_overlap() {
@@ -679,9 +675,9 @@ fn test_aboz_shared_arm_none_no_overlap() {
     assert!(!progress, "disjoint bilinears must not trigger aboz");
 }
 
-/// Coverage: gate at line 84 — `x` (the shared/selector) is NOT in
-/// `ctx.known`. The lemma must `continue`, NOT promote `y0`/`y1`. We
-/// also disable disjunctions so the only observed action is the
+/// Selector-not-known gate: `x` (the shared/selector) is NOT in
+/// `ctx.known`. The lemma must `continue`, NOT promote `y0`/`y1`.
+/// Disjunctions disabled so the only observed action is the
 /// "x-not-known" continue.
 #[test]
 fn test_aboz_skips_when_selector_not_known() {
@@ -719,11 +715,10 @@ fn test_aboz_skips_when_selector_not_known() {
     assert!(unknown.contains(&4));
 }
 
-/// Coverage: `match_bilinear` reject when a poly has TWO bilinear
-/// terms. `(x_1 + x_2) * x_3 = 0` lowers to `x_1*x_3 + x_2*x_3 = 0` —
-/// two bilinear monomials. `match_bilinear` returns None on second
-/// bilinear (line 201-203). Combined with another constraint we ensure
-/// `collect_bilinear_zero` rejects this poly.
+/// `match_bilinear` rejects a poly with TWO bilinear terms.
+/// `(x_1 + x_2) * x_3 = 0` lowers to `x_1*x_3 + x_2*x_3 = 0` — two
+/// bilinear monomials. `match_bilinear` returns None on the second
+/// bilinear, so `collect_bilinear_zero` rejects this poly.
 #[test]
 fn test_aboz_match_bilinear_rejects_two_bilinear_terms() {
     let header = HeaderSection {
@@ -777,11 +772,10 @@ fn test_aboz_match_bilinear_rejects_two_bilinear_terms() {
     assert!(!progress);
 }
 
-/// Coverage: line 44 `if linear_sums.is_empty() { return false; }`.
-/// Two bilinear products exist (so we pass the first products.len()<2
-/// gate) but EVERY equality is purely bilinear — no linear-only sum
-/// anywhere. Build a fresh IR with two bare bilinear monomials and no
-/// wire-0 self-pin or linear sum.
+/// Empty `linear_sums` early-return: two bilinear products exist (so we
+/// pass the first products.len()<2 gate) but EVERY equality is purely
+/// bilinear — no linear-only sum anywhere. Build a fresh IR with two
+/// bare bilinear monomials and no wire-0 self-pin or linear sum.
 #[test]
 fn test_aboz_no_progress_when_linear_sums_empty() {
     let r1cs = aboz_shape_r1cs();
@@ -815,14 +809,14 @@ fn test_aboz_no_progress_when_linear_sums_empty() {
         };
         lemma.run(&ir, &mut ctx)
     };
-    assert!(!progress, "no linear sum at all ⇒ early return at line 44");
+    assert!(!progress, "no linear sum at all ⇒ early return");
 }
 
-/// Coverage: line 60 `Some((*b0, *a0, *a1))` — the `b0 == b1` arm of
-/// the shared-wire match. Two products canonicalise to (a0, b) and
-/// (a1, b) where `b` is the larger wire index (the selector) shared in
-/// the `b` slot of both products. Pick wires so the selector is wire 4
-/// (the highest), and the other sides are wires 1 and 2.
+/// The `b0 == b1` arm of the shared-wire match. Two products
+/// canonicalise to (a0, b) and (a1, b) where `b` is the larger wire
+/// index (the selector) shared in the `b` slot of both products. Pick
+/// wires so the selector is wire 4 (the highest), and the other sides
+/// are wires 1 and 2.
 #[test]
 fn test_aboz_shared_arm_b0_eq_b1() {
     // Wires: 0=one, 1=y0, 2=y1, 3=c_extra, 4=sel. Both bilinears
@@ -888,14 +882,13 @@ fn test_aboz_shared_arm_b0_eq_b1() {
     assert!(known_set.contains(&2), "y1 promoted");
 }
 
-/// Coverage: `match_bilinear` lines 196-198 — the `0 =>` arm with a
-/// nonzero constant term inside a poly that ALSO contains a single
-/// bilinear monomial. R1CS `(x_1) * (x_2) = 1` lowers to
-/// `x_1 * x_2 - 1 = 0`: a bilinear term plus a nonzero constant `-1`.
-/// `match_bilinear` walks the bilinear term first (vars.len()==2), then
-/// hits the constant term (vars.len()==0) and returns None at line 197
-/// because the constant coefficient is nonzero. Net effect on the
-/// lemma: the IR has no bilinear-zero products ⇒ no progress.
+/// `match_bilinear` rejects a poly that contains a single bilinear
+/// monomial alongside a nonzero constant term. R1CS `(x_1) * (x_2) = 1`
+/// lowers to `x_1 * x_2 - 1 = 0`: a bilinear term plus a nonzero
+/// constant `-1`. `match_bilinear` walks the bilinear term first
+/// (vars.len()==2), then hits the constant term (vars.len()==0) and
+/// returns None because the constant coefficient is nonzero. Net effect
+/// on the lemma: the IR has no bilinear-zero products ⇒ no progress.
 #[test]
 fn test_aboz_match_bilinear_rejects_bilinear_plus_nonzero_constant() {
     let header = HeaderSection {

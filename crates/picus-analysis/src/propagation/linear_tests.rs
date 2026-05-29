@@ -273,14 +273,12 @@ fn prop_linear_lemma_name_is_stable() {
     assert_eq!(lemma.name(), "linear");
 }
 
-// ── extra coverage ─────────────────────────────────────────────────
-
-/// Coverage: classify_poly_vars treats a degree-0 non-zero constant
-/// term as a no-op match arm. We build `x_1 + 1 = 0` (which is
-/// `x_1 - p_minus_1 = 0` in field form): the polynomial has one
-/// constant term and one linear term. The constant hits the `0 => {}`
-/// arm; the linear term registers wire 1 as linear-only. wire 1's
-/// dep set is empty (no other variables) ⇒ promotes unconditionally.
+/// `classify_poly_vars` treats a degree-0 non-zero constant term as a
+/// no-op match arm. Build `x_1 + 1 = 0` (which is `x_1 - p_minus_1 = 0`
+/// in field form): the polynomial has one constant term and one linear
+/// term. The constant hits the `0 => {}` arm; the linear term registers
+/// wire 1 as linear-only. wire 1's dep set is empty (no other
+/// variables) ⇒ promotes unconditionally.
 #[test]
 fn test_linear_classify_handles_nonzero_constant_term() {
     let ir = make_ir(3, |ring| {
@@ -301,9 +299,9 @@ fn test_linear_classify_handles_nonzero_constant_term() {
     assert!(owned.known.contains(&1));
 }
 
-/// Coverage: cache HIT path — when the equality vector length is
-/// unchanged between calls, `cdmap` is not rebuilt. The lemma must
-/// still respect known/unknown updates that happened externally.
+/// Cache HIT path: when the equality vector length is unchanged between
+/// calls, `cdmap` is not rebuilt. The lemma must still respect
+/// known/unknown updates that happened externally.
 #[test]
 fn test_linear_cache_hit_on_unchanged_ir() {
     // x_1 + x_2 = 0: starts with wire 2 known ⇒ wire 1 promotes.

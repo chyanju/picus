@@ -1,12 +1,9 @@
-//! Spec-driven property tests for the SMT-LIB v2 parser + FF algebra
-//! (formerly the `prop_*` block of `tests.rs`).
+//! Spec-driven property tests for the SMT-LIB v2 parser + FF algebra.
 //!
 //! Each property is stated against an external SMT-LIB v2 / finite-field
 //! invariant before computing the expected value, then cross-checked
 //! against the parser's `build_poly_with_ctx` / `parse` / `parse_boolean`
-//! output via an independent polynomial evaluator. The setup helpers
-//! (`mk_ctx`, `eval_poly`, `build_poly_from_src`) are duplicated from
-//! `tests.rs` so this file can be its own `mod`.
+//! output via an independent polynomial evaluator.
 
 use super::*;
 
@@ -286,7 +283,7 @@ fn prop_unary_ff_mul_is_identity() {
     }
 }
 
-// ────────── bit-sum spec (recurring bug hazard per memory) ──────────
+// ────────── bit-sum spec (recurring bug hazard) ──────────
 
 /// SPEC: `(ff.bitsum b_0 b_1 ... b_{n-1})` equals
 /// `sum_i 2^i * b_i  (mod prime)`. Exact powers of 2 — not arbitrary
@@ -524,7 +521,7 @@ fn prop_parse_eq_zero_polynomial_for_tautology() {
     }
 }
 
-// ────────── Edge-prime invariants (recurring hazard class per memory) ──────────
+// ────────── Edge-prime invariants (recurring hazard class) ──────────
 
 /// SPEC: GF(2) has only {0, 1}. `(ff.add x x) = 0` for any x in GF(2)
 /// (characteristic 2: a + a = 2a = 0).

@@ -316,9 +316,9 @@ fn split_linear_factors_degree_zero_input_yields_no_factors() {
     // single degree-0 element; the loop pops it, hits the deg==0 guard,
     // and the stack drains empty without ever pushing into `out`.
     //
-    // `cantor_zassenhaus` itself guards against degree-0 input at its
-    // entry (line 384 of univariate.rs), so this branch is exercised by
-    // a direct call into the private helper from the sibling test mod.
+    // `cantor_zassenhaus` itself guards against degree-0 input at entry,
+    // so this branch is reached only via a direct call into the private
+    // helper from the sibling test mod.
     let f = small_field();
     let mut rng = oorandom::Rand64::new(0xDEADBEEF);
     let factors = split_linear_factors(&UnivariatePoly::one(&f), &f, &mut rng);

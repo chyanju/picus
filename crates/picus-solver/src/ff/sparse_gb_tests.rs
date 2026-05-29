@@ -298,55 +298,6 @@ fn assert_all_reduce_to_zero(
     }
 }
 
-/// Spec: ideal equality A == B iff every element of A reduces to 0
-/// mod B AND vice versa. Equality of reduced GBs is sufficient but
-/// stronger than needed; the membership check pins the IDEAL even
-/// when the bases happen to differ.
-fn assert_ideals_equal(
-    a: &[SparsePolynomial],
-    b: &[SparsePolynomial],
-    ring: &PolyRing,
-) {
-    let a_refs: Vec<&SparsePolynomial> = a.iter().collect();
-    let b_refs: Vec<&SparsePolynomial> = b.iter().collect();
-    for p in a {
-        let nf = p.reduce_by_refs(&b_refs, ring);
-        assert!(nf.is_zero(), "A ⊄ B: residue nonzero");
-    }
-    for p in b {
-        let nf = p.reduce_by_refs(&a_refs, ring);
-        assert!(nf.is_zero(), "B ⊄ A: residue nonzero");
-    }
-}
-
-// (`sparse_gb_generators_reduce_to_zero_hand_built_gf7` folded into
-// `sparse_gb_generators_reduce_to_zero_across_primes` below, which sweeps
-// GF(2)/3/5/7/2^31-1 — strictly stronger than a single GF(7) probe.)
-
-// ── (9) engine equivalence: sparse ≡ dense (full reduced GB) ──
-
-// (`sparse_vs_dense_reduced_gb_equal_gf7_nonmonomial` and
-// `sparse_and_dense_generate_same_ideal_gf5` folded into the differential
-// bank `diff_sparse_vs_dense_bank_prime_nvars_sweep` (cyclic_3 +
-// overlapping_lts shapes over GF(7)/101/BN254) and
-// `diff_sparse_vs_dense_bank_edge_primes_small` (GF(2)/3/5 bank), which
-// already enforce term-for-term canonical equality AND ideal-equality.)
-
-// (`sparse_vs_dense_edge_primes_ideal_equality` — 5-prime sweep of one
-// hand-built bivariate system — folded into `diff_sparse_vs_dense_bank_*`
-// (above) which runs the full structured bank over each of GF(2)/3/5/7
-// + GF(101) + BN254, strictly subsuming this single-shape probe.)
-
-// ── (7) tiny ring shapes: 1-variable / single monomial / constant ──
-
-// (`sparse_gb_single_monic_generator_equals_input` covered by
-// `sparse_diff_systems`' `sparse_linear` / `single_monomial_x0sq` /
-// `high_degree_monomials` shapes in the sparse-vs-dense differential bank.)
-
-// (`sparse_gb_of_zero_only_is_empty` covered by
-// `diff_sparse_all_zero_generators_yields_empty_gb` (multiple-zero version)
-// and `groebner_basis_of_empty_input_is_empty`.)
-
 // ── (3) idempotence of interreduce ──
 
 /// Spec: interreduce is idempotent on its image. Applying interreduce
@@ -539,11 +490,6 @@ fn sparse_reduced_gb_is_monic() {
         assert_eq!(lc_big, one_big, "reduced GB element not monic");
     }
 }
-
-// (`sparse_vs_dense_gf2_specific_system` covered by
-// `diff_sparse_vs_dense_bank_edge_primes_small` which runs the structured
-// bank (cyclic_3, overlapping_lts, …) over GF(2)/2vars, plus
-// `fuzz_f4_vs_perpair_ideal_equal_3v_gf2` for the GF(2)/3vars probe.)
 
 // ─────────────────────────────────────────────────────────────────────
 // Hard-probe: sparse_gb vs dense Buchberger differential bank.
@@ -904,14 +850,9 @@ fn assert_ideal_eq_mutual(a: &[SparsePolynomial], b: &[SparsePolynomial], ring: 
 
 // ────────── Property: F4-lite ≡ per-pair geobucket (dense vs dense) ──────────
 
-// (`fuzz_f4_vs_perpair_ideal_equal_3v_gf101` — mid-prime — covered by
-// `fuzz_f4_vs_perpair_ideal_equal_3v_gf2` (small-prime bitprop hazard
-// surface) and `fuzz_f4_vs_perpair_ideal_equal_3v_bn254` (curve-prime); the
-// `diff_f4_vs_buch_bank_small_primes_sweep` (GF(7)/101) over in
-// `f4/tests.rs` also probes 101 via the structured bank.)
-
 /// SPEC: same engine-equivalence on a small prime — GF(2) is the
-/// "characteristic edge" that has bitten bitprop twice (R5/H1, R7/J1).
+/// characteristic-edge regression surface for bit-width and bitprop
+/// logic.
 #[test]
 fn fuzz_f4_vs_perpair_ideal_equal_3v_gf2() {
     let ring = ring_prime_str("2", 3);
@@ -966,11 +907,6 @@ fn fuzz_f4_vs_perpair_inconsistency_agreement_across_primes() {
 /// algorithm spec — Buchberger's theorem says they must compute the
 /// same ideal. This is a 4-way cross-check (sparse engine + dense
 /// engine + per-pair + F4) collapsed into a 2-way ideal equality.
-// (`fuzz_sparse_vs_dense_f4_ideal_equal_3v_gf7` covered by the BN254 variant
-// below — both probe sparse-engine vs dense-F4 ideal-equivalence on the
-// same `build_consistent_3v` shape; the GF(7) sparse-vs-dense-perpair leg
-// is already in `diff_sparse_vs_dense_bank_prime_nvars_sweep`.)
-
 #[test]
 fn fuzz_sparse_vs_dense_f4_ideal_equal_3v_bn254() {
     let ring = ring_prime_str(F4_BN254_PRIME, 3);
@@ -1041,9 +977,8 @@ fn fuzz_gb_idempotent_cross_engine_3v_gf101() {
 #[test]
 fn fuzz_mid_call_cancel_does_not_fabricate_unit_consistent_system() {
     // Pre-cancelled token: forces the engine into the immediate-cancel
-    // branch from the very first iteration. (CancelToken::cancelled()
-    // is also exercised in diff_sparse_precancelled_token_returns_subideal;
-    // we strengthen it here with the NO-UNIT contract.)
+    // branch from the very first iteration. Strengthens the general
+    // sub-ideal contract with a NO-UNIT contract on a consistent system.
     let ring = ring_prime_str("101", 3);
     let gens = build_consistent_3v(&ring);
     let token = crate::timeout::CancelToken::cancelled();
@@ -1070,9 +1005,9 @@ fn fuzz_mid_call_cancel_does_not_fabricate_unit_consistent_system() {
 fn fuzz_field_polynomial_generator_does_not_collapse_to_unit_across_primes() {
     // Spec: over GF(p), x^p - x = 0 is the bit/trit/… constraint, satisfied by
     // every field element — so on its own it must NOT collapse the ideal to
-    // {1}. Sweep small primes (R5/H1 + R7/J1 small-prime bitprop hazard
-    // surface): GF(2) -> x^2 - x; GF(3) -> x^3 - x. Sparse and dense engines
-    // must agree on the same (non-trivial) ideal.
+    // {1}. Sweep small primes (high-signal characteristic-edge surface for
+    // bit-width / bitprop logic): GF(2) -> x^2 - x; GF(3) -> x^3 - x.
+    // Sparse and dense engines must agree on the same (non-trivial) ideal.
     for &p in &[2u64, 3] {
         let ring = ring_prime_str(&p.to_string(), 1);
         let x = SparsePolynomial::variable(0, &ring);

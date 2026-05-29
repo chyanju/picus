@@ -1133,9 +1133,9 @@ fn solve_with_cached_constant_query_poly_admitted_to_linear_partition() {
     // Build the cache for `self_diseq_unsat_sys`, then run `solve_with_cached`
     // directly. `encode_query_disequalities` produces the constant `-1` for
     // the `(x, x)` disequality; in `solve_with_cached` the constant satisfies
-    // `admit(ring, 0, p)` → it is added to partition 0 (line 515-516) and
-    // also to partition 1 (k > 1). The whole-ring check then fires and the
-    // verdict is UNSAT (x != x has no model).
+    // `admit(ring, 0, p)` → it is added to partition 0 and also to partition
+    // 1 (k > 1). The whole-ring check then fires and the verdict is UNSAT
+    // (x != x has no model).
     let mut ctx = IncrementalSolverContext::new();
     let cs = self_diseq_unsat_sys();
     let digest = digest_constraint_side(&cs);
@@ -1174,10 +1174,10 @@ fn solve_with_cached_k1_fallback_places_query_in_partition_zero() {
     // distinct vars `x`, `y` and the disequality `(x, y)`, so the encoded
     // query poly is `(x - y)·w - 1` with `total_degree = 2`. In
     // `solve_with_cached`:
-    //   - line 514 `admit(ring, 0, p)` = false (degree > 1).
-    //   - line 518 `k > 1` = false (k = 1).
-    //   - placed stays false → line 522 `!placed && k > 0` true → the
-    //     fallback at line 523 pushes the poly to partition 0.
+    //   - `admit(ring, 0, p)` = false (degree > 1).
+    //   - `k > 1` = false (k = 1).
+    //   - placed stays false → `!placed && k > 0` true → the fallback
+    //     pushes the poly to partition 0.
     // The 1-partition split_gb_extend then accepts the Rabinowitsch poly
     // and find_zero discovers a model satisfying `x != y` (e.g. x=1,y=0,w=1).
     let field = crate::ff::field::PrimeField::new(BigUint::from(7u32));

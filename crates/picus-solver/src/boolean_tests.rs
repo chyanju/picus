@@ -247,8 +247,7 @@ fn dnf_size_estimate_saturates_at_cap() {
 
 #[test]
 fn solve_boolean_query_dnf_returns_unknown_past_cap() {
-    // 4 ors × 2 = DNF length 16; cap 8 ⇒ Unknown. ConfigGuard
-    // scopes the override so we don't need a cross-test lock.
+    // 4 ors × 2 = DNF length 16; cap 8 ⇒ Unknown.
     let _g = crate::config::ConfigGuard::with_override(|c| {
         c.dnf_enabled = true;
         c.dnf_cap = 8;

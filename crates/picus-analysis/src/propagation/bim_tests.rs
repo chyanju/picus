@@ -707,9 +707,9 @@ fn prop_bim_invertible_singleton_sweeps_small_primes() {
     }
 }
 
-// ── extra coverage: matrix_det_mod internals ───────────────────────
+// ── matrix_det_mod internals ───────────────────────────────────────
 
-/// Coverage: pivot-swap sign-flip path in `matrix_det_mod`.
+/// Pivot-swap sign-flip path in `matrix_det_mod`.
 /// System:
 ///   x_1·0 + x_2·1 = 0   (row 0: leading column is zero)
 ///   x_1·1 + x_2·0 = 0   (row 1: leading column nonzero)
@@ -782,8 +782,8 @@ fn test_bim_promotes_with_pivot_swap_sign_flip() {
     assert!(known_set.contains(&2));
 }
 
-/// Coverage: subtractive wrap-around branch in `matrix_det_mod`'s
-/// Gauss step. System over GF(7):
+/// Subtractive wrap-around branch in `matrix_det_mod`'s Gauss step.
+/// System over GF(7):
 ///   x_1 + x_2 = 0
 ///   3 x_1 + x_2 = 0
 /// Det = 1·1 - 3·1 = -2 ≡ 5 (mod 7) ≠ 0 ⇒ invertible.
@@ -851,9 +851,8 @@ fn test_bim_promotes_via_wrap_subtraction_branch() {
     assert!(known_set.contains(&2));
 }
 
-/// Coverage: the m[row][col].is_zero() `continue` branch inside the
-/// elimination loop. System with a leading 0 in row 2's column 0 of a
-/// 3x3 system:
+/// The m[row][col].is_zero() `continue` branch inside the elimination
+/// loop. System with a leading 0 in row 2's column 0 of a 3x3 system:
 ///   x_1 + x_2          = 0   (deps: 1, 2)
 ///   x_1 +       x_3    = 0   (deps: 1, 3)
 ///         x_2 +  x_3   = 0   (deps: 2, 3)
@@ -922,10 +921,10 @@ fn test_bim_promotes_3x3_skips_zero_pivot_rows() {
     assert!(known_set.contains(&3));
 }
 
-/// Coverage: `matrix_det_mod` lines 128-129 — `if n == 0 || matrix[0].len() != n { return None; }`.
-/// `Basis2Lemma::run` always feeds a square nxn matrix, so the only way
-/// to exercise the non-square guard is to call `matrix_det_mod`
-/// directly. Pass a 2×3 matrix and expect `None`.
+/// `matrix_det_mod` non-square guard: `if n == 0 || matrix[0].len() != n
+/// { return None; }`. `Basis2Lemma::run` always feeds a square nxn
+/// matrix, so the only way to exercise the non-square guard is to call
+/// `matrix_det_mod` directly. Pass a 2×3 matrix and expect `None`.
 #[test]
 fn test_bim_matrix_det_mod_rejects_non_square() {
     use num_traits::Zero;
@@ -951,12 +950,11 @@ fn test_bim_matrix_det_mod_rejects_non_square() {
     assert!(!det.is_zero(), "det of identity must be nonzero");
 }
 
-/// Coverage: `matrix_det_mod` lines 137-138 (pivot row swap + sign
-/// flip) and line 158 (`det = (p - &det) % p` when `sign_flip` is true,
-/// then `Some(det)`). Matrix `[[0, 1], [1, 0]]` over GF(7):
+/// `matrix_det_mod` pivot row swap + sign flip, then `det = (p - &det)
+/// % p` when `sign_flip` is true. Matrix `[[0, 1], [1, 0]]` over GF(7):
 ///   col 0: pivot at row 1 (m[0][0] = 0), swap rows 0 and 1, sign_flip = true.
 ///   After swap: [[1, 0], [0, 1]]. det = 1; pivot_inv = 1. Inner row
-///   has 0 at col 0 ⇒ inner-loop `continue` branch (line 143-145).
+///   has 0 at col 0 ⇒ inner-loop `continue` branch.
 ///   col 1: pivot at row 1, no swap. det = 1·1 = 1.
 ///   sign_flip is true ⇒ det = (7 - 1) % 7 = 6 ≠ 0.
 #[test]

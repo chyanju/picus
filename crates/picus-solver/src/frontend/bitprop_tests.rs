@@ -291,7 +291,7 @@ fn bitprop_phase1_smallprime_constant_is_sound() {
 //     (the input ideal); otherwise the propagation deletes a real
 //     solution (false-UNSAT / unsound "safe" verdict).
 //   * `is_bit` MUST be referentially transparent over `&self`: it cannot
-//     persist a per-branch bit proof into the global `self.bits` (R5 H1).
+//     persist a per-branch bit proof into the global `self.bits`.
 
 fn build_bit_ideal<'r>(pr: &'r FfPolyRing, extra: Vec<Poly>) -> Ideal<'r> {
     // Bit-constrain every ring variable, then mix in caller-supplied
@@ -474,11 +474,11 @@ fn prop_determinism_two_independent_calls_agree() {
     assert_eq!(eqs_a.len(), eqs_a2.len(), "non-deterministic repeated call");
 }
 
-/// PROPERTY (R5 H1 regression / spec): `is_bit` MUST NOT cache a
-/// per-basis bit proof into `self.bits`. The `&self` signature enforces
-/// this at the type level — also checked behaviourally: a call with a
-/// basis that proves `v` is a bit must NOT make a subsequent call with
-/// an empty basis return `true`.
+/// PROPERTY: `is_bit` MUST NOT cache a per-basis bit proof into
+/// `self.bits`. The `&self` signature enforces this at the type level
+/// — also checked behaviourally: a call with a basis that proves `v`
+/// is a bit must NOT make a subsequent call with an empty basis return
+/// `true`.
 #[test]
 fn prop_is_bit_does_not_cache_branch_local_proof_r5_h1() {
     let pr = FfPolyRing::new(ff(257), vec!["x".into()]);
@@ -493,7 +493,7 @@ fn prop_is_bit_does_not_cache_branch_local_proof_r5_h1() {
     let basis_b = Ideal::new(&pr, Vec::new());
     assert!(
         !bp.is_bit(0, std::slice::from_ref(&basis_b)),
-        "is_bit cached a branch-local proof (R5 H1 regression)"
+        "is_bit cached a branch-local proof across basis switches"
     );
 }
 
@@ -678,10 +678,9 @@ fn prop_add_bit_makes_is_bit_true_independent_of_basis() {
 //      (constant pin → bit) nor Phase 2 (bitsum equality → bitwise) is sound.
 //    * SOUNDNESS FLOOR: every poly bitprop emits must reduce to 0 against
 //      the supplied basis (a.k.a. be in the ideal). Otherwise bitprop has
-//      deleted a real solution and the verdict can flip SAT → false UNSAT
-//      (the very class that produced R5 H1 and R7 J1).
+//      deleted a real solution and the verdict can flip SAT → false UNSAT.
 //    * is_bit must be referentially transparent over &self (no per-branch
-//      caching into self.bits) — R5 H1 regression.
+//      caching into self.bits).
 //    * Phase 1 contradiction: emitted output is a SINGLE non-zero constant
 //      poly (the spec uses `1`, but downstream cares only about
 //      "non-zero constant" → trivial ideal).
@@ -697,7 +696,7 @@ fn prop_add_bit_makes_is_bit_true_independent_of_basis() {
 /// If bitprop emits a non-entailed equality on any (p, k, v), the soundness
 /// assertion fires; if it skips a pin under the fit condition the
 /// completeness assertion fires. Both directly catch real verdict-flipping
-/// bugs of the R5 H1 / R7 J1 class.
+/// bugs in the bit-width-guard class.
 #[test]
 fn hardprobe_phase1_sweep_soundness_and_completeness() {
     for prime in [17u32, 257, 1009] {
@@ -794,9 +793,9 @@ fn hardprobe_phase1_gf2_only_k1_propagates() {
 
 /// HARD-PROBE: every prime p ∈ {3, 5, 7, 11, 13, 17, 257, 1009}, k chosen
 /// at the boundary `2^k = p` or just above. Across this sweep, every
-/// emitted poly must be in the ideal. Specifically targets R5 H1 / R7 J1:
-/// a stale-or-too-aggressive bit-width guard would emit unsound polys on
-/// the boundary.
+/// emitted poly must be in the ideal. Targets the bit-width guard:
+/// a stale-or-too-aggressive guard would emit unsound polys on the
+/// boundary.
 #[test]
 fn hardprobe_phase1_boundary_primes_sound() {
     let cases: &[(u32, usize)] = &[
@@ -804,9 +803,9 @@ fn hardprobe_phase1_boundary_primes_sound() {
         (5, 2),    // 2^2 = 4 ≤ 5 — fit OK
         (5, 3),    // 2^3 = 8 > 5 — fit FAILS
         (7, 2),    // 2^2 = 4 ≤ 7 — fit OK
-        (7, 3),    // 2^3 = 8 > 7 — fit FAILS  (R5 H1 historical)
+        (7, 3),    // 2^3 = 8 > 7 — fit FAILS
         (11, 3),   // 2^3 = 8 ≤ 11 — fit OK
-        (11, 4),   // 2^4 = 16 > 11 — fit FAILS  (R7 J1 historical neighbourhood)
+        (11, 4),   // 2^4 = 16 > 11 — fit FAILS
         (13, 3),   // 2^3 = 8 ≤ 13 — fit OK
         (17, 4),   // 2^4 = 16 ≤ 17 — fit OK
         (257, 8),  // 2^8 = 256 ≤ 257 — fit OK
@@ -1047,9 +1046,8 @@ fn hardprobe_phase1_non_bit_entry_must_not_propagate() {
 
 /// HARD-PROBE: bitsum length cliff. For k = floor(log2 p), 2^k ≤ p holds
 /// — propagation legal. For k = floor(log2 p) + 1, 2^k > p — propagation
-/// MUST refuse or emit only entailed equalities. This is the exact guard
-/// R5 H1 / R7 J1 historically broke. Test sweeps primes whose log2 cap is
-/// distinct enough to exercise the off-by-one.
+/// MUST refuse or emit only entailed equalities. Sweeps primes whose
+/// log2 cap is distinct enough to exercise the off-by-one in the guard.
 #[test]
 fn hardprobe_phase1_length_cliff_at_log2_p() {
     for prime in [7u32, 11, 13, 17, 31, 127, 257, 1009] {
@@ -1173,8 +1171,8 @@ fn hardprobe_single_var_ring_k1() {
 
 /// HARD-PROBE: many independent calls in a row on the SAME BitProp / SAME
 /// ideal must yield byte-exactly the same equality count. Probes a hidden
-/// mutation across calls (R5 H1 signature: a per-call cache mutation
-/// changed subsequent results).
+/// mutation across calls (a per-call cache mutation would change
+/// subsequent results).
 #[test]
 fn hardprobe_referential_transparency_across_many_calls() {
     let pr = FfPolyRing::new(
@@ -1199,17 +1197,17 @@ fn hardprobe_referential_transparency_across_many_calls() {
         let n = bp.get_bit_equalities(std::slice::from_ref(&ideal)).len();
         assert_eq!(
             n, n0,
-            "round {}: equality count drifted ({} != {}), R5 H1 regression",
+            "round {}: equality count drifted ({} != {}), is_bit cache leak",
             round, n, n0
         );
     }
 }
 
-/// HARD-PROBE: R5 H1 / R7 J1 cross-branch is_bit poisoning. Drive
-/// `is_bit` with a basis containing `x^2 - x` (proves x is a bit ON this
-/// branch), then drive it AGAIN with a SIBLING basis that has no such
-/// constraint. Spec: is_bit must NOT cache the branch-A proof into
-/// self.bits — sibling call must return false.
+/// HARD-PROBE: cross-branch is_bit poisoning. Drive `is_bit` with a
+/// basis containing `x^2 - x` (proves x is a bit ON this branch), then
+/// drive it AGAIN with a SIBLING basis that has no such constraint.
+/// Spec: is_bit must NOT cache the branch-A proof into self.bits —
+/// sibling call must return false.
 #[test]
 fn hardprobe_is_bit_no_cross_branch_cache_r5_h1_r7_j1() {
     let pr = FfPolyRing::new(ff(257), vec!["x".into(), "y".into()]);
@@ -1226,7 +1224,7 @@ fn hardprobe_is_bit_no_cross_branch_cache_r5_h1_r7_j1() {
     let basis_b = Ideal::new(&pr, vec![]);
     assert!(
         !bp.is_bit(0, std::slice::from_ref(&basis_b)),
-        "R5 H1 / R7 J1 regression: is_bit cached a per-branch proof"
+        "is_bit cached a per-branch proof across basis switches"
     );
 
     // Branch C: a different var y under basis A. Spec: not bit-constrained.
@@ -1239,8 +1237,7 @@ fn hardprobe_is_bit_no_cross_branch_cache_r5_h1_r7_j1() {
 /// HARD-PROBE: Phase 2 with `2^max > p` (FIT FAILS) — even when the basis
 /// proves A − B ≡ 0 mod p, propagation must not emit `b_k − c_k` because
 /// mod-p collisions admit b ≠ c integerly. Spec: every emit must still be
-/// in the ideal (sound by being already entailed). The historical R5 H1
-/// bug emitted false equalities exactly on this path.
+/// in the ideal (sound by being already entailed).
 #[test]
 fn hardprobe_phase2_fit_fails_sound() {
     // GF(11), 4-bit bitsums: 2^4 = 16 > 11 → fit FAILS.

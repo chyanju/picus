@@ -312,12 +312,12 @@ fn prop_binary01_lemma_name_is_stable() {
     assert_eq!(lemma.name(), "binary01");
 }
 
-// ── extra coverage: structural matcher near-misses ─────────────────
+// ── structural matcher near-misses ─────────────────────────────────
 
-/// Coverage: x_1^2 - x_2 = 0 has both a quadratic term (in x_1) and a
-/// linear term (in x_2). Pattern requires sq_exps[0].0 == lin_exps[0].0
-/// (same variable). Different variables ⇒ `match_x_squared_minus_x`
-/// returns None at the variable-mismatch guard.
+/// `x_1^2 - x_2 = 0` has both a quadratic term (in x_1) and a linear
+/// term (in x_2). Pattern requires sq_exps[0].0 == lin_exps[0].0 (same
+/// variable). Different variables ⇒ `match_x_squared_minus_x` returns
+/// None at the variable-mismatch guard.
 #[test]
 fn test_binary01_rejects_quadratic_in_one_var_linear_in_another() {
     let ir = make_ir(3, |ring| {
@@ -339,8 +339,8 @@ fn test_binary01_rejects_quadratic_in_one_var_linear_in_another() {
     );
 }
 
-/// Coverage: two-term polynomial where BOTH terms are linear (no
-/// quadratic). `sq_idx` stays None ⇒ pattern returns None.
+/// Two-term polynomial where BOTH terms are linear (no quadratic).
+/// `sq_idx` stays None ⇒ pattern returns None.
 #[test]
 fn test_binary01_rejects_two_linear_terms() {
     // x_1 + x_2 = 0: two linear terms; no quadratic term.
@@ -357,9 +357,8 @@ fn test_binary01_rejects_two_linear_terms() {
     assert!(owned.ranges.is_empty(), "two linear terms cannot match x^2-x");
 }
 
-/// Coverage: range singleton-promotion path when the range was tightened
-/// to `{1}` (the other binary singleton). Mirror of the existing `{0}`
-/// test — sweeps the second singleton.
+/// Range singleton-promotion path when the range was tightened to `{1}`
+/// (the other binary singleton).
 #[test]
 fn test_binary01_promotes_when_pre_range_pins_to_one() {
     let ir = make_ir(3, |ring| {

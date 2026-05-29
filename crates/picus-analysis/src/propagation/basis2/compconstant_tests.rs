@@ -435,11 +435,11 @@ fn prop_build_part_map_bucket_per_product_pair() {
 // ---------------------------------------------------------------------------
 // Direct-Poly tests against the recogniser's private helpers.
 //
-// The R1CS surface can only emit polys of the form `(sumA)(sumB) - sumC`,
-// which is too restrictive to cover every branch of `match_part` /
-// `find_sum_var` / `find_inner_bit`. We construct polys directly via the
-// ring API on a small PolyIR (still produced by `tiny_r1cs` to get a
-// well-formed prime/ring).
+// The R1CS surface only emits polys of shape `(sumA)(sumB) - sumC`, too
+// restrictive to cover every branch of `match_part` / `find_sum_var` /
+// `find_inner_bit`. These tests build polys directly via the ring API
+// on a small PolyIR (still produced by `tiny_r1cs` for a well-formed
+// prime/ring).
 // ---------------------------------------------------------------------------
 
 /// Build a fresh PolyIR with `n_wires` wires under prime `p`, then drop
@@ -632,19 +632,9 @@ fn prop_match_part_rejects_no_wire() {
 
 #[test]
 fn prop_match_part_rejects_two_product_monomials() {
-    // Two product monomials over the SAME (sl, sm) pair but distinct
-    // vars to ensure they don't combine into one canonicalised term.
-    // Easiest distinct shape: pair-match for (sl, sm) but a second
-    // product also over (sl, sm). Because the polynomial library
-    // CANONICALISES terms of the same monomial together, we instead
-    // use a product that matches the pair_key but is over a different
-    // variable mapping (still pair_key-equal to sl,sm). Without an
-    // alias, the simplest way to force two distinct quadratic
-    // monomials whose pair_key is `(sl, sm)` is to inject a second
-    // product over (sl, sl) — that has pair_key (sl, sl) which differs
-    // from (sl, sm), tripping the EARLIER pair-mismatch branch instead.
-    // So we sidestep: keep this test as the pair-mismatch path; the
-    // duplicate-same-pair scenario can't be expressed without aliasing.
+    // Two product monomials with different pair_keys trigger the
+    // pair-mismatch reject. (Same-pair duplicates would canonicalise
+    // into one monomial and so are unreachable from this API.)
     let p_u = 257u64;
     let ir = ir_fresh(p_u, 6);
     let canon: Vec<usize> = (0..ir.ring.n_vars()).collect();
@@ -1252,23 +1242,6 @@ fn prop_product_pair_accepts_linear_and_constant_terms_around_product() {
     let pair = product_pair(&ir, &poly).expect("single product monomial");
     assert_eq!(pair_key(pair.0, pair.1), pair_key(1, 2));
 }
-
-// ---------------------------------------------------------------------------
-// companion_proves_below_prime — gates past the part-map lookup
-// ---------------------------------------------------------------------------
-//
-// Building a full 254-bit CompConstant by hand is out of scope; we
-// instead pin one branch we CAN reach:
-//   * After ALL parts match and ct is decoded, the `ct >= p` gate
-//     short-circuits to false. Constructing that scenario faithfully
-//     would also require all 127 match_part successes, which is too
-//     heavy. So we leave that path uncovered here.
-//
-// Below we additionally pin the "no inner-bit decomposition" path of
-// the companion path via the structural fact that without any
-// equalities, every internal helper that scans `ir.equalities` returns
-// None / false, and the top-level guard already rejects on the bit-count
-// gate (covered above).
 
 // ---------------------------------------------------------------------------
 // pair_key — large values + edge cases

@@ -1,8 +1,7 @@
 //! Spec-driven property tests for the encoder.
 //!
-//! Split from `encoder_tests.rs` for file-size hygiene. Helpers
-//! `empty_builder`, `idx_term`, `bitdecomp_system` are duplicated from the
-//! main test sibling — both modules are independent `#[cfg(test)]`
+//! Helpers `empty_builder`, `idx_term`, `bitdecomp_system` are duplicated
+//! from the main test sibling — both modules are independent `#[cfg(test)]`
 //! children of `encoder` and cannot share private items via `super::`.
 use super::*;
 use num_bigint::BigUint;
@@ -304,7 +303,6 @@ fn spec_rabinowitsch_satisfied_iff_a_neq_b() {
 /// zero; we also pick a non-matching aux and assert nonzero. The
 /// encoder MUST produce bitsum polys with bit coefficients `2^i mod p`
 /// — exact powers of two — otherwise binary decomposition is broken.
-/// Memory entry: bitprop is a RECURRING HAZARD class (R5/H1, R7/J1).
 #[test]
 fn spec_bitsum_poly_encodes_binary_value() {
     let prime: u32 = 101;
