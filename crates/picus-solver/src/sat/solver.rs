@@ -773,6 +773,15 @@ impl Solver {
                         self.learn_clause(learnt);
                         if self.should_restart() {
                             self.perform_restart();
+                            // Drain the root-level propagation the restart
+                            // exposed (the just-learned unit, and anything it
+                            // forces) before the next decision raises the
+                            // level — otherwise a root conflict would be
+                            // analyzed at level 1 instead of ending in UNSAT.
+                            // Mirrors the pre-loop drain at the top of solve().
+                            if self.propagate().is_some() {
+                                return SolveResult::Unsat;
+                            }
                             break;
                         }
                     }

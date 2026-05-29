@@ -273,6 +273,101 @@ fn bit_prop_derived_eq_unsat_core_is_sound() {
 }
 
 #[test]
+fn populate_bitprop_detects_bit_constraint_and_bitsum() {
+    // p0 = x*(x-1) = x^2 - x  → bit constraint on x (var 0).
+    // p1 = y + 2*z            → bitsum [y, z] (vars 1, 2): coeff run 1, 2.
+    // populate_bitprop must register var 0 in `bits` and the [1, 2] bitsum.
+    let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into(), "z".into()]);
+    let f = pr.field();
+    let x = pr.var(0);
+    let xx = pr.mul(pr.clone_poly(&x), pr.clone_poly(&x));
+    let p0 = pr.sub(xx, x); // x^2 - x
+    let two_z = pr.scale(f.from_int(2), pr.var(2));
+    let p1 = pr.add(pr.var(1), two_z); // y + 2z
+    let mut bp = BitProp::new(&pr);
+    populate_bitprop(&pr, &[p0, p1], &mut bp);
+    assert!(bp.bits.contains(&0), "x must be registered as a bit");
+    assert!(
+        bp.bitsums.iter().any(|bs| bs == &vec![1usize, 2usize]),
+        "bitsum [y, z] must be registered; got {:?}",
+        bp.bitsums
+    );
+}
+
+#[test]
+fn populate_bitprop_registers_two_bitsums_from_one_poly() {
+    // p = a + 2b + c + 2d + 3e over GF(11), variable order [a, b, c, d, e].
+    // `parse::bit_sums` finds two coefficient runs (1,2): the chains
+    // [a, b] and [c, d]; the lone `3e` term forms no chain. `bit_sums`
+    // therefore returns `Some((sums, residual))` with `sums.len() == 2`,
+    // each `bs.bits.len() == 2`, so the inner `for bs in &sums` loop body
+    // (the `>= 2` add_bitsum arm) runs for both entries and the loop tail
+    // is reached after each. Pins that both bitsums register.
+    let pr = FfPolyRing::new(
+        ff(11),
+        vec!["a".into(), "b".into(), "c".into(), "d".into(), "e".into()],
+    );
+    let f = pr.field();
+    let two = || f.from_int(2);
+    let terms = [
+        pr.var(0),                  // a
+        pr.scale(two(), pr.var(1)), // 2b
+        pr.var(2),                  // c
+        pr.scale(two(), pr.var(3)), // 2d
+        pr.scale(f.from_int(3), pr.var(4)), // 3e (no bitsum partner)
+    ];
+    let mut p = pr.zero();
+    for t in terms {
+        p = pr.add(p, t);
+    }
+    let mut bp = BitProp::new(&pr);
+    populate_bitprop(&pr, &[p], &mut bp);
+    assert!(
+        bp.bitsums.iter().any(|bs| bs == &vec![0usize, 1usize]),
+        "bitsum [a, b] must register; got {:?}",
+        bp.bitsums
+    );
+    assert!(
+        bp.bitsums.iter().any(|bs| bs == &vec![2usize, 3usize]),
+        "bitsum [c, d] must register; got {:?}",
+        bp.bitsums
+    );
+    assert_eq!(bp.bitsums.len(), 2, "exactly two bitsums; got {:?}", bp.bitsums);
+}
+
+#[test]
+fn populate_bitprop_ignores_non_bit_non_bitsum_polys() {
+    // A bare linear poly with a single variable yields no bit constraint
+    // (no quadratic term) and no >=2-length bitsum.
+    let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
+    let f = pr.field();
+    let p = pr.sub(pr.var(0), pr.constant(f.from_int(3))); // x - 3
+    let mut bp = BitProp::new(&pr);
+    populate_bitprop(&pr, &[p], &mut bp);
+    assert!(bp.bits.is_empty(), "no quadratic term ⇒ no bit constraint");
+    assert!(bp.bitsums.is_empty(), "single linear monomial ⇒ no bitsum");
+}
+
+#[test]
+fn solve_single_gb_nontrivial_unsat_returns_full_core() {
+    // x^2 - 3 over GF(7): 3 is a non-residue (QRs = {1,2,4}), so x^2 = 3
+    // has no GF(7) root. The DegRevLex GB {x^2-3} is non-trivial (no
+    // constant element), so solve_single_gb reaches the NonTrivial arm;
+    // find_zero enumerates x ∈ {0..6} exhaustively (7 < 2^16) and returns
+    // FindZeroOutcome::Unsat ⇒ SolveOutcome::Unsat((0..1).collect()).
+    let pr = FfPolyRing::new(ff(7), vec!["x".into()]);
+    let f = pr.field();
+    let x2 = pr.mul(pr.var(0), pr.var(0));
+    let p = pr.sub(x2, pr.constant(f.from_int(3))); // x^2 - 3
+    match solve_single_gb(&pr, vec![p]) {
+        SolveOutcome::Unsat(core) => {
+            assert_eq!(core, vec![0usize], "non-trivial UNSAT names all inputs");
+        }
+        other => panic!("expected UNSAT, got {:?}", other),
+    }
+}
+
+#[test]
 fn ff_is_zero_unsound_full_unsat_core_is_sound() {
     // 4-poly system over F_17 that arises during the
     // `cvc5_ff_is_zero_unsound_sat` post_check trail:
@@ -295,6 +390,33 @@ fn ff_is_zero_unsound_full_unsat_core_is_sound() {
                 core.contains(&3),
                 "core must include is_zero=0 (index 3); got {:?}",
                 core
+            );
+        }
+        other => panic!("expected UNSAT, got {:?}", other),
+    }
+}
+
+#[test]
+fn solve_split_gb_unsat_via_dfs_returns_full_input_core() {
+    // {x + y, x·y − 1} over GF(7). build_partitions splits the linear
+    // x+y into basis 0 and both into basis 1; neither partition is the
+    // whole ring after the initial fixpoint (so the `is_whole_ring`
+    // early-return at the top of `solve_split_gb_cancel` is NOT taken).
+    // The DFS in `split_find_zero_cancel` then drives the conflict
+    // re-extension loop to a definitive UNSAT (x·(−x)=1 ⇒ x²=−1=6, a
+    // non-residue mod 7), so the `SplitFindZeroOutcome::Unsat` arm of
+    // `solve_split_gb_cancel` is reached and reports the trivial
+    // all-input core `(0..2)`.
+    let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
+    let f = pr.field();
+    let x_plus_y = pr.add(pr.var(0), pr.var(1));
+    let xy_minus_1 = pr.sub(pr.mul(pr.var(0), pr.var(1)), pr.constant(f.one()));
+    match solve_split_gb(&pr, &[x_plus_y, xy_minus_1], &[]) {
+        SolveOutcome::Unsat(core) => {
+            assert_eq!(
+                core,
+                vec![0usize, 1usize],
+                "DFS-derived UNSAT names every original input"
             );
         }
         other => panic!("expected UNSAT, got {:?}", other),

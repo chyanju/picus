@@ -123,6 +123,158 @@ fn test_apply_rule_univariate() {
     assert!(vals.contains(&num_bigint::BigUint::from(5u32)));
 }
 
+#[test]
+fn split_find_zero_conflict_reextend_loop_yields_unsat() {
+    // bases = [{x+y}, {x·y−1}] over GF(7): x+y=0 ∧ x·y=1 forces
+    // x² = −1 = 6, a non-residue mod 7 ⇒ UNSAT. all_gens = [x+y, x·y−1].
+    // The first DFS pass descends on a value for x; the linear partition
+    // pins y, and at a leaf the nonlinear original x·y−1 evaluates to a
+    // nonzero constant and is NOT in basis 0 (it is nonlinear) ⇒ the DFS
+    // returns ZeroExtendResult::Conflict(x·y−1). `split_find_zero_cancel`
+    // catches the conflict, clones it into every partition's new_polys,
+    // re-runs split_gb_extend_cancel (basis growth), and re-enters the
+    // fixpoint loop. GF(7) round-robin is exhaustive ⇒ the loop terminates
+    // with a definitive Unsat.
+    let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
+    let f = pr.field();
+    let x_plus_y = pr.add(pr.var(0), pr.var(1));
+    let xy_minus_1 = pr.sub(pr.mul(pr.var(0), pr.var(1)), pr.constant(f.one()));
+    let split_basis: SplitGb = vec![
+        Ideal::from_gb(&pr, vec![x_plus_y]),
+        Ideal::from_gb(&pr, vec![xy_minus_1]),
+    ];
+    let mut bp = BitProp::new(&pr);
+    match split_find_zero(&pr, split_basis, &mut bp) {
+        SplitFindZeroOutcome::Unsat => {}
+        other => panic!("expected Unsat after conflict re-extension, got {:?}", other),
+    }
+}
+
+#[test]
+fn split_find_zero_cancel_pre_cancelled_errors() {
+    // The loop guard `cancel.is_cancelled()` fires on entry.
+    let pr = FfPolyRing::new(ff(7), vec!["x".into()]);
+    let split_basis: SplitGb = vec![Ideal::from_gb(&pr, vec![])];
+    let mut bp = BitProp::new(&pr);
+    let out = split_find_zero_cancel(&pr, split_basis, &mut bp, &CancelToken::cancelled());
+    assert!(matches!(out, Err(Cancelled)));
+}
+
+#[test]
+fn admit_rejects_partition_index_beyond_one() {
+    // The `_ => false` arm of `admit`: any partition index >= 2 never
+    // admits, even a degree-1 single-term poly that bases 0 and 1 accept.
+    let pr = FfPolyRing::new(ff(7), vec!["x".into()]);
+    let lin = pr.var(0); // deg 1, 1 term
+    assert!(admit(&pr, 0, &lin));
+    assert!(admit(&pr, 1, &lin));
+    assert!(!admit(&pr, 2, &lin), "partition index 2 is never admitted");
+    assert!(!admit(&pr, 7, &lin), "any higher partition index is rejected");
+}
+
+#[test]
+fn split_find_zero_conflict_reextend_via_solve_loop_reaches_extend_branch() {
+    // bases = [{x+y}, {x·y−1}] over GF(7) is jointly UNSAT (x²=−1=6, a
+    // non-residue). The DFS leaf returns ZeroExtendResult::Conflict on the
+    // nonlinear original x·y−1 (it evaluates to a nonzero constant and is
+    // not in basis 0), driving `split_find_zero_cancel`'s conflict arm:
+    // it clones the conflict into every partition's new_polys and calls
+    // `split_gb_extend_cancel` (the `?` re-extension step) before
+    // re-entering the fixpoint loop, which then proves UNSAT.
+    let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
+    let f = pr.field();
+    let x_plus_y = pr.add(pr.var(0), pr.var(1));
+    let xy_minus_1 = pr.sub(pr.mul(pr.var(0), pr.var(1)), pr.constant(f.one()));
+    let split_basis: SplitGb = vec![
+        Ideal::from_gb(&pr, vec![x_plus_y]),
+        Ideal::from_gb(&pr, vec![xy_minus_1]),
+    ];
+    let mut bp = BitProp::new(&pr);
+    match split_find_zero_cancel(&pr, split_basis, &mut bp, &CancelToken::none()) {
+        Ok(SplitFindZeroOutcome::Unsat) => {}
+        other => panic!("expected Ok(Unsat) after re-extension, got {:?}", other),
+    }
+}
+
+// ────────── try_split_triangular (config-gated split_triangular) ──────────
+
+#[test]
+fn triangular_zero_dim_sat_returns_verified_point() {
+    // split_triangular on: a zero-dimensional, satisfiable system
+    // {x − 2, y − 3} over GF(7). `try_split_triangular` builds the ideal,
+    // finds it zero-dimensional, runs `gb::model::find_zero_cancel` (Sat
+    // arm), verifies the witness against the combined system, and maps it
+    // back to a point. The DFS is bypassed.
+    let _g = crate::config::ConfigGuard::with_override(|c| c.split_triangular = true);
+    let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
+    let f = pr.field();
+    let p_x = pr.sub(pr.var(0), pr.constant(f.from_int(2))); // x = 2
+    let p_y = pr.sub(pr.var(1), pr.constant(f.from_int(3))); // y = 3
+    let split_basis: SplitGb = vec![
+        Ideal::from_gb(&pr, vec![pr.clone_poly(&p_x), pr.clone_poly(&p_y)]),
+        Ideal::from_gb(&pr, vec![]),
+    ];
+    let mut bp = BitProp::new(&pr);
+    match split_find_zero(&pr, split_basis, &mut bp) {
+        SplitFindZeroOutcome::Sat(pt) => {
+            assert_eq!(pr.field().to_biguint(&pt[0]), BigUint::from(2u32));
+            assert_eq!(pr.field().to_biguint(&pt[1]), BigUint::from(3u32));
+        }
+        other => panic!("expected triangular SAT(2,3), got {:?}", other),
+    }
+}
+
+#[test]
+fn triangular_zero_dim_unsat_returns_unsat() {
+    // split_triangular on: a zero-dimensional system with no GF(7) point.
+    // {x² − 3} over GF(7) — 3 is a non-residue (QRs = {1,2,4}). The ideal
+    // is zero-dimensional, so `try_split_triangular` runs the complete
+    // zero-dim enumeration (`find_zero_cancel` → Unsat) and returns
+    // `SplitFindZeroOutcome::Unsat` without the DFS.
+    let _g = crate::config::ConfigGuard::with_override(|c| c.split_triangular = true);
+    let pr = FfPolyRing::new(ff(7), vec!["x".into()]);
+    let f = pr.field();
+    let x2 = pr.mul(pr.var(0), pr.var(0));
+    let p = pr.sub(x2, pr.constant(f.from_int(3))); // x^2 - 3
+    let split_basis: SplitGb = vec![Ideal::from_gb(&pr, vec![p]), Ideal::from_gb(&pr, vec![])];
+    let mut bp = BitProp::new(&pr);
+    match split_find_zero(&pr, split_basis, &mut bp) {
+        SplitFindZeroOutcome::Unsat => {}
+        other => panic!("expected triangular UNSAT, got {:?}", other),
+    }
+}
+
+#[test]
+fn triangular_positive_dim_falls_back_to_dfs() {
+    // split_triangular on, but the combined system {x·y − 2} over GF(7)
+    // is positive-dimensional (2 vars, 1 equation). `try_split_triangular`
+    // hits the `!ideal.is_zero_dim()` guard and returns None, so
+    // `split_find_zero_cancel` falls through to the brancher DFS, which
+    // finds a SAT point satisfying x·y = 2.
+    let _g = crate::config::ConfigGuard::with_override(|c| c.split_triangular = true);
+    let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
+    let f = pr.field();
+    let xy = pr.mul(pr.var(0), pr.var(1));
+    let p = pr.sub(xy, pr.constant(f.from_int(2))); // x*y - 2
+    let split_basis: SplitGb = vec![
+        Ideal::from_gb(&pr, vec![]),
+        Ideal::from_gb(&pr, vec![pr.clone_poly(&p)]),
+    ];
+    let mut bp = BitProp::new(&pr);
+    match split_find_zero(&pr, split_basis, &mut bp) {
+        SplitFindZeroOutcome::Sat(pt) => {
+            let x = pr.field().to_biguint(&pt[0]);
+            let y = pr.field().to_biguint(&pt[1]);
+            assert_eq!(
+                (x * y) % BigUint::from(7u32),
+                BigUint::from(2u32),
+                "DFS fallback must satisfy x·y = 2"
+            );
+        }
+        other => panic!("expected SAT via DFS fallback, got {:?}", other),
+    }
+}
+
 const P: u64 = 11;
 const N_VARS: usize = 6;
 

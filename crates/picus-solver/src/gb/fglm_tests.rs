@@ -143,3 +143,61 @@ fn quotient_dimension_matches_fglm_staircase() {
     let lex = fglm_to_lex(&drl).expect("zero-dim → Some");
     assert!(!lex.is_empty());
 }
+
+// ────────── LexKey ──────────
+
+#[test]
+fn lexkey_eq_compares_exponents() {
+    let a = LexKey(Monomial::from_exponents(vec![1, 0]));
+    let b = LexKey(Monomial::from_exponents(vec![1, 0]));
+    let c = LexKey(Monomial::from_exponents(vec![0, 1]));
+    assert!(a == b);
+    assert!(a != c);
+}
+
+#[test]
+fn lexkey_order_is_lex() {
+    // x > y in Lex: [1,0] sorts above [0,1]. partial_cmp delegates to Ord.
+    let x = LexKey(Monomial::from_exponents(vec![1, 0]));
+    let y = LexKey(Monomial::from_exponents(vec![0, 1]));
+    assert_eq!(x.partial_cmp(&y), Some(Ordering::Greater));
+    assert_eq!(y.partial_cmp(&x), Some(Ordering::Less));
+    assert_eq!(x.cmp(&x), Ordering::Equal);
+    // x^2 (=[2,0]) > x (=[1,0]) in Lex (first exponent dominates).
+    let x2 = LexKey(Monomial::from_exponents(vec![2, 0]));
+    assert_eq!(x2.partial_cmp(&x), Some(Ordering::Greater));
+}
+
+#[test]
+fn fglm_runs_gb_stats_scope_block() {
+    // With `gb_stats_enabled`, the `metric::scope!` dump block in
+    // `fglm_to_lex` runs (the staircase-vs-Hilbert eprintln). The
+    // verdict and Lex GB must be unchanged by the telemetry gate.
+    let _g = crate::config::ConfigGuard::with_override(|c| c.gb_stats_enabled = true);
+    let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
+    let c = |v: i64| pr.constant(pr.field().from_int(v));
+    let x2 = pr.mul(pr.var(0), pr.var(0));
+    let y2 = pr.mul(pr.var(1), pr.var(1));
+    let gens = vec![
+        pr.sub(x2, c(3)),
+        pr.sub(y2, c(2)),
+        pr.sub(pr.add(pr.var(0), pr.var(1)), pr.one()),
+    ];
+    // Exercises the gb-stats scope inside `fglm_to_lex` and still
+    // matches the direct Lex Buchberger basis.
+    assert_fglm_matches(&pr, gens);
+}
+
+#[test]
+fn lexkey_btreeset_dedups_and_orders() {
+    // BTreeSet uses Ord + Eq: a duplicate exponent vector is collapsed,
+    // and iteration yields increasing Lex order.
+    let mut set: BTreeSet<LexKey> = BTreeSet::new();
+    set.insert(LexKey(Monomial::from_exponents(vec![0, 1]))); // y
+    set.insert(LexKey(Monomial::from_exponents(vec![1, 0]))); // x
+    set.insert(LexKey(Monomial::from_exponents(vec![0, 1]))); // y again
+    assert_eq!(set.len(), 2);
+    let ordered: Vec<Vec<u16>> = set.iter().map(|k| k.0.exponents().to_vec()).collect();
+    // Increasing Lex: y = [0,1] before x = [1,0].
+    assert_eq!(ordered, vec![vec![0, 1], vec![1, 0]]);
+}

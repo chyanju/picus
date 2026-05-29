@@ -265,6 +265,82 @@ fn quotient_dim_edge_unit_and_scalar_ring() {
 }
 
 #[test]
+fn one_minus_t_pow_zero_collapses_to_zero() {
+    // 1 - t^0 = 1 - 1 = 0.
+    let hn = HilbertNum::one_minus_t_pow(0);
+    assert!(hn.is_zero());
+    assert_eq!(hn, HilbertNum::zero());
+    assert_eq!(hn.degree(), None);
+}
+
+#[test]
+fn sub_assign_resizes_when_other_longer() {
+    // self is degree 1, other is degree 3: sub_assign must extend
+    // self's coefficient vector before subtracting.
+    let mut a = HilbertNum {
+        coeffs: vec![5, 7],
+    };
+    let b = HilbertNum {
+        coeffs: vec![1, 2, 3, 4],
+    };
+    a.sub_assign(&b);
+    // [5-1, 7-2, 0-3, 0-4] = [4, 5, -3, -4]
+    assert_eq!(a.coeffs(), &[4, 5, -3, -4]);
+}
+
+#[test]
+fn mul_by_zero_is_zero() {
+    let one = HilbertNum::one();
+    let zero = HilbertNum::zero();
+    assert!(one.mul(&zero).is_zero());
+    assert!(zero.mul(&one).is_zero());
+    // Non-trivial operand times zero is still zero.
+    let p = HilbertNum {
+        coeffs: vec![1, -2, 3],
+    };
+    assert!(p.mul(&HilbertNum::zero()).is_zero());
+}
+
+#[test]
+fn hf_at_zero_vars_returns_coefficient() {
+    // n_vars == 0 means S = k: HF(d) = N_d, the raw coefficient of t^d.
+    let hn = HilbertNum {
+        coeffs: vec![1, -3, 5],
+    };
+    assert_eq!(hn.hf_at(0, 0), 1);
+    assert_eq!(hn.hf_at(1, 0), -3);
+    assert_eq!(hn.hf_at(2, 0), 5);
+    // Past the last term the coefficient is 0.
+    assert_eq!(hn.hf_at(7, 0), 0);
+}
+
+#[test]
+fn quotient_dim_declines_past_socle_degree_cap() {
+    // Both variables carry pure powers (so the ideal is zero-dimensional
+    // and we get past the positive-dimensional `None` check), but the
+    // socle-degree bound `Σ(a_v - 1) = 65534 + 65534` exceeds
+    // QUOT_DIM_DEGREE_CAP (2^16), so the function declines with `None`
+    // rather than summing the Hilbert function.
+    let gens = [x(2, 0, 65535), x(2, 1, 65535)];
+    assert_eq!(quotient_dimension(&gens, 2), None);
+}
+
+#[test]
+fn quotient_dim_takes_minimum_pure_power_per_variable() {
+    // When two generators are pure powers of the SAME variable, `pure[v]`
+    // is first set via `map_or(e, _)` (None → Some(e)) and on the second
+    // occurrence the closure `|c| c.min(e)` fires — the smaller exponent
+    // wins. Gens = [x0^3, x0^2, x1^2] minimises (as a monomial ideal) to
+    // (x0^2, x1^2): standard monomials {1, x0, x1, x0·x1} ⇒ dim = 4.
+    let gens = [from_exps(vec![3, 0]), from_exps(vec![2, 0]), from_exps(vec![0, 2])];
+    assert_eq!(quotient_dimension(&gens, 2), Some(4));
+    // Order-independence: the same closure fires when the smaller pure
+    // power is seen first (`pure[0]` set to 2, then `c.min(3)` keeps 2).
+    let gens_swapped = [from_exps(vec![2, 0]), from_exps(vec![3, 0]), from_exps(vec![0, 2])];
+    assert_eq!(quotient_dimension(&gens_swapped, 2), Some(4));
+}
+
+#[test]
 fn quotient_dim_equals_summed_hilbert_function() {
     // Cross-check the closed-form sum against term-by-term HF for an
     // Artinian ideal: I = (x^2, y^3) in k[x, y], dim = 2*3 = 6.

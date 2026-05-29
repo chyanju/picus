@@ -395,3 +395,40 @@ fn stats_enabled_drives_counters_without_changing_verdict() {
         other => panic!("expected Point under stats, got {:?}", other),
     }
 }
+
+// ────────── apply_phase_save with backtracking Roots branchers ──────────
+
+#[test]
+fn backtracking_dfs_with_recurring_roots_branchers_finds_unique_point() {
+    // bases = [{x + y − 2}, {x² − 1, y² − 1}] over GF(7). Each of x, y is
+    // pinned to the univariate root set {1, 6} by basis 1; basis 0 enforces
+    // x + y = 2, whose only root-set solution is the unique point (1, 1).
+    //
+    // The DFS branches one variable at the top via a Roots brancher (tried
+    // as 6 then 1 by Vec::pop order); under the failing top value the inner
+    // variable also gets a Roots brancher whose leaf violates the linear
+    // quick-check, so that frame exhausts and is popped — recording a
+    // saved-phase entry. Backtracking to the surviving top value rebuilds a
+    // Roots brancher for the inner variable and runs it through
+    // `apply_phase_save` (the `if let Some(saved_val)` lookup). The unique
+    // SAT leaf (1, 1) is then reached. This drives the multi-level
+    // backtrack / phase-save plumbing while pinning the sound verdict.
+    let pr = ring2();
+    let f = pr.field();
+    let x_plus_y_minus_2 = pr.sub(pr.add(pr.var(0), pr.var(1)), pr.constant(f.from_int(2)));
+    let x2_minus_1 = pr.sub(pr.mul(pr.var(0), pr.var(0)), pr.constant(f.one()));
+    let y2_minus_1 = pr.sub(pr.mul(pr.var(1), pr.var(1)), pr.constant(f.one()));
+    let bases = vec![
+        Ideal::from_gb(&pr, vec![x_plus_y_minus_2]),
+        Ideal::from_gb(&pr, vec![x2_minus_1, y2_minus_1]),
+    ];
+    let r: PartialPoint = vec![None, None];
+    let mut bp = BitProp::new(&pr);
+    match split_zero_extend(&pr, &[], bases, r, &mut bp) {
+        ZeroExtendResult::Point(pt) => {
+            assert_eq!(pr.field().to_biguint(&pt[0]), BigUint::from(1u32), "x = 1");
+            assert_eq!(pr.field().to_biguint(&pt[1]), BigUint::from(1u32), "y = 1");
+        }
+        other => panic!("expected Point(1, 1), got {:?}", other),
+    }
+}

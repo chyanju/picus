@@ -80,3 +80,35 @@ fn linear_relation_substituted_into_nonlinear() {
         );
     }
 }
+
+#[test]
+fn zero_polynomials_are_skipped() {
+    // GF(7): a zero poly mixed with one linear (x - 3) and one nonlinear
+    // (x*y - 1). The zero poly is dropped during partitioning, so it
+    // contributes neither to the linear nor the nonlinear set:
+    // n_eliminated counts only the single real linear pivot.
+    let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
+    let zero = pr.zero();
+    let lin = pr.sub(pr.var(0), pr.constant(pr.field().from_int(3)));
+    let nl = pr.sub(pr.mul(pr.var(0), pr.var(1)), pr.one());
+    let elim = eliminate_linear(&pr, &[zero, lin, nl], &CancelToken::none()).unwrap();
+    assert!(elim.applied);
+    assert_eq!(elim.n_eliminated, 1);
+    // The reduced set carries no zero polynomial.
+    assert!(elim.reduced.iter().all(|p| !pr.is_zero(p)));
+}
+
+#[test]
+fn cancellation_propagates_as_err() {
+    // A linear + nonlinear system so the elimination pass actually runs,
+    // with a pre-cancelled token. Cancellation must surface as
+    // Err(Cancelled), never as a silently-applied elimination.
+    let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
+    let lin = pr.sub(pr.var(0), pr.constant(pr.field().from_int(3)));
+    let nl = pr.sub(pr.mul(pr.var(0), pr.var(1)), pr.one());
+    let cancel = CancelToken::cancelled();
+    assert!(matches!(
+        eliminate_linear(&pr, &[lin, nl], &cancel),
+        Err(Cancelled)
+    ));
+}

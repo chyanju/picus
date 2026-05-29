@@ -242,3 +242,199 @@ fn mutex_does_not_fire_for_equivalent_value_via_canonicalization() {
     tbl.intern_eq(&[t(1, 1)], &[t(6, 0)], &vn, &mut sat);
     assert_eq!(sat.n_clauses(), n_after + 1);
 }
+
+#[test]
+fn as_single_var_eq_empty_polynomial_is_none() {
+    // Trivially-true `0 = 0` has no terms.
+    let prime = BigUint::from(101u32);
+    let key = AtomKey { terms: vec![] };
+    assert!(key.as_single_var_eq(&prime).is_none());
+}
+
+#[test]
+fn as_single_var_eq_single_constant_term_is_none() {
+    // A lone constant term (no variable) cannot pin a variable.
+    let prime = BigUint::from(101u32);
+    let key = AtomKey {
+        terms: vec![(BigUint::from(5u32), vec![])],
+    };
+    assert!(key.as_single_var_eq(&prime).is_none());
+}
+
+#[test]
+fn as_single_var_eq_single_zero_coeff_var_term_is_none() {
+    // A single `0·x` term has a zero (non-invertible) coefficient.
+    let prime = BigUint::from(101u32);
+    let key = AtomKey {
+        terms: vec![(BigUint::zero(), vec!["x".to_string()])],
+    };
+    assert!(key.as_single_var_eq(&prime).is_none());
+}
+
+#[test]
+fn as_single_var_eq_two_term_zero_var_coeff_is_none() {
+    // Two terms `0·x + 3 = 0`: the variable coefficient is zero, so
+    // no value can be derived for x.
+    let prime = BigUint::from(101u32);
+    let key = AtomKey {
+        terms: vec![
+            (BigUint::from(3u32), vec![]),
+            (BigUint::zero(), vec!["x".to_string()]),
+        ],
+    };
+    assert!(key.as_single_var_eq(&prime).is_none());
+}
+
+#[test]
+fn as_single_var_eq_two_term_both_have_vars_is_none() {
+    // `x + y = 0`: neither term is a bare constant, so the
+    // (var_term, const_term) split fails.
+    let prime = BigUint::from(101u32);
+    let key = AtomKey {
+        terms: vec![
+            (BigUint::from(1u32), vec!["x".to_string()]),
+            (BigUint::from(1u32), vec!["y".to_string()]),
+        ],
+    };
+    assert!(key.as_single_var_eq(&prime).is_none());
+}
+
+#[test]
+fn as_single_var_eq_single_var_term_solves_to_zero() {
+    // A lone `a·x = 0` term with `a != 0` pins x = 0.
+    let prime = BigUint::from(101u32);
+    let key = AtomKey {
+        terms: vec![(BigUint::from(7u32), vec!["x".to_string()])],
+    };
+    let (var, val) = key.as_single_var_eq(&prime).expect("single-var-eq");
+    assert_eq!(var, "x");
+    assert_eq!(val, BigUint::zero());
+}
+
+#[test]
+fn as_single_var_eq_two_term_multivar_var_term_is_none() {
+    // `x·y + 3 = 0`: the variable term names two variables (degree 2),
+    // so the single-variable check rejects it.
+    let prime = BigUint::from(101u32);
+    let key = AtomKey {
+        terms: vec![
+            (BigUint::from(3u32), vec![]),
+            (BigUint::from(1u32), vec!["x".to_string(), "y".to_string()]),
+        ],
+    };
+    assert!(key.as_single_var_eq(&prime).is_none());
+}
+
+#[test]
+fn intern_negated_into_negates_coeffs() {
+    // Terms `[(5, x), (0, const)]` over prime 101 negate to
+    // `[(96, x), (0, const)]`: 96 = 101 - 5, zero stays zero.
+    let prime = BigUint::from(101u32);
+    let key = AtomKey {
+        terms: vec![
+            (BigUint::from(5u32), vec!["x".to_string()]),
+            (BigUint::zero(), vec![]),
+        ],
+    };
+    let mut builder = ConstraintSystemBuilder::new(prime.clone());
+    let out = key.intern_negated_into(&mut builder, &prime);
+    assert_eq!(out.len(), 2);
+    // First term: 96·x where x is the first interned var (idx 0).
+    assert_eq!(out[0].coeff, BigUint::from(96u32));
+    assert_eq!(out[0].vars, vec![(0u32, 1u16)]);
+    // Second term: constant 0, no variables.
+    assert_eq!(out[1].coeff, BigUint::zero());
+    assert!(out[1].vars.is_empty());
+}
+
+#[test]
+fn intern_negated_into_collapses_repeated_names_to_exponent() {
+    // Within-term `x * x` (vars = ["x", "x"]) collapses to (idx, 2);
+    // a coeff of 3 negates to 101 - 3 = 98.
+    let prime = BigUint::from(101u32);
+    let key = AtomKey {
+        terms: vec![(BigUint::from(3u32), vec!["x".to_string(), "x".to_string()])],
+    };
+    let mut builder = ConstraintSystemBuilder::new(prime.clone());
+    let out = key.intern_negated_into(&mut builder, &prime);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].coeff, BigUint::from(98u32));
+    assert_eq!(out[0].vars, vec![(0u32, 2u16)]);
+}
+
+#[test]
+fn as_single_var_eq_var_first_zero_constant_solves_to_zero() {
+    // A two-term key whose VARIABLE term sorts first (`a·x`) and whose
+    // CONSTANT term has a zero coefficient. `from_indexed_eq` would
+    // never emit this order (it puts the constant first and drops zero
+    // coefficients), but the public method must still handle a directly
+    // constructed key. Exercises the `t0` (var) / `t1` (const) split arm
+    // and the zero-constant `neg_c = 0` branch: 7·x + 0 = 0 ⇒ x = 0.
+    let prime = BigUint::from(101u32);
+    let key = AtomKey {
+        terms: vec![
+            (BigUint::from(7u32), vec!["x".to_string()]),
+            (BigUint::zero(), vec![]),
+        ],
+    };
+    let (var, val) = key.as_single_var_eq(&prime).expect("single-var-eq");
+    assert_eq!(var, "x");
+    assert_eq!(val, BigUint::zero());
+}
+
+#[test]
+fn as_single_var_eq_var_first_nonzero_constant_solves_via_fermat() {
+    // Var term first, non-zero constant: 2·x + 3 = 0 over GF(7).
+    // x = (−3)·2⁻¹ = 4·4 = 16 mod 7 = 2.
+    let prime = BigUint::from(7u32);
+    let key = AtomKey {
+        terms: vec![
+            (BigUint::from(2u32), vec!["x".to_string()]),
+            (BigUint::from(3u32), vec![]),
+        ],
+    };
+    let (var, val) = key.as_single_var_eq(&prime).expect("single-var-eq");
+    assert_eq!(var, "x");
+    assert_eq!(val, BigUint::from(2u32));
+}
+
+#[test]
+fn intern_result_into_lit_pos_var_and_trivial() {
+    let v = crate::sat::Var(3);
+    match InternResult::Var(v).into_lit_pos() {
+        InternLit::Lit(l) => {
+            assert_eq!(l.var(), v);
+            assert!(l.is_positive());
+        }
+        _ => panic!("expected Lit"),
+    }
+    match InternResult::Trivial(true).into_lit_pos() {
+        InternLit::Constant(b) => assert!(b),
+        _ => panic!("expected Constant(true)"),
+    }
+    match InternResult::Trivial(false).into_lit_pos() {
+        InternLit::Constant(b) => assert!(!b),
+        _ => panic!("expected Constant(false)"),
+    }
+}
+
+#[test]
+fn intern_result_into_lit_neg_var_and_trivial() {
+    let v = crate::sat::Var(2);
+    match InternResult::Var(v).into_lit_neg() {
+        InternLit::Lit(l) => {
+            assert_eq!(l.var(), v);
+            assert!(l.is_negative());
+        }
+        _ => panic!("expected Lit"),
+    }
+    // Negative polarity flips the trivial truth value.
+    match InternResult::Trivial(true).into_lit_neg() {
+        InternLit::Constant(b) => assert!(!b),
+        _ => panic!("expected Constant(false)"),
+    }
+    match InternResult::Trivial(false).into_lit_neg() {
+        InternLit::Constant(b) => assert!(b),
+        _ => panic!("expected Constant(true)"),
+    }
+}

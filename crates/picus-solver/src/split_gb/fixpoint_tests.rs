@@ -116,6 +116,23 @@ fn split_gb_extend_cancel_pre_cancelled_returns_err() {
     assert!(matches!(out, Err(Cancelled)));
 }
 
+#[test]
+fn split_gb_cancel_runs_trace_block_when_gb_trace_enabled() {
+    // With `gb_trace_enabled`, the per-iteration `metric::trace!` block in
+    // `run_fixpoint` emits its diagnostic line. The verdict and basis must
+    // be identical to the untraced run (the trace gate is pure telemetry).
+    let _g = crate::config::ConfigGuard::with_override(|c| c.gb_trace_enabled = true);
+    let pr = pr_one_var();
+    let f = pr.field();
+    let p = pr.sub(pr.var(0), pr.constant(f.from_int(3)));
+    let mut bp = BitProp::new(&pr);
+    let split = split_gb_cancel(&pr, vec![vec![p]], &mut bp, &CancelToken::none())
+        .expect("not cancelled");
+    assert_eq!(split.len(), 1);
+    assert!(!split[0].basis.is_empty());
+    assert!(!split[0].is_whole_ring());
+}
+
 // ─────── split_gb_cancel_traced ───────
 
 #[test]
@@ -185,4 +202,31 @@ fn split_gb_cancel_traced_pre_cancelled_returns_err() {
     let cancel = CancelToken::cancelled();
     let out = split_gb_cancel_traced(&pr, vec![vec![]], vec![vec![]], &mut bp, &cancel);
     assert!(matches!(out, Err(Cancelled)));
+}
+
+// ─────── per-iteration trace sink (gb_trace_enabled) ───────
+
+#[test]
+fn run_fixpoint_emits_per_iteration_trace_when_gb_trace_enabled() {
+    // With `gb_trace_enabled`, `run_fixpoint`'s `metric::trace!` block runs
+    // every fixpoint iteration: `metric::clock!` yields `Some(Instant)`
+    // (so the `elapsed_ms` map takes its Some arm) and the diagnostic
+    // `eprintln!` executes. A two-partition system whose linear generator
+    // `x − 3` propagates into the nonlinear partition `{x·y − 1}` forces a
+    // cross-partition admit so the loop runs more than one iteration before
+    // converging. The verdict must be unaffected: a consistent system
+    // (x=3, y=5 over GF(7)) stays non-whole-ring.
+    let _g = crate::config::ConfigGuard::with_override(|c| c.gb_trace_enabled = true);
+    let pr = pr_two_vars();
+    let f = pr.field();
+    let x_minus_3 = pr.sub(pr.var(0), pr.constant(f.from_int(3)));
+    let xy_minus_1 = pr.sub(pr.mul(pr.var(0), pr.var(1)), pr.constant(f.one()));
+    let gens: Vec<Vec<Poly>> = vec![vec![x_minus_3], vec![xy_minus_1]];
+    let mut bp = BitProp::new(&pr);
+    let split = split_gb_cancel(&pr, gens, &mut bp, &CancelToken::none()).expect("not cancelled");
+    assert_eq!(split.len(), 2);
+    assert!(
+        !split.iter().any(|b| b.is_whole_ring()),
+        "consistent system (x=3, y=5) is not the whole ring"
+    );
 }

@@ -46,3 +46,24 @@ fn lit_raw_roundtrip() {
     assert_eq!(Lit::from_raw(p.raw()), p);
     assert_eq!(Lit::from_raw(n.raw()), n);
 }
+
+#[test]
+fn lbool_is_defined() {
+    assert!(LBool::True.is_defined());
+    assert!(LBool::False.is_defined());
+    assert!(!LBool::Undef.is_defined());
+}
+
+#[test]
+fn lit_display_positive_and_negative() {
+    let v = Var(5);
+    assert_eq!(format!("{}", Lit::pos(v)), "x5");
+    assert_eq!(format!("{}", Lit::neg(v)), "-x5");
+}
+
+#[test]
+fn lit_display_var_zero() {
+    let v = Var(0);
+    assert_eq!(format!("{}", Lit::pos(v)), "x0");
+    assert_eq!(format!("{}", Lit::neg(v)), "-x0");
+}

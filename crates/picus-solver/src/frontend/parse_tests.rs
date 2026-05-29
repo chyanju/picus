@@ -482,3 +482,39 @@ fn test_bitsums_two_bitsums() {
     lens.sort();
     assert_eq!(lens, vec![2, 2]);
 }
+
+// =============================================================================
+// one_constraint  reject paths
+// =============================================================================
+
+#[test]
+fn test_one_constraint_rejects_quadratic_term() {
+    // x^2 - 1: the x^2 term has exponent 2, which `one_constraint` rejects
+    // as soon as it sees a variable of degree > 1.
+    let pr = FfPolyRing::new(ff(17), vec!["x".into()]);
+    let x2 = pr.mul(pr.var(0), pr.var(0));
+    let p = pr.sub(x2, pr.one());
+    assert_eq!(one_constraint(&pr, &p), None);
+}
+
+#[test]
+fn test_one_constraint_rejects_multivar_term() {
+    // x*y - 1: the x*y monomial introduces a second variable in one term,
+    // which `one_constraint` rejects (no single linear variable).
+    let pr = FfPolyRing::new(ff(17), vec!["x".into(), "y".into()]);
+    let xy = pr.mul(pr.var(0), pr.var(1));
+    let p = pr.sub(xy, pr.one());
+    assert_eq!(one_constraint(&pr, &p), None);
+}
+
+// =============================================================================
+// extract_linear_monomials  zero-polynomial path
+// =============================================================================
+
+#[test]
+fn test_extract_linear_monomials_zero_poly_is_none() {
+    // The zero polynomial has no terms, so there are no linear monomials
+    // to extract.
+    let pr = FfPolyRing::new(ff(17), vec!["x".into(), "y".into()]);
+    assert!(extract_linear_monomials(&pr, &pr.zero()).is_none());
+}

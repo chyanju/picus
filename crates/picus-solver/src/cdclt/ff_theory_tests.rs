@@ -621,3 +621,466 @@ fn pop_clears_pinning_so_propagate_returns_empty() {
     th.pop();
     assert!(th.propagate().is_empty());
 }
+
+#[test]
+fn post_check_skips_fact_for_var_not_in_table() {
+    // A fact whose atom variable is absent from the table (not aux, not
+    // an interned atom) is skipped in check_full_with_mapping (the
+    // `atom() == None` continue). With no other facts, `had_any` stays
+    // false ⇒ Sat with an empty model.
+    let prime = BigUint::from(101u32);
+    let atoms = AtomTable::new(prime);
+    let cancel = CancelToken::none();
+    let mut th = FfTheory::new(&atoms, &cancel);
+    th.notify_fact(Var(999), true);
+    match th.post_check() {
+        CheckOutcome::Sat => {}
+        other => panic!("expected Sat, got {:?}", other),
+    }
+    let m = th.collect_model().expect("empty model present");
+    assert!(m.is_empty());
+}
+
+#[test]
+fn post_check_unknown_when_cancelled_before_solve() {
+    // A pre-cancelled token: encode succeeds, then the post-encode
+    // cancellation check returns Unknown.
+    let prime = BigUint::from(101u32);
+    let mut atoms = AtomTable::new(prime);
+    let mut sat = Solver::new();
+    let mut vn: Vec<String> = Vec::new();
+    let av = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 5);
+    let cancel = CancelToken::cancelled();
+    let mut th = FfTheory::new(&atoms, &cancel);
+    th.notify_fact(av, true);
+    match th.post_check() {
+        CheckOutcome::Unknown => {}
+        other => panic!("expected Unknown on cancellation, got {:?}", other),
+    }
+    assert!(
+        th.collect_model().is_none(),
+        "no model after a cancelled check"
+    );
+}
+
+#[test]
+fn collect_model_is_none_after_unsat() {
+    // After an UNSAT post_check, has_model is false ⇒ collect_model None.
+    let prime = BigUint::from(101u32);
+    let mut atoms = AtomTable::new(prime);
+    let mut sat = Solver::new();
+    let mut vn: Vec<String> = Vec::new();
+    let a1 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 5);
+    let a2 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 6);
+    let cancel = CancelToken::none();
+    let mut th = FfTheory::new(&atoms, &cancel);
+    th.notify_fact(a1, true);
+    th.notify_fact(a2, true);
+    assert!(matches!(th.post_check(), CheckOutcome::Unsat { .. }));
+    assert!(th.collect_model().is_none());
+}
+
+#[test]
+fn pinned_vars_skips_fact_for_var_not_in_table() {
+    // pinned_vars must skip a positive fact whose atom is not in the
+    // table (the `atom() == None` continue) while still pinning a real
+    // single-var equality alongside it.
+    let prime = BigUint::from(101u32);
+    let mut atoms = AtomTable::new(prime);
+    let mut sat = Solver::new();
+    let mut vn: Vec<String> = Vec::new();
+    let a5 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 5);
+    let cancel = CancelToken::none();
+    let mut th = FfTheory::new(&atoms, &cancel);
+    th.notify_fact(Var(999), true); // no atom ⇒ skipped
+    th.notify_fact(a5, true);
+    let pinned = th.pinned_vars();
+    assert_eq!(pinned.len(), 1, "only x is pinned: {:?}", pinned);
+    let (value, _src) = pinned.get("x").expect("x pinned");
+    assert_eq!(value, &BigUint::from(5u32));
+}
+
+#[test]
+fn tier2_source_skips_single_var_equality() {
+    // A single-variable equality on the trail is never a Tier 2 source
+    // (it is handled by pinning). With only (= x 3) asserted, Tier 2
+    // yields nothing; the (= x 6) propagation comes solely from Tier 1.
+    let prime = BigUint::from(101u32);
+    let mut atoms = AtomTable::new(prime);
+    let mut sat = Solver::new();
+    let mut vn: Vec<String> = Vec::new();
+    let a3 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 3);
+    let a6 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 6);
+    let cancel = CancelToken::none();
+    let mut th = FfTheory::new(&atoms, &cancel);
+    th.notify_fact(a3, true);
+    let pinned = th.pinned_vars();
+    // Tier 2 alone produces no propagations from a single-var source.
+    let tier2 = th.compute_tier2(&pinned);
+    assert!(
+        tier2.is_empty(),
+        "single-var-eq source must be skipped by Tier 2: {:?}",
+        tier2
+    );
+    // Tier 1 still derives (= x 6) is False.
+    let tier1 = th.compute_tier1(&pinned);
+    assert!(
+        tier1.iter().any(|&(v, p, _)| v == a6 && !p),
+        "Tier 1 must derive (= x 6) False: {:?}",
+        tier1
+    );
+}
+
+#[test]
+fn tier2_skips_when_unpinned_coefficient_cancels_to_zero() {
+    // (x*y - 3*y = 0) under x=3: the unpinned y coefficient is
+    // 1*3 + (p-3) = 0, so Tier 2 bails (no value can be derived).
+    let prime = BigUint::from(101u32);
+    let mut atoms = AtomTable::new(prime);
+    let mut sat = Solver::new();
+    let mut vn: Vec<String> = Vec::new();
+    let ax3 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 3);
+    let _ay7 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "y", 7);
+    let asrc = intern_eq_terms(
+        &mut atoms,
+        &mut sat,
+        &mut vn,
+        &[(1, &["x", "y"])],
+        &[(3, &["y"])],
+    );
+    let cancel = CancelToken::none();
+    let mut th = FfTheory::new(&atoms, &cancel);
+    th.notify_fact(ax3, true);
+    th.notify_fact(asrc, true);
+    let pinned = th.pinned_vars();
+    let tier2 = th.compute_tier2(&pinned);
+    assert!(
+        tier2.is_empty(),
+        "zero unpinned coefficient must yield no Tier 2 propagation: {:?}",
+        tier2
+    );
+}
+
+#[test]
+fn tier2_derives_zero_value_when_constant_residue_is_zero() {
+    // (x + y = 3) under x=3: residue acc_const = 3 + (p-3) = 0, so
+    // neg_c = 0 ⇒ y = 0. The (= y 0) atom propagates True.
+    let prime = BigUint::from(101u32);
+    let mut atoms = AtomTable::new(prime);
+    let mut sat = Solver::new();
+    let mut vn: Vec<String> = Vec::new();
+    let ax3 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 3);
+    let ay0 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "y", 0);
+    let asum = intern_eq_terms(
+        &mut atoms,
+        &mut sat,
+        &mut vn,
+        &[(1, &["x"]), (1, &["y"])],
+        &[(3, &[])],
+    );
+    let cancel = CancelToken::none();
+    let mut th = FfTheory::new(&atoms, &cancel);
+    th.notify_fact(ax3, true);
+    th.notify_fact(asum, true);
+    let props = th.propagate();
+    assert!(
+        props.iter().any(|&(v, p)| v == ay0 && p),
+        "x+y=3 with x=3 must derive (= y 0) True: {:?}",
+        props
+    );
+}
+
+#[test]
+fn tier2_skips_target_atom_already_on_trail() {
+    // x=3 + (x+y=7) derives y=4. Both (= y 4) and (= y 5) are atoms over
+    // y. (= y 4) is on the trail (asserted with negative polarity, so it
+    // does not pin y), so Tier 2 skips it; only the untrailed (= y 5)
+    // propagates as False.
+    let prime = BigUint::from(101u32);
+    let mut atoms = AtomTable::new(prime);
+    let mut sat = Solver::new();
+    let mut vn: Vec<String> = Vec::new();
+    let ax3 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 3);
+    let ay4 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "y", 4);
+    let ay5 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "y", 5);
+    let asum = intern_eq_terms(
+        &mut atoms,
+        &mut sat,
+        &mut vn,
+        &[(1, &["x"]), (1, &["y"])],
+        &[(7, &[])],
+    );
+    let cancel = CancelToken::none();
+    let mut th = FfTheory::new(&atoms, &cancel);
+    th.notify_fact(ax3, true);
+    th.notify_fact(ay4, false); // on trail but does NOT pin y
+    th.notify_fact(asum, true);
+    let pinned = th.pinned_vars();
+    let tier2 = th.compute_tier2(&pinned);
+    assert!(
+        !tier2.iter().any(|&(v, _, _)| v == ay4),
+        "Tier 2 must not re-propagate an on-trail target atom: {:?}",
+        tier2
+    );
+    assert!(
+        tier2.iter().any(|&(v, p, _)| v == ay5 && !p),
+        "Tier 2 must derive (= y 5) False from y=4: {:?}",
+        tier2
+    );
+}
+
+#[test]
+fn tier1_skips_constant_only_atom_not_on_trail() {
+    // A constant-only atom (= 0 1) interns to a vars-empty key. It is NOT
+    // asserted, so it is a live atom slot when x is pinned. Tier 1
+    // evaluates its (constant) polynomial but its `used_vars` set is empty,
+    // so it is skipped to avoid an empty-reason propagation — never appears
+    // in the Tier 1 results.
+    let prime = BigUint::from(101u32);
+    let mut atoms = AtomTable::new(prime);
+    let mut sat = Solver::new();
+    let mut vn: Vec<String> = Vec::new();
+    let a_x5 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 5);
+    let a_const = intern_eq_terms(&mut atoms, &mut sat, &mut vn, &[(0, &[])], &[(1, &[])]);
+    let cancel = CancelToken::none();
+    let mut th = FfTheory::new(&atoms, &cancel);
+    th.notify_fact(a_x5, true); // pins x = 5; a_const stays off-trail
+    let pinned = th.pinned_vars();
+    let tier1 = th.compute_tier1(&pinned);
+    assert!(
+        !tier1.iter().any(|&(v, _, _)| v == a_const),
+        "constant-only off-trail atom must be skipped by Tier 1: {:?}",
+        tier1
+    );
+}
+
+#[test]
+fn tier1_reason_cites_every_pinning_source_for_multi_var_atom() {
+    // (x + y = 7) under x=3, y=4 reduces to 0 ⇒ atom True via Tier 1.
+    // The reason must name both pinning sources (the `reason.push` arm runs
+    // once per distinct pinning source backing the atom's variables).
+    let prime = BigUint::from(101u32);
+    let mut atoms = AtomTable::new(prime);
+    let mut sat = Solver::new();
+    let mut vn: Vec<String> = Vec::new();
+    let ax3 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 3);
+    let ay4 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "y", 4);
+    let asum = intern_eq_terms(
+        &mut atoms,
+        &mut sat,
+        &mut vn,
+        &[(1, &["x"]), (1, &["y"])],
+        &[(7, &[])],
+    );
+    let cancel = CancelToken::none();
+    let mut th = FfTheory::new(&atoms, &cancel);
+    th.notify_fact(ax3, true);
+    th.notify_fact(ay4, true);
+    let pinned = th.pinned_vars();
+    let tier1 = th.compute_tier1(&pinned);
+    let entry = tier1
+        .iter()
+        .find(|&&(v, _, _)| v == asum)
+        .expect("(x+y=7) must reduce under x=3,y=4");
+    let (_, polarity, reason) = entry;
+    assert!(*polarity, "x+y-7 = 0 ⇒ atom True");
+    let reason_vars: std::collections::HashSet<Var> =
+        reason.iter().map(|&(v, _)| v).collect();
+    assert!(reason_vars.contains(&ax3), "reason must cite x=3: {:?}", reason);
+    assert!(reason_vars.contains(&ay4), "reason must cite y=4: {:?}", reason);
+}
+
+#[test]
+fn tier2_skips_source_fact_for_var_not_in_table() {
+    // A positive fact whose atom variable is not interned (not aux, not a
+    // known atom) is skipped as a Tier 2 source via the `atom() == None`
+    // continue. A genuine multi-var source alongside it still propagates,
+    // confirming the loop continues past the missing fact.
+    let prime = BigUint::from(101u32);
+    let mut atoms = AtomTable::new(prime);
+    let mut sat = Solver::new();
+    let mut vn: Vec<String> = Vec::new();
+    let ax3 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 3);
+    let ay4 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "y", 4);
+    let asum = intern_eq_terms(
+        &mut atoms,
+        &mut sat,
+        &mut vn,
+        &[(1, &["x"]), (1, &["y"])],
+        &[(7, &[])],
+    );
+    let cancel = CancelToken::none();
+    let mut th = FfTheory::new(&atoms, &cancel);
+    th.notify_fact(Var(999), true); // no atom in table ⇒ Tier 2 source skip
+    th.notify_fact(ax3, true);
+    th.notify_fact(asum, true);
+    let pinned = th.pinned_vars();
+    let tier2 = th.compute_tier2(&pinned);
+    assert!(
+        tier2.iter().any(|&(v, p, _)| v == ay4 && p),
+        "Tier 2 must still derive (= y 4) True despite the missing-atom fact: {:?}",
+        tier2
+    );
+}
+
+#[test]
+fn post_check_unknown_when_encode_rejects_oversized_system() {
+    // `encode` rejects any ring with more than 5000 variables
+    // (`encode_impl`'s `n_vars > 5000` guard). A single multi-variable
+    // equality atom spanning 5001 distinct variables interns 5001 names
+    // into the builder, so the freshly built `ConstraintSystem` fails to
+    // encode. `check_full_with_mapping` maps that `Err` to
+    // `CheckOutcome::Unknown`.
+    let prime = BigUint::from(101u32);
+    let mut atoms = AtomTable::new(prime);
+    let mut sat = Solver::new();
+    let mut vn: Vec<String> = Vec::new();
+    // Build an equality `v0 + v1 + ... + v5000 = 0` over 5001 distinct vars.
+    let names: Vec<String> = (0..5001).map(|i| format!("v{}", i)).collect();
+    let lhs: Vec<PolyTerm> = names.iter().map(|n| t(&mut vn, 1, &[n.as_str()])).collect();
+    let rhs: Vec<PolyTerm> = vec![t(&mut vn, 0, &[])];
+    let av = match atoms.intern_eq(&lhs, &rhs, &vn, &mut sat) {
+        InternResult::Var(v) => v,
+        other => panic!("expected Var, got {:?}", other),
+    };
+    let cancel = CancelToken::none();
+    let mut th = FfTheory::new(&atoms, &cancel);
+    th.notify_fact(av, true);
+    match th.post_check() {
+        CheckOutcome::Unknown => {}
+        other => panic!("expected Unknown on encode rejection, got {:?}", other),
+    }
+    assert!(
+        th.collect_model().is_none(),
+        "no model when the encode step rejects the system"
+    );
+}
+
+/// Build a real `EncodedSystem` with one equality (`x - 5 = 0`) and one
+/// disequality (`x != 0`) so its provenance carries an `Equality(_)` and
+/// a `Rabinowitsch(0)` entry.
+fn encode_eq_and_diseq() -> EncodedSystem {
+    let mut builder = ConstraintSystemBuilder::new(BigUint::from(101u32));
+    let x = builder.var("x");
+    // x - 5 = 0
+    builder.add_equality(vec![
+        PolyTerm {
+            coeff: BigUint::from(1u32),
+            vars: vec![(x, 1)],
+        },
+        PolyTerm {
+            coeff: BigUint::from(96u32), // -5 mod 101
+            vars: vec![],
+        },
+    ]);
+    // x != 0: introduce d = x, assert d != __zero
+    let mut seq = 0usize;
+    let mut zero_idx: Option<u32> = None;
+    let (d, zero) = builder.fresh_disequality_vars(&mut seq, &mut zero_idx);
+    builder.add_equality(vec![
+        PolyTerm {
+            coeff: BigUint::from(1u32),
+            vars: vec![(d, 1)],
+        },
+        PolyTerm {
+            coeff: BigUint::from(100u32), // -1 mod 101
+            vars: vec![(x, 1)],
+        },
+    ]);
+    builder.add_disequality(d, zero);
+    let indexed = builder.build();
+    encode(&indexed).expect("encode succeeds")
+}
+
+/// First polynomial index in `encoded` whose provenance is an
+/// `Equality(_)`.
+fn first_equality_index(encoded: &EncodedSystem) -> usize {
+    encoded
+        .poly_provenance
+        .iter()
+        .position(|p| matches!(p, PolySource::Equality(_)))
+        .expect("at least one Equality provenance")
+}
+
+/// First polynomial index in `encoded` whose provenance is a
+/// `Rabinowitsch(_)`.
+fn first_rabinowitsch_index(encoded: &EncodedSystem) -> usize {
+    encoded
+        .poly_provenance
+        .iter()
+        .position(|p| matches!(p, PolySource::Rabinowitsch(_)))
+        .expect("at least one Rabinowitsch provenance")
+}
+
+#[test]
+fn map_core_falls_back_to_full_trail_on_equality_misalignment() {
+    // When n_input_equalities != equality_atoms.len(), an Equality(j)
+    // core index cannot be precisely attributed ⇒ need_full ⇒ the full
+    // trail (all equality + disequality atoms) is returned.
+    let encoded = encode_eq_and_diseq();
+    let eq_idx = first_equality_index(&encoded);
+    // Deliberately misaligned: encoder saw `n_input_equalities` (>= 1)
+    // equalities, but we pass an equality_atoms slice of a different len.
+    assert_ne!(encoded.n_input_equalities, 3);
+    let equality_atoms = vec![Var(0), Var(1), Var(2)];
+    let disequality_atoms = vec![Var(5)];
+    let core = map_core_to_atoms(&[eq_idx], &encoded, &equality_atoms, &disequality_atoms)
+        .expect("full trail is non-empty");
+    // Full trail = sorted/deduped union of equality + disequality atoms.
+    let mut expected = equality_atoms.clone();
+    expected.extend_from_slice(&disequality_atoms);
+    expected.sort();
+    expected.dedup();
+    assert_eq!(core, expected);
+}
+
+#[test]
+fn map_core_falls_back_when_rabinowitsch_index_out_of_range() {
+    // A Rabinowitsch(d) core index with d beyond disequality_atoms.len()
+    // forces the full-trail fallback.
+    let encoded = encode_eq_and_diseq();
+    // Keep the equality frame aligned so only the Rabinowitsch miss
+    // triggers need_full.
+    let n_eq = encoded.n_input_equalities;
+    let equality_atoms: Vec<Var> = (0..n_eq as u32).map(Var).collect();
+    let rab_idx = first_rabinowitsch_index(&encoded);
+    // Empty disequality_atoms ⇒ disequality_atoms.get(0) is None.
+    let core = map_core_to_atoms(&[rab_idx], &encoded, &equality_atoms, &[])
+        .expect("full trail non-empty (equalities present)");
+    assert_eq!(core, equality_atoms);
+}
+
+#[test]
+fn map_core_returns_none_when_full_trail_is_empty() {
+    // Core index maps to an `Other`/encoder-internal polynomial only, and
+    // both atom slices are empty ⇒ atom_core empty ⇒ full trail empty ⇒
+    // None.
+    let encoded = encode_eq_and_diseq();
+    // Find an `Other`/unattributable index if present; otherwise use an
+    // index past the end (poly_provenance.get -> None branch).
+    let other_idx = encoded
+        .poly_provenance
+        .iter()
+        .position(|p| matches!(p, PolySource::Other))
+        .unwrap_or(encoded.poly_provenance.len());
+    let core = map_core_to_atoms(&[other_idx], &encoded, &[], &[]);
+    assert!(core.is_none(), "empty full-trail fallback must be None");
+}
+
+#[test]
+fn map_core_precise_when_equality_aligned() {
+    // With n_input_equalities == equality_atoms.len() and an Equality(j)
+    // core index, the precise atom (equality_atoms[j]) is returned.
+    let encoded = encode_eq_and_diseq();
+    let n_eq = encoded.n_input_equalities;
+    // Distinct sentinel atom vars, one per input equality.
+    let equality_atoms: Vec<Var> = (10..10 + n_eq as u32).map(Var).collect();
+    let eq_idx = first_equality_index(&encoded);
+    let j = match encoded.poly_provenance[eq_idx] {
+        PolySource::Equality(j) => j,
+        _ => unreachable!(),
+    };
+    let core = map_core_to_atoms(&[eq_idx], &encoded, &equality_atoms, &[])
+        .expect("precise core present");
+    assert_eq!(core, vec![equality_atoms[j]]);
+}
