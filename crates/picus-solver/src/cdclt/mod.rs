@@ -9,6 +9,7 @@
 pub mod atoms;
 pub mod cnf;
 pub mod ff_theory;
+pub mod ff_theory_incremental;
 pub mod multi_prime;
 pub mod orchestrator;
 pub mod theory;
