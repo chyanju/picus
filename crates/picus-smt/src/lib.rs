@@ -1,6 +1,10 @@
 pub mod backends;
 pub mod poly_ir;
 
+#[cfg(test)]
+#[path = "lib_tests.rs"]
+mod tests;
+
 /// Reserved variable names for field constants the witness post-
 /// processor must filter out of solver-produced models. `p` is the
 /// field prime; `ps1`..`ps5` are `p-1`..`p-5`; `zero` and `one` are

@@ -57,3 +57,6 @@ pub fn wire_connectivity_score(ir: &PolyIR) -> HashMap<usize, usize> {
     counter
 }
 
+#[cfg(test)]
+mod tests;
+

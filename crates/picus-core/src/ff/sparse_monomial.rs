@@ -329,3 +329,7 @@ impl MonomialRepr for SparseMonomial {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "sparse_monomial_tests.rs"]
+mod tests;

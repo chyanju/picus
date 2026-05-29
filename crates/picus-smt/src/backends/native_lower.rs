@@ -180,3 +180,7 @@ impl PolyIR {
         encode(&self.to_constraint_system())
     }
 }
+
+#[cfg(test)]
+#[path = "native_lower_tests.rs"]
+mod tests;

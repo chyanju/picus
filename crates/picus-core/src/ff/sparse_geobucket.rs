@@ -306,3 +306,7 @@ pub(super) fn reduce(
     }
     SparsePolynomial::from_sorted_terms(result)
 }
+
+#[cfg(test)]
+#[path = "sparse_geobucket_tests.rs"]
+mod tests;

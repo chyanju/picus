@@ -490,3 +490,222 @@ fn prop_sparse_degrevlex_leading_term() {
     let exps = <SparseMonomial as crate::ff::repr::MonomialRepr>::to_dense(lm);
     assert_eq!(exps, vec![0, 5], "DegRevLex LT should be x1^5");
 }
+
+// ── (additional) from_terms canonicalisation ────────────────────────────
+
+#[test]
+fn prop_sparse_from_terms_drops_zero_coeffs() {
+    // Zero-coeff terms must be dropped; result has only nonzero entries.
+    let r = ring_with(101, 3, MonomialOrder::DegRevLex);
+    let p = sp(vec![(vec![1, 0, 0], 0), (vec![0, 1, 0], 3), (vec![0, 0, 1], 0)], &r);
+    assert_eq!(p.num_terms(), 1);
+    let (_, c) = p.term_at(0).unwrap();
+    assert!(!r.field.is_zero(c));
+}
+
+#[test]
+fn prop_sparse_from_terms_combines_like_monomials() {
+    // Duplicate monomials combine; combined zero is dropped.
+    let r = ring_with(101, 2, MonomialOrder::DegRevLex);
+    // 3*x0 + 5*x0 - 8*x0 = 0 ⇒ no term.
+    let p = sp(vec![(vec![1, 0], 3), (vec![1, 0], 5), (vec![1, 0], -8)], &r);
+    assert!(p.is_zero(), "duplicate monomials summing to zero must vanish");
+    // 3*x0 + 5*x0 = 8*x0  ⇒ 1 term.
+    let p2 = sp(vec![(vec![1, 0], 3), (vec![1, 0], 5)], &r);
+    assert_eq!(p2.num_terms(), 1);
+    let (_, c) = p2.term_at(0).unwrap();
+    assert!(r.field.eq(c, &r.field.from_u64(8)));
+}
+
+#[test]
+fn prop_sparse_from_terms_sorts_descending() {
+    // Insert in random order; result must be descending in ring order.
+    let r = ring_with(101, 3, MonomialOrder::DegRevLex);
+    let p = sp(
+        vec![
+            (vec![0, 0, 0], 7),  // smallest
+            (vec![2, 1, 0], 1),  // largest
+            (vec![1, 0, 0], 3),  // middle
+        ],
+        &r,
+    );
+    for i in 1..p.num_terms() {
+        let (a, _) = p.term_at(i - 1).unwrap();
+        let (b, _) = p.term_at(i).unwrap();
+        assert_eq!(
+            <SparseMonomial as crate::ff::repr::MonomialRepr>::cmp_with_order(a, b, r.order),
+            std::cmp::Ordering::Greater,
+            "terms not strictly descending"
+        );
+    }
+}
+
+// ── (additional) is_constant ───────────────────────────────────────────
+
+#[test]
+fn prop_sparse_is_constant() {
+    let r = ring_with(101, 3, MonomialOrder::DegRevLex);
+    assert!(SparsePolynomial::zero().is_constant(), "0 is constant");
+    let c = SparsePolynomial::constant(r.field.from_u64(5), &r);
+    assert!(c.is_constant(), "nonzero constant");
+    let x0 = SparsePolynomial::variable(0, &r);
+    assert!(!x0.is_constant(), "x0 not constant");
+}
+
+// ── (additional) appearing_variables ───────────────────────────────────
+
+#[test]
+fn prop_sparse_appearing_variables() {
+    // Returns (var, max_exp) for every var that appears in any term,
+    // ascending by index.
+    let r = ring_with(101, 5, MonomialOrder::DegRevLex);
+    // 2*x0*x2^3 + 5*x0^2*x4 + 7
+    let p = sp(
+        vec![
+            (vec![1, 0, 3, 0, 0], 2),
+            (vec![2, 0, 0, 0, 1], 5),
+            (vec![0, 0, 0, 0, 0], 7),
+        ],
+        &r,
+    );
+    let app = p.appearing_variables();
+    // vars 0, 2, 4 appear; max exp x0 = 2, x2 = 3, x4 = 1.
+    assert_eq!(app, vec![(0, 2), (2, 3), (4, 1)]);
+}
+
+#[test]
+fn prop_sparse_appearing_variables_zero() {
+    // 0 polynomial has no variables.
+    assert!(SparsePolynomial::zero().appearing_variables().is_empty());
+    // Constant polynomial likewise.
+    let r = ring_with(101, 3, MonomialOrder::DegRevLex);
+    let c = SparsePolynomial::constant(r.field.from_u64(4), &r);
+    assert!(c.appearing_variables().is_empty());
+}
+
+// ── (additional) content_hash equality ─────────────────────────────────
+
+#[test]
+fn prop_sparse_content_hash_equal_for_equal_polys() {
+    // Two polynomials built differently but representing the same value
+    // must hash equal (content_hash is canonical).
+    let r = ring_with(101, 3, MonomialOrder::DegRevLex);
+    let p1 = sp(vec![(vec![2, 1, 0], 2), (vec![1, 0, 0], 5), (vec![0, 0, 0], 7)], &r);
+    let p2 = sp(
+        vec![
+            // same monomials, different insertion order
+            (vec![0, 0, 0], 7),
+            (vec![1, 0, 0], 5),
+            (vec![2, 1, 0], 2),
+        ],
+        &r,
+    );
+    assert!(sparse_eq(&p1, &p2, &r));
+    assert_eq!(p1.content_hash(), p2.content_hash());
+}
+
+// ── (additional) from_sorted_terms invariant ───────────────────────────
+
+#[test]
+fn prop_sparse_from_sorted_terms_matches_from_terms() {
+    // Caller-canonicalised inputs: from_sorted_terms skips the
+    // sort/combine pass but produces the same SparsePolynomial.
+    let r = ring_with(101, 3, MonomialOrder::DegRevLex);
+    // Build descending-sorted, deduped, nonzero terms manually.
+    let canonical_terms: Vec<(SparseMonomial, crate::ff::field::FieldElem)> = vec![
+        (<SparseMonomial as crate::ff::repr::MonomialRepr>::from_exponents(vec![2, 1, 0]), r.field.from_u64(2)),
+        (<SparseMonomial as crate::ff::repr::MonomialRepr>::from_exponents(vec![1, 0, 0]), r.field.from_u64(5)),
+        (<SparseMonomial as crate::ff::repr::MonomialRepr>::from_exponents(vec![0, 0, 0]), r.field.from_u64(7)),
+    ];
+    let p_fast = SparsePolynomial::from_sorted_terms(canonical_terms.clone());
+    let p_slow = SparsePolynomial::from_terms(canonical_terms, &r);
+    assert!(sparse_eq(&p_fast, &p_slow, &r));
+}
+
+// ── (additional) sub via add(neg) identity ──────────────────────────────
+
+#[test]
+fn prop_sparse_sub_equals_add_negate() {
+    // a - b = a + (-b), for each test prime.
+    for &prime in &[7u64, 101] {
+        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
+        let a = sample_p(&r);
+        let b = sample_q(&r);
+        let lhs = a.sub(&b, &r);
+        let rhs = a.add(&b.negate(&r), &r);
+        assert!(sparse_eq(&lhs, &rhs, &r), "a-b != a+(-b) GF({prime})");
+    }
+}
+
+// ── (additional) leading_term consistency ──────────────────────────────
+
+#[test]
+fn prop_sparse_leading_term_coherent() {
+    // leading_term() == (leading_monomial(), leading_coefficient()).
+    let r = ring_with(101, 3, MonomialOrder::DegRevLex);
+    let p = sample_p(&r);
+    let (lm, lc) = p.leading_term().unwrap();
+    assert_eq!(Some(lm), p.leading_monomial());
+    assert!(r.field.eq(lc, p.leading_coefficient().unwrap()));
+}
+
+// ── (additional) scale and negate consistency ──────────────────────────
+
+#[test]
+fn prop_sparse_negate_equals_scale_neg_one() {
+    // -p = p * (-1) (over any prime).
+    for &prime in &[3u64, 7, 101] {
+        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
+        let p = sample_p(&r);
+        let neg_one = r.field.neg(&r.field.one());
+        let lhs = p.negate(&r);
+        let rhs = p.scale(&neg_one, &r);
+        assert!(sparse_eq(&lhs, &rhs, &r), "-p != p*(-1) GF({prime})");
+    }
+}
+
+// ── (additional) evaluate matches dense ────────────────────────────────
+
+#[test]
+fn prop_sparse_evaluate_matches_dense() {
+    // Sparse evaluate and dense evaluate agree (engine equivalence).
+    let r = ring_with(101, 3, MonomialOrder::DegRevLex);
+    let f = &r.field;
+    let p = sample_p(&r);
+    let d = p.to_dense(&r);
+    let values = vec![f.from_u64(2), f.from_u64(3), f.from_u64(5)];
+    let v_sparse = p.evaluate(&values, &r);
+    let v_dense = d.evaluate(&values, &r);
+    assert!(f.eq(&v_sparse, &v_dense), "sparse vs dense evaluate disagree");
+}
+
+// ── (additional) make_monic correctness ────────────────────────────────
+
+#[test]
+fn prop_sparse_make_monic_preserves_value_set() {
+    // make_monic divides by LC ⇒ same zero set (any root of p is a root of
+    // monic(p) and vice versa).
+    let r = ring_with(101, 3, MonomialOrder::DegRevLex);
+    let f = &r.field;
+    let p = sample_p(&r); // LC = 2 (DegRevLex picks 2*x0^2*x1)
+    let m = p.make_monic(&r);
+    // For random points, p(v) == 0 iff m(v) == 0.
+    let v = vec![f.from_u64(11), f.from_u64(13), f.from_u64(17)];
+    let pv = p.evaluate(&v, &r);
+    let mv = m.evaluate(&v, &r);
+    assert_eq!(f.is_zero(&pv), f.is_zero(&mv));
+    // monic LC = 1
+    assert!(f.is_one(m.leading_coefficient().unwrap()));
+}
+
+// ── (additional) reduce: irreducible subject unchanged ─────────────────
+
+#[test]
+fn prop_sparse_reduce_irreducible_unchanged() {
+    // If no divisor LT can ever divide any term in p, NF(p) = p.
+    let r = ring_with(101, 3, MonomialOrder::DegRevLex);
+    let p = sp(vec![(vec![0, 0, 2], 1), (vec![0, 0, 0], 7)], &r);
+    let d = sp(vec![(vec![2, 0, 0], 1), (vec![0, 0, 0], -1)], &r); // x0^2 - 1
+    let nf = p.reduce_by_refs(&[&d], &r);
+    assert!(sparse_eq(&p, &nf, &r));
+}

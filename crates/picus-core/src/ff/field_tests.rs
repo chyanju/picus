@@ -670,3 +670,381 @@ fn prop_neg_mul_small_primes() {
         }
     }
 }
+
+// ──────────────────────────── in-place / by-value variant agreement ─────
+//
+// The *_assign and *_owned API points must yield the identical canonical
+// element as the by-reference counterparts. These are the hot paths the
+// geobucket reducer uses to recycle GMP allocations; a divergence would
+// silently corrupt downstream computation.
+
+#[test]
+fn prop_add_assign_matches_add_small_primes() {
+    // add_assign(a, b) result == add(a, b). Folded: small primes + GMP.
+    for &p in &small_primes() {
+        let f = PrimeField::new(BigUint::from(p));
+        for x in 0..p {
+            for y in 0..p {
+                let a = f.from_u64(x);
+                let b = f.from_u64(y);
+                let expected = f.add(&a, &b);
+                let mut a_mut = a.clone();
+                f.add_assign(&mut a_mut, &b);
+                assert_eq!(a_mut, expected, "GF({p}) add_assign({x},{y})");
+            }
+        }
+    }
+    // GMP arm.
+    let f = PrimeField::new(bn128());
+    let vals = bn128_test_values(&f);
+    for a in &vals {
+        for b in &vals {
+            let expected = f.add(a, b);
+            let mut a_mut = a.clone();
+            f.add_assign(&mut a_mut, b);
+            assert_eq!(a_mut, expected);
+        }
+    }
+}
+
+#[test]
+fn prop_sub_assign_matches_sub_small_primes() {
+    for &p in &small_primes() {
+        let f = PrimeField::new(BigUint::from(p));
+        for x in 0..p {
+            for y in 0..p {
+                let a = f.from_u64(x);
+                let b = f.from_u64(y);
+                let expected = f.sub(&a, &b);
+                let mut a_mut = a.clone();
+                f.sub_assign(&mut a_mut, &b);
+                assert_eq!(a_mut, expected, "GF({p}) sub_assign({x},{y})");
+            }
+        }
+    }
+    let f = PrimeField::new(bn128());
+    let vals = bn128_test_values(&f);
+    for a in &vals {
+        for b in &vals {
+            let expected = f.sub(a, b);
+            let mut a_mut = a.clone();
+            f.sub_assign(&mut a_mut, b);
+            assert_eq!(a_mut, expected);
+        }
+    }
+}
+
+#[test]
+fn prop_mul_assign_matches_mul_small_primes() {
+    for &p in &small_primes() {
+        let f = PrimeField::new(BigUint::from(p));
+        for x in 0..p {
+            for y in 0..p {
+                let a = f.from_u64(x);
+                let b = f.from_u64(y);
+                let expected = f.mul(&a, &b);
+                let mut a_mut = a.clone();
+                f.mul_assign(&mut a_mut, &b);
+                assert_eq!(a_mut, expected, "GF({p}) mul_assign({x},{y})");
+            }
+        }
+    }
+    let f = PrimeField::new(bn128());
+    let vals = bn128_test_values(&f);
+    for a in &vals {
+        for b in &vals {
+            let expected = f.mul(a, b);
+            let mut a_mut = a.clone();
+            f.mul_assign(&mut a_mut, b);
+            assert_eq!(a_mut, expected);
+        }
+    }
+}
+
+#[test]
+fn prop_add_owned_matches_add_small_primes() {
+    // add_owned(a, b) recycles GMP buffers but must equal add(a, b).
+    for &p in &small_primes() {
+        let f = PrimeField::new(BigUint::from(p));
+        for x in 0..p {
+            for y in 0..p {
+                let a = f.from_u64(x);
+                let b = f.from_u64(y);
+                let expected = f.add(&a, &b);
+                let actual = f.add_owned(a, b);
+                assert_eq!(actual, expected, "GF({p}) add_owned({x},{y})");
+            }
+        }
+    }
+    let f = PrimeField::new(bn128());
+    let vals = bn128_test_values(&f);
+    for a in &vals {
+        for b in &vals {
+            let expected = f.add(a, b);
+            let actual = f.add_owned(a.clone(), b.clone());
+            assert_eq!(actual, expected);
+        }
+    }
+}
+
+#[test]
+fn prop_sub_owned_matches_sub_small_primes() {
+    for &p in &small_primes() {
+        let f = PrimeField::new(BigUint::from(p));
+        for x in 0..p {
+            for y in 0..p {
+                let a = f.from_u64(x);
+                let b = f.from_u64(y);
+                let expected = f.sub(&a, &b);
+                let actual = f.sub_owned(a, b);
+                assert_eq!(actual, expected, "GF({p}) sub_owned({x},{y})");
+            }
+        }
+    }
+    let f = PrimeField::new(bn128());
+    let vals = bn128_test_values(&f);
+    for a in &vals {
+        for b in &vals {
+            let expected = f.sub(a, b);
+            let actual = f.sub_owned(a.clone(), b.clone());
+            assert_eq!(actual, expected);
+        }
+    }
+}
+
+#[test]
+fn prop_neg_owned_matches_neg_small_primes() {
+    // neg_owned consumes; must equal neg(&).
+    for &p in &small_primes() {
+        let f = PrimeField::new(BigUint::from(p));
+        for x in 0..p {
+            let a = f.from_u64(x);
+            let expected = f.neg(&a);
+            let actual = f.neg_owned(a);
+            assert_eq!(actual, expected, "GF({p}) neg_owned({x})");
+        }
+    }
+    let f = PrimeField::new(bn128());
+    for a in bn128_test_values(&f) {
+        let expected = f.neg(&a);
+        let actual = f.neg_owned(a.clone());
+        assert_eq!(actual, expected);
+    }
+}
+
+#[test]
+fn prop_add_assign_owned_matches_add_small_primes() {
+    // add_assign_owned forwards to add_assign — same semantic.
+    for &p in &small_primes() {
+        let f = PrimeField::new(BigUint::from(p));
+        for x in 0..p {
+            for y in 0..p {
+                let a = f.from_u64(x);
+                let b = f.from_u64(y);
+                let expected = f.add(&a, &b);
+                let mut a_mut = a.clone();
+                f.add_assign_owned(&mut a_mut, b);
+                assert_eq!(a_mut, expected, "GF({p}) add_assign_owned({x},{y})");
+            }
+        }
+    }
+}
+
+// ──────────────────────────── feanor-style aliases ─────────────────────
+
+#[test]
+fn prop_feanor_aliases_forward() {
+    // The feanor-named methods are pure forwards to the canonical ones.
+    for &p in &small_primes() {
+        let f = PrimeField::new(BigUint::from(p));
+        for x in 0..p {
+            for y in 0..p {
+                let a = f.from_u64(x);
+                let b = f.from_u64(y);
+                assert_eq!(f.eq_el(&a, &b), a == b, "eq_el forwards");
+                assert_eq!(f.add_ref(&a, &b), f.add(&a, &b));
+                assert_eq!(f.sub_ref(&a, &b), f.sub(&a, &b));
+                assert_eq!(f.mul_ref(&a, &b), f.mul(&a, &b));
+                // by-value negate
+                assert_eq!(f.negate(a.clone()), f.neg(&a));
+                // clone_el
+                let c = f.clone_el(&a);
+                assert_eq!(c, a);
+            }
+        }
+    }
+}
+
+#[test]
+fn prop_from_int_matches_from_i64() {
+    // from_int(n) is alias for from_i64(n).
+    for &p in &small_primes() {
+        let f = PrimeField::new(BigUint::from(p));
+        let pi = p as i64;
+        for v in -(2 * pi)..(2 * pi) {
+            assert_eq!(f.from_int(v), f.from_i64(v));
+        }
+    }
+}
+
+#[test]
+fn prop_int_hom_maps_match_from_i64() {
+    // int_hom().map(n) == from_i64(n).
+    for &p in &small_primes() {
+        let f = PrimeField::new(BigUint::from(p));
+        let hom = f.int_hom();
+        for v in -10i64..10 {
+            assert_eq!(hom.map(v), f.from_i64(v));
+        }
+    }
+}
+
+// ──────────────────────────── PrimeField PartialEq ─────────────────────
+
+#[test]
+fn prop_primefield_eq_by_prime() {
+    // Two PrimeFields are equal iff they have the same prime
+    // (independent of Arc identity).
+    let f1 = PrimeField::new(BigUint::from(7u32));
+    let f2 = PrimeField::new(BigUint::from(7u32));
+    let f3 = PrimeField::new(BigUint::from(11u32));
+    assert!(f1 == f2, "same prime => fields equal");
+    assert!(!(f1 == f3), "different prime => fields unequal");
+    // Cloning preserves Arc identity → fast path.
+    let f1c = f1.clone();
+    assert!(f1 == f1c);
+}
+
+// ──────────────────────────── characteristic == prime ──────────────────
+
+#[test]
+fn prop_characteristic_equals_prime() {
+    for &p in &small_primes() {
+        let f = PrimeField::new(BigUint::from(p));
+        assert_eq!(f.characteristic(), f.prime());
+        assert_eq!(*f.characteristic(), BigUint::from(p));
+    }
+}
+
+// ──────────────────────────── is_zero / is_one semantics ───────────────
+
+#[test]
+fn prop_is_zero_is_one_consistent() {
+    // Definitions: is_zero(zero())=true, is_one(one())=true,
+    // is_zero(one())=false unless p==1 (impossible by assert);
+    // is_one(zero())=false.
+    for &p in &small_primes() {
+        let f = PrimeField::new(BigUint::from(p));
+        assert!(f.is_zero(&f.zero()));
+        assert!(f.is_one(&f.one()));
+        assert!(!f.is_one(&f.zero()));
+        assert!(!f.is_zero(&f.one()));
+        // for_u64(0) is zero, for_u64(1) is one.
+        assert!(f.is_zero(&f.from_u64(0)));
+        assert!(f.is_one(&f.from_u64(1)));
+        assert!(f.is_zero(&f.from_u64(p)), "p mod p == 0");
+    }
+}
+
+// ──────────────────────────── construction guards ─────────────────────
+
+#[test]
+#[should_panic(expected = "prime must be > 1")]
+fn prop_new_panics_on_prime_one() {
+    let _ = PrimeField::new(BigUint::from(1u32));
+}
+
+#[test]
+#[should_panic(expected = "prime must be > 1")]
+fn prop_new_panics_on_prime_zero() {
+    let _ = PrimeField::new(BigUint::from(0u32));
+}
+
+// ──────────────────────────── Hash + Eq consistency ────────────────────
+
+#[test]
+fn prop_fieldelem_hash_eq_consistency_small() {
+    // Equal field elements must hash equally.
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    for &p in &small_primes() {
+        let f = PrimeField::new(BigUint::from(p));
+        for x in 0..p {
+            let a = f.from_u64(x);
+            let b = f.from_u64(x);
+            assert_eq!(a, b);
+            let mut ha = DefaultHasher::new();
+            let mut hb = DefaultHasher::new();
+            a.hash(&mut ha);
+            b.hash(&mut hb);
+            assert_eq!(ha.finish(), hb.finish(), "Eq => Hash GF({p}) {x}");
+        }
+    }
+}
+
+// ──────────────────────────── pow with BigUint exponent ────────────────
+
+#[test]
+fn prop_pow_zero_exponent_is_one_even_for_zero_base() {
+    // Convention: a^0 == 1 for ALL a, including a == 0.
+    // Docstring on prop_pow_exponent_identities confirms this.
+    for &p in &small_primes() {
+        let f = PrimeField::new(BigUint::from(p));
+        let zero_exp = BigUint::from(0u32);
+        assert!(f.is_one(&f.pow(&f.zero(), &zero_exp)));
+        assert!(f.is_one(&f.pow(&f.one(), &zero_exp)));
+        assert!(f.is_one(&f.pow_u64(&f.zero(), 0)));
+    }
+}
+
+#[test]
+fn prop_pow_biguint_matches_pow_u64() {
+    // pow(a, BigUint::from(e)) == pow_u64(a, e) for small e.
+    for &p in &small_primes() {
+        let f = PrimeField::new(BigUint::from(p));
+        for x in 0..p {
+            let a = f.from_u64(x);
+            for e in 0u64..7 {
+                let by_bu = f.pow(&a, &BigUint::from(e));
+                let by_u64 = f.pow_u64(&a, e);
+                assert_eq!(by_bu, by_u64, "GF({p}) pow({x},{e}) variant mismatch");
+            }
+        }
+    }
+}
+
+// ──────────────────────────── Repeated assigns preserve invariants ─────
+
+#[test]
+fn prop_chained_assigns_preserve_canonical_form() {
+    // Many chained add_assigns must stay in [0, p).
+    for &p in &small_primes() {
+        let f = PrimeField::new(BigUint::from(p));
+        let mut acc = f.zero();
+        for v in 0..(3 * p) {
+            f.add_assign(&mut acc, &f.from_u64(v));
+            // canonical-form invariant must hold after each op.
+            assert!(f.to_biguint(&acc) < BigUint::from(p));
+        }
+        // Multiplication chain
+        let mut acc = f.one();
+        for v in 1..(2 * p) {
+            f.mul_assign(&mut acc, &f.from_u64(v % p));
+            assert!(f.to_biguint(&acc) < BigUint::from(p));
+        }
+    }
+}
+
+// ──────────────────────────── div(0/0) returns None ────────────────────
+
+#[test]
+fn prop_div_by_zero_returns_none() {
+    // Division by zero must return None (per `inv(zero) = None`).
+    for &p in &small_primes() {
+        let f = PrimeField::new(BigUint::from(p));
+        for x in 0..p {
+            let a = f.from_u64(x);
+            assert!(f.div(&a, &f.zero()).is_none(), "GF({p}) {x}/0 must be None");
+        }
+    }
+}

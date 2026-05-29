@@ -90,3 +90,7 @@ impl R1csFile {
         )
     }
 }
+
+#[cfg(test)]
+#[path = "grammar_tests.rs"]
+mod tests;

@@ -395,3 +395,7 @@ fn block_to_linear(
     }
     Ok(acc)
 }
+
+#[cfg(test)]
+#[path = "poly_ir_tests.rs"]
+mod tests;

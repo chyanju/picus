@@ -241,3 +241,7 @@ inventory::submit! {
         factory: || Box::new(AbozLemma::default()),
     }
 }
+
+#[cfg(test)]
+#[path = "aboz_tests.rs"]
+mod tests;

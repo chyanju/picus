@@ -85,3 +85,7 @@ pub fn all_descriptors() -> Vec<&'static LemmaDescriptor> {
 pub fn all_names() -> Vec<&'static str> {
     all_descriptors().iter().map(|d| d.name).collect()
 }
+
+#[cfg(test)]
+#[path = "lemma_tests.rs"]
+mod tests;
