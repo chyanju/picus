@@ -1554,3 +1554,342 @@ fn symbolic_preprocess_break_exits_inner_loop_on_first_divisor() {
     // The reducer LT records the worklist monomial x0·x1.
     assert_eq!(reducer_lts[0].exponents(), &[1, 1, 0]);
 }
+
+// ──────────── SPEC-DRIVEN PROPERTY TESTS ────────────
+//
+// F4 cross-engine equivalence (vs the per-pair geobucket path) plus
+// post-op invariants. Property statements come from algebraic spec
+// (Buchberger's theorem / uniqueness of the reduced GB / monicity of
+// reduced GBs) — NOT from reading the F4 source.
+
+use crate::ff::buchberger::{
+    groebner_basis as buch_gb, interreduce as buch_interreduce, BuchbergerConfig,
+};
+
+/// Polynomial ring builder for prime `p` and `n_vars` variables.
+fn ring_p(p: u64, n_vars: usize) -> Arc<PolyRing> {
+    PolyRing::new(
+        PrimeField::new(BigUint::from(p)),
+        (0..n_vars).map(|i| format!("x{i}")).collect(),
+        MonomialOrder::DegRevLex,
+    )
+}
+
+/// Canonical reduced GB as a sorted list of term-list representations.
+/// Two ideals' reduced GBs are equal iff this canonical form is.
+fn canon_dense(mut basis: Vec<DensePoly>, ring: &Arc<PolyRing>) -> Vec<Vec<(Vec<u16>, BigUint)>> {
+    basis.retain(|p| !p.is_zero());
+    for p in basis.iter_mut() {
+        *p = p.make_monic(ring);
+    }
+    let mut out: Vec<Vec<(Vec<u16>, BigUint)>> = basis
+        .iter()
+        .map(|p| {
+            let mut ts: Vec<(Vec<u16>, BigUint)> = p
+                .terms(ring)
+                .map(|t| (t.exponents().to_vec(), ring.field.to_biguint(t.coefficient())))
+                .collect();
+            ts.sort();
+            ts
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// Spec of ideal-membership: each input generator reduces to zero
+/// modulo any GB of the ideal it generates (Buchberger).
+fn assert_gens_in_ideal(gens: &[DensePoly], basis: &[DensePoly], ring: &Arc<PolyRing>) {
+    let refs: Vec<&DensePoly> = basis.iter().collect();
+    for g in gens {
+        let nf = g.reduce_by_refs(&refs, ring);
+        assert!(
+            nf.is_zero(),
+            "input generator not in ideal of computed GB (residue has {} term(s))",
+            nf.num_terms()
+        );
+    }
+}
+
+/// Spec: ideal equality — each element of A reduces to 0 mod B and vice versa.
+fn assert_ideals_equal(a: &[DensePoly], b: &[DensePoly], ring: &Arc<PolyRing>) {
+    let a_refs: Vec<&DensePoly> = a.iter().collect();
+    let b_refs: Vec<&DensePoly> = b.iter().collect();
+    for p in a {
+        let nf = p.reduce_by_refs(&b_refs, ring);
+        assert!(nf.is_zero(), "A ⊄ B");
+    }
+    for p in b {
+        let nf = p.reduce_by_refs(&a_refs, ring);
+        assert!(nf.is_zero(), "B ⊄ A");
+    }
+}
+
+// ── (4) post-op invariant: generators reduce to zero modulo F4's GB ──
+
+/// Spec: a Gröbner basis G of ⟨f1,…,fk⟩ must contain ⟨f1,…,fk⟩ as
+/// an ideal, so each fi has zero normal form modulo G. Test the F4
+/// path directly via the Buchberger driver with `use_f4 = true`.
+#[test]
+fn f4_path_generators_reduce_to_zero_handbuilt_gf7() {
+    let ring = ring_p(7, 3);
+    let x = DensePoly::variable(0, &ring);
+    let y = DensePoly::variable(1, &ring);
+    let z = DensePoly::variable(2, &ring);
+    let one = DensePoly::constant(ring.field.one(), &ring);
+    // Non-trivial non-monomial system: x*y - z, y*z - x, z*x - y + 1.
+    let g1 = x.mul(&y, &ring).sub(&z, &ring);
+    let g2 = y.mul(&z, &ring).sub(&x, &ring);
+    let g3 = z.mul(&x, &ring).sub(&y, &ring).add(&one, &ring);
+    let gens = vec![g1, g2, g3];
+    let cfg = BuchbergerConfig { use_f4: true, ..BuchbergerConfig::default() };
+    let gb = buch_interreduce(buch_gb(gens.clone(), &ring, &cfg).unwrap().basis, &ring);
+    assert_gens_in_ideal(&gens, &gb, &ring);
+}
+
+// ── (9) engine equivalence: F4 ≡ per-pair on hand-built systems ──
+
+/// Spec: the reduced GB under a fixed monomial order is unique
+/// (Cox-Little-O'Shea Thm 2.7.5). Per-pair and F4 paths process
+/// different S-pair groupings but must converge on the SAME
+/// reduced GB.
+#[test]
+fn f4_vs_per_pair_reduced_gb_equal_handbuilt_gf7() {
+    let ring = ring_p(7, 3);
+    let x = DensePoly::variable(0, &ring);
+    let y = DensePoly::variable(1, &ring);
+    let z = DensePoly::variable(2, &ring);
+    let one = DensePoly::constant(ring.field.one(), &ring);
+    let g1 = x.mul(&y, &ring).sub(&z, &ring);
+    let g2 = y.mul(&z, &ring).sub(&one, &ring);
+    let g3 = x.mul(&z, &ring).add(&y, &ring);
+    let gens = vec![g1, g2, g3];
+
+    let cfg_pp = BuchbergerConfig { use_f4: false, ..BuchbergerConfig::default() };
+    let cfg_f4 = BuchbergerConfig { use_f4: true, ..BuchbergerConfig::default() };
+
+    let pp = buch_interreduce(buch_gb(gens.clone(), &ring, &cfg_pp).unwrap().basis, &ring);
+    let f4 = buch_interreduce(buch_gb(gens, &ring, &cfg_f4).unwrap().basis, &ring);
+
+    assert_eq!(canon_dense(pp, &ring), canon_dense(f4, &ring));
+}
+
+// ── (7) edge primes: GF(2), GF(3), GF(5), GF(7), large prime ──
+
+/// Spec: F4 is a generic-characteristic algorithm; the reduced GB
+/// of the same generator set must agree with the per-pair path over
+/// any prime. Small primes (2, 3, 5, 7) and a large prime — corpus
+/// memory says small primes have bitten the bit-prop subsystem
+/// twice, so probe them hard here too.
+#[test]
+fn f4_vs_per_pair_edge_primes() {
+    for &p in &[2u64, 3, 5, 7, 2_147_483_647] {
+        let ring = ring_p(p, 2);
+        let x = DensePoly::variable(0, &ring);
+        let y = DensePoly::variable(1, &ring);
+        let one = DensePoly::constant(ring.field.one(), &ring);
+        let two = DensePoly::constant(ring.field.from_u64(2), &ring);
+        // f1 = x*y - 1, f2 = x + y - 2.
+        let f1 = x.mul(&y, &ring).sub(&one, &ring);
+        let f2 = x.add(&y, &ring).sub(&two, &ring);
+        let gens = vec![f1, f2];
+
+        let cfg_pp = BuchbergerConfig { use_f4: false, ..BuchbergerConfig::default() };
+        let cfg_f4 = BuchbergerConfig { use_f4: true, ..BuchbergerConfig::default() };
+
+        let pp = buch_interreduce(buch_gb(gens.clone(), &ring, &cfg_pp).unwrap().basis, &ring);
+        let f4 = buch_interreduce(buch_gb(gens.clone(), &ring, &cfg_f4).unwrap().basis, &ring);
+
+        // Reduced GBs are equal (uniqueness theorem).
+        assert_eq!(
+            canon_dense(pp.clone(), &ring),
+            canon_dense(f4.clone(), &ring),
+            "F4 vs per-pair reduced-GB mismatch over GF({p})"
+        );
+        // And ideal-membership: each input reduces to 0 modulo F4's GB.
+        assert_gens_in_ideal(&gens, &f4, &ring);
+        // And cross-membership: F4's GB ≡ per-pair's GB as ideals.
+        assert_ideals_equal(&pp, &f4, &ring);
+    }
+}
+
+// ── (9) engine equivalence on a non-monomial system with overlapping LTs ──
+
+/// Spec: F4 must handle overlapping leading terms (the case that
+/// drives S-pair generation and symbolic-preprocessing) the same as
+/// per-pair. Pick a non-monomial multivariate system in GF(7) where
+/// every pair has a non-trivial S-polynomial.
+#[test]
+fn f4_vs_per_pair_overlapping_lts_gf7() {
+    let ring = ring_p(7, 4);
+    let x0 = DensePoly::variable(0, &ring);
+    let x1 = DensePoly::variable(1, &ring);
+    let x2 = DensePoly::variable(2, &ring);
+    let x3 = DensePoly::variable(3, &ring);
+    // All four leading monomials share x1.
+    let g1 = x0.mul(&x1, &ring).sub(&x2, &ring);
+    let g2 = x1.mul(&x2, &ring).sub(&x3, &ring);
+    let g3 = x1.mul(&x3, &ring).sub(&x0, &ring);
+    let gens = vec![g1, g2, g3];
+
+    let cfg_pp = BuchbergerConfig { use_f4: false, ..BuchbergerConfig::default() };
+    let cfg_f4 = BuchbergerConfig { use_f4: true, ..BuchbergerConfig::default() };
+
+    let pp = buch_interreduce(buch_gb(gens.clone(), &ring, &cfg_pp).unwrap().basis, &ring);
+    let f4 = buch_interreduce(buch_gb(gens, &ring, &cfg_f4).unwrap().basis, &ring);
+
+    assert_eq!(canon_dense(pp, &ring), canon_dense(f4, &ring));
+}
+
+// ── (4) post-op invariant: reduced GB is MONIC, leading terms MINIMAL ──
+
+/// Spec: a *reduced* GB satisfies (i) every element is monic, and
+/// (ii) no element's leading monomial divides another's
+/// (Cox-Little-O'Shea Defn 2.7.4). Both must hold of the F4 path's
+/// output.
+#[test]
+fn f4_reduced_gb_is_monic_and_lt_minimal() {
+    let ring = ring_p(7, 3);
+    let x = DensePoly::variable(0, &ring);
+    let y = DensePoly::variable(1, &ring);
+    let z = DensePoly::variable(2, &ring);
+    // Coefficients deliberately non-1 to force `make_monic` work.
+    let g1 = x.mul(&y, &ring).scale(&ring.field.from_u64(3), &ring).sub(&z, &ring);
+    let g2 = y.mul(&z, &ring).scale(&ring.field.from_u64(4), &ring).sub(&x, &ring);
+    let g3 = z.mul(&x, &ring).scale(&ring.field.from_u64(5), &ring).sub(&y, &ring);
+    let gens = vec![g1, g2, g3];
+
+    let cfg = BuchbergerConfig { use_f4: true, ..BuchbergerConfig::default() };
+    let gb = buch_interreduce(buch_gb(gens, &ring, &cfg).unwrap().basis, &ring);
+    let one = ring.field.to_biguint(&ring.field.one());
+
+    // (i) monic
+    for p in &gb {
+        let lc = p.leading_coefficient().expect("nonzero element");
+        assert_eq!(ring.field.to_biguint(lc), one, "reduced GB element not monic");
+    }
+    // (ii) LT-minimal
+    let lts: Vec<Monomial> = gb.iter().map(|p| p.leading_monomial(&ring).unwrap()).collect();
+    for i in 0..lts.len() {
+        for j in 0..lts.len() {
+            if i != j {
+                assert!(!lts[i].divides(&lts[j]), "reduced GB: LT[{i}] divides LT[{j}]");
+            }
+        }
+    }
+}
+
+// ── (8) determinism: same input ⇒ same output across two F4 calls ──
+
+/// Spec: F4 has no hidden randomness; two consecutive calls with
+/// structurally-equal inputs must produce structurally-equal output.
+#[test]
+fn f4_path_is_deterministic_across_two_calls() {
+    let ring = ring_p(7, 3);
+    let x = DensePoly::variable(0, &ring);
+    let y = DensePoly::variable(1, &ring);
+    let z = DensePoly::variable(2, &ring);
+    let one = DensePoly::constant(ring.field.one(), &ring);
+    let g1 = x.mul(&y, &ring).sub(&z, &ring);
+    let g2 = y.mul(&z, &ring).sub(&one, &ring);
+    let g3 = x.add(&y, &ring).add(&z, &ring);
+    let gens = vec![g1, g2, g3];
+
+    let cfg = BuchbergerConfig { use_f4: true, ..BuchbergerConfig::default() };
+    let a = buch_interreduce(buch_gb(gens.clone(), &ring, &cfg).unwrap().basis, &ring);
+    let b = buch_interreduce(buch_gb(gens, &ring, &cfg).unwrap().basis, &ring);
+    assert_eq!(canon_dense(a, &ring), canon_dense(b, &ring));
+}
+
+// ── (4) trivial-ideal property: 1 ∈ I ⟺ GB = {1} ──
+
+/// Spec: if a generator is the unit, the ideal is the whole ring and
+/// the reduced GB is {1}. The F4 path must enforce this.
+#[test]
+fn f4_with_unit_generator_collapses_to_one() {
+    let ring = ring_p(7, 3);
+    let x = DensePoly::variable(0, &ring);
+    let y = DensePoly::variable(1, &ring);
+    let one = DensePoly::constant(ring.field.one(), &ring);
+    let g = x.mul(&y, &ring); // non-unit
+    let gens = vec![g, one];
+    let cfg = BuchbergerConfig { use_f4: true, ..BuchbergerConfig::default() };
+    let gb = buch_interreduce(buch_gb(gens, &ring, &cfg).unwrap().basis, &ring);
+    assert_eq!(gb.len(), 1, "GB of unit-containing ideal must be {{1}}");
+    assert!(gb[0].is_constant() && !gb[0].is_zero(), "GB must be a nonzero constant");
+}
+
+// ── (1) algebraic identity on the S-polynomial produced by process_batch ──
+
+/// Spec of the S-polynomial as built inside `process_batch`:
+/// S(f, g) = (lcm / LT(f)) · f − (lc(f) / lc(g)) · (lcm / LT(g)) · g.
+/// Building S(f, g) for two basis elements with INVERSE leading
+/// monomial relations (lm(f) | lm(g)) makes the cofactor for f equal
+/// to lcm/lm(f) = lm(g)/lm(f), and the resulting S-poly must lie in
+/// the ideal generated by {f, g}. Verify residue is zero modulo
+/// {f, g}.
+#[test]
+fn process_batch_output_lies_in_input_ideal_gf7() {
+    let ring = ring_p(7, 3);
+    let x = DensePoly::variable(0, &ring);
+    let y = DensePoly::variable(1, &ring);
+    let z = DensePoly::variable(2, &ring);
+    let one = DensePoly::constant(ring.field.one(), &ring);
+    // f1 = x*y - z, f2 = y*z - 1.
+    let f1 = x.mul(&y, &ring).sub(&z, &ring);
+    let f2 = y.mul(&z, &ring).sub(&one, &ring);
+    let basis_polys = vec![f1.clone(), f2.clone()];
+    let basis_lts: Vec<Monomial> = basis_polys.iter().map(|p| lt(p, &ring)).collect();
+    let basis: Vec<F4BasisRef> = basis_polys
+        .iter()
+        .zip(basis_lts.iter())
+        .map(|(p, l)| F4BasisRef { poly: p, lt: l, lt_divmask: ring.divmask.compute(l), active: true })
+        .collect();
+
+    let lcm = basis_lts[0].lcm(&basis_lts[1]);
+    let lcm_dm = ring.divmask.compute(&lcm);
+    let lcm_deg = lcm.total_degree();
+    let pair = SPair {
+        i: 0,
+        j: 1,
+        sugar: lcm_deg,
+        lcm,
+        lcm_divmask: lcm_dm,
+        lcm_deg,
+        age: 0,
+        generation: 0,
+        is_coprime: false,
+    };
+    let new_polys = process_batch(&[&pair], &basis, &ring, None);
+
+    // Every produced polynomial is a combination of f1, f2 — must lie
+    // in the ideal ⟨f1, f2⟩, so it reduces to zero modulo {f1, f2}'s
+    // reduced GB.
+    let cfg = BuchbergerConfig::default();
+    let gb = buch_interreduce(buch_gb(basis_polys, &ring, &cfg).unwrap().basis, &ring);
+    let gb_refs: Vec<&DensePoly> = gb.iter().collect();
+    for out in &new_polys {
+        let nf = out.poly.reduce_by_refs(&gb_refs, &ring);
+        assert!(nf.is_zero(), "F4 output not in input ideal");
+    }
+}
+
+// ── (7) tiny shape: single non-constant generator ──
+
+/// Spec: GB({p}) for non-constant monic p is {p} — there are no
+/// S-pairs to process, so the basis equals the input (made monic).
+/// Verify for the F4-flagged path.
+#[test]
+fn f4_single_generator_returns_input_monic() {
+    let ring = ring_p(7, 2);
+    let x = DensePoly::variable(0, &ring);
+    let y = DensePoly::variable(1, &ring);
+    let one = DensePoly::constant(ring.field.one(), &ring);
+    let p = x.mul(&y, &ring).sub(&one, &ring); // already monic
+    let cfg = BuchbergerConfig { use_f4: true, ..BuchbergerConfig::default() };
+    let gb = buch_interreduce(buch_gb(vec![p.clone()], &ring, &cfg).unwrap().basis, &ring);
+    assert_eq!(gb.len(), 1, "single-generator GB must have one element");
+    // Canonical form equality with the input's monic.
+    let p_monic = p.make_monic(&ring);
+    assert_eq!(canon_dense(vec![gb[0].clone()], &ring), canon_dense(vec![p_monic], &ring));
+}

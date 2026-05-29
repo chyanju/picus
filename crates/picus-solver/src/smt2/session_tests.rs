@@ -782,3 +782,288 @@ fn unsat_core_output_to_smtlib_space_separates_names() {
 fn silent_output_to_smtlib_is_empty_string() {
     assert_eq!(SessionOutput::Silent.to_smtlib(), "");
 }
+
+// ════════════════ SPEC-DRIVEN property tests ════════════════
+//
+// Each property is derived from the SMT-LIB v2 incremental-mode spec
+// (§4.1 — stack, §4.2 — assert, §4.2.1 — reset, etc.) or from
+// solver-engine equivalence properties — not from inspecting the source.
+
+/// ROUND-TRIP / DETERMINISM: Two fresh sessions running the same script
+/// return verdicts in the same order. (Solver must be a pure function of
+/// the script, modulo timeouts — which we disable by using a tiny GF.)
+#[test]
+fn prop_two_sessions_same_script_yield_same_verdicts() {
+    let src = r#"
+        (set-logic QF_FF)
+        (declare-fun x () (_ FiniteField 7))
+        (declare-fun y () (_ FiniteField 7))
+        (assert (= (ff.add x y) #f5m7))
+        (check-sat)
+    "#;
+    let v1 = last_verdict(&run(src));
+    let v2 = last_verdict(&run(src));
+    assert_eq!(v1, v2);
+    assert!(v1.is_some());
+}
+
+/// SPEC (SMT-LIB §4.1): `(push n)` followed by `(pop n)` is a no-op on
+/// the assertion stack — semantics post-pop equal semantics pre-push.
+/// Tested via verdict equivalence: an unsat-clinching assertion added
+/// inside push;…;pop must not affect the post-pop verdict.
+#[test]
+fn prop_push_pop_round_trip_preserves_verdict() {
+    let mut s = SmtSession::new();
+    s.eval_script(
+        "(set-logic QF_FF) (declare-fun x () (_ FiniteField 7)) (assert (= x #f3m7))",
+    )
+    .expect("setup");
+    // Baseline verdict: clearly SAT (x = 3 works).
+    let pre = match s.eval_script("(check-sat)").expect("check") .last() {
+        Some(SessionOutput::CheckSat(v)) => *v,
+        other => panic!("expected check-sat, got {:?}", other),
+    };
+    assert_eq!(pre, SessionVerdict::Sat);
+    // Push, add a contradictory assert, pop.
+    s.eval_script("(push 1) (assert (= x #f5m7))").expect("inside");
+    // Inside push, UNSAT (x=3 ∧ x=5).
+    let inside = match s.eval_script("(check-sat)").expect("check").last() {
+        Some(SessionOutput::CheckSat(v)) => *v,
+        other => panic!("expected check-sat, got {:?}", other),
+    };
+    assert_eq!(inside, SessionVerdict::Unsat);
+    s.eval_script("(pop 1)").expect("pop");
+    // After pop, the inside-assert must be gone → verdict back to pre.
+    let post = match s.eval_script("(check-sat)").expect("check").last() {
+        Some(SessionOutput::CheckSat(v)) => *v,
+        other => panic!("expected check-sat, got {:?}", other),
+    };
+    assert_eq!(post, pre);
+}
+
+/// SPEC (SMT-LIB §4.2.1): `(reset)` returns the session to its initial
+/// state. Therefore: `reset` then running any script S must yield the
+/// same outputs as a fresh session running S.
+#[test]
+fn prop_reset_then_script_equals_fresh_session_run() {
+    let setup_then_reset = r#"
+        (set-logic QF_FF)
+        (declare-fun x () (_ FiniteField 7))
+        (assert (= x #f2m7))
+        (check-sat)
+        (reset)
+    "#;
+    let s_after_reset = r#"
+        (set-logic QF_FF)
+        (declare-fun y () (_ FiniteField 11))
+        (assert (= y #f7m11))
+        (check-sat)
+    "#;
+    let mut s = SmtSession::new();
+    s.eval_script(setup_then_reset).expect("setup");
+    let after_reset = s.eval_script(s_after_reset).expect("after");
+    let fresh = run(s_after_reset);
+    assert_eq!(
+        last_verdict(&after_reset),
+        last_verdict(&fresh),
+        "reset+script not equivalent to fresh"
+    );
+}
+
+/// SPEC: SAT `check-sat` followed by `get-model` returns a model whose
+/// printed FF values are valid `#fNmP` literals. Round-tripping each
+/// value through `parse_ff_const` recovers a field element in [0, p).
+#[test]
+fn prop_get_model_ff_values_round_trip_through_parse_ff_const() {
+    use num_bigint::BigUint;
+    let src = r#"
+        (set-logic QF_FF)
+        (declare-fun x () (_ FiniteField 7))
+        (assert (= x #f3m7))
+        (check-sat)
+        (get-model)
+    "#;
+    let out = run(src);
+    let model_text = out
+        .iter()
+        .find_map(|o| match o {
+            SessionOutput::Model(s) => Some(s.clone()),
+            _ => None,
+        })
+        .expect("model present");
+    // Every `#fNmP` literal in the printed model must:
+    //   1. parse back via parse_ff_const under the same prime,
+    //   2. yield a value < prime.
+    let prime = BigUint::from(7u32);
+    let mut found_any = false;
+    for tok in model_text.split(|c: char| c.is_whitespace() || c == '(' || c == ')') {
+        if tok.starts_with("#f") {
+            found_any = true;
+            let parsed = super::super::parse_ff_const(tok, &prime)
+                .unwrap_or_else(|| panic!("printed literal {:?} must reparse", tok));
+            assert!(parsed < prime, "model value {} must be < {}", parsed, prime);
+        }
+    }
+    assert!(found_any, "expected at least one #fNmP literal in model");
+}
+
+/// SPEC (engine equivalence): If `(check-sat)` returns SAT, the model
+/// returned by `(get-value (x))` MUST satisfy each asserted equality.
+/// Test: assert `(= (ff.add x y) #f5m7)` and `(= (ff.mul x y) #f6m7)`,
+/// then verify the returned (x, y) satisfies BOTH equations mod 7.
+#[test]
+fn prop_sat_model_satisfies_every_assertion() {
+    use num_bigint::BigUint;
+    let src = r#"
+        (set-logic QF_FF)
+        (declare-fun x () (_ FiniteField 7))
+        (declare-fun y () (_ FiniteField 7))
+        (assert (= (ff.add x y) #f5m7))
+        (assert (= (ff.mul x y) #f6m7))
+        (check-sat)
+        (get-value (x y))
+    "#;
+    let mut s = SmtSession::new();
+    let out = s.eval_script(src).expect("eval");
+    assert_eq!(last_verdict(&out), Some(SessionVerdict::Sat));
+    let model = s.last_model().expect("model");
+    let prime = BigUint::from(7u32);
+    let x = model.get("x").cloned().expect("x");
+    let y = model.get("y").cloned().expect("y");
+    // Math check: x + y ≡ 5 and x*y ≡ 6 (mod 7).
+    assert_eq!((&x + &y) % &prime, BigUint::from(5u32));
+    assert_eq!((&x * &y) % &prime, BigUint::from(6u32));
+}
+
+/// SPEC: `(set-option :tlimit-per 0)` disables the per-check timeout
+/// (documented behavior in session.rs). Therefore a tiny GF check that
+/// completes instantly must return a definite verdict after 0 is set —
+/// never `Unknown` (which would indicate an erroneous immediate
+/// timeout).
+#[test]
+fn prop_tlimit_per_zero_does_not_force_unknown() {
+    let src = r#"
+        (set-logic QF_FF)
+        (set-option :tlimit-per 0)
+        (declare-fun x () (_ FiniteField 5))
+        (assert (= x #f2m5))
+        (check-sat)
+    "#;
+    let v = last_verdict(&run(src));
+    assert_ne!(v, Some(SessionVerdict::Unknown));
+    assert_eq!(v, Some(SessionVerdict::Sat));
+}
+
+/// SPEC (idempotence): `(reset)` is idempotent — calling it twice in a
+/// row leaves the session in the same state as calling it once. We
+/// verify: after `(reset)`, the verdict of a fresh script S is the
+/// same as after `(reset)(reset)`.
+#[test]
+fn prop_reset_is_idempotent() {
+    let post = r#"
+        (set-logic QF_FF)
+        (declare-fun x () (_ FiniteField 5))
+        (assert (= x #f2m5))
+        (check-sat)
+    "#;
+    let mut s1 = SmtSession::new();
+    s1.eval_script("(set-logic QF_FF) (declare-fun y () (_ FiniteField 7)) (reset)")
+        .expect("a");
+    let mut s2 = SmtSession::new();
+    s2.eval_script("(set-logic QF_FF) (declare-fun y () (_ FiniteField 7)) (reset) (reset)")
+        .expect("b");
+    let v1 = last_verdict(&s1.eval_script(post).expect("c"));
+    let v2 = last_verdict(&s2.eval_script(post).expect("d"));
+    assert_eq!(v1, v2);
+}
+
+/// SPEC: `(reset-assertions)` clears the assertion stack but keeps
+/// declarations (§4.2.1). Therefore: after reset-assertions, a check-sat
+/// with no further asserts must return SAT (vacuously) — the previously
+/// asserted unsat constraints no longer apply, and there's nothing left
+/// to contradict.
+#[test]
+fn prop_reset_assertions_clears_unsat_constraints() {
+    let mut s = SmtSession::new();
+    s.eval_script(
+        "(set-logic QF_FF)
+         (declare-fun x () (_ FiniteField 7))
+         (assert (= x #f2m7))
+         (assert (= x #f3m7))",
+    )
+    .expect("setup");
+    // Pre: UNSAT.
+    let pre = last_verdict(&s.eval_script("(check-sat)").expect("pre"));
+    assert_eq!(pre, Some(SessionVerdict::Unsat));
+    // Reset assertions, then check again — must be SAT (no constraints).
+    s.eval_script("(reset-assertions)").expect("ra");
+    let post = last_verdict(&s.eval_script("(check-sat)").expect("post"));
+    assert_eq!(post, Some(SessionVerdict::Sat));
+}
+
+/// SPEC: An asserted contradiction across different primes (GF(2),
+/// GF(3), GF(5), GF(7), GF(11)) must each yield UNSAT. The verdict for
+/// `x = a ∧ x = b` where a ≠ b (mod p) is UNSAT for every prime where
+/// the literals encode distinct field elements.
+#[test]
+fn prop_contradictory_constants_unsat_across_edge_primes() {
+    for &p in &[3u32, 5, 7, 11, 13] {
+        let src = format!(
+            "(set-logic QF_FF) (declare-fun x () (_ FiniteField {})) (assert (= x #f1m{})) (assert (= x #f2m{})) (check-sat)",
+            p, p, p
+        );
+        let v = last_verdict(&run(&src));
+        assert_eq!(
+            v,
+            Some(SessionVerdict::Unsat),
+            "expected UNSAT in GF({}) for x=1 ∧ x=2",
+            p
+        );
+    }
+}
+
+/// SPEC: A satisfiable single-variable equality is SAT regardless of
+/// prime. (Existence of solution = literal in field is trivial.)
+#[test]
+fn prop_single_value_assertion_sat_across_edge_primes() {
+    for &p in &[2u32, 3, 5, 7, 11] {
+        let src = format!(
+            "(set-logic QF_FF) (declare-fun x () (_ FiniteField {})) (assert (= x #f0m{})) (check-sat)",
+            p, p
+        );
+        let v = last_verdict(&run(&src));
+        assert_eq!(
+            v,
+            Some(SessionVerdict::Sat),
+            "expected SAT in GF({}) for x=0",
+            p
+        );
+    }
+}
+
+/// SPEC: For prime p>2, `(= (ff.add x x) #f0mp)` has the unique
+/// solution x = 0 (since 2 is invertible). So check-sat is SAT and the
+/// model must have x = 0. This probes that the parser+solver respect
+/// the field characteristic in a non-trivial way.
+#[test]
+fn prop_double_equals_zero_has_unique_solution_in_odd_prime() {
+    use num_bigint::BigUint;
+    for &p in &[3u32, 5, 7, 11, 13] {
+        let src = format!(
+            "(set-logic QF_FF) (declare-fun x () (_ FiniteField {})) (assert (= (ff.add x x) #f0m{})) (check-sat) (get-value (x))",
+            p, p
+        );
+        let mut s = SmtSession::new();
+        let out = s.eval_script(&src).expect("eval");
+        assert_eq!(last_verdict(&out), Some(SessionVerdict::Sat));
+        let x = s.last_model().unwrap().get("x").cloned().unwrap();
+        assert_eq!(
+            x,
+            BigUint::from(0u32),
+            "for odd p={}, 2x=0 forces x=0, got {}",
+            p,
+            x
+        );
+    }
+}
+

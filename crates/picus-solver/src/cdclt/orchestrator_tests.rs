@@ -675,3 +675,349 @@ fn loop_returns_unknown_at_iter_cap() {
     let r = drive_loop(&mut sat, &mut th, &CancelToken::none());
     assert!(matches!(r, SolveOutcome::Unknown));
 }
+
+// =============================================================================
+// SPEC-DRIVEN property tests — expected values are derived from math / first
+// principles (the SMT semantics of the literal forms `c·x = k` and `c·x ≠ k`
+// over GF(p)), NOT from inspecting `solve_formula`'s implementation.
+// =============================================================================
+
+/// Evaluate `coeff_lhs · m[var_name] mod prime` and compare to `rhs_const mod prime`.
+/// The Eq/Neq literals in this file all have shape `(coeff · x_idx) ?= rhs`.
+fn lit_eq_holds_in_model(
+    coeff_lhs: u64,
+    var_name: &str,
+    rhs_const: u64,
+    model: &HashMap<String, BigUint>,
+    prime: &BigUint,
+) -> bool {
+    let xval = model
+        .get(var_name)
+        .cloned()
+        .unwrap_or_else(|| BigUint::from(0u32));
+    let lhs = (BigUint::from(coeff_lhs) * xval) % prime;
+    let rhs = BigUint::from(rhs_const) % prime;
+    lhs == rhs
+}
+
+/// Property (5) MODEL CHECKING: when `solve_formula` reports Sat on a single
+/// equality `c·x = k` over GF(p), the model MUST satisfy `c·m[x] ≡ k (mod p)`.
+/// Spec source: SMT-LIB Eq semantics over a finite field. The expected value
+/// is dictated by the equation, not by reading source.
+#[test]
+fn prop_sat_model_satisfies_single_eq_gf7() {
+    let vn = names(&["x"]);
+    let prime = BigUint::from(7u32);
+    let f = eq(3, 0, 5); // 3·x = 5 ⇒ x = 4 (since 3·4 = 12 ≡ 5 mod 7)
+    match solve_formula(prime.clone(), &vn, &f, &CancelToken::none()) {
+        SolveOutcome::Sat(m) => {
+            assert!(
+                lit_eq_holds_in_model(3, "x", 5, &m, &prime),
+                "model must satisfy 3·x ≡ 5 (mod 7), got x={:?}",
+                m.get("x")
+            );
+        }
+        other => panic!("expected Sat, got {:?}", other),
+    }
+}
+
+/// Property (7) EDGE PRIMES: solve `x = k` over GF(p) for several primes
+/// (incl. GF(2), GF(3), GF(5), a moderate prime, and a large BN-style
+/// prime). MATH: the unique solution is `k mod p`. The model's `x` MUST
+/// equal `k mod p`. Independent of any source assumption about prime size.
+#[test]
+fn prop_unique_eq_solution_across_edge_primes() {
+    let cases: &[(BigUint, u64)] = &[
+        (BigUint::from(2u32), 1),
+        (BigUint::from(3u32), 2),
+        (BigUint::from(5u32), 4),
+        (BigUint::from(101u32), 73),
+        // BN254 scalar field prime (a real ZK use case).
+        (
+            BigUint::parse_bytes(
+                b"21888242871839275222246405745257275088548364400416034343698204186575808495617",
+                10,
+            )
+            .unwrap(),
+            12345,
+        ),
+    ];
+    for (prime, k) in cases {
+        let vn = names(&["x"]);
+        let f = eq(1, 0, *k);
+        let want = BigUint::from(*k) % prime;
+        match solve_formula(prime.clone(), &vn, &f, &CancelToken::none()) {
+            SolveOutcome::Sat(m) => {
+                assert_eq!(
+                    m.get("x"),
+                    Some(&want),
+                    "GF({}): x=k should give x={}",
+                    prime,
+                    want
+                );
+            }
+            other => panic!("GF({}) k={}: expected Sat, got {:?}", prime, k, other),
+        }
+    }
+}
+
+/// Property (8) DETERMINISM: independent solver runs on the same formula
+/// must return the same verdict class (Sat vs Unsat vs Unknown). No hidden
+/// global state should make a second call differ. Spec: function purity.
+#[test]
+fn prop_determinism_two_calls_same_verdict_class() {
+    let vn = names(&["x"]);
+    let prime = BigUint::from(7u32);
+    let f = Formula::Or(vec![eq(1, 0, 3), eq(1, 0, 5)]);
+    let r1 = solve_formula(prime.clone(), &vn, &f, &CancelToken::none());
+    let r2 = solve_formula(prime, &vn, &f, &CancelToken::none());
+    let cls = |r: &SolveOutcome| match r {
+        SolveOutcome::Sat(_) => "Sat",
+        SolveOutcome::Unsat(_) => "Unsat",
+        SolveOutcome::Unknown => "Unknown",
+    };
+    assert_eq!(cls(&r1), cls(&r2), "verdict class must be deterministic");
+}
+
+/// Property (5) MODEL CHECKING for a SAT disjunction: any model returned for
+/// `(x=3) ∨ (x=5)` over GF(7) MUST satisfy at least one disjunct under SMT
+/// disjunction semantics. Expected from logic, not source.
+#[test]
+fn prop_or_sat_model_satisfies_some_disjunct() {
+    let vn = names(&["x"]);
+    let prime = BigUint::from(7u32);
+    let f = Formula::Or(vec![eq(1, 0, 3), eq(1, 0, 5)]);
+    match solve_formula(prime.clone(), &vn, &f, &CancelToken::none()) {
+        SolveOutcome::Sat(m) => {
+            let ok = lit_eq_holds_in_model(1, "x", 3, &m, &prime)
+                || lit_eq_holds_in_model(1, "x", 5, &m, &prime);
+            assert!(ok, "model must satisfy (x=3) or (x=5), got x={:?}", m.get("x"));
+        }
+        other => panic!("expected Sat, got {:?}", other),
+    }
+}
+
+/// Property (1) IDENTITY / (5) MODEL CHECKING for an AND of `c·x = k` and
+/// `c·x ≠ j` with j ≠ k mod p: the conjunction is logically equivalent to
+/// the single eq, so any model satisfies both literals. MATH-derived.
+#[test]
+fn prop_and_eq_neq_consistent_model() {
+    let vn = names(&["x"]);
+    let prime = BigUint::from(7u32);
+    // (1·x = 3) ∧ (1·x ≠ 5). Expected: x = 3.
+    let f = Formula::And(vec![eq(1, 0, 3), neq(1, 0, 5)]);
+    match solve_formula(prime.clone(), &vn, &f, &CancelToken::none()) {
+        SolveOutcome::Sat(m) => {
+            assert!(lit_eq_holds_in_model(1, "x", 3, &m, &prime));
+            assert!(!lit_eq_holds_in_model(1, "x", 5, &m, &prime));
+        }
+        other => panic!("expected Sat(x=3), got {:?}", other),
+    }
+}
+
+/// Property (5) UNSAT MONOTONICITY: if `F` is UNSAT, then `F ∧ G` is UNSAT
+/// for any G. Pin: take the contradictory pair `(x=5) ∧ (x=6)` (already
+/// UNSAT over GF(101)) and AND in an arbitrary extra eq on a fresh var;
+/// the conjunction remains UNSAT. Spec: classical-logic monotonicity.
+#[test]
+fn prop_unsat_monotonicity_under_conjunction() {
+    let vn = names(&["x", "y"]);
+    let prime = BigUint::from(101u32);
+    let base = Formula::And(vec![eq(1, 0, 5), eq(1, 0, 6)]);
+    let ext = Formula::And(vec![base, eq(1, 1, 7)]);
+    assert!(
+        matches!(
+            solve_formula(prime, &vn, &ext, &CancelToken::none()),
+            SolveOutcome::Unsat(_)
+        ),
+        "UNSAT base ∧ any G must remain UNSAT"
+    );
+}
+
+/// Property (5) TAUTOLOGY: `(x = k) ∨ ¬(x = k)` is the law of the
+/// excluded middle — always SAT over any prime. The model just needs to
+/// exist. Spec: tertium non datur, propositional logic.
+#[test]
+fn prop_excluded_middle_is_sat() {
+    let vn = names(&["x"]);
+    for p in [2u32, 3, 5, 7, 101] {
+        let prime = BigUint::from(p);
+        let f = Formula::Or(vec![eq(1, 0, 3), neq(1, 0, 3)]);
+        assert!(
+            matches!(
+                solve_formula(prime, &vn, &f, &CancelToken::none()),
+                SolveOutcome::Sat(_)
+            ),
+            "GF({}): excluded middle must be SAT",
+            p
+        );
+    }
+}
+
+/// Property (5) ENUMERATION EXHAUSTIVENESS: the formula `(x = 0) ∨ (x = 1)
+/// ∨ ... ∨ (x = p-1)` is a tautology over GF(p) because every element of
+/// GF(p) equals one of 0..p-1. MUST be SAT. MATH spec, not source.
+#[test]
+fn prop_full_enumeration_disjunction_is_sat() {
+    let vn = names(&["x"]);
+    for p in [2u32, 3, 5, 7] {
+        let prime = BigUint::from(p);
+        let disj: Vec<Formula> = (0..p as u64).map(|k| eq(1, 0, k)).collect();
+        let f = Formula::Or(disj);
+        let r = solve_formula(prime.clone(), &vn, &f, &CancelToken::none());
+        match r {
+            SolveOutcome::Sat(m) => {
+                let v = m.get("x").cloned().unwrap_or_else(|| BigUint::from(0u32));
+                assert!(v < prime, "GF({}): model value must be canonical", p);
+            }
+            other => panic!("GF({}): enumeration of all values must be SAT, got {:?}", p, other),
+        }
+    }
+}
+
+/// Property (5) UNSAT by FIELD EXHAUSTION: `(x = 0) ∧ (x ≠ 0) ∧ ... ∧ (x ≠
+/// p-1)` would be UNSAT, but the simpler shape `(x = a) ∧ (x ≠ a)` is also
+/// UNSAT (a direct contradiction). MATH: a literal and its negation cannot
+/// both hold. Spec, not source.
+#[test]
+fn prop_eq_and_negation_is_unsat_across_primes() {
+    let vn = names(&["x"]);
+    for p in [3u32, 5, 7, 11, 101] {
+        let prime = BigUint::from(p);
+        let f = Formula::And(vec![eq(1, 0, 2), neq(1, 0, 2)]);
+        assert!(
+            matches!(
+                solve_formula(prime, &vn, &f, &CancelToken::none()),
+                SolveOutcome::Unsat(_)
+            ),
+            "GF({}): (x=2) ∧ (x≠2) must be UNSAT",
+            p
+        );
+    }
+}
+
+/// Property (5) MODEL CHECKING in a multi-variable system:
+/// `(x = 3) ∧ (y = 4)` over GF(7) → unique model x=3, y=4 (MATH-derived).
+/// The model must contain BOTH bindings with the math values.
+#[test]
+fn prop_independent_vars_pinned_independently() {
+    let vn = names(&["x", "y"]);
+    let prime = BigUint::from(7u32);
+    let f = Formula::And(vec![eq(1, 0, 3), eq(1, 1, 4)]);
+    match solve_formula(prime.clone(), &vn, &f, &CancelToken::none()) {
+        SolveOutcome::Sat(m) => {
+            assert_eq!(m.get("x"), Some(&BigUint::from(3u32)));
+            assert_eq!(m.get("y"), Some(&BigUint::from(4u32)));
+        }
+        other => panic!("expected Sat(x=3,y=4), got {:?}", other),
+    }
+}
+
+/// Property (5) IFF SEMANTICS: `(x = 0) ∨ (x = 1) ∨ (x = 2)` over GF(3)
+/// covers every residue, so it's a tautology — same as Formula::True.
+/// MATH: GF(p) has exactly p elements. Both must be SAT.
+#[test]
+fn prop_gf3_full_coverage_equivalent_to_true() {
+    let vn = names(&["x"]);
+    let prime = BigUint::from(3u32);
+    let f_all = Formula::Or(vec![eq(1, 0, 0), eq(1, 0, 1), eq(1, 0, 2)]);
+    let r_all = solve_formula(prime.clone(), &vn, &f_all, &CancelToken::none());
+    let r_true = solve_formula(prime, &vn, &Formula::True, &CancelToken::none());
+    assert!(
+        matches!(r_all, SolveOutcome::Sat(_)),
+        "(x=0 ∨ x=1 ∨ x=2) over GF(3) must be SAT"
+    );
+    assert!(
+        matches!(r_true, SolveOutcome::Sat(_)),
+        "True must be SAT"
+    );
+}
+
+/// Property (5) MODEL VALIDITY ACROSS DISJUNCTION: any reported SAT model
+/// MUST satisfy every conjunct of the active disjunct. Hand-built: an OR
+/// of three pairwise-incompatible `(x=k) ∧ (y=k)` conjuncts. MATH: the
+/// returned (x, y) must coincide on one of the k values.
+#[test]
+fn prop_disjunction_of_conjunctions_consistent_model() {
+    let vn = names(&["x", "y"]);
+    let prime = BigUint::from(7u32);
+    let f = Formula::Or(vec![
+        Formula::And(vec![eq(1, 0, 1), eq(1, 1, 1)]),
+        Formula::And(vec![eq(1, 0, 2), eq(1, 1, 2)]),
+        Formula::And(vec![eq(1, 0, 3), eq(1, 1, 3)]),
+    ]);
+    match solve_formula(prime.clone(), &vn, &f, &CancelToken::none()) {
+        SolveOutcome::Sat(m) => {
+            let x = m.get("x").cloned().unwrap_or_else(|| BigUint::from(0u32));
+            let y = m.get("y").cloned().unwrap_or_else(|| BigUint::from(0u32));
+            assert_eq!(x, y, "the active disjunct forces x = y");
+            assert!(
+                x == BigUint::from(1u32)
+                    || x == BigUint::from(2u32)
+                    || x == BigUint::from(3u32),
+                "x must take one of the disjunct values"
+            );
+        }
+        other => panic!("expected Sat, got {:?}", other),
+    }
+}
+
+/// Property (5) NESTED NOT IS IDENTITY (NNF spec): `¬¬(x = k)` is
+/// logically equivalent to `(x = k)`. A model satisfying one must
+/// satisfy the other. MATH/RFC: SMT-LIB semantics of `not`.
+#[test]
+fn prop_double_negation_eq_is_sat_with_eq_model() {
+    let vn = names(&["x"]);
+    let prime = BigUint::from(7u32);
+    let inner = eq(1, 0, 4);
+    let f = Formula::Not(Box::new(Formula::Not(Box::new(inner))));
+    match solve_formula(prime.clone(), &vn, &f, &CancelToken::none()) {
+        SolveOutcome::Sat(m) => {
+            assert_eq!(
+                m.get("x"),
+                Some(&BigUint::from(4u32)),
+                "¬¬(x=4) forces x=4"
+            );
+        }
+        other => panic!("expected Sat(x=4), got {:?}", other),
+    }
+}
+
+/// Property (5) DE MORGAN: `¬(A ∧ B)` ≡ `(¬A ∨ ¬B)`. Take A = (x=3) and
+/// B = (x=5); both can't hold simultaneously over GF(7), so `¬(A∧B)` is
+/// a tautology. MUST be SAT. SMT-LIB classical semantics.
+#[test]
+fn prop_de_morgan_negation_of_impossible_conjunction_is_sat() {
+    let vn = names(&["x"]);
+    let prime = BigUint::from(7u32);
+    let a = eq(1, 0, 3);
+    let b = eq(1, 0, 5);
+    let f = Formula::Not(Box::new(Formula::And(vec![a, b])));
+    assert!(
+        matches!(
+            solve_formula(prime, &vn, &f, &CancelToken::none()),
+            SolveOutcome::Sat(_)
+        ),
+        "¬(impossible conjunction) is a tautology — must be SAT"
+    );
+}
+
+/// Property (5) MODEL CONSISTENCY across `c·x` with non-unit coefficient:
+/// over GF(7), `3·x = 1` forces x = inv(3) · 1 = 5 (since 3·5 = 15 ≡ 1
+/// mod 7). MATH: Fermat's little theorem inverse. Pin the exact value.
+#[test]
+fn prop_non_unit_coeff_eq_pins_inverse() {
+    let vn = names(&["x"]);
+    let prime = BigUint::from(7u32);
+    let f = eq(3, 0, 1);
+    match solve_formula(prime, &vn, &f, &CancelToken::none()) {
+        SolveOutcome::Sat(m) => {
+            assert_eq!(
+                m.get("x"),
+                Some(&BigUint::from(5u32)),
+                "3·x = 1 in GF(7) forces x = 5"
+            );
+        }
+        other => panic!("expected Sat(x=5), got {:?}", other),
+    }
+}

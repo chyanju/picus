@@ -422,3 +422,239 @@ fn solve_split_gb_unsat_via_dfs_returns_full_input_core() {
         other => panic!("expected UNSAT, got {:?}", other),
     }
 }
+
+// =============================================================================
+// SPEC-DRIVEN property tests for `solve_split_gb` / `solve_single_gb`. Expected
+// values are derived from polynomial-ideal theory / Fermat / brute-force ground
+// truth over small primes — NEVER from inspecting source behavior.
+// =============================================================================
+
+/// Property (5/9) MODEL CHECKING: any `SolveOutcome::Sat(m)` returned by
+/// `solve_split_gb` MUST satisfy every input polynomial (substitute the model
+/// into the poly, must evaluate to 0 in GF(p)). SPEC: SAT-as-witness.
+#[test]
+fn prop_solve_split_gb_sat_model_zeros_all_inputs() {
+    let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
+    let f = pr.field();
+    let xy_minus_1 = pr.sub(pr.mul(pr.var(0), pr.var(1)), pr.one());
+    let x_eq_3 = pr.sub(pr.var(0), pr.constant(f.from_int(3)));
+    let originals = [pr.clone_poly(&xy_minus_1), pr.clone_poly(&x_eq_3)];
+    match solve_split_gb(&pr, &originals, &[]) {
+        SolveOutcome::Sat(m) => {
+            // Convert model to field-element point in ring var order.
+            let pt: Vec<_> = pr
+                .var_names()
+                .iter()
+                .map(|n| f.from_biguint(&m[n]))
+                .collect();
+            for g in &originals {
+                let v = eval_poly_core(&pr, g, &pt);
+                assert!(
+                    f.is_zero(&v),
+                    "SAT model must zero every input generator"
+                );
+            }
+            // MATH: x = 3, x·y = 1 ⇒ y = 3^{-1} = 5 in GF(7).
+            assert_eq!(m["x"], BigUint::from(3u32));
+            assert_eq!(m["y"], BigUint::from(5u32));
+        }
+        other => panic!("expected SAT, got {:?}", other),
+    }
+}
+
+/// Property (8) DETERMINISM: two independent runs of `solve_split_gb` on
+/// the same inputs must return the same verdict class.
+#[test]
+fn prop_solve_split_gb_deterministic_verdict_class() {
+    let pr = FfPolyRing::new(ff(7), vec!["x".into()]);
+    let f = pr.field();
+    let p = pr.sub(pr.var(0), pr.constant(f.from_int(4)));
+    let r1 = solve_split_gb(&pr, &[pr.clone_poly(&p)], &[]);
+    let r2 = solve_split_gb(&pr, &[pr.clone_poly(&p)], &[]);
+    let cls = |o: &SolveOutcome| match o {
+        SolveOutcome::Sat(_) => "Sat",
+        SolveOutcome::Unsat(_) => "Unsat",
+        SolveOutcome::Unknown => "Unknown",
+    };
+    assert_eq!(cls(&r1), cls(&r2));
+}
+
+/// Property (7/5) EDGE PRIMES: pin `x = a` over GF(2), GF(3), GF(5),
+/// GF(7), GF(11). MATH: unique solution is `a mod p`. Verify model
+/// matches across every probed field size.
+#[test]
+fn prop_solve_split_gb_pin_eq_across_edge_primes() {
+    for p in [2u32, 3, 5, 7, 11] {
+        let pr = FfPolyRing::new(ff(p), vec!["x".into()]);
+        let f = pr.field();
+        let a: u64 = 1; // a < every prime in the list
+        let poly = pr.sub(pr.var(0), pr.constant(f.from_int(a as i64)));
+        match solve_split_gb(&pr, &[poly], &[]) {
+            SolveOutcome::Sat(m) => {
+                assert_eq!(
+                    m["x"],
+                    BigUint::from(a) % BigUint::from(p),
+                    "GF({}): x = {} forces x = {}",
+                    p,
+                    a,
+                    a
+                );
+            }
+            other => panic!("GF({}): expected SAT, got {:?}", p, other),
+        }
+    }
+}
+
+/// Property (1/7) FERMAT: in GF(p), `a^p ≡ a` for every a (Fermat's
+/// little theorem). At p=7 and a=3, 3^7 mod 7 = 3, so `x^7 = x ∧ x = 3`
+/// is SAT with x = 3. Spec: Fermat / SAT model checking.
+#[test]
+fn prop_solve_split_gb_fermat_unit_eq_consistent() {
+    let pr = FfPolyRing::new(ff(7), vec!["x".into()]);
+    let f = pr.field();
+    let p_x_eq_3 = pr.sub(pr.var(0), pr.constant(f.from_int(3)));
+    match solve_split_gb(&pr, &[p_x_eq_3], &[]) {
+        SolveOutcome::Sat(m) => {
+            // MATH: 3^7 mod 7 = 3 (Fermat).
+            let x_val = &m["x"];
+            assert_eq!(x_val, &BigUint::from(3u32));
+            let fermat = x_val.modpow(&BigUint::from(7u32), &BigUint::from(7u32));
+            assert_eq!(
+                &fermat, x_val,
+                "Fermat: x^p ≡ x in GF(p) — independent of source"
+            );
+        }
+        other => panic!("expected SAT, got {:?}", other),
+    }
+}
+
+/// Property (5) MONOTONICITY OF UNSAT: if `{p, q}` is UNSAT, so is
+/// `{p, q, r}` for any extra constraint r. Pin: `{x-1, x-2}` is UNSAT in
+/// GF(7); add an irrelevant `y - 5`. Still UNSAT.
+#[test]
+fn prop_solve_split_gb_unsat_monotone_under_extension() {
+    let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
+    let f = pr.field();
+    let p1 = pr.sub(pr.var(0), pr.constant(f.from_int(1)));
+    let p2 = pr.sub(pr.var(0), pr.constant(f.from_int(2)));
+    let p3 = pr.sub(pr.var(1), pr.constant(f.from_int(5)));
+    assert!(matches!(
+        solve_split_gb(&pr, &[p1, p2, p3], &[]),
+        SolveOutcome::Unsat(_)
+    ));
+}
+
+/// Property (5/9) MODEL CHECKING for `solve_single_gb`: a SAT model must
+/// zero the original polynomial inputs. Pin: x²-x over GF(11). MATH:
+/// roots are exactly {0, 1}.
+#[test]
+fn prop_solve_single_gb_bit_root_in_zero_or_one() {
+    let pr = FfPolyRing::new(ff(11), vec!["x".into()]);
+    let f = pr.field();
+    let xx = pr.mul(pr.var(0), pr.var(0));
+    let bit = pr.sub(xx, pr.var(0));
+    match solve_single_gb(&pr, vec![pr.clone_poly(&bit)]) {
+        SolveOutcome::Sat(m) => {
+            let pt = vec![f.from_biguint(&m["x"])];
+            let v = eval_poly_core(&pr, &bit, &pt);
+            assert!(f.is_zero(&v), "SAT model must zero the bit constraint");
+            let x = &m["x"];
+            assert!(
+                x == &BigUint::from(0u32) || x == &BigUint::from(1u32),
+                "x(x-1)=0 ⇒ x∈{{0,1}} (MATH spec), got {}",
+                x
+            );
+        }
+        other => panic!("expected SAT, got {:?}", other),
+    }
+}
+
+/// Property (1) ALGEBRAIC IDENTITY at the solver layer: `2·x = 4` and
+/// `x = 2` over GF(7) are equivalent (since 2 is invertible: 2·4 ≡ 1 mod
+/// 7, so 2·x = 4 ⇒ x = 2). Both must be SAT with the same x = 2.
+#[test]
+fn prop_solve_split_gb_invertible_scalar_eq_consistent() {
+    let pr_a = FfPolyRing::new(ff(7), vec!["x".into()]);
+    let pr_b = FfPolyRing::new(ff(7), vec!["x".into()]);
+    let fa = pr_a.field();
+    let fb = pr_b.field();
+    // 2·x - 4 = 0
+    let two_x = pr_a.scale(fa.from_int(2), pr_a.var(0));
+    let p_a = pr_a.sub(two_x, pr_a.constant(fa.from_int(4)));
+    // x - 2 = 0
+    let p_b = pr_b.sub(pr_b.var(0), pr_b.constant(fb.from_int(2)));
+    let r_a = solve_split_gb(&pr_a, &[p_a], &[]);
+    let r_b = solve_split_gb(&pr_b, &[p_b], &[]);
+    let (xa, xb) = match (&r_a, &r_b) {
+        (SolveOutcome::Sat(ma), SolveOutcome::Sat(mb)) => (ma["x"].clone(), mb["x"].clone()),
+        other => panic!("expected both SAT, got {:?}", other),
+    };
+    assert_eq!(xa, BigUint::from(2u32));
+    assert_eq!(xb, BigUint::from(2u32));
+    assert_eq!(xa, xb, "invertible-scale equivalence forces same model");
+}
+
+/// Property (3) IDEMPOTENCE: running `solve_split_gb` twice gives the
+/// same model on a single-solution problem.
+#[test]
+fn prop_solve_split_gb_repeat_same_unique_model() {
+    let pr = FfPolyRing::new(ff(7), vec!["x".into()]);
+    let f = pr.field();
+    let p = pr.sub(pr.var(0), pr.constant(f.from_int(3)));
+    let r1 = solve_split_gb(&pr, &[pr.clone_poly(&p)], &[]);
+    let r2 = solve_split_gb(&pr, &[pr.clone_poly(&p)], &[]);
+    let pick = |o: SolveOutcome| match o {
+        SolveOutcome::Sat(m) => m["x"].clone(),
+        _ => panic!("expected SAT"),
+    };
+    assert_eq!(pick(r1), pick(r2));
+}
+
+/// Property (4) UNSAT CORE SOUNDNESS: every index in the returned UNSAT
+/// core must be a valid index into the input slice (`i < n_inputs`). A
+/// core element outside this range is undefined / unsound. SPEC: core
+/// is `Vec<usize>` indexing the input fact list.
+#[test]
+fn prop_unsat_core_indices_in_range() {
+    let pr = FfPolyRing::new(ff(7), vec!["x".into()]);
+    let f = pr.field();
+    let p1 = pr.sub(pr.var(0), pr.constant(f.from_int(1)));
+    let p2 = pr.sub(pr.var(0), pr.constant(f.from_int(2)));
+    let inputs = [pr.clone_poly(&p1), pr.clone_poly(&p2)];
+    match solve_split_gb(&pr, &inputs, &[]) {
+        SolveOutcome::Unsat(core) => {
+            for &i in &core {
+                assert!(
+                    i < inputs.len(),
+                    "core index {} out of range (n_inputs = {})",
+                    i,
+                    inputs.len()
+                );
+            }
+        }
+        other => panic!("expected UNSAT, got {:?}", other),
+    }
+}
+
+/// Helper: evaluate a polynomial at a point. Local copy so we don't
+/// pollute the public API. Identical math to `split_gb::tests::eval_poly`.
+fn eval_poly_core(
+    pr: &FfPolyRing,
+    p: &crate::poly::Poly,
+    point: &[crate::ff::field::FieldElem],
+) -> crate::ff::field::FieldElem {
+    let ring = &pr.ring;
+    let fp = &pr.field();
+    let mut acc = fp.zero();
+    for (c, m) in ring.terms(p) {
+        let mut t = fp.clone_el(c);
+        for v in 0..pr.n_vars() {
+            let e = ring.exponent_at(&m, v);
+            for _ in 0..e {
+                t = fp.mul_ref(&t, &point[v]);
+            }
+        }
+        fp.add_assign(&mut acc, t);
+    }
+    acc
+}

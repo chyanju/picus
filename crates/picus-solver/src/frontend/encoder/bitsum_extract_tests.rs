@@ -400,3 +400,487 @@ fn find_bitsum_chain_break_when_next_coeff_missing() {
     assert_eq!(chain, vec![0u32, 1u32]);
     assert_eq!(base, BigUint::from(1u32));
 }
+
+// ────────── SPEC-DRIVEN PROPERTY TESTS ──────────
+//
+// Expected values below are derived from MATH/SPEC, not from reading the
+// source's control flow.
+//   * bitsum_fits(n, p) ⇔ (2^n ≤ p)   [pure math identity]
+//   * Chain-length cap is floor(log2(p)) = largest n with 2^n ≤ p.
+//   * find_bitsum_chain accepts only the coefficient sequence
+//     c, 2c, 4c, ..., 2^(k-1)·c  (mod p). Any other coefficient must
+//     not extend the chain (rejection of 3, 5, 6, 1+p, etc.).
+//   * detect_bit_constraint accepts c·x^2 + d·x iff `(c+d) ≡ 0 (mod p)`
+//     AND both terms reference the SAME variable.
+
+// PROPERTY (1) math identity for bitsum_fits: equivalent to 2^n ≤ p.
+// Independent check: compute 2^n via BigUint shift and compare to p.
+#[test]
+fn prop_bitsum_fits_equivalent_to_2pow_le_p() {
+    for &prime in &[2u32, 3, 5, 7, 11, 13, 17, 31, 257, 65537] {
+        let p = BigUint::from(prime);
+        for n in 0usize..40 {
+            let two_n = BigUint::from(1u32) << n;
+            let expected = two_n <= p;
+            assert_eq!(
+                bitsum_fits(n, &p),
+                expected,
+                "bitsum_fits({}, {}) disagrees with (2^n ≤ p)",
+                n,
+                prime
+            );
+        }
+    }
+}
+
+// PROPERTY (1) bitsum_fits monotone in `n` for any fixed `p`:
+// if bitsum_fits(n, p) is false, then bitsum_fits(n+1, p) is false.
+// Math: 2^n > p ⇒ 2^(n+1) > p.
+#[test]
+fn prop_bitsum_fits_monotone_in_len() {
+    for &prime in &[2u32, 3, 5, 7, 11, 13, 17, 257] {
+        let p = BigUint::from(prime);
+        let mut once_false = false;
+        for n in 0usize..30 {
+            let fits = bitsum_fits(n, &p);
+            if once_false {
+                assert!(
+                    !fits,
+                    "bitsum_fits non-monotone at p={}, n={}",
+                    prime, n
+                );
+            }
+            if !fits { once_false = true; }
+        }
+    }
+}
+
+// PROPERTY (1) bitsum_fits at boundary: for prime p with 2^k = p (none in
+// our test set since all are odd primes), but the relation `2^k ≤ p` is
+// strict-inequality-safe — independent math: 2^n = p ⇒ fits true; we
+// check the boundary at p=2 (only even prime).
+#[test]
+fn prop_bitsum_fits_boundary_p_eq_2() {
+    let p = BigUint::from(2u32);
+    // 2^0=1 ≤ 2 ✓
+    assert!(bitsum_fits(0, &p));
+    // 2^1=2 ≤ 2 ✓ (boundary equality)
+    assert!(bitsum_fits(1, &p));
+    // 2^2=4 > 2 ✗
+    assert!(!bitsum_fits(2, &p));
+}
+
+// PROPERTY (7) edge primes: bitsum_fits for GF(2), GF(3), GF(5).
+// Independent: max chain length is floor(log2 p).
+#[test]
+fn prop_bitsum_fits_max_chain_len_matches_floor_log2() {
+    // (prime, expected_max_len) where max_len is the largest n with 2^n ≤ p.
+    for &(prime, expected) in &[
+        (2u32, 1usize),  // 2^1 = 2 ≤ 2; 2^2 = 4 > 2
+        (3, 1),          // 2^1 = 2 ≤ 3; 2^2 = 4 > 3
+        (5, 2),          // 2^2 = 4 ≤ 5; 2^3 = 8 > 5
+        (7, 2),          // 2^2 = 4 ≤ 7; 2^3 = 8 > 7
+        (11, 3),         // 2^3 = 8 ≤ 11; 2^4 = 16 > 11
+        (13, 3),
+        (17, 4),         // 2^4 = 16 ≤ 17; 2^5 = 32 > 17
+        (31, 4),
+        (257, 8),        // 2^8 = 256 ≤ 257; 2^9 = 512 > 257
+    ] {
+        let p = BigUint::from(prime);
+        // Independent: compute max_n by enumeration.
+        let mut n = 0usize;
+        while bitsum_fits(n + 1, &p) { n += 1; }
+        assert_eq!(
+            n, expected,
+            "p={}: bitsum_fits's max chain length = {}, expected {}",
+            prime, n, expected
+        );
+    }
+}
+
+// PROPERTY (1) detect_bit_constraint accept ↔ math identity.
+// Spec: accepts (c·x^2 + d·x = 0) iff (c + d) ≡ 0 (mod p) AND both
+// terms reference the SAME single variable. Sweep many (c, d, prime).
+#[test]
+fn prop_detect_bit_constraint_matches_math_definition() {
+    for &prime in &[7u32, 11, 13, 17, 257] {
+        let p = BigUint::from(prime);
+        for c in 1u32..prime {
+            for d in 0u32..prime {
+                let eq = vec![
+                    PolyTerm {
+                        coeff: BigUint::from(c),
+                        vars: vec![(0u32, 2)],
+                    },
+                    PolyTerm {
+                        coeff: BigUint::from(d),
+                        vars: vec![(0u32, 1)],
+                    },
+                ];
+                let expected = ((c + d) % prime) == 0;
+                let got = detect_bit_constraint(&eq, &p).is_some();
+                assert_eq!(
+                    got, expected,
+                    "p={} c={} d={}: detect_bit_constraint vs (c+d)≡0",
+                    prime, c, d
+                );
+            }
+        }
+    }
+}
+
+// PROPERTY (1) detect_bit_constraint rejects mismatched vars regardless
+// of (c+d) ≡ 0. Math spec: must be the SAME variable.
+#[test]
+fn prop_detect_bit_constraint_rejects_two_vars() {
+    let p = BigUint::from(17u32);
+    // c=1, d=16 with (1+16) = 17 ≡ 0 (mod 17): sum is zero, but the two
+    // terms reference distinct vars (0 vs 1). Must still reject.
+    let eq = vec![
+        PolyTerm {
+            coeff: BigUint::from(1u32),
+            vars: vec![(0u32, 2)],
+        },
+        PolyTerm {
+            coeff: BigUint::from(16u32),
+            vars: vec![(1u32, 1)],
+        },
+    ];
+    assert_eq!(detect_bit_constraint(&eq, &p), None);
+}
+
+// PROPERTY (8) determinism: detect_bit_constraint is a pure function.
+// Same input → same output across calls.
+#[test]
+fn prop_detect_bit_constraint_pure() {
+    let p = BigUint::from(7u32);
+    let eq = vec![
+        PolyTerm {
+            coeff: BigUint::from(1u32),
+            vars: vec![(2u32, 2)],
+        },
+        PolyTerm {
+            coeff: BigUint::from(6u32),
+            vars: vec![(2u32, 1)],
+        },
+    ];
+    let r1 = detect_bit_constraint(&eq, &p);
+    let r2 = detect_bit_constraint(&eq, &p);
+    assert_eq!(r1, r2);
+    assert_eq!(r1, Some(2));
+}
+
+// PROPERTY (1) find_bitsum_chain rejects non-power-of-two coefficient.
+// Spec (b): the coefficient sequence must be c, 2c, 4c, .... Inserting
+// a coefficient `3·c` (which is NOT 2^i·c for i ≤ k) between bit 0 and
+// bit 1 must not extend the chain past length 1, so a chain that would
+// have been length ≥ 2 is gated by the missing 2·c slot.
+#[test]
+fn prop_find_bitsum_chain_rejects_coeff_three_in_chain() {
+    let p = BigUint::from(257u32);
+    let bits: HashSet<VarIdx> = [0u32, 1u32, 2u32].into_iter().collect();
+    // Coeffs: 1·b0, 3·b1 (NOT 2·b1), 4·b2. The 2·* slot is empty so
+    // the chain stops after b0 (length 1, below MIN_AUTO_BITSUM_LEN=2).
+    let eq = vec![
+        PolyTerm { coeff: BigUint::from(1u32), vars: vec![(0u32, 1)] },
+        PolyTerm { coeff: BigUint::from(3u32), vars: vec![(1u32, 1)] },
+        PolyTerm { coeff: BigUint::from(4u32), vars: vec![(2u32, 1)] },
+    ];
+    // min_len=2 → must return None (only base=1 yields length 1; bases 3,4
+    // also yield length 1 since 2·3=6 missing and 2·4=8 missing).
+    assert!(
+        find_bitsum_chain(&eq, &bits, &p, 2).is_none(),
+        "coefficient 3 (not 2^i·c) must NOT extend a chain"
+    );
+}
+
+// PROPERTY (1) find_bitsum_chain rejects coefficient 5 in chain.
+#[test]
+fn prop_find_bitsum_chain_rejects_coeff_five_in_chain() {
+    let p = BigUint::from(257u32);
+    let bits: HashSet<VarIdx> = [0u32, 1u32, 2u32].into_iter().collect();
+    // Coeffs: 1·b0, 5·b1, 4·b2. 2·1=2 absent so base=1 length=1; 2·5=10
+    // absent so base=5 length=1; 2·4=8 absent so base=4 length=1.
+    let eq = vec![
+        PolyTerm { coeff: BigUint::from(1u32), vars: vec![(0u32, 1)] },
+        PolyTerm { coeff: BigUint::from(5u32), vars: vec![(1u32, 1)] },
+        PolyTerm { coeff: BigUint::from(4u32), vars: vec![(2u32, 1)] },
+    ];
+    assert!(
+        find_bitsum_chain(&eq, &bits, &p, 2).is_none(),
+        "coefficient 5 (not 2^i·c) must NOT extend a chain"
+    );
+}
+
+// PROPERTY (1) find_bitsum_chain rejects coefficient 6 in chain.
+#[test]
+fn prop_find_bitsum_chain_rejects_coeff_six_in_chain() {
+    let p = BigUint::from(257u32);
+    let bits: HashSet<VarIdx> = [0u32, 1u32, 2u32].into_iter().collect();
+    // Coeffs: 1·b0, 6·b1, 4·b2.
+    let eq = vec![
+        PolyTerm { coeff: BigUint::from(1u32), vars: vec![(0u32, 1)] },
+        PolyTerm { coeff: BigUint::from(6u32), vars: vec![(1u32, 1)] },
+        PolyTerm { coeff: BigUint::from(4u32), vars: vec![(2u32, 1)] },
+    ];
+    assert!(
+        find_bitsum_chain(&eq, &bits, &p, 2).is_none(),
+        "coefficient 6 (not 2^i·c) must NOT extend a chain"
+    );
+}
+
+// PROPERTY (1) find_bitsum_chain accepts the EXACT power-of-two sequence
+// {1, 2, 4, 8} for a length-4 chain. Independent math: coeffs are
+// 2^0·c, 2^1·c, 2^2·c, 2^3·c with c=1. Then for c=3 (base=3) the
+// extended sequence {3, 6, 12, 24} should also be accepted under GF(257)
+// (large enough prime, no mod-p collision).
+#[test]
+fn prop_find_bitsum_chain_accepts_power_of_two_sequence() {
+    let p = BigUint::from(257u32);
+    let bits: HashSet<VarIdx> = [0u32, 1u32, 2u32, 3u32].into_iter().collect();
+    let eq = vec![
+        PolyTerm { coeff: BigUint::from(1u32), vars: vec![(0u32, 1)] },
+        PolyTerm { coeff: BigUint::from(2u32), vars: vec![(1u32, 1)] },
+        PolyTerm { coeff: BigUint::from(4u32), vars: vec![(2u32, 1)] },
+        PolyTerm { coeff: BigUint::from(8u32), vars: vec![(3u32, 1)] },
+    ];
+    let (chain, base, _) =
+        find_bitsum_chain(&eq, &bits, &p, 2).expect("length-4 chain");
+    assert_eq!(chain.len(), 4);
+    assert_eq!(base, BigUint::from(1u32));
+}
+
+// PROPERTY (1) find_bitsum_chain accepts a scaled sequence (base = 3
+// over GF(257)): {3, 6, 12}. Independent math: 3·2^0, 3·2^1, 3·2^2.
+#[test]
+fn prop_find_bitsum_chain_accepts_scaled_sequence() {
+    let p = BigUint::from(257u32);
+    let bits: HashSet<VarIdx> = [0u32, 1u32, 2u32].into_iter().collect();
+    let eq = vec![
+        PolyTerm { coeff: BigUint::from(3u32), vars: vec![(0u32, 1)] },
+        PolyTerm { coeff: BigUint::from(6u32), vars: vec![(1u32, 1)] },
+        PolyTerm { coeff: BigUint::from(12u32), vars: vec![(2u32, 1)] },
+    ];
+    let (chain, base, _) =
+        find_bitsum_chain(&eq, &bits, &p, 2).expect("length-3 chain");
+    assert_eq!(chain.len(), 3);
+    assert_eq!(base, BigUint::from(3u32));
+}
+
+// PROPERTY (1) find_bitsum_chain length cap: chain length must never
+// exceed floor(log2 p). Independent math: compute the cap by enumeration
+// and assert.
+#[test]
+fn prop_find_bitsum_chain_respects_floor_log2_cap() {
+    for &prime in &[7u32, 11, 13, 17, 31] {
+        let p = BigUint::from(prime);
+        // Independent: enumerate floor(log2 p).
+        let mut cap = 0usize;
+        while bitsum_fits(cap + 1, &p) { cap += 1; }
+        // Build a (cap+2)-bit chain. Source must cap at `cap`.
+        let n = cap + 2;
+        let bits: HashSet<VarIdx> = (0..n as u32).collect();
+        let mut eq = Vec::new();
+        let mut c = 1u32;
+        for i in 0..n {
+            eq.push(PolyTerm {
+                coeff: BigUint::from(c % prime),
+                vars: vec![(i as u32, 1)],
+            });
+            c = (c * 2) % prime;
+        }
+        if let Some((chain, _, _)) = find_bitsum_chain(&eq, &bits, &p, 2) {
+            assert!(
+                chain.len() <= cap,
+                "p={}: chain length {} exceeds floor(log2 p) = {}",
+                prime, chain.len(), cap
+            );
+        }
+    }
+}
+
+// PROPERTY (8) determinism: find_bitsum_chain is a pure function.
+#[test]
+fn prop_find_bitsum_chain_deterministic() {
+    let p = BigUint::from(257u32);
+    let bits: HashSet<VarIdx> = [0u32, 1u32].into_iter().collect();
+    let eq = vec![
+        PolyTerm { coeff: BigUint::from(1u32), vars: vec![(0u32, 1)] },
+        PolyTerm { coeff: BigUint::from(2u32), vars: vec![(1u32, 1)] },
+    ];
+    let r1 = find_bitsum_chain(&eq, &bits, &p, 2);
+    let r2 = find_bitsum_chain(&eq, &bits, &p, 2);
+    assert_eq!(r1.is_some(), r2.is_some());
+    if let (Some((c1, b1, _)), Some((c2, b2, _))) = (r1, r2) {
+        assert_eq!(c1, c2);
+        assert_eq!(b1, b2);
+    }
+}
+
+// PROPERTY (4) min_len contract: find_bitsum_chain MUST NOT return a
+// chain shorter than `min_len`. Math: any return is ≥ min_len.
+#[test]
+fn prop_find_bitsum_chain_respects_min_len() {
+    let p = BigUint::from(257u32);
+    let bits: HashSet<VarIdx> = [0u32, 1u32, 2u32].into_iter().collect();
+    let eq = vec![
+        PolyTerm { coeff: BigUint::from(1u32), vars: vec![(0u32, 1)] },
+        PolyTerm { coeff: BigUint::from(2u32), vars: vec![(1u32, 1)] },
+        PolyTerm { coeff: BigUint::from(4u32), vars: vec![(2u32, 1)] },
+    ];
+    // Ask for min_len = 5 (longer than possible).
+    assert!(find_bitsum_chain(&eq, &bits, &p, 5).is_none());
+    // Ask for min_len = 3 (just possible).
+    let (chain, _, _) = find_bitsum_chain(&eq, &bits, &p, 3).expect("len-3 ok");
+    assert!(chain.len() >= 3);
+}
+
+// PROPERTY (7) edge: empty equality must yield None.
+#[test]
+fn prop_find_bitsum_chain_empty_eq_is_none() {
+    let p = BigUint::from(257u32);
+    let bits: HashSet<VarIdx> = HashSet::new();
+    let eq: Vec<PolyTerm> = vec![];
+    assert!(find_bitsum_chain(&eq, &bits, &p, 2).is_none());
+}
+
+// PROPERTY (7) edge: when `bits` is empty (no declared bit variables),
+// no chain can be formed. Spec: the bucket-build step filters by bit
+// membership, so the result must be None.
+#[test]
+fn prop_find_bitsum_chain_no_declared_bits_is_none() {
+    let p = BigUint::from(257u32);
+    let bits: HashSet<VarIdx> = HashSet::new();
+    let eq = vec![
+        PolyTerm { coeff: BigUint::from(1u32), vars: vec![(0u32, 1)] },
+        PolyTerm { coeff: BigUint::from(2u32), vars: vec![(1u32, 1)] },
+    ];
+    assert!(find_bitsum_chain(&eq, &bits, &p, 2).is_none());
+}
+
+// PROPERTY (8) auto_extract_bitsums determinism: same input → same output.
+#[test]
+fn prop_auto_extract_bitsums_deterministic() {
+    let cs = cs_with(17, |b| {
+        let b0 = b.var("b0");
+        let b1 = b.var("b1");
+        for bv in [b0, b1] {
+            b.add_equality(vec![
+                PolyTerm { coeff: BigUint::from(1u32), vars: vec![(bv, 2)] },
+                PolyTerm { coeff: BigUint::from(16u32), vars: vec![(bv, 1)] },
+            ]);
+        }
+        b.add_equality(vec![
+            PolyTerm { coeff: BigUint::from(1u32), vars: vec![(b0, 1)] },
+            PolyTerm { coeff: BigUint::from(2u32), vars: vec![(b1, 1)] },
+            PolyTerm { coeff: BigUint::from(10u32), vars: vec![] },
+        ]);
+    });
+    let out1 = auto_extract_bitsums(&cs);
+    let out2 = auto_extract_bitsums(&cs);
+    assert_eq!(out1.bitsums.len(), out2.bitsums.len());
+    assert_eq!(out1.bitsums, out2.bitsums);
+}
+
+// PROPERTY (3) idempotence: auto_extract_bitsums(auto_extract_bitsums(x))
+// must have the same number of bitsums as the first call. Once chains
+// have been extracted into `__bitsum_N` aux vars, re-running cannot
+// find new chains (the aux vars are not in `bits`).
+#[test]
+fn prop_auto_extract_bitsums_idempotent_bitsum_count() {
+    let cs = cs_with(257, |b| {
+        let b0 = b.var("b0");
+        let b1 = b.var("b1");
+        let b2 = b.var("b2");
+        for bv in [b0, b1, b2] {
+            b.add_equality(vec![
+                PolyTerm { coeff: BigUint::from(1u32), vars: vec![(bv, 2)] },
+                PolyTerm { coeff: BigUint::from(256u32), vars: vec![(bv, 1)] }, // -1 mod 257
+            ]);
+        }
+        b.add_equality(vec![
+            PolyTerm { coeff: BigUint::from(1u32), vars: vec![(b0, 1)] },
+            PolyTerm { coeff: BigUint::from(2u32), vars: vec![(b1, 1)] },
+            PolyTerm { coeff: BigUint::from(4u32), vars: vec![(b2, 1)] },
+            PolyTerm { coeff: BigUint::from(5u32), vars: vec![] },
+        ]);
+    });
+    let out1 = auto_extract_bitsums(&cs);
+    let out2 = auto_extract_bitsums(&out1);
+    assert_eq!(
+        out1.bitsums.len(),
+        out2.bitsums.len(),
+        "second pass added more bitsums (non-idempotent)"
+    );
+}
+
+// PROPERTY (7) edge: auto_extract over GF(2). Independent math:
+// floor(log2 2) = 1, so cap = 1, so MIN_AUTO_BITSUM_LEN = 2 > cap and
+// NO chain of admissible length can ever be extracted.
+#[test]
+fn prop_auto_extract_gf2_extracts_nothing() {
+    let cs = cs_with(2, |b| {
+        let b0 = b.var("b0");
+        let b1 = b.var("b1");
+        // x^2 - x = x^2 + x mod 2: detect_bit_constraint requires
+        // c+d ≡ 0 mod 2, so c=d=1 works (1+1 = 2 ≡ 0 mod 2).
+        for bv in [b0, b1] {
+            b.add_equality(vec![
+                PolyTerm { coeff: BigUint::from(1u32), vars: vec![(bv, 2)] },
+                PolyTerm { coeff: BigUint::from(1u32), vars: vec![(bv, 1)] },
+            ]);
+        }
+        // chain-shaped equality b0 + b1 (with 2 ≡ 0 mod 2 so b1's
+        // coefficient is effectively 0; we use 1 so both are bit 0).
+        b.add_equality(vec![
+            PolyTerm { coeff: BigUint::from(1u32), vars: vec![(b0, 1)] },
+            PolyTerm { coeff: BigUint::from(1u32), vars: vec![(b1, 1)] },
+        ]);
+    });
+    let out = auto_extract_bitsums(&cs);
+    // Cap = 1 < MIN_AUTO_BITSUM_LEN = 2 → no chain extractable.
+    assert_eq!(
+        out.bitsums.len(),
+        0,
+        "GF(2) cap is 1 < MIN_AUTO_BITSUM_LEN=2; nothing must be extracted"
+    );
+}
+
+// PROPERTY (7) edge: BN128-class prime. bitsum_fits at 253 holds and
+// can support arbitrarily long bitsum chains (independent math: 2^253
+// fits in the BN128 prime ~ 2^254).
+#[test]
+fn prop_bitsum_fits_bn128_long_chain() {
+    let p = BigUint::parse_bytes(
+        b"21888242871839275222246405745257275088548364400416034343698204186575808495617",
+        10,
+    )
+    .unwrap();
+    // Independent: enumerate cap; expected 253.
+    let mut cap = 0usize;
+    while bitsum_fits(cap + 1, &p) { cap += 1; }
+    assert_eq!(cap, 253);
+}
+
+// PROPERTY (4) "no bit registered" passthrough invariant: if NO eq
+// matches a bit constraint AND no explicit bitsum is present, the
+// function returns a clone with the SAME number of equalities (cannot
+// extract since `bits` is empty).
+#[test]
+fn prop_auto_extract_passthrough_when_no_bits_registered() {
+    let cs = cs_with(17, |b| {
+        let x = b.var("x");
+        let y = b.var("y");
+        // x + 2y + 3 = 0 (not a bit constraint).
+        b.add_equality(vec![
+            PolyTerm { coeff: BigUint::from(1u32), vars: vec![(x, 1)] },
+            PolyTerm { coeff: BigUint::from(2u32), vars: vec![(y, 1)] },
+            PolyTerm { coeff: BigUint::from(3u32), vars: vec![] },
+        ]);
+    });
+    let out = auto_extract_bitsums(&cs);
+    assert_eq!(out.equalities.len(), cs.equalities.len());
+    assert_eq!(out.bitsums.len(), 0);
+    assert_eq!(out.prime, cs.prime);
+    assert_eq!(out.var_names, cs.var_names);
+}
