@@ -214,9 +214,8 @@ fn audit_malformed_nnz_returns_error_not_panic() {
 #[test]
 fn audit_small_field_size_one_byte_prime_parses() {
     // `field_size = 1` (a 1-byte prime, e.g. GF(7)) is a legitimate
-    // iden3 width that is NOT a multiple of 8. Regression for the
-    // removed `field_size % 8` guard, which wrongly rejected such a
-    // file. The decoded prime and the small field_size must survive.
+    // iden3 width and is NOT required to be a multiple of 8. The
+    // decoded prime and the small field_size must survive.
     let mut header: Vec<u8> = Vec::new();
     header.extend_from_slice(&1u32.to_le_bytes()); // field_size = 1
     header.push(7u8); // prime = 7 (one byte)
@@ -237,8 +236,6 @@ fn audit_small_field_size_one_byte_prime_parses() {
     assert_eq!(r.header.field_size, 1);
     assert_eq!(r.header.prime_number, BigUint::from(7u32));
 }
-
-// ---- Additional tests ----
 
 #[test]
 fn prop_bad_version_rejected() {

@@ -9,7 +9,6 @@ use picus_r1cs::grammar::{
     Constraint, ConstraintBlock, ConstraintSection, HeaderSection, R1csFile, W2lSection,
 };
 use std::collections::HashSet;
-use std::sync::Arc;
 
 // ─── Test fixtures ────────────────────────────────────────────────
 

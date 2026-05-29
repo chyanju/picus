@@ -144,7 +144,7 @@ fn test_normalize() {
     assert!(pr.field().is_one(&lc));
 }
 
-// ────────── extend_with_cancel: empty-after-filter early return (lines 92-93) ──────────
+// ────────── extend_with_cancel: empty-after-filter early return ──────────
 
 #[test]
 fn extend_with_cancel_zero_new_poly_is_noop() {
@@ -165,7 +165,7 @@ fn extend_with_cancel_zero_new_poly_is_noop() {
     assert!(extended.contains(&x_m1));
 }
 
-// ────────── extend_with_cancel_traced: empty-after-filter early return (line 145) ──────────
+// ────────── extend_with_cancel_traced: empty-after-filter early return ──────────
 
 #[test]
 fn extend_with_cancel_traced_zero_new_poly_is_noop() {
@@ -183,7 +183,7 @@ fn extend_with_cancel_traced_zero_new_poly_is_noop() {
     assert_eq!(tracer.basis_count(), 0, "tracer not fed on the no-op path");
 }
 
-// ────────── quotient_dimension special cases (lines 233, 250, 253, 260) ──────────
+// ────────── quotient_dimension special cases ──────────
 
 #[test]
 fn quotient_dimension_whole_ring_is_zero() {
@@ -217,7 +217,7 @@ fn quotient_dimension_skips_zero_polys() {
     assert_eq!(ideal.quotient_dimension(), Some(1));
 }
 
-// ────────── leading_monomial / leading_coefficient helpers (lines 381-387, 397) ──────────
+// ────────── leading_monomial / leading_coefficient helpers ──────────
 
 #[test]
 fn leading_monomial_of_quadratic() {
@@ -263,8 +263,7 @@ fn is_zero_dim_yes_with_univariate_power_leading_terms() {
     // the leading monomials are the pure powers x^2, y^2, z^2. Each pins
     // exactly one variable (`multiple = false`), so `covered` grows to
     // {0,1,2} = n_vars and the final `covered.len() == n_vars` evaluates
-    // to true. Complements the linear-pin fixture by driving the same
-    // return through degree-2 pure-power leading terms.
+    // to true via degree-2 pure-power leading terms.
     let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into(), "z".into()]);
     let one = pr.one();
     let x2 = pr.mul(pr.var(0), pr.var(0));

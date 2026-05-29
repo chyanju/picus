@@ -269,13 +269,12 @@ fn prop_quadratic_residue_root_is_valid_gf7() {
 
 /// Property (6) BIT-PROP SPEC: `x · (x - 1) = 0` over GF(p) forces
 /// x ∈ {0, 1}. Solve and check the returned model. MATH: roots of the
-/// polynomial are exactly 0 and 1. Memory says bitprop is a recurring
-/// hazard — probe it on multiple primes.
+/// polynomial are exactly 0 and 1. Bitprop is a recurring hazard —
+/// probe it on multiple primes.
 #[test]
 fn prop_bit_constraint_forces_zero_or_one() {
     for p in [3u32, 5, 7, 11, 101] {
         let pr = FfPolyRing::new(ff(p), vec!["x".into()]);
-        let f = pr.field();
         let xx = pr.mul(pr.var(0), pr.var(0));
         let bit = pr.sub(xx, pr.var(0)); // x² - x = x(x-1)
         let originals = vec![pr.clone_poly(&bit)];
@@ -417,7 +416,7 @@ fn prop_bit_decomposition_out_of_range_is_unsat() {
 /// layer: a single satisfiable polynomial whose linear part has a `1,2`
 /// coefficient run is exposed as a bitsum candidate. Spec: a bitsum
 /// pattern alone (without bit constraints proving bit-ness) MUST NOT
-/// prune SAT models. Memory R5 H1 / R7 J1 both bitprop, hence probe HARD.
+/// prune SAT models.
 #[test]
 fn prop_bitsum_shaped_linear_does_not_force_false_unsat_gf7() {
     let pr = FfPolyRing::new(ff(7), vec!["y".into(), "z".into(), "x".into()]);
@@ -440,7 +439,7 @@ fn prop_bitsum_shaped_linear_does_not_force_false_unsat_gf7() {
         }
         acc
     };
-    // Brute force confirms SAT (MATH ground truth, not source).
+    // Brute force confirms SAT.
     let n_sols = (0..7i64)
         .flat_map(|y| (0..7i64).flat_map(move |z| (0..7i64).map(move |x| (y, z, x))))
         .filter(|&(y, z, x)| {

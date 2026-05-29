@@ -6,10 +6,8 @@
 //!   - `all_names()` matches the names of `all_descriptors()` in order.
 //!   - Every registered lemma's `factory()` builds an instance whose
 //!     `.name()` matches the descriptor's `.name`.
-//!   - The current core lemma set (aboz / basis2 / bim / binary01 /
-//!     linear / range / lemma file is the interface, the lemma names live
-//!     in their respective files). At minimum, all of these baseline names
-//!     must be present.
+//!   - The baseline lemma set (aboz / basis2 / bim / binary01 / linear)
+//!     must be registered.
 
 use crate::propagation::lemma::{all_descriptors, all_names, PropagationLemma};
 

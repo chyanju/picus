@@ -11,10 +11,8 @@ fn bn128() -> BigUint {
 /// `to_biguint`-equal outputs.
 #[test]
 fn small_matches_gmp_axioms() {
-    // Both fields are constructed from the same prime; `new`
-    // routes the first to Small (bits <= 64). To exercise the
-    // Gmp path on the same value, construct a Gmp-only field
-    // manually.
+    // `new` routes a 64-bit-fitting prime to Small; construct a Gmp-only
+    // field manually to exercise the Gmp path on the same value.
     let p_bu = BigUint::from(7919u32);
     let f_small = PrimeField::new(p_bu.clone());
     let f_gmp = {
@@ -155,15 +153,11 @@ fn small_prime_dispatch_is_picked() {
     assert!(matches!(f_gmp.kind, FieldKind::Gmp { .. }));
 }
 
-// ──────────────────────────── Spec-driven property tests ────────────────
-//
-// Expected values are derived from FIELD AXIOMS (additive/multiplicative
+// Expected values come from FIELD AXIOMS (additive/multiplicative
 // group laws), Fermat's little theorem, distributivity, and identities
-// of the square-and-multiply algorithm — NOT from observed source
-// behaviour. A failure here is a soundness bug in PrimeField.
-//
-// Small edge primes (GF(2), GF(3), GF(5), GF(7), GF(13)) exhaustively
-// exercise every (a, b) pair. BN128 covers the GMP arm.
+// of the square-and-multiply algorithm. A failure is a soundness bug
+// in PrimeField. Small edge primes (GF(2), GF(3), GF(5), GF(7), GF(13))
+// exhaustively exercise every (a, b) pair; BN128 covers the GMP arm.
 
 /// Build a small set of representative field elements covering 0, 1,
 /// the multiplicative generator-region (small ints), and `p - 1`
@@ -189,9 +183,8 @@ fn bn128_test_values(f: &PrimeField) -> Vec<FieldElem> {
     ]
 }
 
-/// (1) ADDITIVE IDENTITY: a + 0 == a and 0 + a == a, for every a in GF(p).
+/// ADDITIVE IDENTITY: a + 0 == a and 0 + a == a, for every a in GF(p).
 /// Property: 0 is the neutral element of the additive group.
-/// Folded: small primes (exhaustive) + BN128 (curated values) in one test.
 #[test]
 fn prop_additive_identity() {
     for &p in &small_primes() {
@@ -211,8 +204,7 @@ fn prop_additive_identity() {
     }
 }
 
-/// (1) MULTIPLICATIVE IDENTITY: a * 1 == a and 1 * a == a, every a in GF(p).
-/// Folded: small primes + BN128.
+/// MULTIPLICATIVE IDENTITY: a * 1 == a and 1 * a == a, every a in GF(p).
 #[test]
 fn prop_multiplicative_identity() {
     for &p in &small_primes() {
@@ -232,7 +224,7 @@ fn prop_multiplicative_identity() {
     }
 }
 
-/// (1) MULTIPLICATIVE ZERO: a * 0 == 0 and 0 * a == 0.
+/// MULTIPLICATIVE ZERO: a * 0 == 0 and 0 * a == 0.
 /// Property: absorbing element of the multiplicative monoid.
 #[test]
 fn prop_multiplicative_zero_small_primes() {
@@ -247,8 +239,7 @@ fn prop_multiplicative_zero_small_primes() {
     }
 }
 
-/// (1) ADDITIVE INVERSE: a + (-a) == 0, for every a in GF(p).
-/// Folded: small primes + BN128.
+/// ADDITIVE INVERSE: a + (-a) == 0, for every a in GF(p).
 #[test]
 fn prop_additive_inverse() {
     for &p in &small_primes() {
@@ -270,9 +261,8 @@ fn prop_additive_inverse() {
     }
 }
 
-/// (1) MULTIPLICATIVE INVERSE: for a != 0, a * a^{-1} == 1.
+/// MULTIPLICATIVE INVERSE: for a != 0, a * a^{-1} == 1.
 /// Also: inv(0) is None (0 has no multiplicative inverse in a field).
-/// Folded: small primes + BN128.
 #[test]
 fn prop_multiplicative_inverse() {
     for &p in &small_primes() {
@@ -299,9 +289,8 @@ fn prop_multiplicative_inverse() {
     }
 }
 
-/// (1) LEFT DISTRIBUTIVITY: a * (b + c) == a*b + a*c.
-/// (1) RIGHT DISTRIBUTIVITY: (a + b) * c == a*c + b*c.
-/// Folded: small primes (exhaustive triples) + BN128 (curated triples).
+/// LEFT DISTRIBUTIVITY: a * (b + c) == a*b + a*c.
+/// RIGHT DISTRIBUTIVITY: (a + b) * c == a*c + b*c.
 #[test]
 fn prop_distributivity() {
     for &p in &small_primes() {
@@ -335,7 +324,7 @@ fn prop_distributivity() {
     }
 }
 
-/// (1) SUBTRACTION IS ADD-NEG: a - b == a + (-b).
+/// SUBTRACTION IS ADD-NEG: a - b == a + (-b).
 /// Property derives from the definition of the additive group.
 #[test]
 fn prop_sub_is_add_neg_small_primes() {
@@ -355,7 +344,7 @@ fn prop_sub_is_add_neg_small_primes() {
     }
 }
 
-/// (1) DIVISION IS MUL-INV: a / b == a * b^{-1}, for b != 0.
+/// DIVISION IS MUL-INV: a / b == a * b^{-1}, for b != 0.
 #[test]
 fn prop_div_is_mul_inv_small_primes() {
     for &p in &small_primes() {
@@ -374,10 +363,9 @@ fn prop_div_is_mul_inv_small_primes() {
     }
 }
 
-/// (1) FERMAT'S LITTLE THEOREM: a^p == a for every a in GF(p). This is
+/// FERMAT'S LITTLE THEOREM: a^p == a for every a in GF(p). This is
 /// the textbook fact, independent of the implementation of `pow`.
 /// Also tests the Euler form a^{p-1} == 1 for a != 0.
-/// Folded: small primes (exhaustive) + BN128 (curated values).
 #[test]
 fn prop_fermat() {
     for &p in &small_primes() {
@@ -409,7 +397,7 @@ fn prop_fermat() {
     }
 }
 
-/// (1) pow(a, e) == repeated multiplication: a * a * ... (e times).
+/// pow(a, e) == repeated multiplication: a * a * ... (e times).
 /// Spec for square-and-multiply: it must agree with the naive O(e) loop.
 #[test]
 fn prop_pow_matches_repeated_mul_small_primes() {
@@ -428,12 +416,11 @@ fn prop_pow_matches_repeated_mul_small_primes() {
     }
 }
 
-/// (1) pow EXPONENT IDENTITIES:
+/// pow EXPONENT IDENTITIES:
 ///   a^0 == 1 (for all a, including a == 0 by the conventional
 ///   definition that the empty product is 1).
 ///   a^1 == a.
 ///   a^(e1 + e2) == a^e1 * a^e2.
-/// Folded: small primes + BN128.
 #[test]
 fn prop_pow_exponent_identities() {
     for &p in &small_primes() {
@@ -465,10 +452,9 @@ fn prop_pow_exponent_identities() {
     }
 }
 
-/// (1) FROZENKEL: For all a, b in GF(p) with p prime,
+/// FROBENIUS ENDOMORPHISM: For all a, b in GF(p) with p prime,
 /// (a + b)^p == a^p + b^p. This follows from the binomial theorem
 /// since every middle coefficient is divisible by p in GF(p).
-/// (Also called the "Frobenius endomorphism" property.)
 #[test]
 fn prop_frobenius_small_primes() {
     for &p in &small_primes() {
@@ -486,10 +472,9 @@ fn prop_frobenius_small_primes() {
     }
 }
 
-/// (2) ROUND-TRIP through from_biguint / to_biguint.
+/// ROUND-TRIP through from_biguint / to_biguint.
 /// For a value v already reduced in [0, p), from_biguint then
 /// to_biguint must return v unchanged.
-/// Folded: small primes (exhaustive) + BN128 (curated big values).
 #[test]
 fn prop_biguint_roundtrip() {
     for &p in &small_primes() {
@@ -516,7 +501,7 @@ fn prop_biguint_roundtrip() {
     }
 }
 
-/// (2) from_u64 REDUCTION: from_u64(v) reduces v mod p.
+/// from_u64 REDUCTION: from_u64(v) reduces v mod p.
 /// Spec: the result is congruent to v mod p, and is in [0, p).
 #[test]
 fn prop_from_u64_reduces_small_primes() {
@@ -534,7 +519,7 @@ fn prop_from_u64_reduces_small_primes() {
     }
 }
 
-/// (2) from_i64 REDUCTION: from_i64(v) reduces v mod p with the
+/// from_i64 REDUCTION: from_i64(v) reduces v mod p with the
 /// least-non-negative representative.
 /// Spec: ((v mod p) + p) mod p, always in [0, p).
 #[test]
@@ -556,7 +541,7 @@ fn prop_from_i64_reduces_small_primes() {
     }
 }
 
-/// (4) CANONICAL FORM INVARIANT: every result lies in [0, p).
+/// CANONICAL FORM INVARIANT: every result lies in [0, p).
 /// Property: the field stores canonical representatives. Tests every
 /// arithmetic op against the public prime.
 #[test]
@@ -581,7 +566,7 @@ fn prop_canonical_form_small_primes() {
     }
 }
 
-/// (8) DETERMINISM ACROSS INDEPENDENT FIELD INSTANCES: two fields
+/// DETERMINISM ACROSS INDEPENDENT FIELD INSTANCES: two fields
 /// constructed independently from the same prime must agree on
 /// every op. Property: the field semantics depends only on the prime.
 #[test]
@@ -602,7 +587,7 @@ fn prop_independent_instances_agree_small_primes() {
     }
 }
 
-/// (4) NO ZERO DIVISORS: for a, b in GF(p) with p prime,
+/// NO ZERO DIVISORS: for a, b in GF(p) with p prime,
 /// a * b == 0 iff a == 0 or b == 0. This is the integral-domain
 /// property of a field.
 #[test]
@@ -621,9 +606,8 @@ fn prop_no_zero_divisors_small_primes() {
     }
 }
 
-/// (1) INVERSE VIA FERMAT: for a != 0, a^{p-2} == a^{-1}. Spec
+/// INVERSE VIA FERMAT: for a != 0, a^{p-2} == a^{-1}. Spec
 /// identity; an independent way to compute the inverse.
-/// Folded: small primes + BN128.
 #[test]
 fn prop_inverse_via_fermat() {
     for &p in &small_primes() {
@@ -652,7 +636,7 @@ fn prop_inverse_via_fermat() {
     }
 }
 
-/// (1) NEG-MUL EQUIVALENCES: -(a*b) == (-a)*b == a*(-b).
+/// NEG-MUL EQUIVALENCES: -(a*b) == (-a)*b == a*(-b).
 #[test]
 fn prop_neg_mul_small_primes() {
     for &p in &small_primes() {
@@ -680,7 +664,7 @@ fn prop_neg_mul_small_primes() {
 
 #[test]
 fn prop_add_assign_matches_add_small_primes() {
-    // add_assign(a, b) result == add(a, b). Folded: small primes + GMP.
+    // add_assign(a, b) result == add(a, b).
     for &p in &small_primes() {
         let f = PrimeField::new(BigUint::from(p));
         for x in 0..p {

@@ -29,13 +29,6 @@ fn new_starts_at_level_zero_no_check() {
 }
 
 // ────────── Trivial scripts ──────────
-//
-// `exit_terminates_script` deleted: `session_exit_stops_eval_script` in
-// tests.rs is strictly stronger (asserts exactly one verdict observed AND
-// the post-(exit) assert never reaches session state).
-//
-// `echo_emits_string` deleted: `session_echo_is_passed_through` in tests.rs
-// asserts exact equality `"\"hello\""` (this version only `contains("hello")`).
 
 #[test]
 fn set_info_set_logic_are_silent() {
@@ -56,14 +49,7 @@ fn ff_sat_via_finitefield_sort() {
     assert_eq!(last_verdict(&out), Some(SessionVerdict::Sat));
 }
 
-// UNSAT-via-contradiction coverage folded into
-// `prop_contradictory_constants_unsat_across_edge_primes` (GF3,5,7,11,13).
-
 // ────────── push / pop levels ──────────
-//
-// `push_pop_isolates_assertions` deleted: `session_push_pop_isolates_asserts`
-// in tests.rs asserts the same isolation property via a more thorough
-// 3-verdict sequence (sat→unsat→sat) with explicit (push 1)/(pop 1).
 
 #[test]
 fn pop_past_zero_is_noop() {
@@ -102,18 +88,7 @@ fn reset_clears_everything() {
     assert_eq!(last_verdict(&out), Some(SessionVerdict::Sat));
 }
 
-// `reset_assertions_keeps_declarations` deleted: the tests.rs version of
-// the same name is strictly stronger — it asserts that macros + tlimit
-// options also survive (not just declarations), and that internal
-// `formulas` and `levels` collections are empty afterwards.
-
 // ────────── get-value / get-unsat-core ──────────
-//
-// `get_unsat_core_returns_names_after_unsat` (shallow: only asserts an
-// UnsatCore output exists) is subsumed by
-// `named_annotation_skips_other_attributes` further down, which uses the
-// same `(! ... :named ...)` annotation, runs through UNSAT, and asserts
-// that the returned core contains the expected name.
 
 // ────────── Bool sort + propositional check-sat ──────────
 
@@ -129,14 +104,11 @@ fn bool_only_check_sat() {
     assert_eq!(last_verdict(&out), Some(SessionVerdict::Sat));
 }
 
-// `default_equals_new` collapsed into `new_starts_at_level_zero_no_check`
-// (identical three assertions on the freshly-built session state).
-
 // ────────── eval() Silent fallthroughs ──────────
 //
 // The four shape variants (top-level atom / empty list / non-atom-head /
 // unknown command) each hit a distinct dispatch arm but all assert
-// `out.is_empty()`. They share a helper, so fold into a single sweep.
+// `out.is_empty()`.
 #[test]
 fn silent_fallthroughs_across_dispatch_arms() {
     // Each source string is an "inert" top-level form that must yield
@@ -230,18 +202,7 @@ fn assert_parse_failure_reinstalls_builder() {
     assert_eq!(last_verdict(&out), Some(SessionVerdict::Sat));
 }
 
-// ────────── check-sat empty / Bool default ──────────
-//
-// `check_sat_with_no_assertions_is_sat` (empty formula → Formula::True →
-// SAT) is subsumed by `prop_reset_assertions_clears_unsat_constraints`,
-// which after `(reset-assertions)` issues a bare `(check-sat)` and
-// asserts the same SAT verdict.
-
 // ────────── set-option :tlimit-per parsing ──────────
-//
-// `set_option_tlimit_per_stores_value` (set 1000, observe `Some(1000)`)
-// is folded into `set_option_tlimit_per_zero_disables`, which seeds the
-// same `Some(1000)` first and then transitions it to `None` via `0`.
 
 #[test]
 fn set_option_tlimit_per_zero_disables() {
@@ -331,11 +292,6 @@ fn get_value_malformed_query_is_empty() {
         other => panic!("expected empty Values, got {:?}", other),
     }
 }
-
-// `get_value_unknown_variable_is_skipped` deleted: tests.rs
-// `session_get_value_skips_undeclared_name` covers the same skip semantics
-// with a strictly stronger mixed query `(get-value (x undeclared))` —
-// asserts the declared name is kept while the unknown one is dropped.
 
 #[test]
 fn get_value_returns_model_value() {
@@ -441,9 +397,6 @@ fn format_define_fun_ff_without_prime_uses_underscore_sort() {
         "(define-fun y () _ 9)"
     );
 }
-
-// `echo_output_to_smtlib_quotes_text` folded into
-// `to_smtlib_renders_each_session_output_variant`.
 
 // ────────── assert with FF op but no prime hint ──────────
 
@@ -645,28 +598,11 @@ fn get_model_to_smtlib_matches_session_format_model() {
     );
 }
 
-// `values_output_to_smtlib_formats_name_value_pairs`,
-// `unsat_core_output_to_smtlib_space_separates_names`, and
-// `silent_output_to_smtlib_is_empty_string` folded into
-// `to_smtlib_renders_each_session_output_variant` above.
-
 // ════════════════ SPEC-DRIVEN property tests ════════════════
 //
 // Each property is derived from the SMT-LIB v2 incremental-mode spec
 // (§4.1 — stack, §4.2 — assert, §4.2.1 — reset, etc.) or from
 // solver-engine equivalence properties — not from inspecting the source.
-
-// `prop_two_sessions_same_script_yield_same_verdicts` (determinism on a
-// trivial GF7 script) is subsumed by the surviving prop tests below
-// (every prop running a script twice — `prop_reset_is_idempotent`,
-// `prop_reset_assertions_clears_unsat_constraints` — exercises the same
-// pure-function-of-script guarantee).
-//
-// `prop_reset_then_script_equals_fresh_session_run` (reset → script ≡
-// fresh session → script) is subsumed by `reset_clears_everything`
-// (resets then runs an unrelated GF11 script and asserts the verdict)
-// combined with `prop_reset_is_idempotent` (which compares post-reset
-// verdicts against a baseline).
 
 /// SPEC: SAT `check-sat` followed by `get-model` returns a model whose
 /// printed FF values are valid `#fNmP` literals. Round-tripping each

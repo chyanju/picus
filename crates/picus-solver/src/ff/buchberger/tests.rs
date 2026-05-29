@@ -7,10 +7,6 @@ fn ring(n_vars: usize) -> Arc<PolyRing> {
     PolyRing::new(f, names, MonomialOrder::DegRevLex)
 }
 
-// `gb_unit_ideal` (single-`1` input) was folded into the more demanding
-// `prop_nonzero_constant_in_input_forces_trivial_gb_gf101` below — same
-// {1}-collapse property, with a real generator alongside the constant.
-
 #[test]
 fn incremental_push_pop() {
     let r = ring(2);
@@ -802,10 +798,6 @@ fn prop_every_input_generator_reduces_to_zero_against_gb_across_primes() {
 // elements f, g ∈ B, LT(f) does not divide LT(g). picus's Buchberger output
 // is finalised through `interreduce` which enforces this; verify it.
 
-// The LT-minimality and monicity properties of the reduced GB are exhaustively
-// covered (over GF(7), GF(13), GF(101), GF(257)) by the combined
-// `prop_gb_characterisation_across_primes` test below.
-
 // ─── Class 4: empty / zero-only input → empty GB ──────────────────────────
 // Spec: I = (0) ⇒ the reduced GB is empty. Also Buchberger(G ∪ {0}) =
 // Buchberger(G) since 0 contributes nothing to the ideal.
@@ -838,10 +830,6 @@ fn prop_all_zero_input_yields_empty_gb() {
 // mutual reduction: every element of B1 reduces to 0 against B2 and vice
 // versa.
 
-// (`prop_gb_invariant_under_adjoining_zero_generators_*` was folded into
-// `prop_interreduce_drops_zero_polynomials_gf101` + `prop_all_zero_input_yields_empty_gb`,
-// which cover the zero-generator-filtering branch end-to-end.)
-
 // ─── Class 4: inconsistent system → trivial GB ────────────────────────────
 // Spec: if 1 ∈ I (e.g. {x - 1, x - 2} ⇒ -1 ∈ I), then GB = {1}.
 
@@ -865,10 +853,6 @@ fn prop_inconsistent_linear_system_yields_constant_gb_prime_sweep() {
             "spec: inconsistent linear system over GF({}) ⇒ trivial GB", prime);
     }
 }
-
-// (`prop_nonzero_constant_in_input_forces_trivial_gb_gf101` covered by
-// `diff_basis_containing_1_is_trivial_both_paths` below — that test probes
-// the same {1}-collapse on both per-pair and F4 paths.)
 
 // ─── Class 3: interreduce idempotence ─────────────────────────────────────
 // Spec: interreduce(interreduce(B)) == interreduce(B) (same multiset of
@@ -903,7 +887,7 @@ fn bases_equal_as_sets(a: &[DensePoly], b: &[DensePoly], ring: &PolyRing) -> boo
 fn prop_interreduce_is_idempotent_across_primes() {
     // Spec: interreduce is a projection — applying it twice agrees with once.
     // Sweep small + medium prime so a characteristic-dependent regression
-    // (cf. R5/H1, R7/J1 bitprop small-prime hazards) surfaces here too.
+    // surfaces here too.
     for &p in &[7u64, 101] {
         let r = ring_p(p, 3);
         let basis = vec![
@@ -917,15 +901,6 @@ fn prop_interreduce_is_idempotent_across_primes() {
             "spec: interreduce ∘ interreduce == interreduce (idempotent, GF({p}))");
     }
 }
-
-// (`prop_interreduce_output_is_monic_gf101` covered by
-// `interreduce_makes_nonzero_tail_result_monic` above — both call interreduce
-// on a non-monic 2-element basis and assert every survivor is monic.
-//
-// `prop_interreduce_output_has_unique_lt_relations_gf101` covered by
-// `interreduce_drops_dominated_leading_term` (sparse_gb side) plus
-// `prop_gb_characterisation_across_primes` whose LT-minimality leg exercises
-// interreduce as the final stage of every GB run.)
 
 // ─── Class 4: GB on already-GB input preserves the ideal ─────────────────
 // Spec: GB(GB(G)) generates the same ideal as GB(G). Checked via mutual
@@ -1010,11 +985,6 @@ fn prop_groebner_basis_is_deterministic() {
     }
 }
 
-// ─── Class 9: per-pair engine and F4 engine compute equivalent ideals ────
-// Covered by `f4/tests.rs::diff_f4_vs_buch_bank_small_primes_sweep` (sweeps
-// (7,2)/(7,3)/(7,4)/(101,3)/(101,4) over the full `diff_systems_dense` bank
-// — strictly stronger than a single 3-var GF(101) probe).
-
 // ─── Class 4: groebner_basis_incremental == groebner_basis on union ──────
 // Spec: groebner_basis_incremental(GB(G1), G2) generates the same ideal as
 // groebner_basis(G1 ∪ G2). We compare via mutual reducibility.
@@ -1054,9 +1024,9 @@ fn prop_incremental_gb_matches_full_gb_on_union_gf101() {
 #[test]
 fn prop_single_linear_gen_is_already_a_gb_small_prime_sweep() {
     // Sweep (prime, leading_coeff, const): a single linear monic `a·x - c`
-    // over GF(p) is already its own (monic) reduced GB. Small-prime corpus
-    // (GF(2)/3/5) is where bitprop bugs historically surfaced (R5 H1, R7 J1),
-    // so probing the GB engines on each small prime is high signal.
+    // over GF(p) is already its own (monic) reduced GB. Small primes
+    // (GF(2)/3/5) are a high-signal regression surface for bit-width and
+    // bitprop logic, so probing the GB engines on each is worthwhile.
     for (prime, a, c) in [(2u64, 1i64, 1i64), (3, 2, 1), (5, 3, 2)] {
         let r = ring_p(prime, 1);
         let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
@@ -1072,10 +1042,6 @@ fn prop_single_linear_gen_is_already_a_gb_small_prime_sweep() {
             "spec: that element is monic (GF({}))", prime);
     }
 }
-
-// (`prop_zero_var_ring_nonzero_constant_yields_unit_ideal_gf7` covered by
-// `diff_zero_variable_ring_constant_input` below — both probe the 0-var
-// k[] = k case with a unit constant.)
 
 // ─── Class 4: ideal-membership consistency on a different prime + shape ──
 // Spec stress: triangular system over GF(5). Every input must reduce to 0
@@ -1227,16 +1193,8 @@ fn ideals_equal_dense(a: &[DensePoly], b: &[DensePoly], ring: &Arc<PolyRing>) ->
     true
 }
 
-/// Spec: input where every batch is < F4_MIN_BATCH so the size
-/// fallback fires (per-pair path inside run_f4). Cross-check F4
-/// vs use_f4=false via mutual ideal-membership.
-//
-// (`diff_run_f4_size_fallback_matches_pp_gf7` folded into
-// `f4/tests.rs::diff_f4_vs_buch_bank_small_primes_sweep` which runs the full
-// `diff_systems_dense` bank — including the small-system shapes that hit
-// the size fallback — over GF(7) at 2/3/4 vars.)
-
-/// BN254-prime variant: same coverage at a realistic ZK-circuit prime.
+/// BN254-prime variant: F4 vs use_f4=false cross-check via mutual
+/// ideal-membership at a realistic ZK-circuit prime.
 #[test]
 fn diff_run_f4_vs_pp_above_min_batch_bn254() {
     let r = ring_p_test_bn254(4);

@@ -234,11 +234,6 @@ fn f4_multipair_3vars_overlapping_lts() {
     // f1 = x0^2 - x1
     // f2 = x0*x1 - x2
     // f3 = x1^2 - x0  (LT(f3) = x1^2 may need reducer chain)
-    //
-    // Also folds in the cyclic-3-shape coverage: both shapes exercise
-    // `process_batch` on 3-pair multi-pair batches; the F4-vs-Buchberger
-    // bank (`diff_f4_vs_buch_bank_small_primes_sweep` -> "cyclic_3") covers
-    // the cyclic-3 ideal-equivalence over GF(7) at higher level.
     let ring = ring_mod7(3);
     let x0 = x(0, &ring);
     let x1 = x(1, &ring);
@@ -652,8 +647,8 @@ fn f4_workspace_idempotent_on_repeated_batch() {
 /// call, [`F4WorkspaceStats::reducer_stale`] is incremented for
 /// every monomial whose cached entry pointed at the
 /// now-deactivated element. The outputs must remain a valid GB
-/// extension — the wider `f4_vs_per_pair_random_cross_check`
-/// fuzz catches any silent reuse of a stale row.
+/// extension — the BN254 random fuzz catches any silent reuse of
+/// a stale row.
 #[test]
 fn f4_workspace_invalidates_on_basis_deactivation() {
     let ring = ring_mod7(3);
@@ -724,20 +719,11 @@ fn f4_workspace_invalidates_on_basis_deactivation() {
 
 // ─── F4 vs per-pair cross-validation fuzz ─────────────────────
 
-// (`f4_vs_per_pair_random_cross_check` — GF(7), 2 vars, 12 LCG seeds —
-// folded into the BN254 random fuzz below, which exercises the same property
-// over a realistic ZK-circuit prime with 3 vars and 10 seeds. Small-prime
-// random coverage of F4 ≡ per-pair is preserved by
-// `diff_f4_vs_buch_edge_primes_small` running the full hand-built bank
-// (cyclic_3, overlapping_lts, …) over GF(2)/3/5.)
-
 /// BN254 random fuzz: cross-checks F4 vs per-pair over the BN254 scalar
 /// field (a ~254-bit prime, routed to the GMP `FieldElem` arm) with 3
-/// variables and degree-≤2 generators. Exercises F4 / per-pair agreement
-/// in the realistic coefficient/variable regime the GF(7) two-variable
-/// cross-check does not cover. Compares leading-term sets (the reduced-GB
-/// staircase), matching the convention above — `add_generators`'
-/// single-pass tail reduction does not guarantee identical tails.
+/// variables and degree-≤2 generators. Compares leading-term sets (the
+/// reduced-GB staircase); `add_generators`' single-pass tail reduction
+/// does not guarantee identical tails.
 #[test]
 fn f4_vs_per_pair_bn254_3vars() {
     use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
@@ -1500,21 +1486,6 @@ fn assert_gens_in_ideal(gens: &[DensePoly], basis: &[DensePoly], ring: &Arc<Poly
     }
 }
 
-// (`f4_path_generators_reduce_to_zero_handbuilt_gf7` and
-// `f4_vs_per_pair_reduced_gb_equal_handbuilt_gf7` folded into the broader
-// `diff_f4_vs_buch_bank_small_primes_sweep` differential bank below — the
-// bank exercises ideal-membership AND mutual ideal-equality across multiple
-// system shapes (cyclic_3, overlapping_lts, sparse_linear, …) and primes.)
-
-// (`f4_vs_per_pair_edge_primes` folded into `diff_f4_vs_buch_edge_primes_small`
-// + `diff_f4_vs_buch_bank_small_primes_sweep` — the differential bank covers
-// the same property across GF(2)/3/5 (small-prime bitprop hazard) and GF(7),
-// and includes the GF(2)/3/5 sweep this test was probing. Large prime
-// (~2^31) is covered by `diff_f4_vs_buch_bank_bn254_3vars` below.
-//
-// `f4_vs_per_pair_overlapping_lts_gf7` likewise covered by the bank's
-// "overlapping_lts" shape over GF(7).)
-
 // ── (4) post-op invariant: reduced GB is MONIC, leading terms MINIMAL ──
 
 /// Spec: a *reduced* GB satisfies (i) every element is monic, and
@@ -1575,11 +1546,6 @@ fn f4_path_is_deterministic_across_two_calls() {
     assert_eq!(canon_dense(a, &ring), canon_dense(b, &ring));
 }
 
-// (`f4_with_unit_generator_collapses_to_one` folded into the differential
-// bank's `contains_one_trivial_unsat` and `constant_and_relation` systems,
-// which probe the same {1}-collapse over multiple primes via
-// `assert_trivial_iff_unit_in_gens`.)
-
 // ── (1) algebraic identity on the S-polynomial produced by process_batch ──
 
 /// Spec of the S-polynomial as built inside `process_batch`:
@@ -1634,11 +1600,6 @@ fn process_batch_output_lies_in_input_ideal_gf7() {
         assert!(nf.is_zero(), "F4 output not in input ideal");
     }
 }
-
-// (`f4_single_generator_returns_input_monic` covered by the differential
-// bank's `sparse_linear` / `single_monomial_x0sq` / `high_degree_monomials`
-// single-gen systems plus `f4_reduced_gb_is_monic_and_lt_minimal` for the
-// monicity property.)
 
 // ─────────────────────────────────────────────────────────────────────
 // Hard-probe: F4 vs Buchberger differential (mutual ideal-membership)
@@ -1876,9 +1837,9 @@ fn diff_f4_vs_buch_bank_bn254_3vars() {
     }
 }
 
-/// Edge primes: GF(2), GF(3), GF(5). Corpus memory pins small-prime
-/// bitprop bugs (R5/H1, R7/J1) — probe GB engines on the same small
-/// primes for parity.
+/// Edge primes: GF(2), GF(3), GF(5). Small primes are a high-signal
+/// regression surface for characteristic-dependent encoder logic; probe
+/// the GB engines on each for parity.
 #[test]
 fn diff_f4_vs_buch_edge_primes_small() {
     for &p in &[2u64, 3, 5] {
@@ -1980,23 +1941,12 @@ fn diff_precancelled_token_at_process_batch_returns_empty() {
     assert!(out2.is_empty(), "workspace variant must also short-circuit");
 }
 
-// (`diff_mid_pipeline_cancel_token` — `CancelToken::new()` + `cancel()` before
-// the call — folded into `diff_precancelled_token_at_groebner_basis_returns_timeout`
-// (above), which covers the same pre-cancellation entry-point semantics for
-// both per-pair and F4 paths via `CancelToken::cancelled()`.)
-
 // ─────────────────────────────────────────────────────────────────────
 // F4_MIN_BATCH boundary: F4 routes batches of < F4_MIN_BATCH (12) to
 // the per-pair geobucket fallback and ≥ 12 to the matrix path. Build
 // adversarial inputs that straddle the boundary so a regression
 // affecting only one branch surfaces.
 // ─────────────────────────────────────────────────────────────────────
-
-// (`diff_f4_min_batch_boundary_exactly_12_pairs` — 5-var mixed degree-1/2
-// system — folded into the more adversarial
-// `diff_f4_min_batch_boundary_homogeneous_x0_chained` (13-var, C(13,2)=78
-// non-coprime pairs at sugar 2: a strictly stronger F4 matrix-path probe)
-// and the process_batch-level `diff_f4_min_batch_boundary_12_identical_pairs`.)
 
 /// Same-sugar batch exactly 12 from a structurally-uniform input:
 /// 13 polynomials of the form `xi^2 - c_i` for distinct constants c_i
@@ -2080,9 +2030,5 @@ fn diff_f4_min_batch_boundary_12_identical_pairs() {
     assert_ideals_equal_dense("[12-identical-vs-1]", &gb_a, &gb_b, &ring);
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Restart-schedule independence note: groebner_basis has no restart
-// schedule (Buchberger is monotone — no SAT-style restarts). Recorded
-// in the StructuredOutput skips section so the orchestrator can route
-// the property to the SAT subsystem instead.
-// ─────────────────────────────────────────────────────────────────────
+// Buchberger is monotone (no SAT-style restarts) so there is no
+// restart-schedule independence property to test for the GB engine.

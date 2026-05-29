@@ -62,12 +62,8 @@ fn merge_descending_preserves_descending_order() {
 
 // ────────── gm_insert ──────────
 //
-// gm_insert coverage lives in `buchberger/tests.rs::gm_insert_*` (5 cases:
-// smaller_lcm_dominates_larger, larger_lcm_evicted_by_smaller,
-// unrelated_lcms_both_kept, equal_lcm_prefers_coprime,
-// equal_lcm_keeps_existing_otherwise) which exercises the same public
-// `gm_insert` via the real `PolyRing` divmask path. The local-helper
-// duplicates that used to live here are deleted.
+// gm_insert coverage lives in `buchberger/tests.rs::gm_insert_*`, which
+// exercises the public `gm_insert` via a real `PolyRing` divmask path.
 
 // ────────── merge_sorted_descending: dst exhausts first ──────────
 
@@ -90,9 +86,6 @@ fn merge_descending_drains_dst_then_extends_incoming() {
 
 // ────────── b_criterion_kill ──────────
 //
-// b_criterion coverage lives in `buchberger/tests.rs::b_criterion_*`
-// (5 cases: kills_when_all_three_conditions_hold, keeps_when_new_lt_does_not_divide_lcm,
-// keeps_when_lcm_lt_j_new_equals_lcm, keeps_when_lcm_lt_i_new_equals_lcm,
-// empty_queue_is_noop) which exercises the same public `b_criterion_kill`
-// via real basis elements + ring divmask. The local-helper duplicate that
-// used to live here is deleted.
+// b_criterion coverage lives in `buchberger/tests.rs::b_criterion_*`,
+// which exercises the public `b_criterion_kill` via real basis elements
+// and ring divmask.

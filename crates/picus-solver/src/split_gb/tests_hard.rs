@@ -397,10 +397,10 @@ fn hard_mid_pipeline_cancel_between_two_extend_calls() {
 }
 
 // -----------------------------------------------------------------------------
-// Big primes — BN128 / curve25519. Historically big-prime arithmetic edge
-// cases harbor bugs (cf. round 5 H1 bitprop bit-cache, round 7 J1 bit-width
-// guard). Probe both with concrete SAT and UNSAT systems whose verdict is
-// fixed by elementary number theory.
+// Big primes — BN128 / curve25519. Big-prime arithmetic edge cases are a
+// known hazard (bit-width guards, cached bit proofs). Probe both with
+// concrete SAT and UNSAT systems whose verdict is fixed by elementary
+// number theory.
 // -----------------------------------------------------------------------------
 
 /// HYPOTHESIS: split_gb on a trivial concrete SAT system over BN128 fails

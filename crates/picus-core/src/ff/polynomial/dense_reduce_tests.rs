@@ -75,7 +75,7 @@ fn unique_lt_divisors(r: &PolyRing) -> Vec<DensePoly> {
     ]
 }
 
-// ── (1) zero / empty edges ──────────────────────────────────────────────
+// ── zero / empty edges ──────────────────────────────────────────────────
 
 #[test]
 fn prop_reduce_zero_input_is_zero_all_variants() {
@@ -113,7 +113,7 @@ fn prop_reduce_empty_divisors_is_identity_all_variants() {
     assert!(poly_eq(&p.reduce_by_refs_counted(&empty, &r, &mut counts), &p, &r));
 }
 
-// ── (2) variant agreement on a GB-shaped divisor set ────────────────────
+// ── variant agreement on a GB-shaped divisor set ────────────────────────
 
 #[test]
 fn prop_variants_agree_on_gb_shaped_set() {
@@ -148,7 +148,7 @@ fn prop_variants_agree_on_gb_shaped_set() {
     assert!(poly_eq(&by_geo, &by_counted, &r), "geo vs counted");
 }
 
-// ── (3) use_counts semantics: incremented (not zeroed) ──────────────────
+// ── use_counts semantics: incremented (not zeroed) ──────────────────────
 
 #[test]
 fn prop_use_counts_accumulate_across_calls() {
@@ -176,7 +176,7 @@ fn prop_use_counts_accumulate_across_calls() {
     assert_eq!(counts[0], 9, "second call increments further");
 }
 
-// ── (4) DivMask precompute paths (_dms variants) ────────────────────────
+// ── DivMask precompute paths (_dms variants) ────────────────────────────
 
 #[test]
 fn prop_counted_dms_matches_counted() {
@@ -246,7 +246,7 @@ fn prop_counted_dms_no_cancel_matches_counted() {
     assert_eq!(counts_a, counts_b);
 }
 
-// ── (5) reduce_by (owned-list) forwards to reduce_by_refs ───────────────
+// ── reduce_by (owned-list) forwards to reduce_by_refs ───────────────────
 
 #[test]
 fn prop_reduce_by_matches_reduce_by_refs() {
@@ -266,7 +266,7 @@ fn prop_reduce_by_matches_reduce_by_refs() {
     assert!(poly_eq(&by_owned, &by_refs, &r));
 }
 
-// ── (6) Cancel paths: already-cancelled token bails out cleanly ─────────
+// ── Cancel paths: already-cancelled token bails out cleanly ─────────────
 
 #[test]
 fn prop_reduce_by_refs_cancel_terminates_on_cancelled() {
@@ -301,7 +301,7 @@ fn prop_reduce_by_refs_counted_cancel_terminates_on_cancelled() {
     let _ = p.reduce_by_refs_counted_cancel(&divs, &r, &cancel, &mut counts);
 }
 
-// ── (7) Naive (cross-check oracle) parity tests ─────────────────────────
+// ── Naive (cross-check oracle) parity tests ─────────────────────────────
 
 #[test]
 fn prop_naive_self_reduction_to_zero() {
@@ -334,7 +334,7 @@ fn prop_naive_constant_only_irreducible() {
     assert!(poly_eq(&nf, &p, &r));
 }
 
-// ── (8) ReducerIndex precomputed reduce path agrees with geobucket ──────
+// ── ReducerIndex precomputed reduce path agrees with geobucket ──────────
 
 #[test]
 fn prop_indexed_matches_geobucket_small_set() {
@@ -395,7 +395,7 @@ fn prop_indexed_with_caller_dms_matches() {
     assert!(poly_eq(&by_auto, &by_dms, &r));
 }
 
-// ── (9) Residue is in input's coset: p - nf is in ideal ────────────────
+// ── Residue is in input's coset: p - nf is in ideal ─────────────────────
 
 #[test]
 fn prop_residue_in_input_coset() {
@@ -419,7 +419,7 @@ fn prop_residue_in_input_coset() {
     assert!(poly_eq(&nf, &nf2, &r), "normal form is not a fixed point");
 }
 
-// ── (10) Result-identity across thresholds: > SORT_THRESHOLD ────────────
+// ── Result-identity across thresholds: > SORT_THRESHOLD ─────────────────
 
 #[test]
 fn prop_geobucket_normal_form_with_many_orthogonal_divisors() {
@@ -470,14 +470,12 @@ fn prop_geobucket_normal_form_with_many_orthogonal_divisors() {
     assert_eq!(*lc, fp.from_u64(97));
 }
 
-// ── (11) reduce_by_refs_counted on multiple divisors ────────────────────
+// ── reduce_by_refs_counted on multiple divisors ─────────────────────────
 
 #[test]
 fn prop_counted_attributes_picks_to_correct_divisor() {
-    // Two orthogonal divisors d1 = x, d2 = y. p = x + y reduces by:
-    //   step 1: x picked by d1
-    //   step 2: y picked by d2
-    // So counts should end as [1, 1].
+    // Two orthogonal divisors d1 = x, d2 = y. p = x + y reduces by
+    // picking d1 for the x term and d2 for the y term — counts = [1, 1].
     let r = small_ring();
     let f = &r.field;
     let d1 = DensePoly::from_terms(
@@ -502,7 +500,7 @@ fn prop_counted_attributes_picks_to_correct_divisor() {
     assert_eq!(counts, vec![1, 1]);
 }
 
-// ── (12) Reduction in GF(2) — small-prime soundness ───────────────────
+// ── Reduction in GF(2) — small-prime soundness ──────────────────────────
 
 #[test]
 fn prop_reduce_in_gf2() {

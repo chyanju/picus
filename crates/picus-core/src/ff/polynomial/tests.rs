@@ -235,8 +235,8 @@ fn reduce_by_refs_geobucket_to_zero() {
 
 #[test]
 fn substitute_var_concrete_value() {
-    // substitute_var has no spec-property test elsewhere: substituting z=4
-    // into p = x*y + 2*z + 3 must give x*y + 11 (constant absorbed).
+    // Substituting z=4 into p = x*y + 2*z + 3 gives x*y + 11
+    // (constant absorbed).
     let r = small_ring();
     let f = &r.field;
     let p = DensePoly::from_terms(
@@ -255,13 +255,9 @@ fn substitute_var_concrete_value() {
     assert_eq!(*consts[0].coefficient(), f.from_u64(11));
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// SPEC-DRIVEN PROPERTY TESTS
-//
-// Expected values come from MATHEMATICAL IDENTITIES, not from reading the
-// source. Each test enforces a ring-axiom / monomial-order property that
-// MUST hold by definition; a failure is a bug in the implementation.
-// ─────────────────────────────────────────────────────────────────────────
+// Expected values come from MATHEMATICAL IDENTITIES. Each test enforces a
+// ring-axiom / monomial-order property that holds by definition; a failure
+// is a bug in the implementation.
 
 /// Polynomial equality under the ring order: same number of terms, and
 /// for each index i, same exponent vector and same coefficient.
@@ -329,14 +325,13 @@ fn sample_r(ring: &PolyRing) -> DensePoly {
     )
 }
 
-// ── (1) ALGEBRAIC IDENTITIES — ring axioms ──────────────────────────────
+// ── ALGEBRAIC IDENTITIES — ring axioms ──────────────────────────────────
 
 #[test]
 fn prop_additive_group_axioms() {
-    // Folded: identity (a+0=a), inverse (a+(-a)=0), sub-self (a-a=0),
+    // identity (a+0=a), inverse (a+(-a)=0), sub-self (a-a=0),
     // negate-involution (-(-a)=a), commutativity (a+b=b+a),
-    // associativity ((a+b)+c=a+(b+c)). Single sweep over representative
-    // primes covers every additive-group property.
+    // associativity ((a+b)+c=a+(b+c)).
     for &prime in &[2u64, 3, 5, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let a = sample_p(&r);
@@ -358,7 +353,7 @@ fn prop_additive_group_axioms() {
 
 #[test]
 fn prop_multiplicative_monoid_axioms() {
-    // Folded: identity (a*1=a), absorbing (a*0=0), commutativity (a*b=b*a),
+    // identity (a*1=a), absorbing (a*0=0), commutativity (a*b=b*a),
     // associativity ((a*b)*c=a*(b*c)) — the multiplicative-monoid axioms
     // of the polynomial ring.
     for &prime in &[2u64, 3, 5, 7, 101] {
@@ -373,7 +368,6 @@ fn prop_multiplicative_monoid_axioms() {
         assert!(z.mul(&a, &r).is_zero(), "0*a GF({prime})");
         assert!(poly_eq(&a.mul(&b, &r), &b.mul(&a, &r), &r), "comm GF({prime})");
     }
-    // Associativity is the expensive case; primes 3/7/101 suffice.
     for &prime in &[3u64, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let a = sample_p(&r);
@@ -388,7 +382,7 @@ fn prop_multiplicative_monoid_axioms() {
 #[test]
 fn prop_distributivity() {
     // Left and right distributivity: a*(b+c)=a*b+a*c and (b+c)*a=b*a+c*a.
-    // Both required by the ring axioms — fold into a single sweep.
+    // Both required by the ring axioms.
     for &prime in &[2u64, 3, 5, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let a = sample_p(&r);
@@ -454,8 +448,8 @@ fn prop_leading_monomial_of_product_under_degrevlex() {
 
 #[test]
 fn prop_scale_axioms() {
-    // Folded scale axioms: scale(a,1)=a (identity), scale(a,0)=0 (zero
-    // collapses), and scale(scale(a,c),c^-1)=a (invertibility for c!=0).
+    // scale(a,1)=a (identity), scale(a,0)=0 (zero collapses),
+    // scale(scale(a,c),c^-1)=a (invertibility for c!=0).
     for &prime in &[3u64, 5, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let a = sample_p(&r);
@@ -473,11 +467,11 @@ fn prop_scale_axioms() {
     assert!(a.scale(&r.field.zero(), &r).is_zero(), "s0 GF(2)");
 }
 
-// ── (3) IDEMPOTENCE ─────────────────────────────────────────────────────
+// ── IDEMPOTENCE ─────────────────────────────────────────────────────────
 
 #[test]
 fn prop_make_monic() {
-    // Folded: idempotence monic(monic(p))=monic(p), LC(monic(p))=1, and
+    // idempotence monic(monic(p))=monic(p), LC(monic(p))=1, and
     // monic(0)=0 (no LC to divide by → zero stays zero).
     for &prime in &[3u64, 5, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
@@ -491,11 +485,11 @@ fn prop_make_monic() {
     assert!(DensePoly::zero().make_monic(&r).is_zero(), "monic(0)=0");
 }
 
-// ── (4) INVARIANTS POST-OPERATION ───────────────────────────────────────
+// ── INVARIANTS POST-OPERATION ───────────────────────────────────────────
 
 #[test]
 fn prop_evaluate_ring_hom() {
-    // Evaluation is a ring homomorphism into GF(p). Folded:
+    // Evaluation is a ring homomorphism into GF(p):
     //   E(a+b) = E(a)+E(b), E(a*b) = E(a)*E(b),
     //   E(constant c) = c, E(x_i)(v) = v_i.
     for &prime in &[3u64, 7, 101] {
@@ -545,7 +539,7 @@ fn prop_fermat_little_theorem_evaluation() {
     }
 }
 
-// ── (7) EDGE PRIMES & SHAPES ────────────────────────────────────────────
+// ── EDGE PRIMES & SHAPES ────────────────────────────────────────────────
 
 #[test]
 fn prop_zero_var_ring_constants_only() {
@@ -596,9 +590,8 @@ fn prop_one_var_ring_basic_identities() {
 
 #[test]
 fn prop_zero_poly_invariants() {
-    // Folded: zero poly has no LT/LM/LC, num_terms=0, total_degree=0;
+    // Zero poly has no LT/LM/LC, num_terms=0, total_degree=0;
     // constant(0) collapses to the zero polynomial across primes.
-    // (`make_monic(0) = 0` already covered by `prop_make_monic`.)
     let r = ring_with(7, 3, MonomialOrder::DegRevLex);
     let z = DensePoly::zero();
     assert!(z.is_zero());
@@ -614,7 +607,7 @@ fn prop_zero_poly_invariants() {
     }
 }
 
-// ── (8) DETERMINISM ─────────────────────────────────────────────────────
+// ── DETERMINISM ─────────────────────────────────────────────────────────
 
 #[test]
 fn prop_content_hash_deterministic() {
@@ -632,7 +625,7 @@ fn prop_content_hash_deterministic() {
         "content_hash differs between identical builds");
 }
 
-// ── (1) again — Lex order specifics ─────────────────────────────────────
+// ── Lex order specifics ─────────────────────────────────────────────────
 
 #[test]
 fn prop_leading_term_lex_ordering() {
@@ -671,11 +664,10 @@ fn prop_leading_term_degrevlex_ordering() {
 
 #[test]
 fn prop_reduce_invariants() {
-    // Folded reducer invariants:
-    //   reduce_by(empty) = identity,
-    //   reduce_by(0, [d]) = 0,
-    //   p mod [p] = 0 (self-reduction),
-    //   (q*p) mod [p] = 0 (ideal membership).
+    // reduce_by(empty) = identity,
+    // reduce_by(0, [d]) = 0,
+    // p mod [p] = 0 (self-reduction),
+    // (q*p) mod [p] = 0 (ideal membership).
     let r = ring_with(101, 3, MonomialOrder::DegRevLex);
     let p = sample_p(&r);
     let nf_empty = p.reduce_by(&[], &r);
@@ -696,7 +688,7 @@ fn prop_reduce_invariants() {
     }
 }
 
-// ── (9) ENGINE EQUIVALENCE: Dense vs Sparse ─────────────────────────────
+// ── ENGINE EQUIVALENCE: Dense vs Sparse ─────────────────────────────────
 
 fn ring_repr(prime: u64, n_vars: usize, repr: crate::config::ReprKind) -> Arc<PolyRing> {
     let f = PrimeField::new(BigUint::from(prime));
@@ -795,7 +787,7 @@ fn prop_dense_sparse_evaluate_agree() {
     assert!(f.eq(&ed, &es), "dense vs sparse evaluate disagree");
 }
 
-// ── (10) ADDITIONAL COVERAGE: appearing_variables / is_univariate ───────
+// ── appearing_variables / is_univariate ─────────────────────────────────
 
 #[test]
 fn prop_appearing_variables_reports_max_exponent() {
@@ -871,7 +863,7 @@ fn prop_is_univariate_iff_one_variable_appears() {
     assert!(z.is_univariate(&r).is_none());
 }
 
-// ── (11) mul_term ───────────────────────────────────────────────────────
+// ── mul_term ────────────────────────────────────────────────────────────
 
 #[test]
 fn prop_mul_term_matches_mul_with_single_term_poly() {
@@ -910,7 +902,7 @@ fn prop_mul_term_on_zero_poly_yields_zero() {
     assert!(result.is_zero());
 }
 
-// ── (12) negate_in_place ────────────────────────────────────────────────
+// ── negate_in_place ─────────────────────────────────────────────────────
 
 #[test]
 fn prop_negate_in_place_matches_negate() {
@@ -934,7 +926,7 @@ fn prop_negate_in_place_involution() {
     assert!(poly_eq(&p_mut, &p, &r));
 }
 
-// ── (13) cmp_term_at on lex vs degrevlex ────────────────────────────────
+// ── cmp_term_at on lex vs degrevlex ─────────────────────────────────────
 
 #[test]
 fn prop_cmp_term_at_lex() {
@@ -967,7 +959,7 @@ fn prop_cmp_term_at_degrevlex() {
     );
 }
 
-// ── (14) from_raw_sorted is a thin constructor ─────────────────────────
+// ── from_raw_sorted is a thin constructor ──────────────────────────────
 
 #[test]
 fn prop_from_raw_sorted_roundtrip() {
@@ -988,7 +980,7 @@ fn prop_from_raw_sorted_empty_is_zero() {
     assert!(q.is_zero());
 }
 
-// ── (15) terms() iterator order ─────────────────────────────────────────
+// ── terms() iterator order ──────────────────────────────────────────────
 
 #[test]
 fn prop_terms_iterates_descending() {
@@ -1014,7 +1006,7 @@ fn prop_terms_iterates_descending() {
     assert_eq!(lt.coefficient(), first.coefficient());
 }
 
-// ── (16) merge_owned ────────────────────────────────────────────────────
+// ── merge_owned ─────────────────────────────────────────────────────────
 
 #[test]
 fn prop_merge_owned_matches_add() {
@@ -1061,7 +1053,7 @@ fn prop_merge_owned_zero_rhs() {
     assert!(poly_eq(&merged, &a, &r));
 }
 
-// ── (17) is_constant / num_terms ────────────────────────────────────────
+// ── is_constant / num_terms ─────────────────────────────────────────────
 
 #[test]
 fn prop_is_constant_classification() {
@@ -1089,7 +1081,7 @@ fn prop_constant_zero_collapses() {
     assert_eq!(nc.total_degree(), 0);
 }
 
-// ── (18) content_hash sensitivity to LC ─────────────────────────────────
+// ── content_hash sensitivity to LC ──────────────────────────────────────
 
 #[test]
 fn prop_content_hash_changes_with_leading_coefficient() {
@@ -1123,7 +1115,7 @@ fn prop_content_hash_zero_is_stable() {
     assert_eq!(h1, h2);
 }
 
-// ── (19) Polynomial enum surface ────────────────────────────────────────
+// ── Polynomial enum surface ─────────────────────────────────────────────
 
 #[test]
 fn prop_polynomial_zero_is_zero() {
@@ -1409,7 +1401,7 @@ fn prop_polynomial_collect_terms_idx_round_trip_count() {
     }
 }
 
-// ── (20) ReducerIndex: matches_active / size queries ────────────────────
+// ── ReducerIndex: matches_active / size queries ─────────────────────────
 
 #[test]
 fn prop_reducer_index_len_matches_divisors() {
@@ -1486,7 +1478,7 @@ fn prop_reducer_index_matches_active_rejects_changed_lt() {
     assert!(!idx.matches_active(&divs_new, &r));
 }
 
-// ── (21) reduce_by_refs_counted / _cancel / cancellation surface ────────
+// ── reduce_by_refs_counted / _cancel / cancellation surface ─────────────
 
 #[test]
 fn prop_reduce_by_refs_counted_counts_picks() {
@@ -1587,7 +1579,7 @@ fn prop_reduce_by_refs_cancel_already_cancelled_returns_input_coset() {
     let _ = p.reduce_by_refs_cancel(&divs, &r, &cancel);
 }
 
-// ── (22) reduce_by_refs on zero / empty edges ───────────────────────────
+// ── reduce_by_refs on zero / empty edges ────────────────────────────────
 
 #[test]
 fn prop_reduce_by_refs_zero_input_is_zero() {
@@ -1634,7 +1626,7 @@ fn prop_reduce_by_refs_geobucket_with_zero_divisor_skips_it() {
     assert_eq!(nf.leading_term(&r).unwrap().exponents(), &[0, 0, 0]);
 }
 
-// ── (23) cross-prime sweep on reduce ────────────────────────────────────
+// ── cross-prime sweep on reduce ─────────────────────────────────────────
 
 #[test]
 fn prop_reduce_self_yields_zero_across_primes() {

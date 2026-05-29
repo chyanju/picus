@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/). Entries are telegraphic: one line per change — what changed plus the key term/API — with no narrative, mechanism explanations, or "no verdict change" boilerplate.
 
+## [1.8.17] - 2026-05-29
+- Soundness: `sat::Solver::solve` drains root-level propagation after `perform_restart` and returns `Unsat` on a root conflict (was: post-restart root unit left unpropagated, root conflict analyzed at level 1 ⇒ wrong `Sat` under aggressive restart). Regression `audit_solve_sound_under_aggressive_restart`.
+- Workspace lib unit-test coverage 83.02% → 91.92%: picus-analysis 5.60% → 90.40%, picus-smt 2.01% → 85.94%, picus-r1cs 74.63% → 98.16%, picus-core 83.58% → 87.20%, picus-solver 87.90% → 97.59%. 1874 lib tests total.
+- Test layout: large sibling files split by prefix; `smt2/tests.rs` → `tests.rs` + `tests_session.rs` + `tests_property.rs`; `split_gb/tests.rs` → `tests.rs` + `tests_prop.rs` + `tests_hard.rs`; `frontend/encoder_tests.rs` → `encoder_tests.rs` + `encoder_tests_spec.rs`.
+- Sibling test files added for previously-untested algorithmic modules in `picus-analysis` (propagation/aboz/bim/basis2/binary01/linear/range/lemma + dpvl + selector), `picus-smt` (poly_ir, native_ff, native_lower), `picus-r1cs` (parser, grammar), and `picus-core` (dense_reduce, sparse_geobucket, sparse_monomial).
+
 ## [1.8.16] - 2026-05-28
 - Test layout: unit tests move to sibling files (`mod.rs`→`tests.rs`, leaf→`<name>_tests.rs`); no inline `mod tests {}` blocks remain in `src/`.
 - Integration tests renamed by scenario; `cdclt_regression` split into `cdclt_vs_dnf_parity` + `cdclt_scenarios`; `cvc5_*` corpus/unit files renamed.

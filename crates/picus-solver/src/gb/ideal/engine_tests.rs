@@ -218,7 +218,7 @@ fn reduces_to_zero(pr: &FfPolyRing, basis: &[Poly], p: &Poly) -> bool {
     p.reduce_by(basis, ring).is_zero()
 }
 
-// ────────── BuchbergerDirect::compute (lines 88-96) ──────────
+// ────────── BuchbergerDirect::compute ──────────
 
 #[test]
 fn buchberger_direct_name_is_stable() {
@@ -249,7 +249,7 @@ fn buchberger_direct_compute_empty_is_empty() {
     assert!(gb.is_empty());
 }
 
-// ────────── BuchbergerByHomog::name + compute (lines 123-135) ──────────
+// ────────── BuchbergerByHomog::name + compute ──────────
 
 #[test]
 fn by_homog_name_is_stable() {
@@ -275,7 +275,7 @@ fn by_homog_compute_degrevlex_nonhomogeneous() {
     assert!(reduces_to_zero(&pr, &gb, &p));
 }
 
-// ────────── BuchbergerByHomog fallback to Direct (lines 140, 142) ──────────
+// ────────── BuchbergerByHomog fallback to Direct ──────────
 
 #[test]
 fn by_homog_lex_falls_back_to_direct() {
@@ -291,7 +291,7 @@ fn by_homog_lex_falls_back_to_direct() {
     assert!(x_minus_1(&pr).reduce_by(&gb, &lex_ring).is_zero());
 }
 
-// ────────── compute_gb_direct (lines 431, 437-440, dense path) ──────────
+// ────────── compute_gb_direct (dense path) ──────────
 
 #[test]
 fn compute_gb_direct_empty_returns_empty() {
@@ -302,7 +302,7 @@ fn compute_gb_direct_empty_returns_empty() {
 
 #[test]
 fn compute_gb_direct_dense_path_linear() {
-    // Force the dense routing (lines 438-440) by installing a Dense repr.
+    // Force the dense routing by installing a Dense repr.
     let _g = ConfigGuard::install({
         let mut c = RuntimeConfig::default();
         c.poly_repr = crate::config::ReprKind::Dense;
@@ -318,7 +318,7 @@ fn compute_gb_direct_dense_path_linear() {
     assert!(reduces_to_zero(&pr, &gb, &x_minus_1(&pr)));
 }
 
-// ────────── compute_gb_incremental_with_order (lines 507, 512-525) ──────────
+// ────────── compute_gb_incremental_with_order ──────────
 
 #[test]
 fn incremental_empty_new_returns_known_gb() {
@@ -342,7 +342,7 @@ fn incremental_empty_known_recomputes_from_scratch() {
 
 #[test]
 fn incremental_dense_seed_extends_ideal() {
-    // Dense path (lines 510-525): seed reduced GB {x-1}, add {y-2}.
+    // Dense path: seed reduced GB {x-1}, add {y-2}.
     // Result must be a GB of <x-1, y-2> — both generators reduce to zero.
     let _g = ConfigGuard::install({
         let mut c = RuntimeConfig::default();
@@ -414,7 +414,7 @@ fn default_compute_traced_panics_for_misconfigured_algorithm() {
     );
 }
 
-// ────────── compute_gb_with_order dense path (line ~373) ──────────
+// ────────── compute_gb_with_order dense path ──────────
 
 #[test]
 fn compute_gb_with_order_dense_repr_records_dense_dispatch() {

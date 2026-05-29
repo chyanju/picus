@@ -52,7 +52,7 @@ fn sparse_eq(a: &SparsePolynomial, b: &SparsePolynomial, r: &PolyRing) -> bool {
     true
 }
 
-// ── (1) Spec corners ────────────────────────────────────────────────────
+// ── Spec corners ────────────────────────────────────────────────────────
 
 #[test]
 fn prop_reduce_empty_divisors_is_identity() {
@@ -107,7 +107,7 @@ fn prop_reduce_irreducible_subject_is_identity() {
         "irreducible subject must come out unchanged");
 }
 
-// ── (2) Differential oracle: naive ≡ geobucket ≡ dense ─────────────────
+// ── Differential oracle: naive ≡ geobucket ≡ dense ──────────────────────
 
 #[test]
 fn prop_reduce_geobucket_matches_naive() {
@@ -163,7 +163,7 @@ fn prop_reduce_result_descending_canonical() {
     }
 }
 
-// ── (3) Cancellation handling inside the geobucket ─────────────────────
+// ── Cancellation handling inside the geobucket ──────────────────────────
 
 #[test]
 fn prop_reduce_cancels_all_terms() {
@@ -195,7 +195,7 @@ fn prop_reduce_inside_ideal_two_generators() {
     assert!(nf.is_zero(), "element of <p,q> should reduce to 0");
 }
 
-// ── (4) Divisor-order dependency (documented spec) ─────────────────────
+// ── Divisor-order dependency (documented spec) ──────────────────────────
 
 #[test]
 fn prop_reduce_divisor_first_match_wins() {
@@ -222,7 +222,7 @@ fn prop_reduce_divisor_first_match_wins() {
         "order B: geobucket disagrees with naive");
 }
 
-// ── (5) Cancel token ────────────────────────────────────────────────────
+// ── Cancel token ────────────────────────────────────────────────────────
 
 #[test]
 fn prop_reduce_cancel_small_subject_canonical() {
@@ -267,7 +267,7 @@ fn prop_reduce_cancel_uncancelled_token_equals_uncancelled() {
     assert!(sparse_eq(&nf_a, &nf_b, &r));
 }
 
-// ── (6) Stress: many small additions force cascade ─────────────────────
+// ── Stress: many small additions force cascade ──────────────────────────
 
 #[test]
 fn prop_reduce_dense_subject_descending() {
@@ -297,7 +297,7 @@ fn prop_reduce_dense_subject_descending() {
     }
 }
 
-// ── (7) Small-prime sanity ──────────────────────────────────────────────
+// ── Small-prime sanity ──────────────────────────────────────────────────
 
 #[test]
 fn prop_reduce_gf7_consistency() {

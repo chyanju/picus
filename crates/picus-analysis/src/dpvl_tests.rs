@@ -479,8 +479,7 @@ fn test_run_dpvl_empty_target_set_returns_safe() {
 }
 
 /// Output wire is also an input ⇒ already in `ks` ⇒ Safe on the first
-/// iteration. This is the "target already known" early-Safe exit,
-/// distinct from the empty-target-set one above.
+/// iteration. Drives the "target already known" early-Safe exit.
 #[test]
 fn test_run_dpvl_target_is_input_returns_safe() {
     // n_wires=2, wire 0 = one, wire 1 is BOTH input and output.
@@ -527,12 +526,12 @@ fn test_run_dpvl_no_backend_with_unknown_target_returns_unknown() {
     );
 }
 
-/// Same as the prior test, but with `LemmaSet::all()` so the
-/// `lemmas.is_empty()` guard is FALSE and `propagate` IS called. Still
-/// no backend, so still `Unknown` — but this exercises the other arm of
-/// the empty-lemmas branch (propagate runs but doesn't promote the
-/// output wire to known, because it isn't derivable from the trivial
-/// `1*1=1` constraint).
+/// Output not known + `SolverKind::None` + `LemmaSet::all()` ⇒
+/// `lemmas.is_empty()` is FALSE and `propagate` IS called. Still no
+/// backend ⇒ still `Unknown` — exercises the other arm of the
+/// empty-lemmas branch (propagate runs but doesn't promote the output
+/// wire to known, because it isn't derivable from the trivial `1*1=1`
+/// constraint).
 #[test]
 fn test_run_dpvl_propagation_runs_but_target_unreached_returns_unknown() {
     let r = trivial_r1cs(7, 2, vec![0], vec![1]);
@@ -582,7 +581,7 @@ fn test_apply_overlay_theory_field_only() {
 }
 
 /// Bad solver name in overlay surfaces as an `Err`, not a silent
-/// default — mirrors the existing bad-selector / bad-lemmas tests.
+/// default.
 #[test]
 fn test_apply_overlay_bad_solver_errors() {
     let mut cfg = DpvlConfig::default();
@@ -820,11 +819,9 @@ fn test_run_dpvl_propagation_promotes_target_returns_safe() {
     );
 }
 
-/// Same R1CS as the propagation-Safe test, but with `LemmaSet::none()`
-/// disabling every lemma. Without lemmas the output wire stays
-/// unknown, and `SolverKind::None` ⇒ `Unknown`. Confirms the previous
-/// test's Safe verdict is actually coming from a lemma rather than
-/// some other promotion path.
+/// `linear_forced_r1cs` + `LemmaSet::none()`: every lemma disabled, so
+/// the output wire stays unknown and `SolverKind::None` ⇒ `Unknown`.
+/// Pins that promotion comes from a lemma, not from some other path.
 #[test]
 fn test_run_dpvl_propagation_disabled_misses_promotion() {
     let r = linear_forced_r1cs();

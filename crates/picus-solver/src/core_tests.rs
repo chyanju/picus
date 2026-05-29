@@ -369,8 +369,7 @@ fn solve_single_gb_nontrivial_unsat_returns_full_core() {
 
 #[test]
 fn ff_is_zero_unsound_full_unsat_core_is_sound() {
-    // 4-poly system over F_17 that arises during the
-    // `cvc5_ff_is_zero_unsound_sat` post_check trail:
+    // 4-poly system over F_17:
     //   p0: 1 - is_zero - m*x = 0
     //   p1: is_zero * m = 0
     //   p2: x = 0

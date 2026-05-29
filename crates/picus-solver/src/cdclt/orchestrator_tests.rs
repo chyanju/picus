@@ -24,11 +24,7 @@ fn names(ns: &[&str]) -> Vec<String> {
 #[test]
 fn solve_trivial_eq() {
     // GF(101) sanity: single eq routes through solve_formula and returns Sat
-    // with the expected model. Other end-to-end shape tests over GF(101)
-    // (contradictory, or-picks, eq+neq, implies-chain, disjunctive-bit) are
-    // subsumed by `prop_eq_and_negation_is_unsat_across_primes`,
-    // `prop_or_sat_model_satisfies_some_disjunct`, and the small-prime
-    // hardprobe sweeps below.
+    // with the expected model.
     let vn = names(&["x"]);
     let f = eq(1, 0, 5);
     let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
@@ -160,9 +156,8 @@ fn theory_core_undef_var_gives_up_not_panic() {
 #[test]
 fn apply_theory_conflict_false_core_var_takes_positive_literal() {
     // A core var asserted False contributes its *positive* literal to
-    // the learnt clause (the `LBool::False => Lit::pos(v)` arm). A
-    // single-var lemma `(x)` is assertable by backjumping to root, so
-    // the call returns Some, not give-up.
+    // the learnt clause. A single-var lemma `(x)` is assertable by
+    // backjumping to root, so the call returns Some, not give-up.
     let mut sat = Solver::new();
     let v = sat.new_var();
     assert!(sat.decide(Lit::neg(v))); // level 1: v = False
@@ -783,11 +778,10 @@ fn prop_non_unit_coeff_eq_pins_inverse() {
 
 // ─────────── HARD-PROBE: SAT restart × theory propagation at orchestrator level ───────────
 //
-// These tests engineer the CDCL(T) loop into the specific edge cases the
-// known restart-drain bug touched. Expected values are SPEC-derived from
-// propositional / SMT semantics, never from inspecting the loop control
-// flow. Cancellation tests use deterministic CancelToken sources (no
-// real timer races).
+// These tests engineer the CDCL(T) loop into specific restart-drain edge
+// cases. Expected values are SPEC-derived from propositional / SMT
+// semantics, never from inspecting the loop control flow. Cancellation
+// tests use deterministic CancelToken sources (no real timer races).
 
 /// SPEC: A pre-cancelled token forces `cdclt_loop` to Unknown on the
 /// FIRST iteration, regardless of any pending theory work. Each scripted
@@ -1080,7 +1074,8 @@ fn hardprobe_theory_propagation_then_postcheck_push_pop_ledger_balanced() {
 //      - v ∈ [0, 2^k) AND 2^k ≤ p  ⇒  SAT, unique decomposition.
 //      - v ∈ [2^k, p) (with 2^k ≤ p) ⇒  UNSAT (overflow).
 //      - 2^k > p ⇒ bitprop MUST NOT fabricate UNSAT (mod-p collisions admit
-//        real integer solutions; verdict-flipping = R5 H1 / R7 J1 class).
+//        real integer solutions; verdict-flipping is the soundness class
+//        to guard).
 //   * Cancel: pre-cancelled token ⇒ Unknown (never SAT/UNSAT).
 //   * Determinism: same formula → same verdict class and same unique model.
 // =============================================================================
@@ -1138,11 +1133,11 @@ fn hardprobe_bitsum_pinned_value_yields_unique_decomposition() {
     }
 }
 
-/// HARD-PROBE: GF(7) 3-bit collision case (R5 H1 neighbourhood).
-/// 2^3 = 8 > 7 so bitprop's fit guard MUST refuse propagation. Pinning
-/// the sum to 0 admits (0,0,0) and (1,1,1) (since 7 ≡ 0); adding b0 = 1
-/// keeps only (1,1,1) as a real solution. If bitprop unsoundly pinned
-/// every b_i to 0 (the mod-p residue), the verdict would flip to UNSAT.
+/// HARD-PROBE: GF(7) 3-bit collision case. 2^3 = 8 > 7 so bitprop's fit
+/// guard MUST refuse propagation. Pinning the sum to 0 admits (0,0,0)
+/// and (1,1,1) (since 7 ≡ 0); adding b0 = 1 keeps only (1,1,1) as a
+/// real solution. If bitprop unsoundly pinned every b_i to 0 (the
+/// mod-p residue), the verdict would flip to UNSAT.
 #[test]
 fn hardprobe_gf7_3bit_collision_keeps_real_solution() {
     let vn = names(&["b0", "b1", "b2"]);
@@ -1162,7 +1157,7 @@ fn hardprobe_gf7_3bit_collision_keeps_real_solution() {
             assert_eq!(m.get("b2"), Some(&BigUint::from(1u32)));
         }
         SolveOutcome::Unsat(_) => panic!(
-            "GF(7) collision: (1,1,1) is a real solution; UNSAT is unsound (R5 H1 / R7 J1 class)"
+            "GF(7) collision: (1,1,1) is a real solution; UNSAT is unsound (bitprop fit-guard class)"
         ),
         SolveOutcome::Unknown => {}
     }
@@ -1513,7 +1508,7 @@ fn hardprobe_bit_and_neq_zero_pins_to_one() {
 /// HARD-PROBE: GF(7) 3-bit, ALL 7 fitting pin values must be SAT.
 /// 2^3 = 8 > 7, so bitprop's fit guard MUST refuse propagation, and the
 /// theory must find the (unique) bit assignment that satisfies each.
-/// Any UNSAT here is verdict-flipping unsoundness (R5 H1 class).
+/// Any UNSAT here is verdict-flipping unsoundness (bitprop fit-guard class).
 #[test]
 fn hardprobe_gf7_3bit_all_pins_must_be_sat() {
     let vn = names(&["b0", "b1", "b2"]);
@@ -1542,7 +1537,7 @@ fn hardprobe_gf7_3bit_all_pins_must_be_sat() {
                     "GF(7) v={}: model sums to {:?}, not v", v, sum);
             }
             SolveOutcome::Unsat(_) => panic!(
-                "GF(7) v={}: real solution exists; UNSAT is unsound (R5 H1 class)", v
+                "GF(7) v={}: real solution exists; UNSAT is unsound (bitprop fit-guard class)", v
             ),
             SolveOutcome::Unknown => {}
         }

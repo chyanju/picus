@@ -1112,11 +1112,9 @@ fn property_seven_of_eight_minterms_forces_unique_model() {
 
 // ─────────── HARD-PROBE: SAT restart × theory propagation ───────────
 //
-// These tests target the restart/theory-propagation interaction risk
-// surface where the only real verdict-soundness bug was just found (the
-// restart-drain regression at solve()'s restart point). Expected values
-// derive ONLY from propositional-logic semantics — never from inspecting
-// the solver's current control flow.
+// These tests target the restart/theory-propagation interaction surface.
+// Expected values derive ONLY from propositional-logic semantics — never
+// from inspecting the solver's current control flow.
 
 /// SPEC: PHP(3,2) is UNSAT regardless of restart cadence. Sweep
 /// `restart_base` ∈ {1, 2, 3, 7, 11, 100} so the restart fires at
@@ -1272,8 +1270,8 @@ fn hardprobe_root_enqueue_theory_persists_across_perform_restart() {
 
 /// SPEC: After a theory lemma forces the asserting literal at level 0
 /// (root unit learnt), an immediate restart must NOT lose that root
-/// assignment. Reproduces the family of the bug just fixed: a learnt
-/// root unit pre-restart still drives later propagation post-restart.
+/// assignment. A learnt root unit pre-restart still drives later
+/// propagation post-restart.
 /// Hypothesis: dropping the learnt-unit's root assignment would let a
 /// post-restart decision pick the opposite polarity and (after solve)
 /// produce a wrong verdict on a downstream UNSAT formula.

@@ -1,4 +1,4 @@
-//! `SmtSession`-level integration tests (formerly inside `tests.rs`).
+//! `SmtSession`-level integration tests.
 //!
 //! These exercise the script-eval surface from `mod.rs`: `(set-logic)`,
 //! declarations, `(assert)`, `(check-sat)`, `(get-model)`, `(get-value)`,
@@ -12,14 +12,6 @@
 use super::*;
 
 // ─────────────────────────── SmtSession ─────────────────────────
-
-// `session_check_sat_returns_sat_for_satisfiable` deleted: subsumed by
-// session_tests.rs `prop_single_value_assertion_sat_across_edge_primes`
-// (asserts the same `x = constant` SAT property across primes 2/3/5/7/11).
-//
-// `session_check_sat_returns_unsat` deleted: subsumed by session_tests.rs
-// `prop_contradictory_constants_unsat_across_edge_primes` (asserts the
-// same `x=a ∧ x=b, a≠b` UNSAT property across primes 3/5/7/11/13).
 
 #[test]
 fn session_get_model_prints_assignment() {
@@ -153,12 +145,6 @@ fn session_to_smtlib_formats_verdicts() {
     );
 }
 
-// `session_named_assert_strips_annotation` deleted: strict subset of
-// `session_named_annotation_with_other_attrs_is_stripped` below, which
-// exercises two `:named` asserts (foo + bar) PLUS a generic `:weight`
-// attribute on the same form, covering both the strip-and-solve and the
-// label-capture paths in one go.
-
 #[test]
 fn session_get_unsat_core_reports_named_asserts() {
     let src = r#"
@@ -224,11 +210,6 @@ fn session_unnamed_asserts_excluded_from_core() {
     }
 }
 
-// `session_set_option_tlimit_per_is_recorded` deleted: subsumed by
-// session_tests.rs `set_option_tlimit_per_zero_disables`, which seeds the
-// session to `Some(1000)` via the same `:tlimit-per N` path and asserts
-// that recorded value before then transitioning to 0 → None.
-
 #[test]
 fn session_tlimit_per_zero_disables_timeout() {
     let src = r#"
@@ -259,10 +240,6 @@ fn session_get_model_before_check_sat_returns_empty_model() {
         other => panic!("expected Model, got {:?}", other),
     }
 }
-
-// `session_get_value_before_check_sat_returns_empty` deleted: identical
-// property to session_tests.rs `get_value_without_model_is_empty`
-// (declared x, no prior check-sat, get-value yields empty Values list).
 
 #[test]
 fn session_get_value_skips_undeclared_name() {
@@ -486,11 +463,6 @@ fn session_to_smtlib_formats_values_and_core() {
     assert_eq!(empty.to_smtlib(), "()");
 }
 
-// `session_silent_to_smtlib_is_empty_string` deleted: the
-// `SessionOutput::Silent → ""` rendering is covered by session_tests.rs
-// `to_smtlib_renders_each_session_output_variant`, which sweeps every
-// variant including Silent.
-
 // ─── (! ... :named ...) edge cases ───
 
 #[test]
@@ -517,9 +489,6 @@ fn session_named_annotation_with_other_attrs_is_stripped() {
 }
 
 // ─── set-option misuse ───
-//
-// `session_set_option_non_numeric_tlimit_is_ignored` deleted: identical
-// property + setup to session_tests.rs `set_option_tlimit_per_non_numeric_is_ignored`.
 
 #[test]
 fn session_set_option_tlimit_per_can_be_overwritten() {
