@@ -174,10 +174,9 @@ impl IncrementalGB {
     }
 
     /// Per-run profiling counters accumulated across every
-    /// `add_generators` / `run_only` call. Emitted on stderr when
-    /// `gb_stats` is enabled; read here by tests (which enable `gb_stats`,
-    /// since the counters are gb-stats-gated). Pure telemetry — no field
-    /// drives engine logic.
+    /// `add_generators` / `run_only` call. Pure telemetry — no field
+    /// drives engine logic; counters only advance when the
+    /// `metric::` DSL is active.
     pub fn engine_stats(&self) -> &super::GbProfileCounters {
         &self.state.profile
     }
@@ -335,9 +334,8 @@ mod tests {
     fn engine_stats_accessor_works() {
         let igb = IncrementalGB::new(ring2(), cfg());
         let stats = igb.engine_stats();
-        // Fresh stats — most counters are zero.
-        // `assert_eq!(stats.reductions_total, 0)` is implementation-specific;
-        // just ensure the accessor returns a reference.
+        // Accessor returns a reference to the counters struct; specific
+        // counter values are not asserted here (the set may evolve).
         let _: &super::super::GbProfileCounters = stats;
     }
 

@@ -95,7 +95,7 @@ impl NativeFfBackend {
 }
 
 /// Thin wrapper around the cache module's `digest_constraint_side`.
-/// Used for the stats path's `last_cs_digest` tracking.
+/// Used by the repeat-detection telemetry to update `last_cs_digest`.
 fn digest_native_constraint_side(ics: &ConstraintSystem) -> u128 {
     picus_solver::incremental_context::digest_constraint_side(ics)
 }
@@ -123,10 +123,10 @@ impl SolverBackend for NativeFfBackend {
         let indexed = ir.to_constraint_system();
         metric::incr!(NATIVE_FF.solve_calls);
         metric::scope! {
-            // Repeat-detection over consecutive constraint sides: a stats-only
-            // mini-algorithm (an expensive digest plus persisted last-digest
-            // state), so it lives in a metric::scope! block rather than a bare
-            // hand-written gb-stats `if`-gate.
+            // Repeat-detection over consecutive constraint sides. The digest
+            // is expensive and the streak counter needs persisted
+            // last-digest state, both of which belong inside the gated
+            // `metric::scope!` so neither runs when profiling is off.
             let d = digest_native_constraint_side(&indexed);
             if self.last_cs_digest == Some(d) {
                 metric::incr!(NATIVE_FF.repeated_cs_digest_streak);

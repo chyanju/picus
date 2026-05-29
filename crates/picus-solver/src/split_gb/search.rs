@@ -277,9 +277,8 @@ pub fn split_zero_extend_cancel<'r>(
 
         // Build a starting `SplitGb` of cloned ideals (each already a
         // reduced GB) and extend each with `assign_poly` as the single
-        // new generator. The bit-prop fixpoint loop is preserved; only
-        // the per-iteration GB recompute is replaced with incremental
-        // Buchberger.
+        // new generator. Per-iteration GB growth uses incremental
+        // Buchberger inside the bit-prop fixpoint.
         let (starting, new_polys_per_split): (SplitGb<'r>, Vec<Vec<Poly>>) = {
             metric::timer!(SPLIT_DFS.time_in_basis_clone_ns);
             let starting: SplitGb<'r> = stack[frame_idx].bases.iter()
@@ -539,8 +538,8 @@ mod tests {
         // brancher tries x=0 first. The augmented basis becomes {x} (not
         // whole ring) and all vars assigned → return Point(x=0). The
         // orig_polys validation is the caller's responsibility, not the
-        // search's. (If a future change folds orig_polys into search's
-        // quick-eval, Conflict becomes the expected outcome — accept both.)
+        // search's. Conflict is also an acceptable outcome if orig_polys
+        // is folded into the search's quick-eval path.
         let pr = ring1();
         let f = pr.field();
         let one = pr.constant(f.one());
@@ -751,10 +750,9 @@ mod tests {
 
     #[test]
     fn stats_enabled_drives_counters_without_changing_verdict() {
-        // Same satisfiable instance as `descends_through_frames…`, but with the
-        // gb-stats subscriber installed and the flag on, so every metric!
-        // event is emitted and routed. The verdict must be identical
-        // (instrumentation is side-effect-only).
+        // Same satisfiable instance as `descends_through_frames…`, with
+        // gb_stats_enabled on so every metric event is emitted and routed.
+        // The verdict must be identical: instrumentation is side-effect-only.
         let _g = crate::config::ConfigGuard::with_override(|c| c.gb_stats_enabled = true);
         let pr = ring2();
         let f = pr.field();

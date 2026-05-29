@@ -940,7 +940,7 @@ fn f4_size_fallback_fires_on_small_batches() {
     );
 
     // Per-pair reference: compare LT sets to confirm the routing
-    // decision didn't break correctness.
+    // decision preserves correctness.
     let cfg_pp = BuchbergerConfig {
         order: MonomialOrder::DegRevLex,
         cancel_token: None,

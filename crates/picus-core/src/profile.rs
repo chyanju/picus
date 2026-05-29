@@ -18,11 +18,9 @@
 //! accumulated table.  `picus-cli` calls `dump_to_stderr` automatically when
 //! profiling is enabled (CLI `--profile wall`).
 //!
-//! The profiler is intentionally *coarse* — it accumulates total wall-clock
-//! time and a call count per named site. Overlapping timers on the same site
-//! each add their full elapsed time, so a recursive site's total can exceed
-//! wall-clock. Use it
-//! to find which phases dominate, then drop in finer-grained timers as needed.
+//! The profiler is coarse: it accumulates total wall-clock time and a call
+//! count per named site. Overlapping timers on the same site each add their
+//! full elapsed time, so a recursive site's total can exceed wall-clock.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -228,36 +226,35 @@ pub fn gb_trace_enabled() -> bool {
 //
 // gb-stats instrumentation is invoked through the `metric::` namespace
 // (`metric::incr!`, `metric::add!`, `metric::max!`, `metric::timer!`) plus the
-// `#[metric]` attribute, so every profiling site is syntactically
-// self-identifying and never borrows main-logic syntax (`let`, `+=`, `if`):
+// `#[metric]` attribute. Every profiling site uses this syntax and does not
+// borrow main-logic syntax (`let`, `+=`, `if`), so
 // `grep -E 'metric::|#\[metric\]'` finds exactly the profiling.
 //
 // Each macro takes the *typed counter path* (e.g.
 // `SPLIT_GB.fixpoint_iters_total`) and lowers to a direct,
-// `gb_stats_enabled`-gated atomic update — compiler-checked, no name dispatch.
+// `gb_stats_enabled`-gated atomic update (compiler-checked, no name dispatch).
 // The `__metric_*` macros are the `#[macro_export]` implementations,
 // re-exported under clean names by the `metric` module in `lib.rs`; call sites
 // use `metric::incr!(PATH)` etc., not these directly.
 //
-// Full vocabulary: incr! / add! / max! (counters), timer! (RAII into a global
+// Vocabulary: incr! / add! / max! (counters), timer! (RAII into a global
 // counter) / timer_local! (RAII into a local u64 tally) / stopwatch! (gb-stats
 // Option<Instant> read at several points), gate! (read the flag once into a
 // cached Gate for a hot loop/step, then pass it to a gated timer!/timer_local!),
 // def! / bump! (local accumulators: declare / `+=`, drained once via a
 // gb-stats-gated scope! + add!), next! (increment-and-return for a
-// counter-as-id), scope! { } (a
-// gb-stats-gated pure-profiling block), trace! { } / clock! (the gb-*trace*
-// sink — verbose per-step output, distinct flag from gb-stats).
+// counter-as-id), scope! { } (a gb-stats-gated pure-profiling block),
+// trace! { } / clock! (the gb-*trace* sink: verbose per-step output, distinct
+// flag from gb-stats).
 //
 // Hot-loop gating: the per-monomial reducer timing in `ff::polynomial::
 // dense_reduce` and the per-step sub-region timing in `ff::geobucket::
 // sub_scaled_tail` must not do a thread-local config read on every iteration.
 // They use `metric::gate!(g)` to read `gb_stats_enabled()` once, then gate the
 // inner timers on the cached bool via `metric::timer_local!(g, ..)` /
-// `metric::timer!(g, ..)`. This keeps the read-once perf of a hand-cached flag
-// while staying entirely in the DSL — no bare `if gb_stats_enabled()` survives.
+// `metric::timer!(g, ..)`.
 
-/// Impl of `metric::incr!(counter)` — `counter += 1` when gb-stats is on.
+/// Backs `metric::incr!(counter)`: `counter += 1` when gb-stats is on.
 #[macro_export]
 macro_rules! __metric_incr {
     ($c:expr) => {
@@ -267,7 +264,7 @@ macro_rules! __metric_incr {
     };
 }
 
-/// Impl of `metric::add!(counter, n)` — `counter += n` when gb-stats is on.
+/// Backs `metric::add!(counter, n)`: `counter += n` when gb-stats is on.
 #[macro_export]
 macro_rules! __metric_add {
     ($c:expr, $n:expr) => {
@@ -277,7 +274,7 @@ macro_rules! __metric_add {
     };
 }
 
-/// Impl of `metric::max!(counter, v)` — `counter = max(counter, v)` when on.
+/// Backs `metric::max!(counter, v)`: `counter = max(counter, v)` when on.
 #[macro_export]
 macro_rules! __metric_max {
     ($c:expr, $v:expr) => {
@@ -323,7 +320,7 @@ impl Drop for MetricTimer<'_> {
     }
 }
 
-/// Impl of `metric::timer!(counter);` (re-reads the gb-stats flag) or
+/// Backs `metric::timer!(counter);` (re-reads the gb-stats flag) and
 /// `metric::timer!(gate, counter);` (uses a pre-read [`Gate`], for a hot step
 /// that times two sub-regions without re-reading the thread-local config).
 /// Statement-form RAII timer: expands to a hidden, block-scoped guard (no bare
@@ -397,7 +394,7 @@ impl Drop for LocalTimer<'_> {
     }
 }
 
-/// Impl of `metric::timer_local!(local);` (re-reads the gb-stats flag) or
+/// Backs `metric::timer_local!(local);` (re-reads the gb-stats flag) and
 /// `metric::timer_local!(gate, local);` (uses a pre-read [`Gate`], for hot
 /// loops). Block-scoped RAII timer adding elapsed ns to the local `u64`
 /// accumulator on drop. See [`LocalTimer`].
@@ -411,7 +408,7 @@ macro_rules! __metric_timer_local {
     };
 }
 
-/// Impl of `metric::gate!(g);` — read the gb-stats flag once into a cached
+/// Backs `metric::gate!(g);`: read the gb-stats flag once into a cached
 /// [`Gate`] for a hot loop, then gate per-iteration `metric::timer_local!(g, ..)`
 /// on the cached bool instead of re-reading the thread-local config.
 #[macro_export]
@@ -421,7 +418,7 @@ macro_rules! __metric_gate {
     };
 }
 
-/// Impl of `metric::stopwatch!(name);` — declare an `Option<Instant>` profiling
+/// Backs `metric::stopwatch!(name);`: declare an `Option<Instant>` profiling
 /// local that is `Some(now)` only when gb-stats is on, readable at several
 /// later `metric::scope!` dump points via `name.map(|t| t.elapsed())`. The
 /// gb-stats analogue of [`metric::clock!`] (which is gb-trace).
@@ -439,15 +436,11 @@ macro_rules! __metric_stopwatch {
 // Local-accumulator vocabulary for hot loops: keep per-iteration work to a
 // plain local `+=` (no atomic), then drain once via a gb-stats-gated
 // `metric::scope!` + `metric::add!`. `def`/`bump` are always-on (a local
-// `u64`, negligible when stats are off); only the drain block is gated. The
-// `metric::` spelling keeps these visibly profiling rather than bare `let
-// mut acc = 0` / `acc += 1` that read as logic.
+// `u64`, negligible when stats are off); only the drain block is gated.
 
-/// Impl of `metric::def!(acc);` (accumulator `= 0`) or
+/// Backs `metric::def!(acc);` (accumulator `= 0`) and
 /// `metric::def!(name = expr);` (a profiling-local seeded from `expr`, e.g. an
-/// entry snapshot of a counter, or `metric::next!`). The `metric::def!`
-/// spelling keeps it visibly a profiling local, not a bare `let` that reads as
-/// main logic.
+/// entry snapshot of a counter, or `metric::next!`).
 #[macro_export]
 macro_rules! __metric_def {
     ($name:ident) => {
@@ -458,7 +451,7 @@ macro_rules! __metric_def {
     };
 }
 
-/// Impl of `metric::next!(counter)` — increment `counter` and return the new
+/// Backs `metric::next!(counter)`: increment `counter` and return the new
 /// value (a per-call sequence id) when gb-stats is on, else `0`. For
 /// profiling ids that need the post-increment value, which `metric::incr!`
 /// discards.
@@ -473,10 +466,9 @@ macro_rules! __metric_next {
     };
 }
 
-/// Impl of `metric::trace! { ... }` — run a pure gb-*trace* block (gated by
+/// Backs `metric::trace! { ... }`: run a pure gb-*trace* block (gated by
 /// `gb_trace_enabled`, the verbose per-step diagnostic sink, distinct from the
-/// gb-stats `metric::scope!`). Keeps trace output in the metric DSL rather than
-/// a bare `if trace_on { eprintln!(..) }`.
+/// gb-stats `metric::scope!`).
 #[macro_export]
 macro_rules! __metric_trace {
     ($($body:tt)*) => {
@@ -486,7 +478,7 @@ macro_rules! __metric_trace {
     };
 }
 
-/// Impl of `metric::clock!(name);` — declare an `Option<Instant>` profiling
+/// Backs `metric::clock!(name);`: declare an `Option<Instant>` profiling
 /// local that is `Some(now)` only when gb-trace is on, for a
 /// `metric::trace!`-printed elapsed. No `Instant::now()` cost when trace is off.
 #[macro_export]
@@ -500,7 +492,7 @@ macro_rules! __metric_clock {
     };
 }
 
-/// Impl of `metric::bump!(acc)` / `metric::bump!(acc, n)` — local `acc += 1|n`.
+/// Backs `metric::bump!(acc)` / `metric::bump!(acc, n)`: local `acc += 1|n`.
 #[macro_export]
 macro_rules! __metric_bump {
     ($name:ident) => {
@@ -511,11 +503,11 @@ macro_rules! __metric_bump {
     };
 }
 
-/// Impl of `metric::scope! { ... }` — run a pure-profiling block only when
+/// Backs `metric::scope! { ... }`: run a pure-profiling block only when
 /// gb-stats is on. For telemetry that is more than one counter (stats-only
-/// computation feeding several counters, a per-run dump): the block contains
-/// ONLY profiling, so wrapping it buries no business logic, and the
-/// `metric::scope!` opener marks the whole region as profiling.
+/// computation feeding several counters, a per-run dump). The block must
+/// contain only profiling — no main-logic side effects, since it is skipped
+/// when gb-stats is off.
 #[macro_export]
 macro_rules! __metric_scope {
     ($($body:tt)*) => {

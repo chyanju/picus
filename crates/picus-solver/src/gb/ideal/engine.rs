@@ -312,25 +312,15 @@ pub(crate) fn wrap_dense_vec(v: Vec<crate::ff::DensePoly>) -> Vec<Poly> {
     v.into_iter().map(Poly::Dense).collect()
 }
 
-/// Compute a Groebner basis of `generators` in the requested monomial
-/// order, routed through [`compute_gb_dispatch`].
-///
-/// On failure the result depends on the cause:
-/// * Cancellation — return the generators unchanged; every caller
-///   re-checks `cancel.is_cancelled()` and reports `Timeout`, discarding
-///   this value.
-/// * Genuine engine error (e.g. a caught panic) — return an *empty*
-///   basis. The unreduced generators are not a Gröbner basis, and
-///   handing them back would let `is_zero_dim`/`min_poly`/FGLM treat a
-///   non-GB as a GB (a possible false UNSAT). An empty basis instead
-///   leaves the ideal undetermined downstream (→ Unknown, or a
-///   `verify_model`-guarded SAT), never a trusted zero-dimensional GB.
 /// Resolve a GB `Result` into a basis under the soundness contract shared
 /// by every public GB entry point: on **cancellation** return `backup`
 /// (the caller's `is_cancelled()` check then discards it); on a **genuine
 /// engine error** return an empty basis — never the unreduced generators,
-/// so downstream cannot mistake them for a Gröbner basis and emit a wrong
-/// verdict. `what` names the call site for the warning log.
+/// so downstream cannot mistake them for a Gröbner basis (which would let
+/// `is_zero_dim`/`min_poly`/FGLM emit a false UNSAT). An empty basis
+/// leaves the ideal undetermined downstream (→ Unknown, or a
+/// `verify_model`-guarded SAT). `what` names the call site for the
+/// warning log.
 fn finish_gb(
     result: Result<Vec<Poly>, EngineError>,
     cancel: &CancelToken,
@@ -347,6 +337,12 @@ fn finish_gb(
     })
 }
 
+/// Compute a Groebner basis of `generators` in the requested monomial
+/// order, routed through [`compute_gb_dispatch`] (dense) or the sparse
+/// engine ([`sparse_gb_route`]) per the active representation.
+/// Failure handling follows the [`finish_gb`] contract: cancellation
+/// returns the generators unchanged (caller's `is_cancelled()` check
+/// discards them); a genuine engine error returns an empty basis.
 #[metric]
 pub fn compute_gb_with_order(
     poly_ring: &FfPolyRing,
@@ -535,16 +531,16 @@ pub fn compute_gb_incremental_with_order(
     finish_gb(result, cancel, backup, "incremental GB")
 }
 
-/// Traced variant: feeds Buchberger steps to `tracer` for UNSAT-core extraction.
-///
-/// `tracer` must have been constructed with `n_inputs >= generators.len()` and
-/// be in a fresh state (or have been previously fed exactly `tracer.basis_count()`
-/// initial-basis events corresponding to earlier generators in the same global
-/// input numbering).
-/// Traced sibling of [`compute_gb_with_order`]. Routes through
+/// Traced sibling of [`compute_gb_with_order`]: feeds Buchberger steps
+/// to `tracer` for UNSAT-core extraction. Routes through
 /// [`compute_gb_dispatch`] with `Some(tracer)`; if the dispatched
-/// algorithm doesn't support tracing, dispatch silently falls back
-/// to [`BuchbergerDirect`] for that call.
+/// algorithm doesn't support tracing, dispatch silently falls back to
+/// [`BuchbergerDirect`] for that call.
+///
+/// `tracer` must have been constructed with `n_inputs >= generators.len()`
+/// and be in a fresh state (or have been previously fed exactly
+/// `tracer.basis_count()` initial-basis events corresponding to earlier
+/// generators in the same global input numbering).
 #[metric]
 pub fn compute_gb_with_order_traced(
     poly_ring: &FfPolyRing,

@@ -141,7 +141,6 @@ fn cdclt_loop<T: Theory>(
             }
         }
 
-        // Step 4: Decide.
         let next = sat.pick_decision().expect("not all assigned ⇒ Undef var exists");
         let ok = sat.decide(next);
         debug_assert!(ok);

@@ -109,8 +109,8 @@ fn run_fixpoint<'r>(
     let mut split_basis: SplitGb<'r> = starting;
     let mut new_polys: Vec<Vec<Poly>> = new_polys;
 
-    // Per-call sequence id for the gb-trace tag (post-increment of the shared
-    // call counter; 0 when gb-stats is off).
+    // Per-call sequence id for the trace tag (post-increment of the shared
+    // call counter; 0 when metrics are disabled).
     metric::def!(call_idx = metric::next!(SPLIT_GB.split_gb_extend_calls));
 
     // Cross-iteration memoisation of positive `contains` results.
@@ -185,8 +185,8 @@ fn run_fixpoint<'r>(
             }
         }
 
-        // Profiling-local accumulators (shared by the gb-stats drain below
-        // and the gb-trace line): plain `+=` in the hot loop, no atomics.
+        // Per-iteration accumulators consumed by both the per-iter aggregate
+        // below and the trace line. Local to this loop iteration.
         metric::def!(iter_contains_calls);
         metric::def!(iter_contains_true);
         metric::def!(iter_memo_hits);
@@ -357,22 +357,23 @@ fn run_fixpoint_traced<'r>(
 
             // Conservative dependency attribution (sound super-set).
             //
-            // The tracer's `deps` are keyed by Buchberger *push* order, but the
+            // Every surviving basis element — and any extracted core — is
+            // attributed the union of all original inputs that fed this
+            // partition's extend. A per-index read would be unsound: the
+            // tracer's `deps` are keyed by Buchberger push order, but the
             // returned basis is `active_polys()` — a compacted subsequence
             // (deactivated elements stay in the engine's vector but drop out of
             // the active list), and a batched new generator that reduces to
-            // zero never gets a tracer input slot at all. Both break a
+            // zero never gets a tracer input slot at all. Either break a
             // positional `deps_of(bidx)` / `tracer_input_to_orig[ti]`
             // correspondence, so a per-index read could attribute a *smaller*
-            // dep set than the element truly has — an under-approximation, i.e.
-            // an unsound (too-small) UNSAT core that could drop a needed
-            // generator and yield a wrong UNSAT in CDCL(T). Instead attribute
-            // every surviving element — and any extracted core — the union of
-            // all original inputs that fed this partition's extend. That is
-            // always a sound super-set: it can only widen the CDCL(T) conflict
-            // clause, never flip a verdict. (The default conjunctive path
+            // dep set than the element truly has — an under-approximation,
+            // yielding an unsound (too-small) UNSAT core that could drop a
+            // needed generator and produce a wrong UNSAT in CDCL(T). The union
+            // is a sound super-set: it can only widen the CDCL(T) conflict
+            // clause, never flip a verdict. The default conjunctive path
             // discards the core entirely in the native_ff backend, so the
-            // precision cost lands only on the CDCL(T)/disjunction path.)
+            // precision cost lands only on the CDCL(T)/disjunction path.
             let all_input_deps: BTreeSet<usize> = tracer_input_to_orig
                 .iter()
                 .flat_map(|d| d.iter().copied())

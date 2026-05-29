@@ -1,9 +1,8 @@
 //! Dense-polynomial Gröbner reduction: the `reduce_by_refs*` family
 //! (geobucket / DivMask-indexed reducers) and the `reduce_by_refs_naive`
-//! cross-check oracle, as inherent `impl DensePoly` methods. A submodule of
-//! `polynomial` so these methods keep access to `DensePoly`'s private
-//! fields and helpers; inherent methods need no re-export, so
-//! `DensePoly::reduce_by_refs*` call sites are unchanged.
+//! cross-check oracle, as inherent `impl DensePoly` methods. Sits in a
+//! `polynomial` submodule so these methods retain access to `DensePoly`'s
+//! private fields and helpers; inherent methods need no re-export.
 
 use super::*;
 use crate::metric;
