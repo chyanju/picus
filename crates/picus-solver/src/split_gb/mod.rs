@@ -333,3 +333,7 @@ pub fn split_find_zero_cancel<'r>(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_prop;
+#[cfg(test)]
+mod tests_hard;

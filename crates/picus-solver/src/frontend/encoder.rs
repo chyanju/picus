@@ -433,3 +433,7 @@ fn encode_impl(
 #[cfg(test)]
 #[path = "encoder_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "encoder_tests_spec.rs"]
+mod tests_spec;
