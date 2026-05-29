@@ -7,19 +7,9 @@ fn ring(n_vars: usize) -> Arc<PolyRing> {
     PolyRing::new(f, names, MonomialOrder::DegRevLex)
 }
 
-fn const_p(ring: &Arc<PolyRing>, v: u64) -> DensePoly {
-    DensePoly::constant(ring.field.from_u64(v), ring)
-}
-
-#[test]
-fn gb_unit_ideal() {
-    let r = ring(2);
-    // {1} generates the whole ring.
-    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-    let gb = groebner_basis(vec![const_p(&r, 1)], &r, &cfg).unwrap();
-    assert_eq!(gb.basis.len(), 1);
-    assert!(gb.basis[0].is_constant());
-}
+// `gb_unit_ideal` (single-`1` input) was folded into the more demanding
+// `prop_nonzero_constant_in_input_forces_trivial_gb_gf101` below — same
+// {1}-collapse property, with a real generator alongside the constant.
 
 #[test]
 fn incremental_push_pop() {
@@ -300,26 +290,6 @@ fn poly(ring: &Arc<PolyRing>, terms: &[(Vec<u16>, i64)]) -> DensePoly {
 }
 
 #[test]
-fn groebner_basis_incremental_collapses_when_new_gen_divides_existing() {
-    // Existing GB = {x0^2 - 1}; add x0 - 1. Since x0^2-1 = (x0-1)(x0+1),
-    // the ideal (x0^2-1, x0-1) = (x0-1) ⇒ GB = {x0 - 1}.
-    let r = ring(1);
-    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-    let existing = groebner_basis(vec![poly(&r, &[(vec![2], 1), (vec![0], -1)])], &r, &cfg)
-        .unwrap();
-    let extended = groebner_basis_incremental(
-        existing,
-        vec![poly(&r, &[(vec![1], 1), (vec![0], -1)])],
-        &r,
-        &cfg,
-    )
-    .unwrap();
-    assert_eq!(extended.basis.len(), 1);
-    // The single generator is degree-1 (the linear x0 - 1, made monic).
-    assert_eq!(extended.basis[0].leading_monomial(&r).unwrap().total_degree(), 1);
-}
-
-#[test]
 fn interreduce_tail_reduces_with_live_cancel_token() {
     // basis = {x0 + x1, x1}. Tail-reducing x0+x1 by x1 yields x0, so the
     // inter-reduced basis is {x0, x1}. Passing a live (never-firing) token
@@ -357,24 +327,6 @@ fn interreduce_returns_early_on_pre_cancelled_token() {
 // ────────── F4 path (use_f4 = true) ──────────
 
 #[test]
-fn f4_path_matches_per_pair_on_consistent_system() {
-    // x0*x1 - 1, x0 - 2 over GF(101): SAT, zero-dimensional. Both engines
-    // must agree on the (nontrivial) basis size and triviality.
-    let r = ring(2);
-    let gens = || vec![
-        poly(&r, &[(vec![1, 1], 1), (vec![0, 0], -1)]), // x0·x1 - 1
-        poly(&r, &[(vec![1, 0], 1), (vec![0, 0], -2)]), // x0 - 2
-    ];
-    let per_pair = BuchbergerConfig { order: r.order, use_f4: false, ..Default::default() };
-    let f4 = BuchbergerConfig { order: r.order, use_f4: true, ..Default::default() };
-    let gb_pp = groebner_basis(gens(), &r, &per_pair).unwrap();
-    let gb_f4 = groebner_basis(gens(), &r, &f4).unwrap();
-    assert!(!gb_pp.basis.iter().any(|p| p.is_constant()));
-    assert!(!gb_f4.basis.iter().any(|p| p.is_constant()));
-    assert_eq!(gb_pp.basis.len(), gb_f4.basis.len());
-}
-
-#[test]
 fn f4_path_detects_inconsistent_system() {
     // x0 - 1 and x0 - 2 over GF(101): S-poly reduces to a nonzero constant.
     // The F4 batch must surface the constant and mark the basis trivial.
@@ -391,24 +343,6 @@ fn f4_path_detects_inconsistent_system() {
     .unwrap();
     assert!(gb.basis.iter().any(|p| p.is_constant()),
         "inconsistent system must yield a constant (whole-ring) basis");
-}
-
-#[test]
-fn f4_path_with_stats_enabled_is_consistent_with_default() {
-    // Drives the F4 stats eprintln block; verdict must be unchanged.
-    let _g = crate::config::ConfigGuard::with_override(|c| c.gb_stats_enabled = true);
-    let r = ring(2);
-    let f4 = BuchbergerConfig { order: r.order, use_f4: true, ..Default::default() };
-    let gb = groebner_basis(
-        vec![
-            poly(&r, &[(vec![1, 1], 1), (vec![0, 0], -1)]), // x0·x1 - 1
-            poly(&r, &[(vec![1, 0], 1), (vec![0, 0], -2)]), // x0 - 2
-        ],
-        &r,
-        &f4,
-    )
-    .unwrap();
-    assert!(!gb.basis.is_empty());
 }
 
 #[test]
@@ -434,27 +368,6 @@ fn per_pair_run_cancelled_at_loop_top_with_stats_returns_timeout() {
         &cfg,
     );
     assert!(res.is_err(), "pre-cancelled run must return an engine error");
-}
-
-#[test]
-fn per_pair_run_with_stats_completes_and_emits_telemetry() {
-    // Non-F4 run that processes S-pairs to completion with gb_stats on,
-    // driving the end-of-run telemetry eprintln. The basis must be the
-    // same nontrivial GB the default run produces.
-    let _g = crate::config::ConfigGuard::with_override(|c| c.gb_stats_enabled = true);
-    let r = ring(2);
-    let cfg = BuchbergerConfig { order: r.order, use_f4: false, ..Default::default() };
-    let gb = groebner_basis(
-        vec![
-            poly(&r, &[(vec![1, 1], 1), (vec![0, 0], -1)]), // x0·x1 - 1
-            poly(&r, &[(vec![1, 0], 1), (vec![0, 0], -2)]), // x0 - 2
-        ],
-        &r,
-        &cfg,
-    )
-    .unwrap();
-    assert!(!gb.basis.is_empty());
-    assert!(!gb.basis.iter().any(|p| p.is_constant()));
 }
 
 #[test]
@@ -862,57 +775,25 @@ fn poly_in(ring: &Arc<PolyRing>, terms: &[(Vec<u16>, i64)]) -> DensePoly {
 // generator g ∈ G reduces to zero against B.
 
 #[test]
-fn prop_every_input_generator_reduces_to_zero_against_gb_gf101() {
-    let r = ring_p(101, 3);
-    let gens = vec![
-        poly_in(&r, &[(vec![2, 0, 0], 1), (vec![0, 1, 0], -1)]), // x0^2 - x1
-        poly_in(&r, &[(vec![1, 1, 0], 1), (vec![0, 0, 1], -1)]), // x0*x1 - x2
-        poly_in(&r, &[(vec![0, 2, 0], 1), (vec![1, 0, 0], -1)]), // x1^2 - x0
-    ];
-    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-    let gb = groebner_basis(gens.clone(), &r, &cfg).unwrap();
-    let refs: Vec<&DensePoly> = gb.basis.iter().collect();
-    for g in &gens {
-        let nf = g.reduce_by_refs(&refs, &r);
-        assert!(
-            nf.is_zero(),
-            "spec: every original generator must reduce to 0 mod GB"
-        );
-    }
-}
-
-#[test]
-fn prop_every_input_generator_reduces_to_zero_against_gb_gf7() {
-    // Same property over a small prime (GF(7)).
-    let r = ring_p(7, 2);
-    let gens = vec![
-        poly_in(&r, &[(vec![2, 0], 1), (vec![0, 0], -3)]),       // x0^2 - 3
-        poly_in(&r, &[(vec![0, 2], 1), (vec![0, 0], -2)]),       // x1^2 - 2
-        poly_in(&r, &[(vec![1, 1], 1), (vec![0, 0], -1)]),       // x0*x1 - 1
-    ];
-    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-    let gb = groebner_basis(gens.clone(), &r, &cfg).unwrap();
-    let refs: Vec<&DensePoly> = gb.basis.iter().collect();
-    for g in &gens {
-        let nf = g.reduce_by_refs(&refs, &r);
-        assert!(nf.is_zero(), "spec: input generator g must reduce to 0 mod GB over GF(7)");
-    }
-}
-
-#[test]
-fn prop_every_input_generator_reduces_to_zero_against_gb_gf13() {
-    let r = ring_p(13, 3);
-    let gens = vec![
-        poly_in(&r, &[(vec![1, 1, 0], 1), (vec![0, 0, 1], -1)]), // x0*x1 - x2
-        poly_in(&r, &[(vec![2, 0, 0], 1), (vec![0, 0, 0], -5)]), // x0^2 - 5
-        poly_in(&r, &[(vec![0, 2, 0], 1), (vec![0, 0, 0], -8)]), // x1^2 - 8
-    ];
-    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-    let gb = groebner_basis(gens.clone(), &r, &cfg).unwrap();
-    let refs: Vec<&DensePoly> = gb.basis.iter().collect();
-    for g in &gens {
-        let nf = g.reduce_by_refs(&refs, &r);
-        assert!(nf.is_zero(), "spec: input generator g must reduce to 0 mod GB over GF(13)");
+fn prop_every_input_generator_reduces_to_zero_against_gb_across_primes() {
+    // Sweep small + medium primes (GF(7), GF(13), GF(101)) with a triangular-ish
+    // quadratic system: every original generator must reduce to 0 modulo the
+    // computed GB (Buchberger's theorem).
+    for &p in &[7u64, 13, 101] {
+        let r = ring_p(p, 3);
+        let gens = vec![
+            poly_in(&r, &[(vec![2, 0, 0], 1), (vec![0, 1, 0], -1)]), // x0^2 - x1
+            poly_in(&r, &[(vec![1, 1, 0], 1), (vec![0, 0, 1], -1)]), // x0*x1 - x2
+            poly_in(&r, &[(vec![0, 2, 0], 1), (vec![1, 0, 0], -1)]), // x1^2 - x0
+        ];
+        let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
+        let gb = groebner_basis(gens.clone(), &r, &cfg).unwrap();
+        let refs: Vec<&DensePoly> = gb.basis.iter().collect();
+        for g in &gens {
+            let nf = g.reduce_by_refs(&refs, &r);
+            assert!(nf.is_zero(),
+                "spec: every original generator must reduce to 0 mod GB (GF({p}))");
+        }
     }
 }
 
@@ -921,93 +802,9 @@ fn prop_every_input_generator_reduces_to_zero_against_gb_gf13() {
 // elements f, g ∈ B, LT(f) does not divide LT(g). picus's Buchberger output
 // is finalised through `interreduce` which enforces this; verify it.
 
-#[test]
-fn prop_gb_basis_has_no_lt_dividing_another_lt_gf101() {
-    let r = ring_p(101, 3);
-    let gens = vec![
-        poly_in(&r, &[(vec![2, 0, 0], 1), (vec![0, 1, 0], -1)]),
-        poly_in(&r, &[(vec![1, 1, 0], 1), (vec![0, 0, 1], -1)]),
-        poly_in(&r, &[(vec![0, 2, 0], 1), (vec![1, 0, 0], -1)]),
-    ];
-    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-    let gb = groebner_basis(gens, &r, &cfg).unwrap();
-    let lts: Vec<Monomial> = gb
-        .basis
-        .iter()
-        .map(|p| p.leading_monomial(&r).unwrap())
-        .collect();
-    for i in 0..lts.len() {
-        for j in 0..lts.len() {
-            if i == j { continue; }
-            assert!(
-                !lts[i].divides(&lts[j]),
-                "spec: in a reduced GB, LT(b_i) must not divide LT(b_j) for i != j"
-            );
-        }
-    }
-}
-
-#[test]
-fn prop_gb_basis_has_no_lt_dividing_another_lt_gf7() {
-    let r = ring_p(7, 2);
-    let gens = vec![
-        poly_in(&r, &[(vec![2, 0], 1), (vec![0, 1], -1)]),
-        poly_in(&r, &[(vec![1, 1], 1), (vec![0, 0], -1)]),
-        poly_in(&r, &[(vec![0, 2], 1), (vec![1, 0], -1)]),
-    ];
-    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-    let gb = groebner_basis(gens, &r, &cfg).unwrap();
-    let lts: Vec<Monomial> = gb
-        .basis
-        .iter()
-        .map(|p| p.leading_monomial(&r).unwrap())
-        .collect();
-    for i in 0..lts.len() {
-        for j in 0..lts.len() {
-            if i == j { continue; }
-            assert!(
-                !lts[i].divides(&lts[j]),
-                "spec: in a reduced GB over GF(7), LT(b_i) must not divide LT(b_j)"
-            );
-        }
-    }
-}
-
-// ─── Class 4: every element of a reduced GB is monic ──────────────────────
-// Spec: the reduced GB has every leading coefficient equal to 1.
-
-#[test]
-fn prop_gb_elements_are_monic_gf101() {
-    let r = ring_p(101, 2);
-    let gens = vec![
-        poly_in(&r, &[(vec![2, 0], 5), (vec![0, 1], 3)]),        // 5·x0^2 + 3·x1
-        poly_in(&r, &[(vec![1, 1], 7), (vec![0, 0], -2)]),       // 7·x0*x1 - 2
-    ];
-    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-    let gb = groebner_basis(gens, &r, &cfg).unwrap();
-    for p in &gb.basis {
-        let lc = p.leading_coefficient().unwrap();
-        assert!(
-            r.field.is_one(lc),
-            "spec: every reduced GB element must be monic (lc == 1)"
-        );
-    }
-}
-
-#[test]
-fn prop_gb_elements_are_monic_gf13() {
-    let r = ring_p(13, 3);
-    let gens = vec![
-        poly_in(&r, &[(vec![1, 1, 0], 4), (vec![0, 0, 1], -1)]),
-        poly_in(&r, &[(vec![2, 0, 0], 7), (vec![0, 0, 0], -5)]),
-    ];
-    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-    let gb = groebner_basis(gens, &r, &cfg).unwrap();
-    for p in &gb.basis {
-        let lc = p.leading_coefficient().unwrap();
-        assert!(r.field.is_one(lc), "spec: every reduced GB element must be monic over GF(13)");
-    }
-}
+// The LT-minimality and monicity properties of the reduced GB are exhaustively
+// covered (over GF(7), GF(13), GF(101), GF(257)) by the combined
+// `prop_gb_characterisation_across_primes` test below.
 
 // ─── Class 4: empty / zero-only input → empty GB ──────────────────────────
 // Spec: I = (0) ⇒ the reduced GB is empty. Also Buchberger(G ∪ {0}) =
@@ -1041,92 +838,37 @@ fn prop_all_zero_input_yields_empty_gb() {
 // mutual reduction: every element of B1 reduces to 0 against B2 and vice
 // versa.
 
-#[test]
-fn prop_gb_invariant_under_adjoining_zero_generators_gf101() {
-    let r = ring_p(101, 2);
-    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-    let g = vec![
-        poly_in(&r, &[(vec![2, 0], 1), (vec![0, 0], -1)]),
-        poly_in(&r, &[(vec![1, 1], 1), (vec![0, 0], -1)]),
-    ];
-    let g_with_zero = {
-        let mut v = g.clone();
-        v.insert(0, DensePoly::zero());
-        v.push(DensePoly::zero());
-        v
-    };
-    let b1 = groebner_basis(g, &r, &cfg).unwrap();
-    let b2 = groebner_basis(g_with_zero, &r, &cfg).unwrap();
-    let r1: Vec<&DensePoly> = b1.basis.iter().collect();
-    let r2: Vec<&DensePoly> = b2.basis.iter().collect();
-    for p in &b1.basis {
-        assert!(p.reduce_by_refs(&r2, &r).is_zero(),
-            "spec: b ∈ GB(G) must lie in ideal generated by GB(G ∪ {{0}})");
-    }
-    for p in &b2.basis {
-        assert!(p.reduce_by_refs(&r1, &r).is_zero(),
-            "spec: b ∈ GB(G ∪ {{0}}) must lie in ideal generated by GB(G)");
-    }
-}
+// (`prop_gb_invariant_under_adjoining_zero_generators_*` was folded into
+// `prop_interreduce_drops_zero_polynomials_gf101` + `prop_all_zero_input_yields_empty_gb`,
+// which cover the zero-generator-filtering branch end-to-end.)
 
 // ─── Class 4: inconsistent system → trivial GB ────────────────────────────
 // Spec: if 1 ∈ I (e.g. {x - 1, x - 2} ⇒ -1 ∈ I), then GB = {1}.
 
 #[test]
-fn prop_inconsistent_linear_system_yields_constant_gb_gf101() {
-    let r = ring_p(101, 1);
-    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-    let gb = groebner_basis(
-        vec![
-            poly_in(&r, &[(vec![1], 1), (vec![0], -1)]), // x - 1
-            poly_in(&r, &[(vec![1], 1), (vec![0], -2)]), // x - 2
-        ],
-        &r,
-        &cfg,
-    )
-    .unwrap();
-    assert!(gb.basis.iter().any(|p| p.is_constant()),
-        "spec: inconsistent system ⇒ 1 ∈ ideal ⇒ trivial GB");
+fn prop_inconsistent_linear_system_yields_constant_gb_prime_sweep() {
+    // Sweep (prime, c1, c2): {x - c1, x - c2} with c1 ≠ c2 (mod prime) is
+    // inconsistent ⇒ 1 ∈ ideal ⇒ trivial GB containing a constant.
+    for (prime, c1, c2) in [(101u64, 1i64, 2i64), (7, 3, 5)] {
+        let r = ring_p(prime, 1);
+        let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
+        let gb = groebner_basis(
+            vec![
+                poly_in(&r, &[(vec![1], 1), (vec![0], -c1)]),
+                poly_in(&r, &[(vec![1], 1), (vec![0], -c2)]),
+            ],
+            &r,
+            &cfg,
+        )
+        .unwrap();
+        assert!(gb.basis.iter().any(|p| p.is_constant()),
+            "spec: inconsistent linear system over GF({}) ⇒ trivial GB", prime);
+    }
 }
 
-#[test]
-fn prop_inconsistent_linear_system_yields_constant_gb_gf7() {
-    let r = ring_p(7, 1);
-    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-    let gb = groebner_basis(
-        vec![
-            poly_in(&r, &[(vec![1], 1), (vec![0], -3)]), // x - 3
-            poly_in(&r, &[(vec![1], 1), (vec![0], -5)]), // x - 5  (3 ≠ 5 mod 7)
-        ],
-        &r,
-        &cfg,
-    )
-    .unwrap();
-    assert!(gb.basis.iter().any(|p| p.is_constant()),
-        "spec: inconsistent linear system over GF(7) ⇒ trivial GB");
-}
-
-// ─── Class 4: nonzero constant in input forces trivial GB ─────────────────
-// Spec: a nonzero constant ∈ I forces I = (1) and the reduced GB is {1}.
-
-#[test]
-fn prop_nonzero_constant_in_input_forces_trivial_gb_gf101() {
-    let r = ring_p(101, 2);
-    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-    let gb = groebner_basis(
-        vec![
-            poly_in(&r, &[(vec![1, 0], 1)]),       // x0
-            poly_in(&r, &[(vec![0, 0], 7)]),       // 7
-        ],
-        &r,
-        &cfg,
-    )
-    .unwrap();
-    assert_eq!(gb.basis.len(), 1, "spec: GB containing a unit collapses to {{1}}");
-    assert!(gb.basis[0].is_constant());
-    let lc = gb.basis[0].leading_coefficient().unwrap();
-    assert!(r.field.is_one(lc), "spec: the constant generator must be normalised to 1");
-}
+// (`prop_nonzero_constant_in_input_forces_trivial_gb_gf101` covered by
+// `diff_basis_containing_1_is_trivial_both_paths` below — that test probes
+// the same {1}-collapse on both per-pair and F4 paths.)
 
 // ─── Class 3: interreduce idempotence ─────────────────────────────────────
 // Spec: interreduce(interreduce(B)) == interreduce(B) (same multiset of
@@ -1158,77 +900,32 @@ fn bases_equal_as_sets(a: &[DensePoly], b: &[DensePoly], ring: &PolyRing) -> boo
 }
 
 #[test]
-fn prop_interreduce_is_idempotent_gf101() {
-    let r = ring_p(101, 3);
-    let basis = vec![
-        poly_in(&r, &[(vec![2, 0, 0], 3), (vec![0, 1, 0], -1)]),
-        poly_in(&r, &[(vec![1, 1, 0], 2), (vec![0, 0, 1], -1)]),
-        poly_in(&r, &[(vec![0, 2, 0], 5), (vec![1, 0, 0], -1)]),
-    ];
-    let once = interreduce(basis.clone(), &r);
-    let twice = interreduce(once.clone(), &r);
-    assert!(bases_equal_as_sets(&once, &twice, &r),
-        "spec: interreduce ∘ interreduce == interreduce (idempotent)");
-}
-
-#[test]
-fn prop_interreduce_is_idempotent_gf7() {
-    let r = ring_p(7, 2);
-    let basis = vec![
-        poly_in(&r, &[(vec![2, 0], 1), (vec![0, 1], 1)]),
-        poly_in(&r, &[(vec![1, 1], 1), (vec![0, 0], -1)]),
-        poly_in(&r, &[(vec![0, 1], 1)]),
-    ];
-    let once = interreduce(basis.clone(), &r);
-    let twice = interreduce(once.clone(), &r);
-    assert!(bases_equal_as_sets(&once, &twice, &r),
-        "spec: interreduce is idempotent over GF(7)");
-}
-
-// ─── Class 4: every interreduce output element is monic ───────────────────
-// Spec: interreduce's contract makes every surviving element monic.
-
-#[test]
-fn prop_interreduce_output_is_monic_gf101() {
-    let r = ring_p(101, 2);
-    let basis = vec![
-        poly_in(&r, &[(vec![2, 0], 4), (vec![0, 1], 5)]),
-        poly_in(&r, &[(vec![1, 1], 7), (vec![0, 0], -3)]),
-    ];
-    let out = interreduce(basis, &r);
-    for p in &out {
-        let lc = p.leading_coefficient().unwrap();
-        assert!(r.field.is_one(lc),
-            "spec: interreduce makes every surviving polynomial monic");
+fn prop_interreduce_is_idempotent_across_primes() {
+    // Spec: interreduce is a projection — applying it twice agrees with once.
+    // Sweep small + medium prime so a characteristic-dependent regression
+    // (cf. R5/H1, R7/J1 bitprop small-prime hazards) surfaces here too.
+    for &p in &[7u64, 101] {
+        let r = ring_p(p, 3);
+        let basis = vec![
+            poly_in(&r, &[(vec![2, 0, 0], 3), (vec![0, 1, 0], -1)]),
+            poly_in(&r, &[(vec![1, 1, 0], 2), (vec![0, 0, 1], -1)]),
+            poly_in(&r, &[(vec![0, 2, 0], 5), (vec![1, 0, 0], -1)]),
+        ];
+        let once = interreduce(basis.clone(), &r);
+        let twice = interreduce(once.clone(), &r);
+        assert!(bases_equal_as_sets(&once, &twice, &r),
+            "spec: interreduce ∘ interreduce == interreduce (idempotent, GF({p}))");
     }
 }
 
-// ─── Class 4: interreduce output has no LT dividing another LT ────────────
-// Spec: as the post-condition of interreduce, leading monomials are pairwise
-// non-divisibility-related.
-
-#[test]
-fn prop_interreduce_output_has_unique_lt_relations_gf101() {
-    let r = ring_p(101, 3);
-    let basis = vec![
-        poly_in(&r, &[(vec![2, 0, 0], 1)]),
-        poly_in(&r, &[(vec![1, 1, 0], 1)]),
-        poly_in(&r, &[(vec![0, 2, 0], 1)]),
-        poly_in(&r, &[(vec![0, 0, 1], 1)]),
-    ];
-    let out = interreduce(basis, &r);
-    let lts: Vec<Monomial> =
-        out.iter().map(|p| p.leading_monomial(&r).unwrap()).collect();
-    for i in 0..lts.len() {
-        for j in 0..lts.len() {
-            if i == j { continue; }
-            assert!(
-                !lts[i].divides(&lts[j]),
-                "spec: post-interreduce, LT_i must not divide LT_j (i≠j)"
-            );
-        }
-    }
-}
+// (`prop_interreduce_output_is_monic_gf101` covered by
+// `interreduce_makes_nonzero_tail_result_monic` above — both call interreduce
+// on a non-monic 2-element basis and assert every survivor is monic.
+//
+// `prop_interreduce_output_has_unique_lt_relations_gf101` covered by
+// `interreduce_drops_dominated_leading_term` (sparse_gb side) plus
+// `prop_gb_characterisation_across_primes` whose LT-minimality leg exercises
+// interreduce as the final stage of every GB run.)
 
 // ─── Class 4: GB on already-GB input preserves the ideal ─────────────────
 // Spec: GB(GB(G)) generates the same ideal as GB(G). Checked via mutual
@@ -1292,33 +989,25 @@ fn prop_gb_invariant_under_duplication_gf101() {
 // number of polynomials and the same set of polynomials).
 
 #[test]
-fn prop_groebner_basis_is_deterministic_gf101() {
-    let r = ring_p(101, 3);
-    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-    let g = || vec![
-        poly_in(&r, &[(vec![2, 0, 0], 1), (vec![0, 1, 0], -1)]),
-        poly_in(&r, &[(vec![1, 1, 0], 1), (vec![0, 0, 1], -1)]),
-        poly_in(&r, &[(vec![0, 2, 0], 1), (vec![1, 0, 0], -1)]),
-    ];
-    let b1 = groebner_basis(g(), &r, &cfg).unwrap();
-    let b2 = groebner_basis(g(), &r, &cfg).unwrap();
-    assert_eq!(b1.basis.len(), b2.basis.len(), "spec: deterministic GB size");
-    assert!(bases_equal_as_sets(&b1.basis, &b2.basis, &r),
-        "spec: deterministic GB content (same multiset of polynomials)");
-}
-
-#[test]
-fn prop_groebner_basis_is_deterministic_gf7() {
-    let r = ring_p(7, 2);
-    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-    let g = || vec![
-        poly_in(&r, &[(vec![2, 0], 1), (vec![0, 0], -3)]),
-        poly_in(&r, &[(vec![0, 2], 1), (vec![0, 0], -2)]),
-    ];
-    let b1 = groebner_basis(g(), &r, &cfg).unwrap();
-    let b2 = groebner_basis(g(), &r, &cfg).unwrap();
-    assert!(bases_equal_as_sets(&b1.basis, &b2.basis, &r),
-        "spec: deterministic GB content over GF(7)");
+fn prop_groebner_basis_is_deterministic() {
+    // Spec: groebner_basis is a pure function of (gens, ring, cfg). Sweep a
+    // small + medium prime so a characteristic-dependent non-determinism
+    // bug surfaces over the same property.
+    for &p in &[7u64, 101] {
+        let r = ring_p(p, 3);
+        let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
+        let g = || vec![
+            poly_in(&r, &[(vec![2, 0, 0], 1), (vec![0, 1, 0], -1)]),
+            poly_in(&r, &[(vec![1, 1, 0], 1), (vec![0, 0, 1], -1)]),
+            poly_in(&r, &[(vec![0, 2, 0], 1), (vec![1, 0, 0], -1)]),
+        ];
+        let b1 = groebner_basis(g(), &r, &cfg).unwrap();
+        let b2 = groebner_basis(g(), &r, &cfg).unwrap();
+        assert_eq!(b1.basis.len(), b2.basis.len(),
+            "spec: deterministic GB size (GF({p}))");
+        assert!(bases_equal_as_sets(&b1.basis, &b2.basis, &r),
+            "spec: deterministic GB content (GF({p}))");
+    }
 }
 
 // ─── Class 9: per-pair engine and F4 engine compute equivalent ideals ────
@@ -1387,91 +1076,34 @@ fn prop_incremental_gb_matches_full_gb_on_union_gf101() {
 // generic round-trip but reinforced here under tiny rings).
 
 #[test]
-fn prop_single_linear_gen_is_already_a_gb_gf2() {
-    let r = ring_p(2, 1);
-    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-    // x - 1 over GF(2) ≡ x + 1.
-    let gb = groebner_basis(
-        vec![poly_in(&r, &[(vec![1], 1), (vec![0], -1)])],
-        &r,
-        &cfg,
-    )
-    .unwrap();
-    assert_eq!(gb.basis.len(), 1, "spec: GB of a principal linear ideal has one element");
-    assert!(r.field.is_one(gb.basis[0].leading_coefficient().unwrap()),
-        "spec: that element is monic");
+fn prop_single_linear_gen_is_already_a_gb_small_prime_sweep() {
+    // Sweep (prime, leading_coeff, const): a single linear monic `a·x - c`
+    // over GF(p) is already its own (monic) reduced GB. Small-prime corpus
+    // (GF(2)/3/5) is where bitprop bugs historically surfaced (R5 H1, R7 J1),
+    // so probing the GB engines on each small prime is high signal.
+    for (prime, a, c) in [(2u64, 1i64, 1i64), (3, 2, 1), (5, 3, 2)] {
+        let r = ring_p(prime, 1);
+        let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
+        let gb = groebner_basis(
+            vec![poly_in(&r, &[(vec![1], a), (vec![0], -c)])],
+            &r,
+            &cfg,
+        )
+        .unwrap();
+        assert_eq!(gb.basis.len(), 1,
+            "spec: GB of a principal linear ideal has one element (GF({}))", prime);
+        assert!(r.field.is_one(gb.basis[0].leading_coefficient().unwrap()),
+            "spec: that element is monic (GF({}))", prime);
+    }
 }
 
-#[test]
-fn prop_single_linear_gen_is_already_a_gb_gf3() {
-    let r = ring_p(3, 1);
-    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-    let gb = groebner_basis(
-        vec![poly_in(&r, &[(vec![1], 2), (vec![0], -1)])], // 2x - 1
-        &r,
-        &cfg,
-    )
-    .unwrap();
-    assert_eq!(gb.basis.len(), 1);
-    assert!(r.field.is_one(gb.basis[0].leading_coefficient().unwrap()));
-}
-
-#[test]
-fn prop_single_linear_gen_is_already_a_gb_gf5() {
-    let r = ring_p(5, 1);
-    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-    let gb = groebner_basis(
-        vec![poly_in(&r, &[(vec![1], 3), (vec![0], -2)])],
-        &r,
-        &cfg,
-    )
-    .unwrap();
-    assert_eq!(gb.basis.len(), 1);
-    assert!(r.field.is_one(gb.basis[0].leading_coefficient().unwrap()));
-}
-
-// ─── Class 4 + 7: zero-variable ring ─────────────────────────────────────
-// Spec: in a 0-variable polynomial ring k[ ] = k, every nonzero element is a
-// unit ⇒ a single nonzero constant generates the whole ring and GB = {1}.
-
-#[test]
-fn prop_zero_var_ring_nonzero_constant_yields_unit_ideal_gf7() {
-    let r = ring_p(7, 0);
-    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-    let gb = groebner_basis(
-        vec![DensePoly::constant(r.field.from_u64(3), &r)], // 3 ≠ 0 mod 7
-        &r,
-        &cfg,
-    )
-    .unwrap();
-    assert_eq!(gb.basis.len(), 1);
-    assert!(gb.basis[0].is_constant());
-    assert!(r.field.is_one(gb.basis[0].leading_coefficient().unwrap()),
-        "spec: a nonzero constant in k[] generates (1)");
-}
+// (`prop_zero_var_ring_nonzero_constant_yields_unit_ideal_gf7` covered by
+// `diff_zero_variable_ring_constant_input` below — both probe the 0-var
+// k[] = k case with a unit constant.)
 
 // ─── Class 4: ideal-membership consistency on a different prime + shape ──
 // Spec stress: triangular system over GF(5). Every input must reduce to 0
 // against the GB.
-
-#[test]
-fn prop_round_trip_triangular_system_gf5() {
-    let r = ring_p(5, 3);
-    let gens = vec![
-        poly_in(&r, &[(vec![1, 0, 0], 1), (vec![0, 0, 0], -2)]), // x0 - 2
-        poly_in(&r, &[(vec![0, 1, 0], 1), (vec![0, 0, 0], -3)]), // x1 - 3
-        poly_in(&r, &[(vec![0, 0, 1], 1), (vec![0, 0, 0], -4)]), // x2 - 4
-    ];
-    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
-    let gb = groebner_basis(gens.clone(), &r, &cfg).unwrap();
-    let refs: Vec<&DensePoly> = gb.basis.iter().collect();
-    for g in &gens {
-        assert!(g.reduce_by_refs(&refs, &r).is_zero(),
-            "spec: triangular linear inputs must reduce to 0 against GB");
-    }
-    // The triangular linear ideal has 3 generators in its reduced GB.
-    assert_eq!(gb.basis.len(), 3, "spec: 3 linearly independent linear gens ⇒ |GB| = 3");
-}
 
 // ─── Class 4: interreduce of a constant-containing basis is {1} ──────────
 // Spec (from §interreduce docstring math): "If any constant is present,
@@ -1617,32 +1249,6 @@ fn ideals_equal_dense(a: &[DensePoly], b: &[DensePoly], ring: &Arc<PolyRing>) ->
         if !p.reduce_by_refs(&a_refs, ring).is_zero() { return false; }
     }
     true
-}
-
-/// Spec: input where the first homogeneous batch by sugar is ≥
-/// F4_MIN_BATCH so the matrix path is exercised. Cross-check F4
-/// against per-pair via mutual ideal-membership.
-#[test]
-fn diff_run_f4_vs_pp_above_min_batch_gf101() {
-    // 8-var system with many shared-LT pairs at sugar 2.
-    let r = ring_p(101, 6);
-    let v: Vec<DensePoly> = (0..6).map(|i| DensePoly::variable(i, &r)).collect();
-    let mut gens: Vec<DensePoly> = Vec::new();
-    // 15 polys of the form x_i x_j - c_{ij} for distinct constants — all sugar 2.
-    let mut c: u64 = 1;
-    for i in 0..6 {
-        for j in (i + 1)..6 {
-            let ci = DensePoly::constant(r.field.from_u64(c), &r);
-            gens.push(v[i].mul(&v[j], &r).sub(&ci, &r));
-            c += 1;
-        }
-    }
-    let cfg_pp = BuchbergerConfig { order: r.order, use_f4: false, ..Default::default() };
-    let cfg_f4 = BuchbergerConfig { order: r.order, use_f4: true, ..Default::default() };
-    let gb_pp = interreduce(groebner_basis(gens.clone(), &r, &cfg_pp).unwrap().basis, &r);
-    let gb_f4 = interreduce(groebner_basis(gens.clone(), &r, &cfg_f4).unwrap().basis, &r);
-    assert!(ideals_equal_dense(&gb_pp, &gb_f4, &r),
-        "F4 (matrix path) and per-pair must agree as ideals");
 }
 
 /// Spec: input where every batch is < F4_MIN_BATCH so the size

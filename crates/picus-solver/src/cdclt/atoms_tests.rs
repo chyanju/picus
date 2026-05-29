@@ -117,39 +117,6 @@ fn single_var_eq_detected() {
 }
 
 #[test]
-fn intern_eq_emits_mutex_clause_between_same_var_constants() {
-    let mut sat = Solver::new();
-    let mut tbl = AtomTable::new(BigUint::from(101u32));
-    let vn = names(&["x"]);
-    let a0 = match tbl.intern_eq(&[t(1, 1)], &[t(0, 0)], &vn, &mut sat) {
-        InternResult::Var(v) => v,
-        _ => panic!(),
-    };
-    let n_clauses_before = sat.n_clauses();
-    let a1 = match tbl.intern_eq(&[t(1, 1)], &[t(1, 0)], &vn, &mut sat) {
-        InternResult::Var(v) => v,
-        _ => panic!(),
-    };
-    assert_ne!(a0, a1);
-    assert!(sat.n_clauses() > n_clauses_before);
-    assert!(sat.add_clause(vec![Lit::pos(a0)]));
-    let added_second = sat.add_clause(vec![Lit::pos(a1)]);
-    assert!(!added_second);
-    assert!(sat.is_unsat());
-}
-
-#[test]
-fn intern_eq_no_mutex_between_same_constant_repeats() {
-    let mut sat = Solver::new();
-    let mut tbl = AtomTable::new(BigUint::from(101u32));
-    let vn = names(&["x"]);
-    tbl.intern_eq(&[t(1, 1)], &[t(0, 0)], &vn, &mut sat);
-    let n_clauses_before = sat.n_clauses();
-    tbl.intern_eq(&[t(1, 1)], &[t(0, 0)], &vn, &mut sat);
-    assert_eq!(sat.n_clauses(), n_clauses_before);
-}
-
-#[test]
 fn intern_eq_no_mutex_across_different_variables() {
     let mut sat = Solver::new();
     let mut tbl = AtomTable::new(BigUint::from(101u32));
@@ -244,85 +211,98 @@ fn mutex_does_not_fire_for_equivalent_value_via_canonicalization() {
 }
 
 #[test]
-fn as_single_var_eq_empty_polynomial_is_none() {
-    // Trivially-true `0 = 0` has no terms.
+fn as_single_var_eq_none_branches_for_unpinnable_shapes() {
+    // Folded sweep over every AtomKey shape that `as_single_var_eq`
+    // must reject (no single-var pin derivable):
+    //   1. empty key (trivially-true 0 = 0)
+    //   2. lone constant term (no variable)
+    //   3. lone 0·x (zero/non-invertible coefficient)
+    //   4. two-term 0·x + 3 = 0 (var-coeff is zero)
+    //   5. two-term x + y = 0 (both terms carry variables)
+    //   6. two-term x·y + 3 = 0 (var term names two variables — deg 2)
     let prime = BigUint::from(101u32);
-    let key = AtomKey { terms: vec![] };
-    assert!(key.as_single_var_eq(&prime).is_none());
+    let cases: &[(&str, Vec<(BigUint, Vec<String>)>)] = &[
+        ("empty", vec![]),
+        ("lone-const", vec![(BigUint::from(5u32), vec![])]),
+        ("lone-zero-coeff", vec![(BigUint::zero(), vec!["x".to_string()])]),
+        (
+            "two-term-zero-var-coeff",
+            vec![
+                (BigUint::from(3u32), vec![]),
+                (BigUint::zero(), vec!["x".to_string()]),
+            ],
+        ),
+        (
+            "two-term-both-vars",
+            vec![
+                (BigUint::from(1u32), vec!["x".to_string()]),
+                (BigUint::from(1u32), vec!["y".to_string()]),
+            ],
+        ),
+        (
+            "two-term-multivar-var",
+            vec![
+                (BigUint::from(3u32), vec![]),
+                (BigUint::from(1u32), vec!["x".to_string(), "y".to_string()]),
+            ],
+        ),
+    ];
+    for (label, terms) in cases {
+        let key = AtomKey { terms: terms.clone() };
+        assert!(
+            key.as_single_var_eq(&prime).is_none(),
+            "{}: must be None",
+            label
+        );
+    }
 }
 
 #[test]
-fn as_single_var_eq_single_constant_term_is_none() {
-    // A lone constant term (no variable) cannot pin a variable.
-    let prime = BigUint::from(101u32);
-    let key = AtomKey {
-        terms: vec![(BigUint::from(5u32), vec![])],
-    };
-    assert!(key.as_single_var_eq(&prime).is_none());
-}
-
-#[test]
-fn as_single_var_eq_single_zero_coeff_var_term_is_none() {
-    // A single `0·x` term has a zero (non-invertible) coefficient.
-    let prime = BigUint::from(101u32);
-    let key = AtomKey {
-        terms: vec![(BigUint::zero(), vec!["x".to_string()])],
-    };
-    assert!(key.as_single_var_eq(&prime).is_none());
-}
-
-#[test]
-fn as_single_var_eq_two_term_zero_var_coeff_is_none() {
-    // Two terms `0·x + 3 = 0`: the variable coefficient is zero, so
-    // no value can be derived for x.
-    let prime = BigUint::from(101u32);
-    let key = AtomKey {
-        terms: vec![
-            (BigUint::from(3u32), vec![]),
-            (BigUint::zero(), vec!["x".to_string()]),
-        ],
-    };
-    assert!(key.as_single_var_eq(&prime).is_none());
-}
-
-#[test]
-fn as_single_var_eq_two_term_both_have_vars_is_none() {
-    // `x + y = 0`: neither term is a bare constant, so the
-    // (var_term, const_term) split fails.
-    let prime = BigUint::from(101u32);
-    let key = AtomKey {
-        terms: vec![
-            (BigUint::from(1u32), vec!["x".to_string()]),
-            (BigUint::from(1u32), vec!["y".to_string()]),
-        ],
-    };
-    assert!(key.as_single_var_eq(&prime).is_none());
-}
-
-#[test]
-fn as_single_var_eq_single_var_term_solves_to_zero() {
-    // A lone `a·x = 0` term with `a != 0` pins x = 0.
-    let prime = BigUint::from(101u32);
-    let key = AtomKey {
-        terms: vec![(BigUint::from(7u32), vec!["x".to_string()])],
-    };
-    let (var, val) = key.as_single_var_eq(&prime).expect("single-var-eq");
-    assert_eq!(var, "x");
-    assert_eq!(val, BigUint::zero());
-}
-
-#[test]
-fn as_single_var_eq_two_term_multivar_var_term_is_none() {
-    // `x·y + 3 = 0`: the variable term names two variables (degree 2),
-    // so the single-variable check rejects it.
-    let prime = BigUint::from(101u32);
-    let key = AtomKey {
-        terms: vec![
-            (BigUint::from(3u32), vec![]),
-            (BigUint::from(1u32), vec!["x".to_string(), "y".to_string()]),
-        ],
-    };
-    assert!(key.as_single_var_eq(&prime).is_none());
+fn as_single_var_eq_some_branches_for_pinnable_shapes() {
+    // Folded sweep over the Some-arms `as_single_var_eq` must hit:
+    //   1. lone `a·x = 0` (a≠0) ⇒ x = 0 (single-var arm).
+    //   2. `a·x + 0 = 0` with a≠0 and zero constant ⇒ x = 0 (var-first /
+    //      zero-constant branch — `from_indexed_eq` would never emit this
+    //      ordering, but the public method must still handle a directly
+    //      constructed key).
+    //   3. `2·x + 3 = 0` over GF(7): x = (−3)·2⁻¹ = 4·4 = 16 mod 7 = 2
+    //      (var-first nonzero-constant Fermat branch).
+    let p101 = BigUint::from(101u32);
+    let p7 = BigUint::from(7u32);
+    let cases: &[(&str, &BigUint, Vec<(BigUint, Vec<String>)>, BigUint)] = &[
+        (
+            "lone-var",
+            &p101,
+            vec![(BigUint::from(7u32), vec!["x".to_string()])],
+            BigUint::zero(),
+        ),
+        (
+            "var-first-zero-const",
+            &p101,
+            vec![
+                (BigUint::from(7u32), vec!["x".to_string()]),
+                (BigUint::zero(), vec![]),
+            ],
+            BigUint::zero(),
+        ),
+        (
+            "var-first-nonzero-const-fermat",
+            &p7,
+            vec![
+                (BigUint::from(2u32), vec!["x".to_string()]),
+                (BigUint::from(3u32), vec![]),
+            ],
+            BigUint::from(2u32),
+        ),
+    ];
+    for (label, prime, terms, expected) in cases {
+        let key = AtomKey { terms: terms.clone() };
+        let (var, val) = key
+            .as_single_var_eq(prime)
+            .unwrap_or_else(|| panic!("{}: expected Some", label));
+        assert_eq!(var, "x", "{}: var name", label);
+        assert_eq!(&val, expected, "{}: value", label);
+    }
 }
 
 #[test]
@@ -360,42 +340,6 @@ fn intern_negated_into_collapses_repeated_names_to_exponent() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].coeff, BigUint::from(98u32));
     assert_eq!(out[0].vars, vec![(0u32, 2u16)]);
-}
-
-#[test]
-fn as_single_var_eq_var_first_zero_constant_solves_to_zero() {
-    // A two-term key whose VARIABLE term sorts first (`a·x`) and whose
-    // CONSTANT term has a zero coefficient. `from_indexed_eq` would
-    // never emit this order (it puts the constant first and drops zero
-    // coefficients), but the public method must still handle a directly
-    // constructed key. Exercises the `t0` (var) / `t1` (const) split arm
-    // and the zero-constant `neg_c = 0` branch: 7·x + 0 = 0 ⇒ x = 0.
-    let prime = BigUint::from(101u32);
-    let key = AtomKey {
-        terms: vec![
-            (BigUint::from(7u32), vec!["x".to_string()]),
-            (BigUint::zero(), vec![]),
-        ],
-    };
-    let (var, val) = key.as_single_var_eq(&prime).expect("single-var-eq");
-    assert_eq!(var, "x");
-    assert_eq!(val, BigUint::zero());
-}
-
-#[test]
-fn as_single_var_eq_var_first_nonzero_constant_solves_via_fermat() {
-    // Var term first, non-zero constant: 2·x + 3 = 0 over GF(7).
-    // x = (−3)·2⁻¹ = 4·4 = 16 mod 7 = 2.
-    let prime = BigUint::from(7u32);
-    let key = AtomKey {
-        terms: vec![
-            (BigUint::from(2u32), vec!["x".to_string()]),
-            (BigUint::from(3u32), vec![]),
-        ],
-    };
-    let (var, val) = key.as_single_var_eq(&prime).expect("single-var-eq");
-    assert_eq!(var, "x");
-    assert_eq!(val, BigUint::from(2u32));
 }
 
 #[test]

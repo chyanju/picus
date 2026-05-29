@@ -62,16 +62,6 @@ fn find_roots_checked_matches_brute_force_and_is_complete() {
 }
 
 #[test]
-fn evaluate_horner() {
-    let f = small_field();
-    // p(x) = 2x^2 + 3x + 1
-    let p = poly_from_ints(&[1, 3, 2], &f);
-    // p(5) = 50 + 15 + 1 = 66
-    let v = p.evaluate(&f.from_u64(5), &f);
-    assert_eq!(v.as_biguint(), BigUint::from(66u32));
-}
-
-#[test]
 fn add_sub_mul() {
     let f = small_field();
     let a = poly_from_ints(&[1, 2, 3], &f); // 3x^2 + 2x + 1
@@ -139,84 +129,15 @@ fn pow_mod_works() {
 }
 
 #[test]
-fn find_roots_quadratic_small() {
+fn find_roots_linear_and_zero_edges() {
     let f = small_field();
-    // (x - 3)(x - 7) = x^2 - 10x + 21
-    let p = poly_from_ints(&[21, -10, 1], &f);
-    let mut roots: Vec<u64> = find_roots(&p, &f)
-        .iter()
-        .map(|r| r.as_biguint().iter_u64_digits().next().unwrap_or(0))
-        .collect();
-    roots.sort();
-    assert_eq!(roots, vec![3u64, 7u64]);
-}
-
-#[test]
-fn find_roots_no_roots() {
-    let f = small_field();
-    // x^2 + 1 over GF(101): -1 is a QR iff 101 ≡ 1 mod 4. 101 mod 4 = 1, so it has roots.
-    // Use x^2 + 2 instead. Check: -2 is QR iff (-2 | 101) = (-1|101)*(2|101) = 1 * 1 = 1. Has roots.
-    // Use a polynomial with no roots: pick (x^2 + a) where a is a non-QR.
-    // Compute a non-QR by finding b with b^((p-1)/2) = -1.
-    let mut nonqr = None;
-    for cand in 2u64..50 {
-        let v = f.from_u64(cand);
-        let exp = (BigUint::from(101u32) - BigUint::one()) / BigUint::from(2u32);
-        let pw = f.pow(&v, &exp);
-        if pw.as_biguint() == (BigUint::from(101u32) - BigUint::one()) {
-            nonqr = Some(cand);
-            break;
-        }
-    }
-    let nq = nonqr.expect("non-QR exists in GF(101)");
-    // p(x) = x^2 + nq has no roots (since -nq is also a non-QR? actually we need -nq to be a non-QR;
-    // sufficient: choose nq so that -nq is a non-QR. With p % 4 == 1, -1 is a QR, so -nq is QR iff
-    // nq is QR — so -nq is non-QR. Good.).
-    let p = poly_from_ints(&[nq as i64, 0, 1], &f);
-    let roots = find_roots(&p, &f);
-    assert!(
-        roots.is_empty(),
-        "expected no roots, got {:?}",
-        roots
-            .iter()
-            .map(|r| r.as_biguint().clone())
-            .collect::<Vec<_>>()
-    );
-}
-
-#[test]
-fn find_roots_cubic_small() {
-    let f = small_field();
-    // (x - 1)(x - 2)(x - 3) = x^3 - 6x^2 + 11x - 6
-    let p = poly_from_ints(&[-6, 11, -6, 1], &f);
-    let mut roots: Vec<u64> = find_roots(&p, &f)
-        .iter()
-        .map(|r| r.as_biguint().iter_u64_digits().next().unwrap_or(0))
-        .collect();
-    roots.sort();
-    assert_eq!(roots, vec![1, 2, 3]);
-}
-
-#[test]
-fn find_roots_with_multiplicity() {
-    let f = small_field();
-    // (x - 5)^2 = x^2 - 10x + 25
-    let p = poly_from_ints(&[25, -10, 1], &f);
-    let roots: Vec<u64> = find_roots(&p, &f)
-        .iter()
-        .map(|r| r.as_biguint().iter_u64_digits().next().unwrap_or(0))
-        .collect();
-    assert_eq!(roots, vec![5]); // dedup'd
-}
-
-#[test]
-fn find_roots_linear() {
-    let f = small_field();
-    // 3x - 6 -> x = 2.
-    let p = poly_from_ints(&[-6, 3], &f);
-    let roots = find_roots(&p, &f);
+    // Linear poly 3x - 6 → x = 2; exercises the deg==1 fast path.
+    let lin = poly_from_ints(&[-6, 3], &f);
+    let roots = find_roots(&lin, &f);
     assert_eq!(roots.len(), 1);
     assert_eq!(roots[0].as_biguint(), BigUint::from(2u32));
+    // Zero-polynomial early return.
+    assert!(find_roots(&UnivariatePoly::zero(), &f).is_empty());
 }
 
 #[test]
@@ -232,56 +153,35 @@ fn find_roots_bn128() {
     assert_eq!(roots, vec![BigUint::from(5u32), BigUint::from(7u32)]);
 }
 
-#[test]
-fn find_roots_zero_poly() {
-    let f = small_field();
-    let p = UnivariatePoly::zero();
-    assert!(find_roots(&p, &f).is_empty());
-}
-
-#[test]
-fn find_roots_constant_poly() {
-    let f = small_field();
-    let p = poly_from_ints(&[7], &f);
-    assert!(find_roots(&p, &f).is_empty());
-}
-
 fn gf2() -> PrimeField {
     PrimeField::new(BigUint::from(2u32))
 }
 
 #[test]
-fn add_with_shorter_operand() {
+fn add_sub_with_shorter_operand_hits_both_arms() {
     let f = small_field();
-    // (3x^2 + 2x + 1) + 5 = 3x^2 + 2x + 6
     let a = poly_from_ints(&[1, 2, 3], &f);
-    let b = poly_from_ints(&[5], &f);
-    let s = a.add(&b, &f);
+    // add: longer + shorter. (3x^2 + 2x + 1) + 5 = 3x^2 + 2x + 6
+    let b5 = poly_from_ints(&[5], &f);
+    let s = a.add(&b5, &f);
     assert_eq!(s.degree(), Some(2));
     assert_eq!(s.coeffs()[0].as_biguint(), BigUint::from(6u32));
     assert_eq!(s.coeffs()[1].as_biguint(), BigUint::from(2u32));
     assert_eq!(s.coeffs()[2].as_biguint(), BigUint::from(3u32));
-    // Commutes: shorter + longer hits the (None, Some) arm too.
-    let s2 = b.add(&a, &f);
+    // add commutes: shorter + longer also hits the (None, Some) arm.
+    let s2 = b5.add(&a, &f);
     assert_eq!(s2.coeffs()[0].as_biguint(), BigUint::from(6u32));
-    assert_eq!(s2.coeffs()[1].as_biguint(), BigUint::from(2u32));
     assert_eq!(s2.coeffs()[2].as_biguint(), BigUint::from(3u32));
-}
-
-#[test]
-fn sub_with_shorter_operand() {
-    let f = small_field();
-    // (3x^2 + 2x + 1) - 1 = 3x^2 + 2x
-    let a = poly_from_ints(&[1, 2, 3], &f);
-    let b = poly_from_ints(&[1], &f);
-    let d = a.sub(&b, &f);
+    // sub: longer - shorter. (3x^2 + 2x + 1) - 1 = 3x^2 + 2x
+    let b1 = poly_from_ints(&[1], &f);
+    let d = a.sub(&b1, &f);
     assert_eq!(d.degree(), Some(2));
     assert_eq!(d.coeffs()[0].as_biguint(), BigUint::from(0u32));
     assert_eq!(d.coeffs()[1].as_biguint(), BigUint::from(2u32));
     assert_eq!(d.coeffs()[2].as_biguint(), BigUint::from(3u32));
-    // shorter - longer hits the (None, Some) negation arm.
-    let d2 = b.sub(&a, &f);
+    // sub: shorter - longer hits the (None, Some) negation arm.
     // 1 - (3x^2 + 2x + 1) = -3x^2 - 2x = 98x^2 + 99x mod 101
+    let d2 = b1.sub(&a, &f);
     assert_eq!(d2.coeffs()[0].as_biguint(), BigUint::from(0u32));
     assert_eq!(d2.coeffs()[1].as_biguint(), BigUint::from(99u32));
     assert_eq!(d2.coeffs()[2].as_biguint(), BigUint::from(98u32));

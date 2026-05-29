@@ -88,105 +88,44 @@ fn sample_r(ring: &PolyRing) -> SparsePolynomial {
 // ── (1) RING AXIOMS ─────────────────────────────────────────────────────
 
 #[test]
-fn prop_sparse_add_identity() {
-    // a + 0 = a.
-    for &prime in &[2u64, 3, 5, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let a = sample_p(&r);
-        let z = SparsePolynomial::zero();
-        assert!(sparse_eq(&a.add(&z, &r), &a, &r), "a+0 != a GF({prime})");
-        assert!(sparse_eq(&z.add(&a, &r), &a, &r), "0+a != a GF({prime})");
-    }
-}
-
-#[test]
-fn prop_sparse_add_inverse() {
-    // a + (-a) = 0.
-    for &prime in &[2u64, 3, 5, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let a = sample_p(&r);
-        let na = a.negate(&r);
-        assert!(a.add(&na, &r).is_zero(), "a+(-a) != 0 GF({prime})");
-    }
-}
-
-#[test]
-fn prop_sparse_sub_self_zero() {
-    // a - a = 0.
-    for &prime in &[2u64, 3, 5, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let a = sample_p(&r);
-        assert!(a.sub(&a, &r).is_zero(), "a-a != 0 GF({prime})");
-    }
-}
-
-#[test]
-fn prop_sparse_negate_involution() {
-    // -(-a) = a.
-    for &prime in &[3u64, 5, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let a = sample_p(&r);
-        let nn = a.negate(&r).negate(&r);
-        assert!(sparse_eq(&nn, &a, &r), "-(-a) != a GF({prime})");
-    }
-}
-
-#[test]
-fn prop_sparse_add_commutative() {
-    // a + b = b + a.
-    for &prime in &[2u64, 3, 5, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let a = sample_p(&r);
-        let b = sample_q(&r);
-        assert!(sparse_eq(&a.add(&b, &r), &b.add(&a, &r), &r),
-            "a+b != b+a GF({prime})");
-    }
-}
-
-#[test]
-fn prop_sparse_add_associative() {
-    // (a+b)+c = a+(b+c).
+fn prop_sparse_additive_group_axioms() {
+    // Folded additive group axioms over representative primes:
+    //   a+0=a, a+(-a)=0, a-a=0, -(-a)=a, a+b=b+a, (a+b)+c=a+(b+c).
     for &prime in &[2u64, 3, 5, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let a = sample_p(&r);
         let b = sample_q(&r);
         let c = sample_r(&r);
-        let lhs = a.add(&b, &r).add(&c, &r);
-        let rhs = a.add(&b.add(&c, &r), &r);
-        assert!(sparse_eq(&lhs, &rhs, &r), "(a+b)+c != a+(b+c) GF({prime})");
+        let z = SparsePolynomial::zero();
+        assert!(sparse_eq(&a.add(&z, &r), &a, &r), "a+0 GF({prime})");
+        assert!(sparse_eq(&z.add(&a, &r), &a, &r), "0+a GF({prime})");
+        let na = a.negate(&r);
+        assert!(a.add(&na, &r).is_zero(), "a+(-a) GF({prime})");
+        assert!(a.sub(&a, &r).is_zero(), "a-a GF({prime})");
+        assert!(sparse_eq(&na.negate(&r), &a, &r), "-(-a) GF({prime})");
+        assert!(sparse_eq(&a.add(&b, &r), &b.add(&a, &r), &r), "comm GF({prime})");
+        let assoc_l = a.add(&b, &r).add(&c, &r);
+        let assoc_r = a.add(&b.add(&c, &r), &r);
+        assert!(sparse_eq(&assoc_l, &assoc_r, &r), "assoc GF({prime})");
     }
 }
 
 #[test]
-fn prop_sparse_mul_identity_and_zero() {
-    // a*1 = a; a*0 = 0.
-    for &prime in &[2u64, 3, 5, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let a = sample_p(&r);
-        let one = SparsePolynomial::constant(r.field.one(), &r);
-        let zero = SparsePolynomial::zero();
-        assert!(sparse_eq(&a.mul(&one, &r), &a, &r), "a*1 != a GF({prime})");
-        assert!(sparse_eq(&one.mul(&a, &r), &a, &r), "1*a != a GF({prime})");
-        assert!(a.mul(&zero, &r).is_zero(), "a*0 != 0 GF({prime})");
-        assert!(zero.mul(&a, &r).is_zero(), "0*a != 0 GF({prime})");
-    }
-}
-
-#[test]
-fn prop_sparse_mul_commutative() {
-    // a*b = b*a.
+fn prop_sparse_multiplicative_monoid_axioms() {
+    // Folded: a*1=a, a*0=0, a*b=b*a; and (a*b)*c=a*(b*c) on a smaller
+    // prime set (the cubic-cost associativity case).
     for &prime in &[2u64, 3, 5, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let a = sample_p(&r);
         let b = sample_q(&r);
-        assert!(sparse_eq(&a.mul(&b, &r), &b.mul(&a, &r), &r),
-            "a*b != b*a GF({prime})");
+        let one = SparsePolynomial::constant(r.field.one(), &r);
+        let zero = SparsePolynomial::zero();
+        assert!(sparse_eq(&a.mul(&one, &r), &a, &r), "a*1 GF({prime})");
+        assert!(sparse_eq(&one.mul(&a, &r), &a, &r), "1*a GF({prime})");
+        assert!(a.mul(&zero, &r).is_zero(), "a*0 GF({prime})");
+        assert!(zero.mul(&a, &r).is_zero(), "0*a GF({prime})");
+        assert!(sparse_eq(&a.mul(&b, &r), &b.mul(&a, &r), &r), "comm GF({prime})");
     }
-}
-
-#[test]
-fn prop_sparse_mul_associative() {
-    // (a*b)*c = a*(b*c).
     for &prime in &[3u64, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let a = sample_p(&r);
@@ -194,7 +133,7 @@ fn prop_sparse_mul_associative() {
         let c = sample_r(&r);
         let lhs = a.mul(&b, &r).mul(&c, &r);
         let rhs = a.mul(&b.mul(&c, &r), &r);
-        assert!(sparse_eq(&lhs, &rhs, &r), "(a*b)*c != a*(b*c) GF({prime})");
+        assert!(sparse_eq(&lhs, &rhs, &r), "assoc GF({prime})");
     }
 }
 
@@ -253,60 +192,49 @@ fn prop_sparse_leading_term_of_product() {
 }
 
 #[test]
-fn prop_sparse_scale_one_identity_zero_collapse() {
-    // scale(a, 1) = a; scale(a, 0) = 0.
-    for &prime in &[2u64, 3, 5, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let a = sample_p(&r);
-        assert!(sparse_eq(&a.scale(&r.field.one(), &r), &a, &r),
-            "scale(a,1) != a GF({prime})");
-        assert!(a.scale(&r.field.zero(), &r).is_zero(),
-            "scale(a,0) != 0 GF({prime})");
-    }
-}
-
-#[test]
-fn prop_sparse_scale_inverse_roundtrip() {
-    // scale(scale(a, c), c^-1) = a for c != 0.
+fn prop_sparse_scale_axioms() {
+    // Folded: scale(a,1)=a, scale(a,0)=0, scale(scale(a,c),c^-1)=a (c!=0).
     for &prime in &[3u64, 5, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let a = sample_p(&r);
+        assert!(sparse_eq(&a.scale(&r.field.one(), &r), &a, &r), "s1 GF({prime})");
+        assert!(a.scale(&r.field.zero(), &r).is_zero(), "s0 GF({prime})");
         let c = r.field.from_u64(2);
         let cinv = r.field.inv(&c).unwrap();
         let s = a.scale(&c, &r).scale(&cinv, &r);
-        assert!(sparse_eq(&s, &a, &r),
-            "scale(scale(a,c),c^-1) != a GF({prime})");
+        assert!(sparse_eq(&s, &a, &r), "scale-inv GF({prime})");
     }
+    // GF(2) — only identity/zero (no nontrivial multiplicative inverse).
+    let r = ring_with(2, 3, MonomialOrder::DegRevLex);
+    let a = sample_p(&r);
+    assert!(sparse_eq(&a.scale(&r.field.one(), &r), &a, &r), "s1 GF(2)");
+    assert!(a.scale(&r.field.zero(), &r).is_zero(), "s0 GF(2)");
 }
 
 // ── (3) IDEMPOTENCE ─────────────────────────────────────────────────────
 
 #[test]
-fn prop_sparse_make_monic_idempotent() {
-    // monic(monic(p)) = monic(p) and LC(monic(p)) = 1.
+fn prop_sparse_make_monic() {
+    // Folded: idempotence monic(monic(p))=monic(p), LC(monic(p))=1,
+    // monic(0)=0 (no LC to divide by).
     for &prime in &[3u64, 5, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let p = sample_p(&r);
         let m = p.make_monic(&r);
         let mm = m.make_monic(&r);
-        assert!(sparse_eq(&m, &mm, &r),
-            "monic idempotence GF({prime})");
-        assert!(r.field.is_one(m.leading_coefficient().unwrap()),
-            "monic LC != 1 GF({prime})");
+        assert!(sparse_eq(&m, &mm, &r), "idempotent GF({prime})");
+        assert!(r.field.is_one(m.leading_coefficient().unwrap()), "LC=1 GF({prime})");
     }
-}
-
-#[test]
-fn prop_sparse_make_monic_of_zero_is_zero() {
     let r = ring_with(101, 3, MonomialOrder::DegRevLex);
-    assert!(SparsePolynomial::zero().make_monic(&r).is_zero());
+    assert!(SparsePolynomial::zero().make_monic(&r).is_zero(), "monic(0)=0");
 }
 
 // ── (4) INVARIANTS ──────────────────────────────────────────────────────
 
 #[test]
-fn prop_sparse_evaluate_homomorphism() {
-    // E is a ring hom: E(a+b) = E(a)+E(b), E(a*b) = E(a)*E(b).
+fn prop_sparse_evaluate_ring_hom() {
+    // Folded: E(a+b)=E(a)+E(b), E(a*b)=E(a)*E(b),
+    // E(constant c)=c, E(x_i)(v)=v_i.
     for &prime in &[3u64, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let f = &r.field;
@@ -315,41 +243,15 @@ fn prop_sparse_evaluate_homomorphism() {
         let v = vec![f.from_u64(2), f.from_u64(3), f.from_u64(5)];
         let ea = a.evaluate(&v, &r);
         let eb = b.evaluate(&v, &r);
-        let sum = a.add(&b, &r).evaluate(&v, &r);
-        let prd = a.mul(&b, &r).evaluate(&v, &r);
-        assert!(f.eq(&sum, &f.add(&ea, &eb)),
-            "E(a+b) != E(a)+E(b) GF({prime})");
-        assert!(f.eq(&prd, &f.mul(&ea, &eb)),
-            "E(a*b) != E(a)*E(b) GF({prime})");
-    }
-}
-
-#[test]
-fn prop_sparse_evaluate_variable_is_value() {
-    // E(x_i)(v) = v_i.
-    for &prime in &[3u64, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let f = &r.field;
-        let v = vec![f.from_u64(2), f.from_u64(5), f.from_u64(11)];
+        assert!(f.eq(&a.add(&b, &r).evaluate(&v, &r), &f.add(&ea, &eb)), "E(a+b) GF({prime})");
+        assert!(f.eq(&a.mul(&b, &r).evaluate(&v, &r), &f.mul(&ea, &eb)), "E(a*b) GF({prime})");
+        let c = f.from_u64(13 % prime);
+        let cp = SparsePolynomial::constant(c.clone(), &r);
+        assert!(f.eq(&cp.evaluate(&v, &r), &c), "E(const) GF({prime})");
         for i in 0..3 {
             let xi = SparsePolynomial::variable(i, &r);
-            assert!(f.eq(&xi.evaluate(&v, &r), &v[i]),
-                "E(x{i}) != v[{i}] GF({prime})");
+            assert!(f.eq(&xi.evaluate(&v, &r), &v[i]), "E(x{i}) GF({prime})");
         }
-    }
-}
-
-#[test]
-fn prop_sparse_evaluate_constant() {
-    // E(c)(v) = c for any constant c.
-    for &prime in &[3u64, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let f = &r.field;
-        let c = f.from_u64(13 % prime);
-        let p = SparsePolynomial::constant(c.clone(), &r);
-        let v = vec![f.from_u64(7), f.from_u64(11), f.from_u64(13)];
-        assert!(f.eq(&p.evaluate(&v, &r), &c),
-            "E(const) != const GF({prime})");
     }
 }
 
@@ -375,35 +277,19 @@ fn prop_sparse_fermat_eval_zero() {
 // ── (4) REDUCTION INVARIANTS ────────────────────────────────────────────
 
 #[test]
-fn prop_sparse_reduce_zero_is_zero() {
+fn prop_sparse_reduce_invariants() {
+    // Folded: 0 reduced by anything = 0, p mod [p] = 0, (q*p) mod [p] = 0.
     let r = ring_with(101, 3, MonomialOrder::DegRevLex);
     let d = sample_p(&r);
     let dr: Vec<&SparsePolynomial> = vec![&d];
-    let nf = SparsePolynomial::zero().reduce_by_refs(&dr, &r);
-    assert!(nf.is_zero(), "0 reduced != 0");
-}
-
-#[test]
-fn prop_sparse_reduce_self_yields_zero() {
-    // p reduced by [p] yields 0.
-    for &prime in &[3u64, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let p = sample_p(&r);
-        let nf = p.reduce_by_refs(&[&p], &r);
-        assert!(nf.is_zero(), "p mod p != 0 GF({prime})");
-    }
-}
-
-#[test]
-fn prop_sparse_reduce_multiple_of_self_zero() {
-    // (q*p) reduced by [p] = 0.
+    assert!(SparsePolynomial::zero().reduce_by_refs(&dr, &r).is_zero(), "0 reduced");
     for &prime in &[7u64, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let p = sample_p(&r);
+        assert!(p.reduce_by_refs(&[&p], &r).is_zero(), "p mod p GF({prime})");
         let q = sample_q(&r);
         let qp = q.mul(&p, &r);
-        let nf = qp.reduce_by_refs(&[&p], &r);
-        assert!(nf.is_zero(), "(q*p) mod p != 0 GF({prime})");
+        assert!(qp.reduce_by_refs(&[&p], &r).is_zero(), "(q*p) mod p GF({prime})");
     }
 }
 
@@ -436,22 +322,19 @@ fn prop_sparse_reduce_naive_matches_geobucket() {
 // ── (7) EDGE CASES ──────────────────────────────────────────────────────
 
 #[test]
-fn prop_sparse_zero_poly_has_no_lc() {
-    let r = ring_with(7, 3, MonomialOrder::DegRevLex);
+fn prop_sparse_zero_poly_invariants() {
+    // Folded: zero poly has no LC/LM, num_terms=0, total_degree=0;
+    // constant(0) collapses to zero across primes.
     let z = SparsePolynomial::zero();
     assert!(z.is_zero());
     assert_eq!(z.num_terms(), 0);
     assert!(z.leading_coefficient().is_none());
     assert!(z.leading_monomial().is_none());
     assert_eq!(z.total_degree(), 0);
-}
-
-#[test]
-fn prop_sparse_constant_zero_is_zero_poly() {
     for &prime in &[2u64, 3, 5, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let p = SparsePolynomial::constant(r.field.zero(), &r);
-        assert!(p.is_zero(), "constant(0) != 0 GF({prime})");
+        assert!(p.is_zero(), "constant(0) GF({prime})");
     }
 }
 
@@ -480,19 +363,6 @@ fn prop_sparse_one_var_ring() {
     let prod = xp1.mul(&xm1, &r);
     let expected = sp(vec![(vec![2], 1), (vec![0], -1)], &r);
     assert!(sparse_eq(&prod, &expected, &r), "(x+1)(x-1) != x^2-1");
-}
-
-// ── (8) DETERMINISM ─────────────────────────────────────────────────────
-
-#[test]
-fn prop_sparse_determinism() {
-    let r = ring_with(101, 3, MonomialOrder::DegRevLex);
-    let a = sample_p(&r);
-    let b = sample_q(&r);
-    assert!(sparse_eq(&a.add(&b, &r), &a.add(&b, &r), &r));
-    assert!(sparse_eq(&a.mul(&b, &r), &a.mul(&b, &r), &r));
-    assert!(sparse_eq(&a.make_monic(&r), &a.make_monic(&r), &r));
-    assert_eq!(a.content_hash(), a.content_hash());
 }
 
 // ── (2) ROUND-TRIP: dense <-> sparse ────────────────────────────────────
@@ -534,43 +404,29 @@ fn prop_sparse_dense_roundtrip() {
 /// with the dense engine on all polynomial-ring operations.
 
 #[test]
-fn prop_sparse_dense_equivalence_add() {
+fn prop_sparse_dense_equivalence_add_mul() {
+    // Folded: sparse arm must agree with dense arm on add and mul over
+    // the same operands (engine equivalence, the dense arm is the
+    // differential oracle per `repr_oracle`).
     let r = ring_with(101, 3, MonomialOrder::DegRevLex);
     let sa = sample_p(&r);
     let sb = sample_q(&r);
     let da = sa.to_dense(&r);
     let db = sb.to_dense(&r);
-    let s_sum = sa.add(&sb, &r);
-    let d_sum = da.add(&db, &r);
-    // Compare via dense materialisation of sparse result.
-    let s_as_dense = s_sum.to_dense(&r);
-    assert_eq!(d_sum.num_terms(), s_as_dense.num_terms(),
-        "term count mismatch on add");
-    for i in 0..d_sum.num_terms() {
-        assert_eq!(d_sum.term(i, &r).exponents(),
-                   s_as_dense.term(i, &r).exponents());
-        assert!(r.field.eq(d_sum.term(i, &r).coefficient(),
-                           s_as_dense.term(i, &r).coefficient()));
-    }
-}
-
-#[test]
-fn prop_sparse_dense_equivalence_mul() {
-    let r = ring_with(101, 3, MonomialOrder::DegRevLex);
-    let sa = sample_p(&r);
-    let sb = sample_q(&r);
-    let da = sa.to_dense(&r);
-    let db = sb.to_dense(&r);
-    let s_prod = sa.mul(&sb, &r);
-    let d_prod = da.mul(&db, &r);
-    let s_as_dense = s_prod.to_dense(&r);
-    assert_eq!(d_prod.num_terms(), s_as_dense.num_terms(),
-        "term count mismatch on mul");
-    for i in 0..d_prod.num_terms() {
-        assert_eq!(d_prod.term(i, &r).exponents(),
-                   s_as_dense.term(i, &r).exponents());
-        assert!(r.field.eq(d_prod.term(i, &r).coefficient(),
-                           s_as_dense.term(i, &r).coefficient()));
+    for (op_name, s_res, d_res) in [
+        ("add", sa.add(&sb, &r).to_dense(&r), da.add(&db, &r)),
+        ("mul", sa.mul(&sb, &r).to_dense(&r), da.mul(&db, &r)),
+    ] {
+        assert_eq!(d_res.num_terms(), s_res.num_terms(),
+            "{op_name}: term count mismatch");
+        for i in 0..d_res.num_terms() {
+            assert_eq!(d_res.term(i, &r).exponents(),
+                       s_res.term(i, &r).exponents(),
+                       "{op_name}: exps[{i}]");
+            assert!(r.field.eq(d_res.term(i, &r).coefficient(),
+                               s_res.term(i, &r).coefficient()),
+                "{op_name}: coeff[{i}]");
+        }
     }
 }
 

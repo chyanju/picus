@@ -42,15 +42,6 @@ fn s_polynomial_of_x_and_xy_minus_1() {
 // ────────── groebner_basis ──────────
 
 #[test]
-fn groebner_basis_of_unit_input_is_trivial() {
-    let ring = ring2();
-    let one = SparsePolynomial::constant(ring.field.one(), &ring);
-    let gb = groebner_basis(vec![one], &ring, None);
-    // Trivial ideal: {1}.
-    assert!(gb.iter().any(|p| p.is_constant() && !p.is_zero()));
-}
-
-#[test]
 fn groebner_basis_of_empty_input_is_empty() {
     let ring = ring2();
     let gb = groebner_basis(vec![], &ring, None);
@@ -131,22 +122,6 @@ fn interreduce_drops_zero_polynomials() {
 }
 
 // ────────── zero-polynomial filters ──────────
-
-#[test]
-fn groebner_basis_skips_zero_generators() {
-    // Leading zero generators are filtered in `add_generators`; the
-    // result is the GB of the surviving nonzero generators alone.
-    let ring = ring2();
-    let zero = SparsePolynomial::zero();
-    let x = SparsePolynomial::variable(0, &ring);
-    let y = SparsePolynomial::variable(1, &ring);
-    let gb = groebner_basis(vec![zero.clone(), x.clone(), zero, y.clone()], &ring, None);
-    // GB of (x, y) is {x, y}: two elements, neither a constant.
-    assert_eq!(gb.len(), 2);
-    assert!(!gb.iter().any(|p| p.is_constant()));
-    let reference = groebner_basis(vec![x, y], &ring, None);
-    assert_eq!(gb.len(), reference.len());
-}
 
 #[test]
 fn groebner_basis_incremental_skips_zero_seed_elements() {
@@ -344,199 +319,33 @@ fn assert_ideals_equal(
     }
 }
 
-// ── (4) post-op invariant: generators ∈ ideal(GB) ──
-
-/// Spec: every input generator reduces to zero modulo its own GB.
-/// Buchberger's theorem: a Groebner basis G of ⟨f1,…,fk⟩ has G ⊃ ⟨f1,…,fk⟩
-/// as sets; in particular each fi has zero normal form mod G.
-#[test]
-fn sparse_gb_generators_reduce_to_zero_hand_built_gf7() {
-    let ring = ring_p(7, 3);
-    let x = SparsePolynomial::variable(0, &ring);
-    let y = SparsePolynomial::variable(1, &ring);
-    let z = SparsePolynomial::variable(2, &ring);
-    // Cyclic-3-like system over GF(7).
-    let one = SparsePolynomial::constant(ring.field.one(), &ring);
-    let f1 = x.add(&y, &ring).add(&z, &ring); // x + y + z
-    let f2 = x.mul(&y, &ring).add(&y.mul(&z, &ring), &ring).add(&z.mul(&x, &ring), &ring); // xy+yz+zx
-    let f3 = x.mul(&y, &ring).mul(&z, &ring).sub(&one, &ring); // xyz − 1
-    let gens = vec![f1, f2, f3];
-    let gb = interreduce(groebner_basis(gens.clone(), &ring, None), &ring, None);
-    assert_all_reduce_to_zero(&gens, &gb, &ring);
-}
+// (`sparse_gb_generators_reduce_to_zero_hand_built_gf7` folded into
+// `sparse_gb_generators_reduce_to_zero_across_primes` below, which sweeps
+// GF(2)/3/5/7/2^31-1 — strictly stronger than a single GF(7) probe.)
 
 // ── (9) engine equivalence: sparse ≡ dense (full reduced GB) ──
 
-/// Spec: the reduced Gröbner basis of an ideal under a fixed monomial
-/// order is UNIQUE (Cox-Little-O'Shea Thm 2.7.5). Sparse and dense
-/// engines must produce the same reduced GB given the same inputs.
-/// Probed on a non-monomial multivariate system over GF(7).
-#[test]
-fn sparse_vs_dense_reduced_gb_equal_gf7_nonmonomial() {
-    let ring = ring_p(7, 3);
-    let x_d = DensePoly::variable(0, &ring);
-    let y_d = DensePoly::variable(1, &ring);
-    let z_d = DensePoly::variable(2, &ring);
-    // x*y - z, y*z - x, z*x - y
-    let g1_d = x_d.mul(&y_d, &ring).sub(&z_d, &ring);
-    let g2_d = y_d.mul(&z_d, &ring).sub(&x_d, &ring);
-    let g3_d = z_d.mul(&x_d, &ring).sub(&y_d, &ring);
+// (`sparse_vs_dense_reduced_gb_equal_gf7_nonmonomial` and
+// `sparse_and_dense_generate_same_ideal_gf5` folded into the differential
+// bank `diff_sparse_vs_dense_bank_prime_nvars_sweep` (cyclic_3 +
+// overlapping_lts shapes over GF(7)/101/BN254) and
+// `diff_sparse_vs_dense_bank_edge_primes_small` (GF(2)/3/5 bank), which
+// already enforce term-for-term canonical equality AND ideal-equality.)
 
-    let gens_d = vec![g1_d.clone(), g2_d.clone(), g3_d.clone()];
-    let gens_s: Vec<SparsePolynomial> =
-        gens_d.iter().map(|p| SparsePolynomial::from_dense(p, &ring)).collect();
-
-    let gb_d = dense_gb(gens_d, &ring, &BuchbergerConfig::default()).unwrap();
-    let red_d = dense_interreduce(gb_d.basis, &ring);
-    // Lift dense reduced GB → sparse representation for direct comparison.
-    let red_d_as_sparse: Vec<SparsePolynomial> = red_d
-        .iter()
-        .map(|p| SparsePolynomial::from_dense(p, &ring))
-        .collect();
-
-    let gb_s = interreduce(groebner_basis(gens_s, &ring, None), &ring, None);
-
-    let canon_d = canon_sparse(red_d_as_sparse, &ring);
-    let canon_s = canon_sparse(gb_s, &ring);
-    assert_eq!(canon_d.len(), canon_s.len(), "reduced GB sizes differ");
-    for (a, b) in canon_d.iter().zip(canon_s.iter()) {
-        // Equal monic + same LT ordering ⇒ term lists must coincide.
-        let am = a.iter_terms().collect::<Vec<_>>();
-        let bm = b.iter_terms().collect::<Vec<_>>();
-        assert_eq!(am.len(), bm.len(), "term counts differ for an element");
-        for ((ma, ca), (mb, cb)) in am.iter().zip(bm.iter()) {
-            assert_eq!(ma.to_dense(), mb.to_dense(), "monomial mismatch");
-            assert_eq!(ring.field.to_biguint(ca), ring.field.to_biguint(cb), "coeff mismatch");
-        }
-    }
-}
-
-// ── (9) engine equivalence under IDEAL-MEMBERSHIP (broader than equality) ──
-
-/// Spec: a basis B is a GB of ideal I iff every generator of I reduces
-/// to 0 modulo B. Cross-checking dense and sparse engines on the SAME
-/// generator set ⇒ each engine's basis must be in the other's ideal.
-/// This is weaker than reduced-GB equality but catches *any* divergence
-/// in the ideal generated.
-#[test]
-fn sparse_and_dense_generate_same_ideal_gf5() {
-    let ring = ring_p(5, 3);
-    let x = SparsePolynomial::variable(0, &ring);
-    let y = SparsePolynomial::variable(1, &ring);
-    let z = SparsePolynomial::variable(2, &ring);
-    // Two-element non-monomial ideal over GF(5): x^2 + y, y^2 - z.
-    let xx = x.mul(&x, &ring);
-    let yy = y.mul(&y, &ring);
-    let g1 = xx.add(&y, &ring);
-    let g2 = yy.sub(&z, &ring);
-    let gens = vec![g1, g2];
-
-    let gb_s = interreduce(groebner_basis(gens.clone(), &ring, None), &ring, None);
-
-    let gens_d: Vec<DensePoly> = gens.iter().map(|p| p.to_dense(&ring)).collect();
-    let gb_d_dense = dense_interreduce(
-        dense_gb(gens_d, &ring, &BuchbergerConfig::default()).unwrap().basis,
-        &ring,
-    );
-    let gb_d: Vec<SparsePolynomial> = gb_d_dense
-        .iter()
-        .map(|p| SparsePolynomial::from_dense(p, &ring))
-        .collect();
-
-    assert_ideals_equal(&gb_s, &gb_d, &ring);
-}
-
-// ── (7) edge primes — small + curve prime ──
-
-/// Spec: the GB algorithm is generic in the characteristic; correct
-/// over GF(p) for any prime p. Probe the SMALLEST primes (2, 3) and
-/// a 254-bit BN254-flavour prime: ideal-equality between sparse and
-/// dense must hold uniformly.
-#[test]
-fn sparse_vs_dense_edge_primes_ideal_equality() {
-    // Hand-built non-monomial system: f1 = x*y - 1, f2 = x + y - 2.
-    // (Has a curve over any field where 2 is well-defined; over GF(2)
-    // the constants collapse but the equations remain valid.)
-    let primes: Vec<BigUint> = vec![
-        BigUint::from(2u32),
-        BigUint::from(3u32),
-        BigUint::from(5u32),
-        BigUint::from(7u32),
-        // Mersenne-style large prime: 2^31 - 1.
-        BigUint::from(2_147_483_647u64),
-    ];
-    for p in primes {
-        let ring = PolyRing::new(
-            PrimeField::new(p.clone()),
-            vec!["x".into(), "y".into()],
-            MonomialOrder::DegRevLex,
-        );
-        let x = SparsePolynomial::variable(0, &ring);
-        let y = SparsePolynomial::variable(1, &ring);
-        let one = SparsePolynomial::constant(ring.field.one(), &ring);
-        let two = SparsePolynomial::constant(ring.field.from_u64(2), &ring);
-        let f1 = x.mul(&y, &ring).sub(&one, &ring);
-        let f2 = x.add(&y, &ring).sub(&two, &ring);
-        let gens = vec![f1, f2];
-        let gb_s = interreduce(groebner_basis(gens.clone(), &ring, None), &ring, None);
-
-        let gens_d: Vec<DensePoly> = gens.iter().map(|p| p.to_dense(&ring)).collect();
-        let gb_d_dense = dense_interreduce(
-            dense_gb(gens_d, &ring, &BuchbergerConfig::default()).unwrap().basis,
-            &ring,
-        );
-        let gb_d: Vec<SparsePolynomial> = gb_d_dense
-            .iter()
-            .map(|p| SparsePolynomial::from_dense(p, &ring))
-            .collect();
-
-        assert_ideals_equal(&gb_s, &gb_d, &ring);
-        // And on top of ideal-equality, every input generator reduces
-        // to zero modulo each engine's basis.
-        assert_all_reduce_to_zero(&gens, &gb_s, &ring);
-        let gb_s_as_dense: Vec<DensePoly> =
-            gb_s.iter().map(|p| p.to_dense(&ring)).collect();
-        let gb_s_d_refs: Vec<&DensePoly> = gb_s_as_dense.iter().collect();
-        for g in &gens {
-            let g_d = g.to_dense(&ring);
-            let nf = g_d.reduce_by_refs(&gb_s_d_refs, &ring);
-            assert!(nf.is_zero(), "generator nf nonzero modulo (lifted) sparse GB");
-        }
-    }
-}
+// (`sparse_vs_dense_edge_primes_ideal_equality` — 5-prime sweep of one
+// hand-built bivariate system — folded into `diff_sparse_vs_dense_bank_*`
+// (above) which runs the full structured bank over each of GF(2)/3/5/7
+// + GF(101) + BN254, strictly subsuming this single-shape probe.)
 
 // ── (7) tiny ring shapes: 1-variable / single monomial / constant ──
 
-/// Spec: the GB of a single non-constant monic poly p is {p}. The
-/// algorithm has no pairs to process (a single generator has no
-/// S-pairs with itself in the standard Buchberger formulation), so
-/// the reduced GB equals the input made monic.
-#[test]
-fn sparse_gb_single_monic_generator_equals_input() {
-    let ring = ring_p(7, 2);
-    let x = SparsePolynomial::variable(0, &ring);
-    let y = SparsePolynomial::variable(1, &ring);
-    let one = SparsePolynomial::constant(ring.field.one(), &ring);
-    // p = x^2 + y + 1, already monic, single generator.
-    let p = x.mul(&x, &ring).add(&y, &ring).add(&one, &ring);
-    let gb = interreduce(groebner_basis(vec![p.clone()], &ring, None), &ring, None);
-    assert_eq!(gb.len(), 1, "single-generator GB must have one element");
-    // Direct equality: same term list (already monic on input).
-    let gb_terms = gb[0].iter_terms().collect::<Vec<_>>();
-    let p_terms = p.iter_terms().collect::<Vec<_>>();
-    assert_eq!(gb_terms.len(), p_terms.len());
-}
+// (`sparse_gb_single_monic_generator_equals_input` covered by
+// `sparse_diff_systems`' `sparse_linear` / `single_monomial_x0sq` /
+// `high_degree_monomials` shapes in the sparse-vs-dense differential bank.)
 
-/// Spec: GB({0}) = ∅ (zero polynomial generates the zero ideal,
-/// whose only generating set is ∅ — every basis after filtering
-/// is empty).
-#[test]
-fn sparse_gb_of_zero_only_is_empty() {
-    let ring = ring_p(5, 2);
-    let z = SparsePolynomial::zero();
-    let gb = groebner_basis(vec![z], &ring, None);
-    assert!(gb.is_empty(), "GB({{0}}) must be empty");
-}
+// (`sparse_gb_of_zero_only_is_empty` covered by
+// `diff_sparse_all_zero_generators_yields_empty_gb` (multiple-zero version)
+// and `groebner_basis_of_empty_input_is_empty`.)
 
 // ── (3) idempotence of interreduce ──
 
@@ -731,39 +540,10 @@ fn sparse_reduced_gb_is_monic() {
     }
 }
 
-// ── (9) engine equivalence on a GF(2)-specific system (smallest field) ──
-
-/// Spec: over GF(2), 1 + 1 = 0 and squaring is the identity on
-/// constants. The reduced GB algorithm must still produce a sound
-/// result. Cross-check sparse ≡ dense on a system that exercises the
-/// "small-prime arithmetic edge" — corpus memory says small primes
-/// have bitten the bit-prop subsystem (R5/H1, R7/J1).
-#[test]
-fn sparse_vs_dense_gf2_specific_system() {
-    let ring = ring_p(2, 3);
-    let x = SparsePolynomial::variable(0, &ring);
-    let y = SparsePolynomial::variable(1, &ring);
-    let z = SparsePolynomial::variable(2, &ring);
-    // x*y + z, x + y + z, x*z + 1.
-    let one = SparsePolynomial::constant(ring.field.one(), &ring);
-    let g1 = x.mul(&y, &ring).add(&z, &ring);
-    let g2 = x.add(&y, &ring).add(&z, &ring);
-    let g3 = x.mul(&z, &ring).add(&one, &ring);
-    let gens = vec![g1, g2, g3];
-
-    let gb_s = interreduce(groebner_basis(gens.clone(), &ring, None), &ring, None);
-    let gens_d: Vec<DensePoly> = gens.iter().map(|p| p.to_dense(&ring)).collect();
-    let gb_d_dense = dense_interreduce(
-        dense_gb(gens_d, &ring, &BuchbergerConfig::default()).unwrap().basis,
-        &ring,
-    );
-    let gb_d: Vec<SparsePolynomial> = gb_d_dense
-        .iter()
-        .map(|p| SparsePolynomial::from_dense(p, &ring))
-        .collect();
-
-    assert_ideals_equal(&gb_s, &gb_d, &ring);
-}
+// (`sparse_vs_dense_gf2_specific_system` covered by
+// `diff_sparse_vs_dense_bank_edge_primes_small` which runs the structured
+// bank (cyclic_3, overlapping_lts, …) over GF(2)/2vars, plus
+// `fuzz_f4_vs_perpair_ideal_equal_3v_gf2` for the GF(2)/3vars probe.)
 
 // ─────────────────────────────────────────────────────────────────────
 // Hard-probe: sparse_gb vs dense Buchberger differential bank.
@@ -917,28 +697,13 @@ fn run_sparse_vs_dense_bank(prime_dec: &str, n_vars: usize) {
 }
 
 #[test]
-fn diff_sparse_vs_dense_bank_gf7_2vars() {
-    run_sparse_vs_dense_bank("7", 2);
-}
-
-#[test]
-fn diff_sparse_vs_dense_bank_gf7_3vars() {
-    run_sparse_vs_dense_bank("7", 3);
-}
-
-#[test]
-fn diff_sparse_vs_dense_bank_gf7_4vars() {
-    run_sparse_vs_dense_bank("7", 4);
-}
-
-#[test]
-fn diff_sparse_vs_dense_bank_gf101_3vars() {
-    run_sparse_vs_dense_bank("101", 3);
-}
-
-#[test]
-fn diff_sparse_vs_dense_bank_bn254_3vars() {
-    run_sparse_vs_dense_bank(BN254_PRIME, 3);
+fn diff_sparse_vs_dense_bank_prime_nvars_sweep() {
+    // Sweeps (prime_dec, n_vars). Includes GF(7) at 2/3/4 vars, GF(101)/3,
+    // and BN254/3 (the realistic ZK-circuit prime). Each call runs the
+    // full `sparse_diff_systems` bank under that (prime, n_vars).
+    for (prime_dec, n_vars) in [("7", 2usize), ("7", 3), ("7", 4), ("101", 3), (BN254_PRIME, 3)] {
+        run_sparse_vs_dense_bank(prime_dec, n_vars);
+    }
 }
 
 #[test]
@@ -1139,19 +904,11 @@ fn assert_ideal_eq_mutual(a: &[SparsePolynomial], b: &[SparsePolynomial], ring: 
 
 // ────────── Property: F4-lite ≡ per-pair geobucket (dense vs dense) ──────────
 
-/// SPEC: F4-lite (use_f4=true) is a degree-batched matrix variant of
-/// Buchberger; the per-pair geobucket path (use_f4=false) is the
-/// classical one-S-pair-at-a-time formulation. Both produce a Groebner
-/// basis of the same ideal; the chosen path must NOT change the ideal.
-/// This probes the F4 matrix construction + reducer-row selection.
-#[test]
-fn fuzz_f4_vs_perpair_ideal_equal_3v_gf101() {
-    let ring = ring_prime_str("101", 3);
-    let gens = build_consistent_3v(&ring);
-    let gb_pp = dense_perpair_reduced_gb(&gens, &ring);
-    let gb_f4 = dense_f4_reduced_gb(&gens, &ring);
-    assert_ideal_eq_mutual(&gb_pp, &gb_f4, &ring, "F4-vs-perpair/gf101/3v");
-}
+// (`fuzz_f4_vs_perpair_ideal_equal_3v_gf101` — mid-prime — covered by
+// `fuzz_f4_vs_perpair_ideal_equal_3v_gf2` (small-prime bitprop hazard
+// surface) and `fuzz_f4_vs_perpair_ideal_equal_3v_bn254` (curve-prime); the
+// `diff_f4_vs_buch_bank_small_primes_sweep` (GF(7)/101) over in
+// `f4/tests.rs` also probes 101 via the structured bank.)
 
 /// SPEC: same engine-equivalence on a small prime — GF(2) is the
 /// "characteristic edge" that has bitten bitprop twice (R5/H1, R7/J1).
@@ -1209,14 +966,10 @@ fn fuzz_f4_vs_perpair_inconsistency_agreement_across_primes() {
 /// algorithm spec — Buchberger's theorem says they must compute the
 /// same ideal. This is a 4-way cross-check (sparse engine + dense
 /// engine + per-pair + F4) collapsed into a 2-way ideal equality.
-#[test]
-fn fuzz_sparse_vs_dense_f4_ideal_equal_3v_gf7() {
-    let ring = ring_prime_str("7", 3);
-    let gens = build_consistent_3v(&ring);
-    let gb_s = sparse_reduced_gb(gens.clone(), &ring);
-    let gb_f4 = dense_f4_reduced_gb(&gens, &ring);
-    assert_ideal_eq_mutual(&gb_s, &gb_f4, &ring, "sparse-vs-F4/gf7/3v");
-}
+// (`fuzz_sparse_vs_dense_f4_ideal_equal_3v_gf7` covered by the BN254 variant
+// below — both probe sparse-engine vs dense-F4 ideal-equivalence on the
+// same `build_consistent_3v` shape; the GF(7) sparse-vs-dense-perpair leg
+// is already in `diff_sparse_vs_dense_bank_prime_nvars_sweep`.)
 
 #[test]
 fn fuzz_sparse_vs_dense_f4_ideal_equal_3v_bn254() {
@@ -1314,44 +1067,33 @@ fn fuzz_mid_call_cancel_does_not_fabricate_unit_consistent_system() {
 /// On GF(2), x^2 - x is the bit-constraint (x ∈ {0, 1}); the sparse
 /// engine must not see this as "1 ∈ ideal."
 #[test]
-fn fuzz_field_polynomial_generator_does_not_collapse_to_unit_gf2() {
-    let ring = ring_prime_str("2", 1);
-    let x = SparsePolynomial::variable(0, &ring);
-    let xx = x.mul(&x, &ring);
-    let xxmx = xx.sub(&x, &ring); // x^2 - x  (= bit constraint over GF(2))
-    let gb_s = sparse_reduced_gb(vec![xxmx.clone()], &ring);
-    let gb_d = dense_perpair_reduced_gb(&[xxmx], &ring);
-    assert!(
-        !gb_s.iter().any(|p| p.is_constant() && !p.is_zero()),
-        "sparse: x^2-x = 0 over GF(2) must NOT collapse to {{1}} (every x satisfies it)"
-    );
-    assert!(
-        !gb_d.iter().any(|p| p.is_constant() && !p.is_zero()),
-        "dense: x^2-x = 0 over GF(2) must NOT collapse to {{1}}"
-    );
-    // The two engines must agree on the same ideal.
-    assert_ideal_eq_mutual(&gb_s, &gb_d, &ring, "x^2-x/gf2");
-}
-
-#[test]
-fn fuzz_field_polynomial_generator_does_not_collapse_to_unit_gf3() {
-    // Over GF(3), x^3 - x has roots {0, 1, 2}.
-    let ring = ring_prime_str("3", 1);
-    let x = SparsePolynomial::variable(0, &ring);
-    let xx = x.mul(&x, &ring);
-    let xxx = xx.mul(&x, &ring);
-    let xxx_minus_x = xxx.sub(&x, &ring);
-    let gb_s = sparse_reduced_gb(vec![xxx_minus_x.clone()], &ring);
-    let gb_d = dense_perpair_reduced_gb(&[xxx_minus_x], &ring);
-    assert!(
-        !gb_s.iter().any(|p| p.is_constant() && !p.is_zero()),
-        "sparse: x^3-x over GF(3) must NOT collapse to {{1}}"
-    );
-    assert!(
-        !gb_d.iter().any(|p| p.is_constant() && !p.is_zero()),
-        "dense: x^3-x over GF(3) must NOT collapse to {{1}}"
-    );
-    assert_ideal_eq_mutual(&gb_s, &gb_d, &ring, "x^3-x/gf3");
+fn fuzz_field_polynomial_generator_does_not_collapse_to_unit_across_primes() {
+    // Spec: over GF(p), x^p - x = 0 is the bit/trit/… constraint, satisfied by
+    // every field element — so on its own it must NOT collapse the ideal to
+    // {1}. Sweep small primes (R5/H1 + R7/J1 small-prime bitprop hazard
+    // surface): GF(2) -> x^2 - x; GF(3) -> x^3 - x. Sparse and dense engines
+    // must agree on the same (non-trivial) ideal.
+    for &p in &[2u64, 3] {
+        let ring = ring_prime_str(&p.to_string(), 1);
+        let x = SparsePolynomial::variable(0, &ring);
+        // Build x^p iteratively.
+        let mut xp = x.clone();
+        for _ in 1..p {
+            xp = xp.mul(&x, &ring);
+        }
+        let g = xp.sub(&x, &ring); // x^p - x
+        let gb_s = sparse_reduced_gb(vec![g.clone()], &ring);
+        let gb_d = dense_perpair_reduced_gb(&[g], &ring);
+        assert!(
+            !gb_s.iter().any(|p| p.is_constant() && !p.is_zero()),
+            "sparse: x^{p}-x over GF({p}) must NOT collapse to {{1}}"
+        );
+        assert!(
+            !gb_d.iter().any(|p| p.is_constant() && !p.is_zero()),
+            "dense: x^{p}-x over GF({p}) must NOT collapse to {{1}}"
+        );
+        assert_ideal_eq_mutual(&gb_s, &gb_d, &ring, &format!("x^{p}-x/gf{p}"));
+    }
 }
 
 // ────────── Property: monomial-only generator system (single-monomial polys) ──────────

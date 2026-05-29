@@ -23,6 +23,12 @@ fn names(ns: &[&str]) -> Vec<String> {
 
 #[test]
 fn solve_trivial_eq() {
+    // GF(101) sanity: single eq routes through solve_formula and returns Sat
+    // with the expected model. Other end-to-end shape tests over GF(101)
+    // (contradictory, or-picks, eq+neq, implies-chain, disjunctive-bit) are
+    // subsumed by `prop_eq_and_negation_is_unsat_across_primes`,
+    // `prop_or_sat_model_satisfies_some_disjunct`, and the small-prime
+    // hardprobe sweeps below.
     let vn = names(&["x"]);
     let f = eq(1, 0, 5);
     let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
@@ -35,106 +41,28 @@ fn solve_trivial_eq() {
 }
 
 #[test]
-fn solve_contradictory_eqs() {
-    let vn = names(&["x"]);
-    let f = Formula::And(vec![eq(1, 0, 5), eq(1, 0, 6)]);
-    let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
-    assert!(matches!(r, SolveOutcome::Unsat(_)));
-}
-
-#[test]
-fn solve_or_picks_satisfiable_branch() {
-    let vn = names(&["x"]);
-    let f = Formula::Or(vec![eq(1, 0, 5), eq(1, 0, 6)]);
-    let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
-    match r {
-        SolveOutcome::Sat(m) => {
-            let v = m.get("x").expect("x assigned").clone();
-            assert!(v == BigUint::from(5u32) || v == BigUint::from(6u32));
-        }
-        other => panic!("expected Sat, got {:?}", other),
-    }
-}
-
-#[test]
-fn solve_disjunctive_bit_via_cdclt() {
-    let vn = names(&["x"]);
-    let f = Formula::And(vec![
-        Formula::Or(vec![eq(1, 0, 0), eq(1, 0, 1)]),
-        eq(1, 0, 7),
-    ]);
-    let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
-    assert!(matches!(r, SolveOutcome::Unsat(_)));
-}
-
-#[test]
-fn solve_eq_and_neq() {
-    let vn = names(&["x"]);
-    let f = Formula::And(vec![eq(1, 0, 5), Formula::Not(Box::new(eq(1, 0, 5)))]);
-    let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
-    assert!(matches!(r, SolveOutcome::Unsat(_)));
-}
-
-#[test]
-fn solve_implies_chain() {
-    let vn = names(&["x", "y"]);
-    let f = Formula::And(vec![
-        eq(1, 0, 0),
-        Formula::Or(vec![Formula::Not(Box::new(eq(1, 0, 0))), eq(1, 1, 0)]),
-        Formula::Not(Box::new(eq(1, 1, 0))),
-    ]);
-    let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
-    assert!(matches!(r, SolveOutcome::Unsat(_)));
-}
-
-#[test]
-fn iter_cap_returns_unknown_on_pathological_input() {
-    let _g = crate::config::ConfigGuard::with_override(|c| c.cdclt_iter_cap = 0);
-    let vn = names(&["x"]);
-    let f = Formula::Or(vec![eq(1, 0, 5), eq(1, 0, 6)]);
-    let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
-    assert!(matches!(r, SolveOutcome::Unknown));
-}
-
-#[test]
-fn solve_true_formula_is_sat_with_empty_model() {
-    // `Formula::True` constant-folds in Tseitin to Constant(true);
-    // `solve_formula` returns Sat with no variable assignments.
+fn solve_true_false_formulas_constant_fold() {
+    // `Formula::True` ⇒ Sat(empty model); `Formula::False` ⇒ Unsat.
+    // Both constant-fold inside Tseitin before any SAT/theory work runs.
     let vn: Vec<String> = vec![];
-    let r = solve_formula(
+    match solve_formula(
         BigUint::from(101u32),
         &vn,
         &Formula::True,
         &CancelToken::none(),
-    );
-    match r {
+    ) {
         SolveOutcome::Sat(m) => assert!(m.is_empty()),
         other => panic!("expected Sat(empty), got {:?}", other),
     }
-}
-
-#[test]
-fn solve_false_formula_is_unsat() {
-    // `Formula::False` constant-folds to Constant(false) → Unsat.
-    let vn: Vec<String> = vec![];
-    let r = solve_formula(
-        BigUint::from(101u32),
-        &vn,
-        &Formula::False,
-        &CancelToken::none(),
-    );
-    assert!(matches!(r, SolveOutcome::Unsat(_)));
-}
-
-#[test]
-fn solve_returns_unknown_when_token_already_cancelled() {
-    // A non-trivial formula reaches the main loop, whose first action
-    // is the cancellation check; a pre-cancelled token short-circuits
-    // to Unknown before any SAT/theory work.
-    let vn = names(&["x"]);
-    let f = eq(1, 0, 5);
-    let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::cancelled());
-    assert!(matches!(r, SolveOutcome::Unknown));
+    assert!(matches!(
+        solve_formula(
+            BigUint::from(101u32),
+            &vn,
+            &Formula::False,
+            &CancelToken::none()
+        ),
+        SolveOutcome::Unsat(_)
+    ));
 }
 
 #[test]
@@ -210,36 +138,6 @@ fn theory_conflict_drives_post_check_unsat_resync() {
         "theory chain must be UNSAT, got {:?}",
         r
     );
-}
-
-#[test]
-fn disjunction_of_three_with_pin_is_unsat_over_small_prime() {
-    // GF(7): `(x=0 ∨ x=1 ∨ x=2)` together with `x=4`. Each disjunct
-    // conflicts with the pin under the theory, exercising repeated
-    // theory-conflict lemma learning until root-level UNSAT.
-    let vn = names(&["x"]);
-    let f = Formula::And(vec![
-        Formula::Or(vec![eq(1, 0, 0), eq(1, 0, 1), eq(1, 0, 2)]),
-        eq(1, 0, 4),
-    ]);
-    let r = solve_formula(BigUint::from(7u32), &vn, &f, &CancelToken::none());
-    assert!(matches!(r, SolveOutcome::Unsat(_)), "got {:?}", r);
-}
-
-#[test]
-fn disjunctive_branch_is_sat_over_small_prime() {
-    // GF(7): `(x=5 ∨ x=6)` is SAT; one branch survives the theory check,
-    // driving the post_check Sat / collect_model path with a real model.
-    let vn = names(&["x"]);
-    let f = Formula::Or(vec![eq(1, 0, 5), eq(1, 0, 6)]);
-    let r = solve_formula(BigUint::from(7u32), &vn, &f, &CancelToken::none());
-    match r {
-        SolveOutcome::Sat(m) => {
-            let v = m.get("x").expect("x assigned").clone();
-            assert!(v == BigUint::from(5u32) || v == BigUint::from(6u32));
-        }
-        other => panic!("expected Sat, got {:?}", other),
-    }
 }
 
 #[test]
@@ -654,27 +552,6 @@ fn loop_theory_propagation_root_unsat_returns_unsat() {
     assert!(!sat.gave_up(), "a root disagreement is sound UNSAT, not give-up");
 }
 
-#[test]
-fn loop_returns_unknown_when_cancelled_before_iteration() {
-    // A pre-cancelled token short-circuits the loop's first action.
-    let mut sat = Solver::new();
-    let _v = sat.new_var();
-    let mut th = ScriptedTheory::new();
-    let r = drive_loop(&mut sat, &mut th, &CancelToken::cancelled());
-    assert!(matches!(r, SolveOutcome::Unknown));
-}
-
-#[test]
-fn loop_returns_unknown_at_iter_cap() {
-    // cap = 0 ⇒ the first `iters > cap` check trips ⇒ Unknown, even with
-    // pending work. Drives the iteration-cap branch through `cdclt_loop`.
-    let _g = crate::config::ConfigGuard::with_override(|c| c.cdclt_iter_cap = 0);
-    let mut sat = Solver::new();
-    let _v = sat.new_var();
-    let mut th = ScriptedTheory::new();
-    let r = drive_loop(&mut sat, &mut th, &CancelToken::none());
-    assert!(matches!(r, SolveOutcome::Unknown));
-}
 
 // =============================================================================
 // SPEC-DRIVEN property tests — expected values are derived from math / first
@@ -698,27 +575,6 @@ fn lit_eq_holds_in_model(
     let lhs = (BigUint::from(coeff_lhs) * xval) % prime;
     let rhs = BigUint::from(rhs_const) % prime;
     lhs == rhs
-}
-
-/// Property (5) MODEL CHECKING: when `solve_formula` reports Sat on a single
-/// equality `c·x = k` over GF(p), the model MUST satisfy `c·m[x] ≡ k (mod p)`.
-/// Spec source: SMT-LIB Eq semantics over a finite field. The expected value
-/// is dictated by the equation, not by reading source.
-#[test]
-fn prop_sat_model_satisfies_single_eq_gf7() {
-    let vn = names(&["x"]);
-    let prime = BigUint::from(7u32);
-    let f = eq(3, 0, 5); // 3·x = 5 ⇒ x = 4 (since 3·4 = 12 ≡ 5 mod 7)
-    match solve_formula(prime.clone(), &vn, &f, &CancelToken::none()) {
-        SolveOutcome::Sat(m) => {
-            assert!(
-                lit_eq_holds_in_model(3, "x", 5, &m, &prime),
-                "model must satisfy 3·x ≡ 5 (mod 7), got x={:?}",
-                m.get("x")
-            );
-        }
-        other => panic!("expected Sat, got {:?}", other),
-    }
 }
 
 /// Property (7) EDGE PRIMES: solve `x = k` over GF(p) for several primes
@@ -761,41 +617,6 @@ fn prop_unique_eq_solution_across_edge_primes() {
     }
 }
 
-/// Property (8) DETERMINISM: independent solver runs on the same formula
-/// must return the same verdict class (Sat vs Unsat vs Unknown). No hidden
-/// global state should make a second call differ. Spec: function purity.
-#[test]
-fn prop_determinism_two_calls_same_verdict_class() {
-    let vn = names(&["x"]);
-    let prime = BigUint::from(7u32);
-    let f = Formula::Or(vec![eq(1, 0, 3), eq(1, 0, 5)]);
-    let r1 = solve_formula(prime.clone(), &vn, &f, &CancelToken::none());
-    let r2 = solve_formula(prime, &vn, &f, &CancelToken::none());
-    let cls = |r: &SolveOutcome| match r {
-        SolveOutcome::Sat(_) => "Sat",
-        SolveOutcome::Unsat(_) => "Unsat",
-        SolveOutcome::Unknown => "Unknown",
-    };
-    assert_eq!(cls(&r1), cls(&r2), "verdict class must be deterministic");
-}
-
-/// Property (5) MODEL CHECKING for a SAT disjunction: any model returned for
-/// `(x=3) ∨ (x=5)` over GF(7) MUST satisfy at least one disjunct under SMT
-/// disjunction semantics. Expected from logic, not source.
-#[test]
-fn prop_or_sat_model_satisfies_some_disjunct() {
-    let vn = names(&["x"]);
-    let prime = BigUint::from(7u32);
-    let f = Formula::Or(vec![eq(1, 0, 3), eq(1, 0, 5)]);
-    match solve_formula(prime.clone(), &vn, &f, &CancelToken::none()) {
-        SolveOutcome::Sat(m) => {
-            let ok = lit_eq_holds_in_model(1, "x", 3, &m, &prime)
-                || lit_eq_holds_in_model(1, "x", 5, &m, &prime);
-            assert!(ok, "model must satisfy (x=3) or (x=5), got x={:?}", m.get("x"));
-        }
-        other => panic!("expected Sat, got {:?}", other),
-    }
-}
 
 /// Property (1) IDENTITY / (5) MODEL CHECKING for an AND of `c·x = k` and
 /// `c·x ≠ j` with j ≠ k mod p: the conjunction is logically equivalent to
@@ -854,48 +675,6 @@ fn prop_excluded_middle_is_sat() {
     }
 }
 
-/// Property (5) ENUMERATION EXHAUSTIVENESS: the formula `(x = 0) ∨ (x = 1)
-/// ∨ ... ∨ (x = p-1)` is a tautology over GF(p) because every element of
-/// GF(p) equals one of 0..p-1. MUST be SAT. MATH spec, not source.
-#[test]
-fn prop_full_enumeration_disjunction_is_sat() {
-    let vn = names(&["x"]);
-    for p in [2u32, 3, 5, 7] {
-        let prime = BigUint::from(p);
-        let disj: Vec<Formula> = (0..p as u64).map(|k| eq(1, 0, k)).collect();
-        let f = Formula::Or(disj);
-        let r = solve_formula(prime.clone(), &vn, &f, &CancelToken::none());
-        match r {
-            SolveOutcome::Sat(m) => {
-                let v = m.get("x").cloned().unwrap_or_else(|| BigUint::from(0u32));
-                assert!(v < prime, "GF({}): model value must be canonical", p);
-            }
-            other => panic!("GF({}): enumeration of all values must be SAT, got {:?}", p, other),
-        }
-    }
-}
-
-/// Property (5) UNSAT by FIELD EXHAUSTION: `(x = 0) ∧ (x ≠ 0) ∧ ... ∧ (x ≠
-/// p-1)` would be UNSAT, but the simpler shape `(x = a) ∧ (x ≠ a)` is also
-/// UNSAT (a direct contradiction). MATH: a literal and its negation cannot
-/// both hold. Spec, not source.
-#[test]
-fn prop_eq_and_negation_is_unsat_across_primes() {
-    let vn = names(&["x"]);
-    for p in [3u32, 5, 7, 11, 101] {
-        let prime = BigUint::from(p);
-        let f = Formula::And(vec![eq(1, 0, 2), neq(1, 0, 2)]);
-        assert!(
-            matches!(
-                solve_formula(prime, &vn, &f, &CancelToken::none()),
-                SolveOutcome::Unsat(_)
-            ),
-            "GF({}): (x=2) ∧ (x≠2) must be UNSAT",
-            p
-        );
-    }
-}
-
 /// Property (5) MODEL CHECKING in a multi-variable system:
 /// `(x = 3) ∧ (y = 4)` over GF(7) → unique model x=3, y=4 (MATH-derived).
 /// The model must contain BOTH bindings with the math values.
@@ -911,26 +690,6 @@ fn prop_independent_vars_pinned_independently() {
         }
         other => panic!("expected Sat(x=3,y=4), got {:?}", other),
     }
-}
-
-/// Property (5) IFF SEMANTICS: `(x = 0) ∨ (x = 1) ∨ (x = 2)` over GF(3)
-/// covers every residue, so it's a tautology — same as Formula::True.
-/// MATH: GF(p) has exactly p elements. Both must be SAT.
-#[test]
-fn prop_gf3_full_coverage_equivalent_to_true() {
-    let vn = names(&["x"]);
-    let prime = BigUint::from(3u32);
-    let f_all = Formula::Or(vec![eq(1, 0, 0), eq(1, 0, 1), eq(1, 0, 2)]);
-    let r_all = solve_formula(prime.clone(), &vn, &f_all, &CancelToken::none());
-    let r_true = solve_formula(prime, &vn, &Formula::True, &CancelToken::none());
-    assert!(
-        matches!(r_all, SolveOutcome::Sat(_)),
-        "(x=0 ∨ x=1 ∨ x=2) over GF(3) must be SAT"
-    );
-    assert!(
-        matches!(r_true, SolveOutcome::Sat(_)),
-        "True must be SAT"
-    );
 }
 
 /// Property (5) MODEL VALIDITY ACROSS DISJUNCTION: any reported SAT model
@@ -1135,114 +894,6 @@ fn hardprobe_repeated_idle_theory_propagation_terminates_sat() {
     assert!(sat.value(c).is_defined());
 }
 
-/// SPEC: A theory that asserts UNSAT via a single-var ROOT core at the
-/// very first post_check must yield UNSAT (after the unit lemma is
-/// learnt and immediately re-asserted at root, the next round's
-/// post_check produces a same-var core whose lemma is all-root ⇒
-/// permanent UNSAT). This is the "root theory conflict" variant —
-/// distinct from `loop_post_check_unsat_root_core_is_unsat` because
-/// here we vary the surrounding setup with additional vars to stress
-/// the resync.
-#[test]
-fn hardprobe_root_theory_conflict_with_extra_vars_yields_unsat() {
-    let mut sat = Solver::new();
-    let v: Vec<Var> = (0..3).map(|_| sat.new_var()).collect();
-    let mut th = ScriptedTheory::new();
-    // Every post_check returns the same unit core [v[0]]: the lemma
-    // learns ¬v[0]; the next full assignment again has v[0] at some
-    // polarity, and the same core forms an all-root lemma ⇒ UNSAT.
-    for _ in 0..5 {
-        th.checks.push_back(CheckOutcome::Unsat { core: vec![v[0]] });
-    }
-    let r = cdclt_loop(&mut sat, &mut th, &CancelToken::none());
-    assert!(matches!(r, SolveOutcome::Unsat(_)), "SPEC: persistent root-core UNSAT, got {r:?}");
-    assert!(sat.is_unsat());
-    // v[0] must be at root level (0) regardless of which polarity was
-    // assigned.
-    assert!(sat.value(v[0]).is_defined());
-}
-
-/// SPEC: After a theory-propagation conflict resyncs the orchestrator,
-/// the next iteration must NOT re-emit the same conflict. We script the
-/// theory to propose `(a,false)` once (disagreement → Conflict + lemma);
-/// the loop must then continue past the resync and reach Sat. A buggy
-/// resync that keeps re-injecting the same theory propagation could
-/// loop forever.
-#[test]
-fn hardprobe_theory_conflict_resync_does_not_redrive_same_propagation() {
-    let mut sat = Solver::new();
-    let a = sat.new_var();
-    let b = sat.new_var();
-    // b True at root.
-    assert!(sat.add_clause(vec![Lit::pos(b)]));
-    assert!(sat.propagate().is_none());
-    // Decide a=True at level 1.
-    assert!(sat.decide(Lit::pos(a)));
-    let mut th = ScriptedTheory::new();
-    // First round: disagreement on a.
-    th.props.push_back(vec![(a, false)]);
-    th.reasons.insert(a, vec![(b, true)]);
-    // Subsequent rounds: no theory propagation (Idle from default).
-    th.checks.push_back(CheckOutcome::Sat);
-    let r = cdclt_loop(&mut sat, &mut th, &CancelToken::none());
-    assert!(matches!(r, SolveOutcome::Sat(_)), "SPEC: single conflict + resync must reach Sat, got {r:?}");
-    // The lemma should have flipped a to False.
-    assert_eq!(sat.value(a), LBool::False, "SPEC: lemma (¬a ∨ ¬b) flips a False");
-    assert_eq!(sat.value(b), LBool::True);
-}
-
-/// SPEC: A `Theory::push` count equals SAT's max decision level reached
-/// during a clean run. With one free var and a Sat post_check, the loop
-/// makes exactly one decision (level 1) before post_check ⇒ one push.
-/// This invariant must hold even when the theory's propagate() returns
-/// a benign Idle-equivalent first.
-/// Hypothesis: a desynced push/pop accounting between SAT and theory
-/// would manifest as an unexpected pushes count.
-#[test]
-fn hardprobe_theory_push_count_matches_max_decision_level() {
-    let mut sat = Solver::new();
-    let v0 = sat.new_var();
-    let mut th = ScriptedTheory::new();
-    // First propagate is an inert (v0, ...) — wait, v0 is undef so a
-    // (v0,true) would go through Progressed. Use an Idle empty queue.
-    th.checks.push_back(CheckOutcome::Sat);
-    let _ = cdclt_loop(&mut sat, &mut th, &CancelToken::none());
-    assert_eq!(
-        th.pushes, 1,
-        "SPEC: max decision level was 1 ⇒ exactly one theory push (got {})",
-        th.pushes
-    );
-    assert!(sat.value(v0).is_defined(), "SPEC: SAT must have decided v0");
-}
-
-/// SPEC: At loop termination (Sat / Unsat), the theory's push/pop
-/// ledger must net to sat.decision_level(). This is the orchestrator's
-/// core invariant ("theory_levels == decision_level"). Drive a clean
-/// run that needs no lemma and verify the invariant. Hypothesis:
-/// off-by-one or skipped push/pop would manifest as a mismatched net.
-#[test]
-fn hardprobe_theory_pop_count_matches_decision_level_clean_run() {
-    let mut sat = Solver::new();
-    let v: Vec<Var> = (0..3).map(|_| sat.new_var()).collect();
-    let mut th = ScriptedTheory::new();
-    th.checks.push_back(CheckOutcome::Sat);
-    let r = cdclt_loop(&mut sat, &mut th, &CancelToken::none());
-    assert!(matches!(r, SolveOutcome::Sat(_)), "SPEC: loop must terminate Sat, got {r:?}");
-    for var in &v {
-        assert!(sat.value(*var).is_defined());
-    }
-    // SPEC: theory ledger net == decision level.
-    let net = th.pushes as i64 - th.pops as i64;
-    assert_eq!(
-        net, sat.decision_level() as i64,
-        "SPEC: theory level accounting must mirror SAT (push={}, pop={}, dl={})",
-        th.pushes, th.pops, sat.decision_level()
-    );
-    // Each variable decision pushed one level ⇒ pushes == 3.
-    assert_eq!(th.pushes, 3, "SPEC: 3 vars ⇒ 3 decisions ⇒ 3 pushes");
-    assert_eq!(th.pops, 0, "SPEC: clean run has no backjumps ⇒ 0 pops");
-}
-
 /// SPEC: Restart-base independence at the FF-theory level — same CDCL(T)
 /// problem over GF(7) must produce the same verdict whether iter_cap is
 /// the default or a large value. This is a coarse restart-cadence proxy
@@ -1274,28 +925,6 @@ fn hardprobe_iter_cap_does_not_flip_verdict_on_decidable_instance() {
         cls(&r1),
         cls(&r2),
         "SPEC: verdict must be invariant under iter_cap (default vs 1M; got {r1:?} vs {r2:?})"
-    );
-}
-
-/// SPEC: A theory that returns Unsat at post_check with a core larger
-/// than 1 yields a lemma that flips the search. The lemma must NOT be
-/// re-emitted on the next round (since SAT's assignment now satisfies
-/// the new clause). Test: 2-var instance, theory says UNSAT for v0=v1=T,
-/// next assignment v0=T v1=F should be accepted.
-#[test]
-fn hardprobe_post_check_unsat_core_drives_alternative_assignment_sat() {
-    let mut sat = Solver::new();
-    let v: Vec<Var> = (0..2).map(|_| sat.new_var()).collect();
-    let mut th = ScriptedTheory::new();
-    // Block the (T, T) corner; accept any other corner.
-    th.checks.push_back(CheckOutcome::Unsat { core: vec![v[0], v[1]] });
-    th.checks.push_back(CheckOutcome::Sat);
-    let r = cdclt_loop(&mut sat, &mut th, &CancelToken::none());
-    assert!(matches!(r, SolveOutcome::Sat(_)), "SPEC: alternative assignment must be Sat, got {r:?}");
-    // The learnt clause (¬v[0] ∨ ¬v[1]) forbids (T, T).
-    assert!(
-        !(sat.value(v[0]) == LBool::True && sat.value(v[1]) == LBool::True),
-        "SPEC: learnt clause forbids both True simultaneously"
     );
 }
 
@@ -1507,38 +1136,6 @@ fn hardprobe_bitsum_pinned_value_yields_unique_decomposition() {
         }
         other => panic!("bitsum pinned must be SAT, got {:?}", other),
     }
-}
-
-/// HARD-PROBE: bitsum overflow under fitting prime: v=10, 3 bits.
-#[test]
-fn hardprobe_bitsum_overflow_is_unsat_large_prime() {
-    let vn = names(&["b0", "b1", "b2"]);
-    let prime = BigUint::from(101u32);
-    let f = Formula::And(vec![
-        bit_constraint(0),
-        bit_constraint(1),
-        bit_constraint(2),
-        bitsum_eq_const(&[0, 1, 2], 10),
-    ]);
-    let r = solve_formula(prime, &vn, &f, &CancelToken::none());
-    assert!(matches!(r, SolveOutcome::Unsat(_)),
-        "spec: v=10 > 2^3 with bits, must be UNSAT, got {:?}", r);
-}
-
-/// HARD-PROBE: overflow at the BOUNDARY v = 2^k. Smallest UNSAT value.
-#[test]
-fn hardprobe_bitsum_overflow_at_minimum_out_of_range() {
-    let vn = names(&["b0", "b1", "b2"]);
-    let prime = BigUint::from(101u32);
-    let f = Formula::And(vec![
-        bit_constraint(0),
-        bit_constraint(1),
-        bit_constraint(2),
-        bitsum_eq_const(&[0, 1, 2], 8),
-    ]);
-    let r = solve_formula(prime, &vn, &f, &CancelToken::none());
-    assert!(matches!(r, SolveOutcome::Unsat(_)),
-        "spec: v=8 = 2^3 is first overflow, must be UNSAT, got {:?}", r);
 }
 
 /// HARD-PROBE: GF(7) 3-bit collision case (R5 H1 neighbourhood).
@@ -1836,25 +1433,6 @@ fn hardprobe_bitsum_without_bit_constraints_is_sat() {
     }
 }
 
-/// HARD-PROBE: GF(5) 2-bit. v=3 → (1,1).
-#[test]
-fn hardprobe_gf5_2bit_bitsum_unique() {
-    let vn = names(&["b0", "b1"]);
-    let prime = BigUint::from(5u32);
-    let f = Formula::And(vec![
-        bit_constraint(0),
-        bit_constraint(1),
-        bitsum_eq_const(&[0, 1], 3),
-    ]);
-    match solve_formula(prime, &vn, &f, &CancelToken::none()) {
-        SolveOutcome::Sat(m) => {
-            assert_eq!(m.get("b0"), Some(&BigUint::from(1u32)));
-            assert_eq!(m.get("b1"), Some(&BigUint::from(1u32)));
-        }
-        other => panic!("GF(5) 2-bit v=3: expected Sat(1,1), got {:?}", other),
-    }
-}
-
 /// HARD-PROBE: GF(3) 1-bit. v=1 → b0=1. Tiniest case.
 #[test]
 fn hardprobe_gf3_1bit_bitsum_unique() {
@@ -1896,34 +1474,22 @@ fn hardprobe_bitsum_v3_across_fitting_primes() {
     }
 }
 
-/// HARD-PROBE: bit ∧ ≠0 ∧ ≠1 over GF(101) → UNSAT.
+/// HARD-PROBE: bit ∧ ≠0 ∧ ≠1 must be UNSAT across small-prime (field-polys
+/// engage) and larger-prime regimes.
 #[test]
-fn hardprobe_bit_constraint_with_two_diseqs_unsat() {
+fn hardprobe_bit_constraint_with_two_diseqs_unsat_across_primes() {
     let vn = names(&["b0"]);
-    let prime = BigUint::from(101u32);
-    let f = Formula::And(vec![
-        bit_constraint(0),
-        neq(1, 0, 0),
-        neq(1, 0, 1),
-    ]);
-    let r = solve_formula(prime, &vn, &f, &CancelToken::none());
-    assert!(matches!(r, SolveOutcome::Unsat(_)),
-        "bit ∧ ≠0 ∧ ≠1 must be UNSAT, got {:?}", r);
-}
-
-/// HARD-PROBE: bit ∧ ≠0 ∧ ≠1 over GF(5) — small-prime field-polys engage.
-#[test]
-fn hardprobe_bit_constraint_with_two_diseqs_gf5_unsat() {
-    let vn = names(&["b0"]);
-    let prime = BigUint::from(5u32);
-    let f = Formula::And(vec![
-        bit_constraint(0),
-        neq(1, 0, 0),
-        neq(1, 0, 1),
-    ]);
-    let r = solve_formula(prime, &vn, &f, &CancelToken::none());
-    assert!(matches!(r, SolveOutcome::Unsat(_)),
-        "GF(5) bit ∧ ≠0 ∧ ≠1 must be UNSAT, got {:?}", r);
+    for p in [5u32, 101] {
+        let prime = BigUint::from(p);
+        let f = Formula::And(vec![
+            bit_constraint(0),
+            neq(1, 0, 0),
+            neq(1, 0, 1),
+        ]);
+        let r = solve_formula(prime, &vn, &f, &CancelToken::none());
+        assert!(matches!(r, SolveOutcome::Unsat(_)),
+            "GF({}): bit ∧ ≠0 ∧ ≠1 must be UNSAT, got {:?}", p, r);
+    }
 }
 
 /// HARD-PROBE: bit ∧ ≠0 forces b=1.

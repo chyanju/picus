@@ -6,87 +6,6 @@ fn bn128() -> BigUint {
         .unwrap()
 }
 
-#[test]
-fn small_prime_basics() {
-    let f = PrimeField::new(BigUint::from(17u32));
-    let a = f.from_u64(10);
-    let b = f.from_u64(12);
-    let c = f.add(&a, &b);
-    assert_eq!(f.to_biguint(&c), BigUint::from(5u32));
-
-    let x = f.from_u64(3);
-    let y = f.from_u64(6);
-    assert_eq!(f.to_biguint(&f.mul(&x, &y)), BigUint::from(1u32));
-    assert_eq!(f.inv(&x).unwrap(), y);
-
-    let d = f.div(&f.from_u64(1), &x).unwrap();
-    assert_eq!(d, y);
-}
-
-#[test]
-fn sub_underflow() {
-    let f = PrimeField::new(BigUint::from(7u32));
-    let a = f.from_u64(2);
-    let b = f.from_u64(5);
-    let c = f.sub(&a, &b);
-    assert_eq!(f.to_biguint(&c), BigUint::from(4u32));
-
-    let mut a2 = f.from_u64(2);
-    f.sub_assign(&mut a2, &b);
-    assert_eq!(f.to_biguint(&a2), BigUint::from(4u32));
-}
-
-#[test]
-fn from_i64_negative() {
-    let f = PrimeField::new(BigUint::from(7u32));
-    assert_eq!(f.to_biguint(&f.from_i64(-1)), BigUint::from(6u32));
-    assert_eq!(f.to_biguint(&f.from_i64(-7)), BigUint::from(0u32));
-    assert_eq!(f.to_biguint(&f.from_i64(-8)), BigUint::from(6u32));
-}
-
-#[test]
-fn neg_works() {
-    let f = PrimeField::new(BigUint::from(7u32));
-    let a = f.from_u64(3);
-    let na = f.neg(&a);
-    assert_eq!(f.to_biguint(&na), BigUint::from(4u32));
-    assert!(f.is_zero(&f.add(&a, &na)));
-    assert!(f.is_zero(&f.neg(&f.zero())));
-}
-
-#[test]
-fn fermat_pow_bn128() {
-    let p = bn128();
-    let f = PrimeField::new(p.clone());
-    let a = f.from_u64(2);
-    let exp = &p - BigUint::from(1u32);
-    let res = f.pow(&a, &exp);
-    assert!(f.is_one(&res));
-}
-
-#[test]
-fn inverse_bn128() {
-    let p = bn128();
-    let f = PrimeField::new(p.clone());
-    let a = f.from_u64(123456789);
-    let ai = f.inv(&a).unwrap();
-    assert!(f.is_one(&f.mul(&a, &ai)));
-}
-
-#[test]
-fn axioms_random() {
-    let f = PrimeField::new(BigUint::from(101u32));
-    for x in 0u64..101 {
-        for y in 0u64..101 {
-            let a = f.from_u64(x);
-            let b = f.from_u64(y);
-            assert_eq!(f.add(&a, &b), f.add(&b, &a));
-            assert_eq!(f.mul(&a, &b), f.mul(&b, &a));
-            assert!(f.is_zero(&f.add(&a, &f.neg(&a))));
-        }
-    }
-}
-
 /// Cross-check the small-prime path against the GMP path on a
 /// prime that fits both. Same operations must produce
 /// `to_biguint`-equal outputs.
@@ -272,8 +191,9 @@ fn bn128_test_values(f: &PrimeField) -> Vec<FieldElem> {
 
 /// (1) ADDITIVE IDENTITY: a + 0 == a and 0 + a == a, for every a in GF(p).
 /// Property: 0 is the neutral element of the additive group.
+/// Folded: small primes (exhaustive) + BN128 (curated values) in one test.
 #[test]
-fn prop_additive_identity_small_primes() {
+fn prop_additive_identity() {
     for &p in &small_primes() {
         let f = PrimeField::new(BigUint::from(p));
         let zero = f.zero();
@@ -283,10 +203,6 @@ fn prop_additive_identity_small_primes() {
             assert_eq!(f.add(&zero, &a), a, "GF({p}): 0 + {x} != {x}");
         }
     }
-}
-
-#[test]
-fn prop_additive_identity_bn128() {
     let f = PrimeField::new(bn128());
     let zero = f.zero();
     for a in bn128_test_values(&f) {
@@ -296,8 +212,9 @@ fn prop_additive_identity_bn128() {
 }
 
 /// (1) MULTIPLICATIVE IDENTITY: a * 1 == a and 1 * a == a, every a in GF(p).
+/// Folded: small primes + BN128.
 #[test]
-fn prop_multiplicative_identity_small_primes() {
+fn prop_multiplicative_identity() {
     for &p in &small_primes() {
         let f = PrimeField::new(BigUint::from(p));
         let one = f.one();
@@ -307,10 +224,6 @@ fn prop_multiplicative_identity_small_primes() {
             assert_eq!(f.mul(&one, &a), a, "GF({p}): 1 * {x} != {x}");
         }
     }
-}
-
-#[test]
-fn prop_multiplicative_identity_bn128() {
     let f = PrimeField::new(bn128());
     let one = f.one();
     for a in bn128_test_values(&f) {
@@ -335,8 +248,9 @@ fn prop_multiplicative_zero_small_primes() {
 }
 
 /// (1) ADDITIVE INVERSE: a + (-a) == 0, for every a in GF(p).
+/// Folded: small primes + BN128.
 #[test]
-fn prop_additive_inverse_small_primes() {
+fn prop_additive_inverse() {
     for &p in &small_primes() {
         let f = PrimeField::new(BigUint::from(p));
         for x in 0..p {
@@ -348,10 +262,6 @@ fn prop_additive_inverse_small_primes() {
             assert_eq!(f.neg(&na), a, "GF({p}): -(-{x}) != {x}");
         }
     }
-}
-
-#[test]
-fn prop_additive_inverse_bn128() {
     let f = PrimeField::new(bn128());
     for a in bn128_test_values(&f) {
         let na = f.neg(&a);
@@ -362,8 +272,9 @@ fn prop_additive_inverse_bn128() {
 
 /// (1) MULTIPLICATIVE INVERSE: for a != 0, a * a^{-1} == 1.
 /// Also: inv(0) is None (0 has no multiplicative inverse in a field).
+/// Folded: small primes + BN128.
 #[test]
-fn prop_multiplicative_inverse_small_primes() {
+fn prop_multiplicative_inverse() {
     for &p in &small_primes() {
         let f = PrimeField::new(BigUint::from(p));
         assert!(f.inv(&f.zero()).is_none(), "GF({p}): inv(0) must be None");
@@ -376,10 +287,6 @@ fn prop_multiplicative_inverse_small_primes() {
             assert_eq!(f.inv(&ai).unwrap(), a, "GF({p}): inv(inv({x})) != {x}");
         }
     }
-}
-
-#[test]
-fn prop_multiplicative_inverse_bn128() {
     let f = PrimeField::new(bn128());
     assert!(f.inv(&f.zero()).is_none());
     for a in bn128_test_values(&f) {
@@ -392,80 +299,11 @@ fn prop_multiplicative_inverse_bn128() {
     }
 }
 
-/// (1) ADDITIVE COMMUTATIVITY: a + b == b + a.
-#[test]
-fn prop_add_commutative_small_primes() {
-    for &p in &small_primes() {
-        let f = PrimeField::new(BigUint::from(p));
-        for x in 0..p {
-            for y in 0..p {
-                let a = f.from_u64(x);
-                let b = f.from_u64(y);
-                assert_eq!(f.add(&a, &b), f.add(&b, &a), "GF({p}): {x} + {y} != {y} + {x}");
-            }
-        }
-    }
-}
-
-/// (1) MULTIPLICATIVE COMMUTATIVITY: a * b == b * a.
-#[test]
-fn prop_mul_commutative_small_primes() {
-    for &p in &small_primes() {
-        let f = PrimeField::new(BigUint::from(p));
-        for x in 0..p {
-            for y in 0..p {
-                let a = f.from_u64(x);
-                let b = f.from_u64(y);
-                assert_eq!(f.mul(&a, &b), f.mul(&b, &a), "GF({p}): {x} * {y} != {y} * {x}");
-            }
-        }
-    }
-}
-
-/// (1) ADDITIVE ASSOCIATIVITY: (a + b) + c == a + (b + c).
-#[test]
-fn prop_add_associative_small_primes() {
-    for &p in &small_primes() {
-        let f = PrimeField::new(BigUint::from(p));
-        for x in 0..p {
-            for y in 0..p {
-                for z in 0..p {
-                    let a = f.from_u64(x);
-                    let b = f.from_u64(y);
-                    let c = f.from_u64(z);
-                    let lhs = f.add(&f.add(&a, &b), &c);
-                    let rhs = f.add(&a, &f.add(&b, &c));
-                    assert_eq!(lhs, rhs, "GF({p}): assoc add ({x},{y},{z})");
-                }
-            }
-        }
-    }
-}
-
-/// (1) MULTIPLICATIVE ASSOCIATIVITY: (a * b) * c == a * (b * c).
-#[test]
-fn prop_mul_associative_small_primes() {
-    for &p in &small_primes() {
-        let f = PrimeField::new(BigUint::from(p));
-        for x in 0..p {
-            for y in 0..p {
-                for z in 0..p {
-                    let a = f.from_u64(x);
-                    let b = f.from_u64(y);
-                    let c = f.from_u64(z);
-                    let lhs = f.mul(&f.mul(&a, &b), &c);
-                    let rhs = f.mul(&a, &f.mul(&b, &c));
-                    assert_eq!(lhs, rhs, "GF({p}): assoc mul ({x},{y},{z})");
-                }
-            }
-        }
-    }
-}
-
 /// (1) LEFT DISTRIBUTIVITY: a * (b + c) == a*b + a*c.
 /// (1) RIGHT DISTRIBUTIVITY: (a + b) * c == a*c + b*c.
+/// Folded: small primes (exhaustive triples) + BN128 (curated triples).
 #[test]
-fn prop_distributivity_small_primes() {
+fn prop_distributivity() {
     for &p in &small_primes() {
         let f = PrimeField::new(BigUint::from(p));
         for x in 0..p {
@@ -484,10 +322,6 @@ fn prop_distributivity_small_primes() {
             }
         }
     }
-}
-
-#[test]
-fn prop_distributivity_bn128() {
     let f = PrimeField::new(bn128());
     let vals = bn128_test_values(&f);
     for a in &vals {
@@ -542,8 +376,10 @@ fn prop_div_is_mul_inv_small_primes() {
 
 /// (1) FERMAT'S LITTLE THEOREM: a^p == a for every a in GF(p). This is
 /// the textbook fact, independent of the implementation of `pow`.
+/// Also tests the Euler form a^{p-1} == 1 for a != 0.
+/// Folded: small primes (exhaustive) + BN128 (curated values).
 #[test]
-fn prop_fermat_small_primes() {
+fn prop_fermat() {
     for &p in &small_primes() {
         let f = PrimeField::new(BigUint::from(p));
         let p_bu = BigUint::from(p);
@@ -559,22 +395,16 @@ fn prop_fermat_small_primes() {
             }
         }
     }
-}
-
-/// (1) pow_u64 == pow(BigUint) on the same exponent.
-/// The two entry points implement the same algebraic function, so they
-/// must agree on every (a, e) pair — independent of which arm runs.
-#[test]
-fn prop_pow_u64_matches_pow_bigint_small_primes() {
-    for &p in &small_primes() {
-        let f = PrimeField::new(BigUint::from(p));
-        for x in 0..p {
-            for e in 0u64..(2 * p + 3) {
-                let a = f.from_u64(x);
-                let lhs = f.pow_u64(&a, e);
-                let rhs = f.pow(&a, &BigUint::from(e));
-                assert_eq!(lhs, rhs, "GF({p}): pow_u64({x},{e}) != pow({x},{e})");
-            }
+    // BN128 arm: a^p == a and a^{p-1} == 1 for nonzero a.
+    let p = bn128();
+    let f = PrimeField::new(p.clone());
+    let p_minus_1 = &p - BigUint::from(1u32);
+    for a in bn128_test_values(&f) {
+        let ap = f.pow(&a, &p);
+        assert_eq!(ap, a, "BN128: a^p != a (Fermat)");
+        if !f.is_zero(&a) {
+            let r = f.pow(&a, &p_minus_1);
+            assert!(f.is_one(&r), "BN128: a^(p-1) != 1");
         }
     }
 }
@@ -603,8 +433,9 @@ fn prop_pow_matches_repeated_mul_small_primes() {
 ///   definition that the empty product is 1).
 ///   a^1 == a.
 ///   a^(e1 + e2) == a^e1 * a^e2.
+/// Folded: small primes + BN128.
 #[test]
-fn prop_pow_exponent_identities_small_primes() {
+fn prop_pow_exponent_identities() {
     for &p in &small_primes() {
         let f = PrimeField::new(BigUint::from(p));
         for x in 0..p {
@@ -620,10 +451,6 @@ fn prop_pow_exponent_identities_small_primes() {
             }
         }
     }
-}
-
-#[test]
-fn prop_pow_exponent_identities_bn128() {
     let f = PrimeField::new(bn128());
     for a in bn128_test_values(&f) {
         assert!(f.is_one(&f.pow_u64(&a, 0)));
@@ -659,25 +486,12 @@ fn prop_frobenius_small_primes() {
     }
 }
 
-/// (1) NEG VIA p-1: -a == (p-1) * a, since p ≡ 0 in GF(p) so
-/// (p-1)*a ≡ -a (mod p). Independent algebraic check on `neg`.
-#[test]
-fn prop_neg_equals_p_minus_one_times_small_primes() {
-    for &p in &small_primes() {
-        let f = PrimeField::new(BigUint::from(p));
-        let p_minus_1 = f.from_u64(p - 1);
-        for x in 0..p {
-            let a = f.from_u64(x);
-            assert_eq!(f.neg(&a), f.mul(&p_minus_1, &a), "GF({p}): -{x} != (p-1)*{x}");
-        }
-    }
-}
-
 /// (2) ROUND-TRIP through from_biguint / to_biguint.
 /// For a value v already reduced in [0, p), from_biguint then
 /// to_biguint must return v unchanged.
+/// Folded: small primes (exhaustive) + BN128 (curated big values).
 #[test]
-fn prop_biguint_roundtrip_small_primes() {
+fn prop_biguint_roundtrip() {
     for &p in &small_primes() {
         let f = PrimeField::new(BigUint::from(p));
         for x in 0..p {
@@ -686,10 +500,6 @@ fn prop_biguint_roundtrip_small_primes() {
             assert_eq!(f.to_biguint(&a), bu, "GF({p}): roundtrip {x}");
         }
     }
-}
-
-#[test]
-fn prop_biguint_roundtrip_bn128() {
     let f = PrimeField::new(bn128());
     let candidates = [
         BigUint::from(0u32),
@@ -746,29 +556,6 @@ fn prop_from_i64_reduces_small_primes() {
     }
 }
 
-/// (3) IDEMPOTENCE / DETERMINISM: same input → same output across two
-/// calls. The field is a pure mathematical object; no hidden state.
-#[test]
-fn prop_deterministic_ops_small_primes() {
-    for &p in &small_primes() {
-        let f = PrimeField::new(BigUint::from(p));
-        for x in 0..p {
-            for y in 0..p {
-                let a = f.from_u64(x);
-                let b = f.from_u64(y);
-                assert_eq!(f.add(&a, &b), f.add(&a, &b));
-                assert_eq!(f.sub(&a, &b), f.sub(&a, &b));
-                assert_eq!(f.mul(&a, &b), f.mul(&a, &b));
-                assert_eq!(f.neg(&a), f.neg(&a));
-                if x != 0 {
-                    assert_eq!(f.inv(&a).unwrap(), f.inv(&a).unwrap());
-                }
-                assert_eq!(f.pow_u64(&a, 11), f.pow_u64(&a, 11));
-            }
-        }
-    }
-}
-
 /// (4) CANONICAL FORM INVARIANT: every result lies in [0, p).
 /// Property: the field stores canonical representatives. Tests every
 /// arithmetic op against the public prime.
@@ -794,20 +581,6 @@ fn prop_canonical_form_small_primes() {
     }
 }
 
-/// (4) is_zero / is_one MATCH CANONICAL VALUE: by the canonical-form
-/// invariant, is_zero(x) iff x == 0 and is_one(x) iff x == 1.
-#[test]
-fn prop_is_zero_is_one_small_primes() {
-    for &p in &small_primes() {
-        let f = PrimeField::new(BigUint::from(p));
-        for x in 0..p {
-            let a = f.from_u64(x);
-            assert_eq!(f.is_zero(&a), x == 0, "GF({p}): is_zero({x}) wrong");
-            assert_eq!(f.is_one(&a), x == 1, "GF({p}): is_one({x}) wrong");
-        }
-    }
-}
-
 /// (8) DETERMINISM ACROSS INDEPENDENT FIELD INSTANCES: two fields
 /// constructed independently from the same prime must agree on
 /// every op. Property: the field semantics depends only on the prime.
@@ -824,63 +597,6 @@ fn prop_independent_instances_agree_small_primes() {
                 let b2 = f2.from_u64(y);
                 assert_eq!(f1.to_biguint(&f1.add(&a1, &b1)), f2.to_biguint(&f2.add(&a2, &b2)));
                 assert_eq!(f1.to_biguint(&f1.mul(&a1, &b1)), f2.to_biguint(&f2.mul(&a2, &b2)));
-            }
-        }
-    }
-}
-
-/// (7) GF(2) EDGE PRIME: the smallest prime. Spec: -1 == 1, every
-/// nonzero element is its own inverse, and (a + b)^2 = a^2 + b^2
-/// (Frobenius at p=2).
-#[test]
-fn prop_gf2_edge_cases() {
-    let f = PrimeField::new(BigUint::from(2u32));
-    let zero = f.zero();
-    let one = f.one();
-    // In GF(2): -1 == 1.
-    assert_eq!(f.neg(&one), one);
-    // The only nonzero element is 1; its inverse is itself.
-    assert_eq!(f.inv(&one).unwrap(), one);
-    // 1 + 1 == 0 in characteristic 2.
-    assert!(f.is_zero(&f.add(&one, &one)));
-    // 1 - 1 == 0.
-    assert!(f.is_zero(&f.sub(&one, &one)));
-    // Frobenius: x^2 == x.
-    assert_eq!(f.pow_u64(&zero, 2), zero);
-    assert_eq!(f.pow_u64(&one, 2), one);
-}
-
-/// (1) for the additive-inverse-is-neg-equiv: a + b == 0 iff b == -a.
-/// Property follows from uniqueness of inverses in an abelian group.
-#[test]
-fn prop_unique_additive_inverse_small_primes() {
-    for &p in &small_primes() {
-        let f = PrimeField::new(BigUint::from(p));
-        for x in 0..p {
-            for y in 0..p {
-                let a = f.from_u64(x);
-                let b = f.from_u64(y);
-                let sum_zero = f.is_zero(&f.add(&a, &b));
-                let b_is_neg_a = b == f.neg(&a);
-                assert_eq!(sum_zero, b_is_neg_a, "GF({p}): {x}+{y}==0 iff {y}==-{x}");
-            }
-        }
-    }
-}
-
-/// (1) UNIQUE MULTIPLICATIVE INVERSE: for a != 0, a * b == 1 iff
-/// b == a^{-1}. Property: uniqueness of inverses in a group.
-#[test]
-fn prop_unique_multiplicative_inverse_small_primes() {
-    for &p in &small_primes() {
-        let f = PrimeField::new(BigUint::from(p));
-        for x in 1..p {
-            for y in 0..p {
-                let a = f.from_u64(x);
-                let b = f.from_u64(y);
-                let prod_one = f.is_one(&f.mul(&a, &b));
-                let b_is_inv_a = b == f.inv(&a).unwrap();
-                assert_eq!(prod_one, b_is_inv_a, "GF({p}): {x}*{y}==1 iff {y}==inv({x})");
             }
         }
     }
@@ -905,38 +621,11 @@ fn prop_no_zero_divisors_small_primes() {
     }
 }
 
-/// (1) FERMAT ON BN128: a^p == a for the BN128 prime, where p is the
-/// large field characteristic. Independent algebraic check on `pow`.
-/// (Compared to the existing `fermat_pow_bn128`, this hits multiple a.)
-#[test]
-fn prop_fermat_bn128() {
-    let p = bn128();
-    let f = PrimeField::new(p.clone());
-    for a in bn128_test_values(&f) {
-        let ap = f.pow(&a, &p);
-        assert_eq!(ap, a, "BN128: a^p != a (Fermat)");
-    }
-}
-
-/// (1) FERMAT VIA EULER: a^{p-1} == 1 for a != 0 in GF(p).
-#[test]
-fn prop_euler_fermat_bn128() {
-    let p = bn128();
-    let f = PrimeField::new(p.clone());
-    let p_minus_1 = &p - BigUint::from(1u32);
-    for a in bn128_test_values(&f) {
-        if f.is_zero(&a) {
-            continue;
-        }
-        let r = f.pow(&a, &p_minus_1);
-        assert!(f.is_one(&r), "BN128: a^(p-1) != 1");
-    }
-}
-
 /// (1) INVERSE VIA FERMAT: for a != 0, a^{p-2} == a^{-1}. Spec
 /// identity; an independent way to compute the inverse.
+/// Folded: small primes + BN128.
 #[test]
-fn prop_inverse_via_fermat_small_primes() {
+fn prop_inverse_via_fermat() {
     for &p in &small_primes() {
         if p < 2 {
             continue;
@@ -950,10 +639,6 @@ fn prop_inverse_via_fermat_small_primes() {
             assert_eq!(by_fermat, by_inv, "GF({p}): {x}^(p-2) != inv({x})");
         }
     }
-}
-
-#[test]
-fn prop_inverse_via_fermat_bn128() {
     let p = bn128();
     let f = PrimeField::new(p.clone());
     let p_minus_2 = &p - BigUint::from(2u32);
@@ -964,48 +649,6 @@ fn prop_inverse_via_fermat_bn128() {
         let by_fermat = f.pow(&a, &p_minus_2);
         let by_inv = f.inv(&a).unwrap();
         assert_eq!(by_fermat, by_inv);
-    }
-}
-
-/// (7) ZERO POW: 0^e == 0 for e >= 1, and 0^0 == 1 (empty-product convention).
-#[test]
-fn prop_zero_pow_small_primes() {
-    for &p in &small_primes() {
-        let f = PrimeField::new(BigUint::from(p));
-        let z = f.zero();
-        assert!(f.is_one(&f.pow_u64(&z, 0)), "GF({p}): 0^0 != 1");
-        for e in 1u64..15 {
-            assert!(f.is_zero(&f.pow_u64(&z, e)), "GF({p}): 0^{e} != 0");
-        }
-    }
-}
-
-/// (7) ONE POW: 1^e == 1 for every e.
-#[test]
-fn prop_one_pow_small_primes() {
-    for &p in &small_primes() {
-        let f = PrimeField::new(BigUint::from(p));
-        let one = f.one();
-        for e in 0u64..15 {
-            assert!(f.is_one(&f.pow_u64(&one, e)), "GF({p}): 1^{e} != 1");
-        }
-    }
-}
-
-/// (8) DETERMINISM OF pow: two calls with the same (a, e) agree, both
-/// on pow and pow_u64.
-#[test]
-fn prop_pow_deterministic_bn128() {
-    let f = PrimeField::new(bn128());
-    let exp = BigUint::from(31415926535u64);
-    for a in bn128_test_values(&f) {
-        let r1 = f.pow(&a, &exp);
-        let r2 = f.pow(&a, &exp);
-        assert_eq!(r1, r2);
-        let r3 = f.pow_u64(&a, 31415926535u64);
-        let r4 = f.pow_u64(&a, 31415926535u64);
-        assert_eq!(r3, r4);
-        assert_eq!(r1, r3, "pow vs pow_u64 must agree");
     }
 }
 

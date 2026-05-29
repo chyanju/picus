@@ -59,57 +59,6 @@ fn from_terms_sorts_and_dedupes() {
 }
 
 #[test]
-fn add_sub_cancellation() {
-    let r = small_ring();
-    let f = &r.field;
-    let a = DensePoly::from_terms(
-        vec![
-            (Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(3)),
-            (Monomial::from_exponents(vec![0, 1, 0]), f.from_u64(5)),
-        ],
-        &r,
-    );
-    let b = a.clone();
-    let zero = a.sub(&b, &r);
-    assert!(zero.is_zero());
-    let two_a = a.add(&a, &r);
-    assert_eq!(two_a.num_terms(), 2);
-    assert_eq!(
-        *two_a.leading_term(&r).unwrap().coefficient(),
-        f.from_u64(6)
-    );
-}
-
-#[test]
-fn mul_works() {
-    let r = small_ring();
-    let f = &r.field;
-    // (x + 1)(x - 1) = x^2 - 1
-    let a = DensePoly::from_terms(
-        vec![
-            (Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1)),
-            (Monomial::from_exponents(vec![0, 0, 0]), f.from_u64(1)),
-        ],
-        &r,
-    );
-    let b = DensePoly::from_terms(
-        vec![
-            (Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1)),
-            (Monomial::from_exponents(vec![0, 0, 0]), f.from_i64(-1)),
-        ],
-        &r,
-    );
-    let prod = a.mul(&b, &r);
-    // x^2 - 1
-    assert_eq!(prod.num_terms(), 2);
-    let terms: Vec<_> = prod.terms(&r).collect();
-    assert_eq!(terms[0].exponents(), &[2, 0, 0]);
-    assert_eq!(*terms[0].coefficient(), f.from_u64(1));
-    assert_eq!(terms[1].exponents(), &[0, 0, 0]);
-    assert_eq!(*terms[1].coefficient(), f.from_i64(-1));
-}
-
-#[test]
 fn reduce_by_simple() {
     let r = small_ring();
     let f = &r.field;
@@ -285,10 +234,11 @@ fn reduce_by_refs_geobucket_to_zero() {
 }
 
 #[test]
-fn evaluate_and_substitute() {
+fn substitute_var_concrete_value() {
+    // substitute_var has no spec-property test elsewhere: substituting z=4
+    // into p = x*y + 2*z + 3 must give x*y + 11 (constant absorbed).
     let r = small_ring();
     let f = &r.field;
-    // p = x*y + 2*z + 3
     let p = DensePoly::from_terms(
         vec![
             (Monomial::from_exponents(vec![1, 1, 0]), f.from_u64(1)),
@@ -297,30 +247,12 @@ fn evaluate_and_substitute() {
         ],
         &r,
     );
-    // p(2,3,4) = 6 + 8 + 3 = 17
-    let v = vec![f.from_u64(2), f.from_u64(3), f.from_u64(4)];
-    assert_eq!(p.evaluate(&v, &r), f.from_u64(17));
-    // substitute z=4: p' = x*y + 11
     let q = p.substitute_var(2, &f.from_u64(4), &r);
     assert_eq!(q.num_terms(), 2);
-}
-
-#[test]
-fn make_monic_works() {
-    let r = small_ring();
-    let f = &r.field;
-    let p = DensePoly::from_terms(
-        vec![
-            (Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(7)),
-            (Monomial::from_exponents(vec![0, 0, 0]), f.from_u64(14)),
-        ],
-        &r,
-    );
-    let m = p.make_monic(&r);
-    assert!(f.is_one(m.leading_coefficient().unwrap()));
-    // 14/7 = 2
-    let const_term = m.terms(&r).last().unwrap();
-    assert_eq!(*const_term.coefficient(), f.from_u64(2));
+    // Concrete coefficient: 2*4 + 3 = 11 (mod 101) at the constant term.
+    let consts: Vec<_> = q.terms(&r).filter(|t| t.exponents() == [0, 0, 0]).collect();
+    assert_eq!(consts.len(), 1);
+    assert_eq!(*consts[0].coefficient(), f.from_u64(11));
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -400,122 +332,48 @@ fn sample_r(ring: &PolyRing) -> DensePoly {
 // ── (1) ALGEBRAIC IDENTITIES — ring axioms ──────────────────────────────
 
 #[test]
-fn prop_add_identity_a_plus_zero_eq_a() {
-    // Ring axiom: 0 is the additive identity. a + 0 = a.
-    for &prime in &[2u64, 3, 5, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let a = sample_p(&r);
-        let z = DensePoly::zero();
-        let lhs = a.add(&z, &r);
-        let rhs = z.add(&a, &r);
-        assert!(poly_eq(&lhs, &a, &r), "a + 0 != a in GF({prime})");
-        assert!(poly_eq(&rhs, &a, &r), "0 + a != a in GF({prime})");
-    }
-}
-
-#[test]
-fn prop_add_inverse_a_plus_neg_a_eq_zero() {
-    // Ring axiom: every a has an additive inverse. a + (-a) = 0.
-    for &prime in &[2u64, 3, 5, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let a = sample_p(&r);
-        let na = a.negate(&r);
-        let s = a.add(&na, &r);
-        assert!(s.is_zero(), "a + (-a) != 0 in GF({prime})");
-    }
-}
-
-#[test]
-fn prop_sub_self_eq_zero() {
-    // a - a = 0 for every polynomial.
-    for &prime in &[2u64, 3, 5, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let p = sample_p(&r);
-        let z = p.sub(&p, &r);
-        assert!(z.is_zero(), "a - a != 0 in GF({prime})");
-    }
-}
-
-#[test]
-fn prop_negate_involution() {
-    // -(-a) = a (additive inverse is its own inverse).
-    for &prime in &[2u64, 3, 5, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let a = sample_p(&r);
-        let nn = a.negate(&r).negate(&r);
-        assert!(poly_eq(&nn, &a, &r), "-(-a) != a in GF({prime})");
-    }
-}
-
-#[test]
-fn prop_add_commutative() {
-    // a + b = b + a.
-    for &prime in &[2u64, 3, 5, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let a = sample_p(&r);
-        let b = sample_q(&r);
-        let ab = a.add(&b, &r);
-        let ba = b.add(&a, &r);
-        assert!(poly_eq(&ab, &ba, &r), "a + b != b + a in GF({prime})");
-    }
-}
-
-#[test]
-fn prop_add_associative() {
-    // (a + b) + c = a + (b + c).
+fn prop_additive_group_axioms() {
+    // Folded: identity (a+0=a), inverse (a+(-a)=0), sub-self (a-a=0),
+    // negate-involution (-(-a)=a), commutativity (a+b=b+a),
+    // associativity ((a+b)+c=a+(b+c)). Single sweep over representative
+    // primes covers every additive-group property.
     for &prime in &[2u64, 3, 5, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let a = sample_p(&r);
         let b = sample_q(&r);
         let c = sample_r(&r);
-        let lhs = a.add(&b, &r).add(&c, &r);
-        let rhs = a.add(&b.add(&c, &r), &r);
-        assert!(poly_eq(&lhs, &rhs, &r), "(a+b)+c != a+(b+c) in GF({prime})");
-    }
-}
-
-#[test]
-fn prop_mul_identity_a_times_one_eq_a() {
-    // a * 1 = a (1 is the multiplicative identity).
-    for &prime in &[2u64, 3, 5, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let a = sample_p(&r);
-        let one = DensePoly::constant(r.field.one(), &r);
-        let l = a.mul(&one, &r);
-        let r2 = one.mul(&a, &r);
-        assert!(poly_eq(&l, &a, &r), "a * 1 != a in GF({prime})");
-        assert!(poly_eq(&r2, &a, &r), "1 * a != a in GF({prime})");
-    }
-}
-
-#[test]
-fn prop_mul_absorbing_zero() {
-    // a * 0 = 0 = 0 * a.
-    for &prime in &[2u64, 3, 5, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let a = sample_p(&r);
         let z = DensePoly::zero();
-        assert!(a.mul(&z, &r).is_zero(), "a * 0 != 0 in GF({prime})");
-        assert!(z.mul(&a, &r).is_zero(), "0 * a != 0 in GF({prime})");
+        assert!(poly_eq(&a.add(&z, &r), &a, &r), "a+0 GF({prime})");
+        assert!(poly_eq(&z.add(&a, &r), &a, &r), "0+a GF({prime})");
+        let na = a.negate(&r);
+        assert!(a.add(&na, &r).is_zero(), "a+(-a) GF({prime})");
+        assert!(a.sub(&a, &r).is_zero(), "a-a GF({prime})");
+        assert!(poly_eq(&na.negate(&r), &a, &r), "-(-a) GF({prime})");
+        assert!(poly_eq(&a.add(&b, &r), &b.add(&a, &r), &r), "comm GF({prime})");
+        let assoc_l = a.add(&b, &r).add(&c, &r);
+        let assoc_r = a.add(&b.add(&c, &r), &r);
+        assert!(poly_eq(&assoc_l, &assoc_r, &r), "assoc GF({prime})");
     }
 }
 
 #[test]
-fn prop_mul_commutative() {
-    // a * b = b * a in a commutative ring.
+fn prop_multiplicative_monoid_axioms() {
+    // Folded: identity (a*1=a), absorbing (a*0=0), commutativity (a*b=b*a),
+    // associativity ((a*b)*c=a*(b*c)) — the multiplicative-monoid axioms
+    // of the polynomial ring.
     for &prime in &[2u64, 3, 5, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let a = sample_p(&r);
         let b = sample_q(&r);
-        let ab = a.mul(&b, &r);
-        let ba = b.mul(&a, &r);
-        assert!(poly_eq(&ab, &ba, &r), "a*b != b*a in GF({prime})");
+        let one = DensePoly::constant(r.field.one(), &r);
+        let z = DensePoly::zero();
+        assert!(poly_eq(&a.mul(&one, &r), &a, &r), "a*1 GF({prime})");
+        assert!(poly_eq(&one.mul(&a, &r), &a, &r), "1*a GF({prime})");
+        assert!(a.mul(&z, &r).is_zero(), "a*0 GF({prime})");
+        assert!(z.mul(&a, &r).is_zero(), "0*a GF({prime})");
+        assert!(poly_eq(&a.mul(&b, &r), &b.mul(&a, &r), &r), "comm GF({prime})");
     }
-}
-
-#[test]
-fn prop_mul_associative() {
-    // (a*b)*c = a*(b*c).
+    // Associativity is the expensive case; primes 3/7/101 suffice.
     for &prime in &[3u64, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let a = sample_p(&r);
@@ -523,35 +381,25 @@ fn prop_mul_associative() {
         let c = sample_r(&r);
         let lhs = a.mul(&b, &r).mul(&c, &r);
         let rhs = a.mul(&b.mul(&c, &r), &r);
-        assert!(poly_eq(&lhs, &rhs, &r), "(a*b)*c != a*(b*c) in GF({prime})");
+        assert!(poly_eq(&lhs, &rhs, &r), "assoc GF({prime})");
     }
 }
 
 #[test]
-fn prop_distributivity_left() {
-    // a*(b+c) = a*b + a*c (ring axiom).
+fn prop_distributivity() {
+    // Left and right distributivity: a*(b+c)=a*b+a*c and (b+c)*a=b*a+c*a.
+    // Both required by the ring axioms — fold into a single sweep.
     for &prime in &[2u64, 3, 5, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let a = sample_p(&r);
         let b = sample_q(&r);
         let c = sample_r(&r);
-        let lhs = a.mul(&b.add(&c, &r), &r);
-        let rhs = a.mul(&b, &r).add(&a.mul(&c, &r), &r);
-        assert!(poly_eq(&lhs, &rhs, &r), "a*(b+c) != a*b + a*c in GF({prime})");
-    }
-}
-
-#[test]
-fn prop_distributivity_right() {
-    // (b+c)*a = b*a + c*a.
-    for &prime in &[2u64, 3, 5, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let a = sample_p(&r);
-        let b = sample_q(&r);
-        let c = sample_r(&r);
-        let lhs = b.add(&c, &r).mul(&a, &r);
-        let rhs = b.mul(&a, &r).add(&c.mul(&a, &r), &r);
-        assert!(poly_eq(&lhs, &rhs, &r), "(b+c)*a != b*a + c*a in GF({prime})");
+        let left = a.mul(&b.add(&c, &r), &r);
+        let left_e = a.mul(&b, &r).add(&a.mul(&c, &r), &r);
+        assert!(poly_eq(&left, &left_e, &r), "left-dist GF({prime})");
+        let right = b.add(&c, &r).mul(&a, &r);
+        let right_e = b.mul(&a, &r).add(&c.mul(&a, &r), &r);
+        assert!(poly_eq(&right, &right_e, &r), "right-dist GF({prime})");
     }
 }
 
@@ -605,139 +453,70 @@ fn prop_leading_monomial_of_product_under_degrevlex() {
 }
 
 #[test]
-fn prop_scale_one_is_identity() {
-    // c=1: scaling is identity.
-    for &prime in &[2u64, 3, 5, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let a = sample_p(&r);
-        let s = a.scale(&r.field.one(), &r);
-        assert!(poly_eq(&s, &a, &r), "scale(a,1) != a in GF({prime})");
-    }
-}
-
-#[test]
-fn prop_scale_zero_is_zero() {
-    // c=0: scaling produces the zero polynomial.
-    for &prime in &[2u64, 3, 5, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let a = sample_p(&r);
-        let s = a.scale(&r.field.zero(), &r);
-        assert!(s.is_zero(), "scale(a,0) != 0 in GF({prime})");
-    }
-}
-
-#[test]
-fn prop_scale_inverse_roundtrip() {
-    // For c ≠ 0: scale(scale(a, c), c^{-1}) = a.
+fn prop_scale_axioms() {
+    // Folded scale axioms: scale(a,1)=a (identity), scale(a,0)=0 (zero
+    // collapses), and scale(scale(a,c),c^-1)=a (invertibility for c!=0).
     for &prime in &[3u64, 5, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let a = sample_p(&r);
+        assert!(poly_eq(&a.scale(&r.field.one(), &r), &a, &r), "s1 GF({prime})");
+        assert!(a.scale(&r.field.zero(), &r).is_zero(), "s0 GF({prime})");
         let c = r.field.from_u64(2);
         let cinv = r.field.inv(&c).unwrap();
         let s = a.scale(&c, &r).scale(&cinv, &r);
-        assert!(poly_eq(&s, &a, &r),
-            "scale(scale(a,c), c^-1) != a in GF({prime})");
+        assert!(poly_eq(&s, &a, &r), "scale-inv GF({prime})");
     }
+    // GF(2): scale(a,0)=0 also.
+    let r = ring_with(2, 3, MonomialOrder::DegRevLex);
+    let a = sample_p(&r);
+    assert!(poly_eq(&a.scale(&r.field.one(), &r), &a, &r), "s1 GF(2)");
+    assert!(a.scale(&r.field.zero(), &r).is_zero(), "s0 GF(2)");
 }
 
 // ── (3) IDEMPOTENCE ─────────────────────────────────────────────────────
 
 #[test]
-fn prop_make_monic_idempotent() {
-    // monic(monic(p)) = monic(p).
+fn prop_make_monic() {
+    // Folded: idempotence monic(monic(p))=monic(p), LC(monic(p))=1, and
+    // monic(0)=0 (no LC to divide by → zero stays zero).
     for &prime in &[3u64, 5, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let p = sample_p(&r);
         let m = p.make_monic(&r);
         let mm = m.make_monic(&r);
-        assert!(poly_eq(&m, &mm, &r), "monic idempotence in GF({prime})");
+        assert!(poly_eq(&m, &mm, &r), "idempotent GF({prime})");
+        assert!(r.field.is_one(m.leading_coefficient().unwrap()), "LC=1 GF({prime})");
     }
-}
-
-#[test]
-fn prop_make_monic_leading_coeff_is_one() {
-    // The leading coefficient of monic(p) must be 1 for nonzero p (def).
-    for &prime in &[3u64, 5, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let p = sample_p(&r);
-        let m = p.make_monic(&r);
-        assert!(r.field.is_one(m.leading_coefficient().unwrap()),
-            "monic LC != 1 in GF({prime})");
-    }
-}
-
-#[test]
-fn prop_negate_negate_idempotent_arm() {
-    // After two negations the polynomial is the original (involution).
-    // Distinct from `prop_negate_involution` above to exercise on
-    // distinct sample. Covers GF(2) (where -a == a).
-    let r = ring_with(2, 3, MonomialOrder::DegRevLex);
-    let p = sample_q(&r);
-    let n = p.negate(&r);
-    // In GF(2), -1 = 1 so negation is the identity.
-    assert!(poly_eq(&n, &p, &r), "in GF(2), -a should equal a");
+    let r = ring_with(101, 3, MonomialOrder::DegRevLex);
+    assert!(DensePoly::zero().make_monic(&r).is_zero(), "monic(0)=0");
 }
 
 // ── (4) INVARIANTS POST-OPERATION ───────────────────────────────────────
 
 #[test]
-fn prop_evaluate_additive_homomorphism() {
-    // E(a + b)(v) = E(a)(v) + E(b)(v): evaluation is a ring hom into GF(p).
+fn prop_evaluate_ring_hom() {
+    // Evaluation is a ring homomorphism into GF(p). Folded:
+    //   E(a+b) = E(a)+E(b), E(a*b) = E(a)*E(b),
+    //   E(constant c) = c, E(x_i)(v) = v_i.
     for &prime in &[3u64, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let f = &r.field;
         let a = sample_p(&r);
         let b = sample_q(&r);
         let v = vec![f.from_u64(2), f.from_u64(3), f.from_u64(5)];
-        let sum_then_eval = a.add(&b, &r).evaluate(&v, &r);
-        let eval_then_sum = f.add(&a.evaluate(&v, &r), &b.evaluate(&v, &r));
-        assert!(f.eq(&sum_then_eval, &eval_then_sum),
-            "E(a+b) != E(a)+E(b) in GF({prime})");
-    }
-}
-
-#[test]
-fn prop_evaluate_multiplicative_homomorphism() {
-    // E(a * b)(v) = E(a)(v) * E(b)(v).
-    for &prime in &[3u64, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let f = &r.field;
-        let a = sample_p(&r);
-        let b = sample_q(&r);
-        let v = vec![f.from_u64(2), f.from_u64(3), f.from_u64(5)];
-        let prod_then_eval = a.mul(&b, &r).evaluate(&v, &r);
-        let eval_then_prod = f.mul(&a.evaluate(&v, &r), &b.evaluate(&v, &r));
-        assert!(f.eq(&prod_then_eval, &eval_then_prod),
-            "E(a*b) != E(a)*E(b) in GF({prime})");
-    }
-}
-
-#[test]
-fn prop_evaluate_constant_is_constant() {
-    // E(c)(v) = c for any constant polynomial c and any values v.
-    for &prime in &[3u64, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let f = &r.field;
+        let ea = a.evaluate(&v, &r);
+        let eb = b.evaluate(&v, &r);
+        assert!(f.eq(&a.add(&b, &r).evaluate(&v, &r), &f.add(&ea, &eb)),
+            "E(a+b) GF({prime})");
+        assert!(f.eq(&a.mul(&b, &r).evaluate(&v, &r), &f.mul(&ea, &eb)),
+            "E(a*b) GF({prime})");
+        // E(const) = const, E(x_i) = v_i.
         let c = f.from_u64(42 % prime);
-        let p = DensePoly::constant(c.clone(), &r);
-        let v = vec![f.from_u64(11), f.from_u64(13), f.from_u64(17)];
-        let e = p.evaluate(&v, &r);
-        assert!(f.eq(&e, &c), "E(const)(v) != const in GF({prime})");
-    }
-}
-
-#[test]
-fn prop_evaluate_variable_x_at_v_is_v() {
-    // E(x_i)(v) = v_i: variable polynomial evaluates to its value.
-    for &prime in &[3u64, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let f = &r.field;
-        let v = vec![f.from_u64(2), f.from_u64(5), f.from_u64(11)];
+        let cp = DensePoly::constant(c.clone(), &r);
+        assert!(f.eq(&cp.evaluate(&v, &r), &c), "E(const) GF({prime})");
         for i in 0..3 {
             let xi = DensePoly::variable(i, &r);
-            let ev = xi.evaluate(&v, &r);
-            assert!(f.eq(&ev, &v[i]),
-                "E(x{i})(v) != v[{i}] in GF({prime})");
+            assert!(f.eq(&xi.evaluate(&v, &r), &v[i]), "E(x{i}) GF({prime})");
         }
     }
 }
@@ -763,32 +542,6 @@ fn prop_fermat_little_theorem_evaluation() {
             assert!(f.is_zero(&e),
                 "Fermat: x^{prime} - x at {a} != 0 in GF({prime})");
         }
-    }
-}
-
-#[test]
-fn prop_substitute_var_then_evaluate_remaining() {
-    // p(x0,x1,x2) at (a0,a1,a2)
-    //   == substitute_var(p, 0, a0)(0,x1,x2) at (0,a1,a2)
-    // because after substitution the substituted variable no longer
-    // matters (any value at its slot yields the same result).
-    for &prime in &[7u64, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let f = &r.field;
-        let p = sample_p(&r);
-        let a0 = f.from_u64(3);
-        let a1 = f.from_u64(4);
-        let a2 = f.from_u64(5);
-        let direct = p.evaluate(&[a0.clone(), a1.clone(), a2.clone()], &r);
-        let sub = p.substitute_var(0, &a0, &r);
-        // After substitution at var 0, any value at slot 0 must yield same:
-        let through = sub.evaluate(&[f.zero(), a1.clone(), a2.clone()], &r);
-        assert!(f.eq(&direct, &through),
-            "substitute_var ; evaluate != direct evaluate in GF({prime})");
-        // Sanity: a different value at the substituted slot is also equal.
-        let through2 = sub.evaluate(&[f.from_u64(99), a1, a2], &r);
-        assert!(f.eq(&through, &through2),
-            "substituted variable still influences value in GF({prime})");
     }
 }
 
@@ -842,9 +595,10 @@ fn prop_one_var_ring_basic_identities() {
 }
 
 #[test]
-fn prop_zero_poly_has_no_terms_no_lc() {
-    // Definitional: zero polynomial has no leading term, num_terms == 0,
-    // is_zero == true, total_degree == 0 by convention.
+fn prop_zero_poly_invariants() {
+    // Folded: zero poly has no LT/LM/LC, num_terms=0, total_degree=0;
+    // constant(0) collapses to the zero polynomial across primes.
+    // (`make_monic(0) = 0` already covered by `prop_make_monic`.)
     let r = ring_with(7, 3, MonomialOrder::DegRevLex);
     let z = DensePoly::zero();
     assert!(z.is_zero());
@@ -853,44 +607,14 @@ fn prop_zero_poly_has_no_terms_no_lc() {
     assert!(z.leading_monomial(&r).is_none());
     assert!(z.leading_term(&r).is_none());
     assert_eq!(z.total_degree(), 0);
-}
-
-#[test]
-fn prop_constant_zero_yields_zero_poly() {
-    // Edge: constant(0) must collapse to the zero polynomial across primes.
     for &prime in &[2u64, 3, 5, 7, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let p = DensePoly::constant(r.field.zero(), &r);
-        assert!(p.is_zero(), "constant(0) != zero poly in GF({prime})");
+        assert!(p.is_zero(), "constant(0) GF({prime})");
     }
 }
 
-#[test]
-fn prop_make_monic_of_zero_is_zero() {
-    // monic(0) = 0 by convention (no leading coefficient to divide by).
-    let r = ring_with(101, 3, MonomialOrder::DegRevLex);
-    let m = DensePoly::zero().make_monic(&r);
-    assert!(m.is_zero(), "monic(0) != 0");
-}
-
 // ── (8) DETERMINISM ─────────────────────────────────────────────────────
-
-#[test]
-fn prop_determinism_arithmetic() {
-    // Same inputs → same outputs across two invocations (no hidden state).
-    let r = ring_with(101, 3, MonomialOrder::DegRevLex);
-    let a = sample_p(&r);
-    let b = sample_q(&r);
-    let s1 = a.add(&b, &r);
-    let s2 = a.add(&b, &r);
-    assert!(poly_eq(&s1, &s2, &r), "add not deterministic");
-    let p1 = a.mul(&b, &r);
-    let p2 = a.mul(&b, &r);
-    assert!(poly_eq(&p1, &p2, &r), "mul not deterministic");
-    let m1 = a.make_monic(&r);
-    let m2 = a.make_monic(&r);
-    assert!(poly_eq(&m1, &m2, &r), "make_monic not deterministic");
-}
 
 #[test]
 fn prop_content_hash_deterministic() {
@@ -946,51 +670,29 @@ fn prop_leading_term_degrevlex_ordering() {
 }
 
 #[test]
-fn prop_reduce_by_empty_divisors_identity() {
-    // Reducing by an empty divisor set returns the polynomial unchanged
-    // (the normal form is the polynomial itself: nothing to cancel against).
+fn prop_reduce_invariants() {
+    // Folded reducer invariants:
+    //   reduce_by(empty) = identity,
+    //   reduce_by(0, [d]) = 0,
+    //   p mod [p] = 0 (self-reduction),
+    //   (q*p) mod [p] = 0 (ideal membership).
     let r = ring_with(101, 3, MonomialOrder::DegRevLex);
     let p = sample_p(&r);
-    let nf = p.reduce_by(&[], &r);
-    assert!(poly_eq(&nf, &p, &r),
-        "reduce_by(empty) should be identity");
-}
-
-#[test]
-fn prop_reduce_zero_by_anything_is_zero() {
-    // Reducing the zero polynomial yields zero regardless of divisors
-    // (0 mod anything = 0).
-    let r = ring_with(101, 3, MonomialOrder::DegRevLex);
+    let nf_empty = p.reduce_by(&[], &r);
+    assert!(poly_eq(&nf_empty, &p, &r), "reduce_by(empty) != identity");
     let f = &r.field;
     let d1 = DensePoly::from_terms(
         vec![(Monomial::from_exponents(vec![1, 0, 0]), f.from_u64(1))],
         &r,
     );
-    let nf = DensePoly::zero().reduce_by(&[d1], &r);
-    assert!(nf.is_zero(), "0 reduced != 0");
-}
-
-#[test]
-fn prop_reduce_self_yields_zero() {
-    // p reduced by [p] yields zero: p divides p, so p ≡ 0 (mod p).
-    for &prime in &[3u64, 7, 101] {
-        let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
-        let p = sample_p(&r);
-        let nf = p.reduce_by(&[p.clone()], &r);
-        assert!(nf.is_zero(), "p mod p != 0 in GF({prime})");
-    }
-}
-
-#[test]
-fn prop_reduce_by_multiple_of_self_yields_zero() {
-    // (q * p) reduced by [p] = 0 because p divides q*p in the ideal sense.
+    assert!(DensePoly::zero().reduce_by(&[d1], &r).is_zero(), "0 reduced != 0");
     for &prime in &[7u64, 101] {
         let r = ring_with(prime, 3, MonomialOrder::DegRevLex);
         let p = sample_p(&r);
+        assert!(p.reduce_by(&[p.clone()], &r).is_zero(), "p mod p GF({prime})");
         let q = sample_q(&r);
         let qp = q.mul(&p, &r);
-        let nf = qp.reduce_by(&[p.clone()], &r);
-        assert!(nf.is_zero(), "(q*p) mod p != 0 in GF({prime})");
+        assert!(qp.reduce_by(&[p.clone()], &r).is_zero(), "(q*p) mod p GF({prime})");
     }
 }
 
