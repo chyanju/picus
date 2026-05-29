@@ -11,7 +11,7 @@
 use std::collections::BTreeSet;
 
 use crate::ff::buchberger::BuchbergerObserver;
-use crate::ff::polynomial::{PolyRing, DensePoly};
+use crate::ff::polynomial::DensePoly;
 
 /// DensePoly dependency tracker for a Buchberger computation.
 ///
@@ -27,8 +27,7 @@ pub struct GbTracer {
     /// Count of `on_initial_basis` events seen so far. Each such event
     /// corresponds to one original input being introduced into the
     /// computation, in order. This is the input-index assigned to the
-    /// next initial-basis element (and the value reported by
-    /// `next_input_idx`).
+    /// next initial-basis element.
     input_count: usize,
     /// Reducer-basis indices reported by the most recent
     /// `on_initial_reducers` call. Consumed (and cleared) by the very
@@ -57,12 +56,6 @@ impl GbTracer {
         }
     }
 
-    /// After GB computation, retrieve the set of original input indices
-    /// that basis element `basis_idx` depends on.
-    pub fn deps_of(&self, basis_idx: usize) -> Option<&BTreeSet<usize>> {
-        self.deps.get(basis_idx)
-    }
-
     /// Return the UNSAT core for the element at `basis_idx`:
     /// the sorted input indices that this element transitively depends on.
     ///
@@ -77,68 +70,6 @@ impl GbTracer {
     /// Total number of basis elements tracked (initial + derived).
     pub fn basis_count(&self) -> usize {
         self.deps.len()
-    }
-
-    /// Save the current state so we can later truncate back. The returned
-    /// opaque value pairs `deps.len()` (low 32 bits) with `input_count`
-    /// (high 32 bits) so a single integer round-trips through `restore`.
-    /// Used in lockstep with `IncrementalGB::push`.
-    pub fn checkpoint(&self) -> usize {
-        // Pack: high 32 bits = input_count, low 32 bits = deps.len().
-        // Both fit easily for any realistic split-DFS run (n_vars < 2^16).
-        debug_assert!(self.deps.len() < (1usize << 32));
-        debug_assert!(self.input_count < (1usize << 32));
-        (self.input_count << 32) | self.deps.len()
-    }
-
-    /// Truncate `deps` and reset `input_count` back to a previously-saved
-    /// state. Used in lockstep with `IncrementalGB::pop` to undo any
-    /// `on_*` events that occurred after the matching `checkpoint()`.
-    pub fn restore(&mut self, saved: usize) {
-        let saved_deps_len = saved & 0xFFFF_FFFF;
-        let saved_input_count = saved >> 32;
-        if saved_deps_len <= self.deps.len() {
-            self.deps.truncate(saved_deps_len);
-        }
-        if saved_input_count <= self.input_count {
-            self.input_count = saved_input_count;
-        }
-        // Pending caches are transient (consumed by the next observer
-        // event); drop them on restore so a half-completed sequence
-        // doesn't leak across checkpoints.
-        self.pending_reducers.clear();
-        self.pending_pair_reducers.clear();
-    }
-
-    /// Logical input index assigned to the *next* call to `on_initial_basis`.
-    /// Useful for callers that need to remember "this frame's `assign_poly`
-    /// was input index N" before calling `add_generators_observed`.
-    pub fn next_input_idx(&self) -> usize {
-        self.input_count
-    }
-
-    /// Find the union of dependency sets across all *constant* basis
-    /// elements.  Returns `None` if no constant is present.
-    pub fn unsat_core_for_trivial(
-        &self,
-        basis: &[DensePoly],
-        _ring: &PolyRing,
-    ) -> Option<Vec<usize>> {
-        let mut combined: BTreeSet<usize> = BTreeSet::new();
-        let mut found = false;
-        for (idx, p) in basis.iter().enumerate() {
-            if !p.is_zero() && p.is_constant() {
-                found = true;
-                if let Some(set) = self.deps.get(idx) {
-                    combined.extend(set.iter().copied());
-                }
-            }
-        }
-        if found {
-            Some(combined.into_iter().collect())
-        } else {
-            None
-        }
     }
 }
 
@@ -209,84 +140,32 @@ impl BuchbergerObserver for GbTracer {
         self.deps.push(combined);
     }
 
-    fn on_inter_reduce(&mut self, old_idx: usize, new_idx: usize) {
-        // Inter-reduce replaces basis[old_idx] with a new reduced form
-        // (recorded under new_idx by Buchberger).  The new form depends
-        // on at least everything the old one did.  Without observing the
-        // exact reducers used we under-approximate by carrying the old
-        // deps forward; this is sufficient for trivial-core extraction
-        // because the trivial element's parents are tracked precisely
-        // via on_new_poly.
-        let combined = if old_idx < self.deps.len() {
-            self.deps[old_idx].clone()
-        } else {
-            (0..self.n_inputs).collect()
-        };
-        // Pad deps so deps[new_idx] is well-defined.
-        while self.deps.len() <= new_idx {
-            self.deps.push(BTreeSet::new());
+    fn wants_inter_reduce_deps(&self) -> bool {
+        crate::config::with(|c| c.track_inter_reduce_deps)
+    }
+
+    fn on_inter_reduce(&mut self, affected: usize, reducers: &[usize]) {
+        // `affected` (a basis position == this tracer's deps index, since
+        // every basis element is reported in order via on_initial_basis /
+        // on_new_poly) was tail-reduced by `reducers`. Its reduced form is
+        // a combination of itself and those reducers, so it now transitively
+        // depends on every input the reducers depend on — fold them in. This
+        // is the precise inter-reduce accounting (gated on
+        // `track_inter_reduce_deps`): without it the element kept only its
+        // pre-reduction deps, which can under-approximate the UNSAT core.
+        if affected >= self.deps.len() {
+            return;
         }
-        self.deps[new_idx] = combined;
+        let mut extra: BTreeSet<usize> = BTreeSet::new();
+        for &r in reducers {
+            if let Some(set) = self.deps.get(r) {
+                extra.extend(set.iter().copied());
+            }
+        }
+        self.deps[affected].extend(extra);
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_tracer_initial_one_input_per_call() {
-        let mut tracer = GbTracer::new(5);
-        // Simulate add_generators calling on_initial_basis 3 times.
-        let p = DensePoly::zero();
-        for _ in 0..3 {
-            tracer.on_initial_basis(0, &p);
-        }
-        assert_eq!(tracer.basis_count(), 3);
-        assert_eq!(tracer.unsat_core_for(0), vec![0]);
-        assert_eq!(tracer.unsat_core_for(1), vec![1]);
-        assert_eq!(tracer.unsat_core_for(2), vec![2]);
-    }
-
-    #[test]
-    fn test_tracer_derived_narrows_core() {
-        let mut tracer = GbTracer::new(4);
-        let p = DensePoly::zero();
-        for _ in 0..4 {
-            tracer.on_initial_basis(0, &p);
-        }
-        // S-pair from (0, 1) → derived element at index 4
-        tracer.on_new_poly(4, &p, (0, 1));
-        assert_eq!(tracer.unsat_core_for(4), vec![0, 1]);
-        // S-pair from (2, 4) → derived element at index 5
-        tracer.on_new_poly(5, &p, (2, 4));
-        assert_eq!(tracer.unsat_core_for(5), vec![0, 1, 2]);
-        // Input 3 is NOT in the core.
-    }
-
-    #[test]
-    fn test_tracer_out_of_range_returns_trivial_core() {
-        let tracer = GbTracer::new(3);
-        assert!(tracer.deps_of(999).is_none());
-        assert_eq!(tracer.unsat_core_for(999), vec![0, 1, 2]);
-    }
-
-    #[test]
-    fn test_tracer_pair_reducers_fold_into_new_poly_deps() {
-        // Inputs 0..4 all on basis. S-pair (0, 1) is reduced against
-        // active basis members 2 and 3 — those reducers must show up
-        // in the new poly's core.
-        let mut tracer = GbTracer::new(4);
-        let p = DensePoly::zero();
-        for _ in 0..4 {
-            tracer.on_initial_basis(0, &p);
-        }
-        tracer.on_pair_reducers(&[2, 3]);
-        tracer.on_new_poly(4, &p, (0, 1));
-        assert_eq!(tracer.unsat_core_for(4), vec![0, 1, 2, 3]);
-        // Pending should be cleared — the next pair without reducers
-        // should not inherit them.
-        tracer.on_new_poly(5, &p, (0, 1));
-        assert_eq!(tracer.unsat_core_for(5), vec![0, 1]);
-    }
-}
+#[path = "tracer_tests.rs"]
+mod tests;

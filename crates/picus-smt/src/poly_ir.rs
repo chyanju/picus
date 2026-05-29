@@ -1,5 +1,7 @@
-//! Solver-agnostic polynomial IR for propagation and (eventually)
-//! backend lowering.
+//! Solver-agnostic polynomial IR: the query form the propagation lemmas
+//! read and the SMT backends lower. The native engine's lowering (to
+//! `ConstraintSystem` / `BooleanQuery` / `EncodedSystem`) lives in the
+//! native backend, so this module depends only on `picus-core`.
 //!
 //! A [`PolyIR`] bundles a polynomial ring over GF(p) together with the
 //! constraint system extracted from a uniqueness query: a list of
@@ -10,9 +12,10 @@
 //! Variable layout. For an R1CS with `n_wires` wires, the ring carries
 //! `2 * n_wires` variables. Variable index `i` (for `i < n_wires`) is
 //! the original copy `x_i`; index `n_wires + i` is the alt copy `y_i`.
-//! Inputs satisfy `x_i = y_i` (encoded as an explicit equality at
-//! lowering time); wire 0 is the R1CS one-wire and pinned to `1` in
-//! both copies. `target_signal` is the wire index `s` whose
+//! Inputs share a value across copies structurally: lowering emits `x_i`
+//! (not `y_i`) for an input wire in both copies, so no explicit
+//! `x_i = y_i` equality is materialised. Wire 0 is the R1CS one-wire and
+//! pinned to `1` in both copies. `target_signal` is the wire index `s` whose
 //! uniqueness we are checking — equivalently, we ask whether
 //! `x_s = y_s` is forced by the constraints.
 //!
@@ -25,15 +28,10 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use num_bigint::BigUint;
-use num_traits::Zero;
 use picus_r1cs::field_reduce;
 use picus_r1cs::grammar::{ConstraintBlock, R1csFile};
-use picus_solver::boolean::{BooleanQuery, Formula, Literal};
-use picus_solver::frontend::encoder::{
-    encode, ConstraintSystemBuilder, EncodedSystem, ConstraintSystem, PolyTerm,
-};
 use picus_core::ff::field::PrimeField;
-use picus_core::poly::{IrPoly as Poly, IrPolyRing};
+use picus_core::poly::{FfPolyRing, IrPoly as Poly};
 use thiserror::Error;
 
 /// Reasons the R1CS-to-PolyIR lowering can fail. Surfacing these as
@@ -53,7 +51,7 @@ pub enum LowerError {
 
 /// Picus uniqueness query in polynomial form.
 pub struct PolyIR {
-    pub ring: Arc<IrPolyRing>,
+    pub ring: Arc<FfPolyRing>,
     pub n_wires: usize,
     pub input_indices: HashSet<usize>,
     pub equalities: Vec<Poly>,
@@ -145,8 +143,8 @@ impl PolyIR {
     /// next backend call sees it as a regular constraint.
     pub fn add_known_wire(&mut self, w: usize) {
         if self.known_signals.insert(w) && !self.input_indices.contains(&w) {
-            // Inputs already had `x_i - y_i = 0` baked in at lowering;
-            // only non-input wires need a fresh equality here.
+            // Input wires reuse `x_i` across both copies at lowering, so
+            // only non-input wires need a fresh `x_w - y_w = 0` equality here.
             let x = self.ring.var(self.orig_var(w));
             let y = self.ring.var(self.alt_var(w));
             self.equalities.push(self.ring.sub(x, y));
@@ -159,6 +157,16 @@ impl PolyIR {
     /// / assignments / bitsums) is unaffected.
     pub fn set_target(&mut self, w: usize) {
         debug_assert!(w < self.n_wires);
+        // An input wire shares one value across both copies: its alt var
+        // `y_w` is never emitted as a distinct variable, so `(x_w, y_w)`
+        // would be a disequality over a free `y_w` — trivially SAT, i.e. a
+        // spurious "two-witness" counter-example. The DPVL driver never
+        // targets an input (inputs are seeded into `known`), but guard the
+        // public API so a direct caller can't silently get a false UNSAFE.
+        assert!(
+            !self.input_indices.contains(&w),
+            "uniqueness target must not be an input wire (its copies are shared)"
+        );
         self.target_signal = w;
         self.disequalities = vec![(self.orig_var(w), self.alt_var(w))];
     }
@@ -188,130 +196,6 @@ impl PolyIR {
         })
     }
 
-    /// Lower this `PolyIR` to an [`ConstraintSystem`] via the
-    /// `ConstraintSystemBuilder`. Variable names are interned in
-    /// `ring.var_names()` order so builder indices match ring
-    /// indices; each `Poly` in `self.equalities` yields a
-    /// `Vec<PolyTerm>` via [`Self::poly_terms_idx`];
-    /// `disequalities`, `assignments`, `bitsums`, and
-    /// `add_field_polys` propagate as-is.
-    pub fn to_constraint_system(&self) -> ConstraintSystem {
-        let prime = self.ring.field().prime().clone();
-        let mut builder = ConstraintSystemBuilder::new(prime);
-        for name in self.ring.var_names() {
-            builder.var(name);
-        }
-        for poly in &self.equalities {
-            let terms: Vec<PolyTerm> = self
-                .poly_terms_idx(poly)
-                .filter(|(coeff, _)| !coeff.is_zero())
-                .map(|(coeff, vars)| PolyTerm {
-                    coeff,
-                    vars: vars.into_iter().map(|(v, e)| (v as u32, e)).collect(),
-                })
-                .collect();
-            if !terms.is_empty() {
-                builder.add_equality(terms);
-            }
-        }
-        for &(a, b) in &self.disequalities {
-            builder.add_disequality(a as u32, b as u32);
-        }
-        for (v, val) in &self.assignments {
-            builder.add_assignment(*v as u32, val.clone());
-        }
-        for chain in &self.bitsums {
-            let bits: Vec<u32> = chain.iter().map(|&v| v as u32).collect();
-            builder.add_bitsum(bits);
-        }
-        builder.set_add_field_polys(self.add_field_polys);
-        builder.build()
-    }
-
-    /// Lower this `PolyIR` to a CDCL(T) [`BooleanQuery`] for the native
-    /// solver's disjunction-aware path. The conjunctive constraints
-    /// (`equalities`, `assignments`, the target `disequalities`) become
-    /// a top-level `And` of `Eq`/`Neq` literals; each clause in
-    /// `disjunctions` becomes an `Or` of `Eq` literals. Bitsum chains
-    /// are intentionally not materialised here — the CDCL(T) theory
-    /// check re-runs `encode` (hence `auto_extract_bitsums`) on each
-    /// branch's conjunctive system, so they are recovered there.
-    pub fn to_boolean_query(&self) -> BooleanQuery {
-        let prime = self.ring.field().prime().clone();
-        let mut builder = ConstraintSystemBuilder::new(prime);
-        for name in self.ring.var_names() {
-            builder.var(name);
-        }
-
-        let mut conj: Vec<Formula> = Vec::new();
-        for poly in &self.equalities {
-            let terms = self.poly_terms_vec(poly);
-            if !terms.is_empty() {
-                conj.push(Formula::Lit(Literal::Eq(terms, Vec::new())));
-            }
-        }
-        for (v, val) in &self.assignments {
-            conj.push(Formula::Lit(Literal::Eq(
-                vec![PolyTerm {
-                    coeff: BigUint::from(1u32),
-                    vars: vec![(*v as u32, 1)],
-                }],
-                vec![PolyTerm {
-                    coeff: val.clone(),
-                    vars: Vec::new(),
-                }],
-            )));
-        }
-        for &(a, b) in &self.disequalities {
-            conj.push(Formula::Lit(Literal::Neq(
-                vec![PolyTerm {
-                    coeff: BigUint::from(1u32),
-                    vars: vec![(a as u32, 1)],
-                }],
-                vec![PolyTerm {
-                    coeff: BigUint::from(1u32),
-                    vars: vec![(b as u32, 1)],
-                }],
-            )));
-        }
-        for clause in &self.disjunctions {
-            let lits: Vec<Formula> = clause
-                .iter()
-                .map(|poly| Formula::Lit(Literal::Eq(self.poly_terms_vec(poly), Vec::new())))
-                .collect();
-            conj.push(Formula::Or(lits));
-        }
-
-        let formula = if conj.is_empty() {
-            Formula::True
-        } else {
-            Formula::And(conj)
-        };
-        BooleanQuery::from_builder_and_formula(builder, formula)
-    }
-
-    /// `poly_terms_idx` collected into the `Vec<PolyTerm>` form that
-    /// `Literal` / `add_equality` consume (zero-coeff terms dropped).
-    fn poly_terms_vec(&self, poly: &Poly) -> Vec<PolyTerm> {
-        self.poly_terms_idx(poly)
-            .filter(|(coeff, _)| !coeff.is_zero())
-            .map(|(coeff, vars)| PolyTerm {
-                coeff,
-                vars: vars.into_iter().map(|(v, e)| (v as u32, e)).collect(),
-            })
-            .collect()
-    }
-
-    /// Encode this `PolyIR` into an [`EncodedSystem`] ready for the
-    /// GB engine. Internally builds an `ConstraintSystem` via
-    /// [`Self::to_constraint_system`] and routes through
-    /// [`picus_solver::frontend::encoder::encode`] (which runs
-    /// `rewriter::rewrite_system` and
-    /// `auto_extract_bitsums`).
-    pub fn encode(&self) -> Result<EncodedSystem, String> {
-        encode(&self.to_constraint_system())
-    }
-
     /// Iterate every term of `poly` as `(coeff, vars_with_exp)` where
     /// `vars_with_exp` lists the variables that actually appear in
     /// this monomial together with their exponents. The list is
@@ -336,8 +220,8 @@ impl PolyIR {
 /// Construct a [`PolyIR`] from a parsed R1CS file in a single pass over
 /// the constraint blocks: each `A * B = C`
 /// constraint becomes one polynomial equality `(sum_a)(sum_b) - sum_c =
-/// 0`, with both copies (`x_i`, `y_i`) emitted side-by-side. Inputs are
-/// pinned to a single value (`x_i - y_i = 0`); wire 0 is pinned to `1`
+/// 0`, with both copies (`x_i`, `y_i`) emitted side-by-side. Input wires
+/// reuse `x_i` in both copies (no `x_i = y_i` equality); wire 0 is pinned to `1`
 /// in both copies; the target signal disequality is *not* materialised
 /// here (the GB solver handles it via a Rabinowitsch trick).
 pub fn r1cs_to_poly_ir(
@@ -346,6 +230,18 @@ pub fn r1cs_to_poly_ir(
     target_signal: usize,
 ) -> Result<PolyIR, LowerError> {
     let n_wires = r1cs.n_wires() as usize;
+    // The target indexes both copies (`target_signal` and
+    // `n_wires + target_signal`); an out-of-range value would build a
+    // disequality over a non-existent ring variable. Reject explicitly
+    // rather than silently producing an unsatisfiable-by-construction
+    // query that degrades to Unknown.
+    if target_signal >= n_wires {
+        return Err(LowerError::WireOutOfBounds {
+            wire: target_signal,
+            n_wires,
+            ctx: "target signal",
+        });
+    }
     let input_indices: HashSet<usize> = r1cs.inputs.iter().copied().collect();
     let prime = &r1cs.header.prime_number;
 
@@ -358,9 +254,20 @@ pub fn r1cs_to_poly_ir(
         var_names.push(format!("y{}", i));
     }
     let field = PrimeField::new(prime.clone());
-    let ring = Arc::new(IrPolyRing::new(field, var_names));
+    let ring = Arc::new(FfPolyRing::new(field, var_names));
 
     let mut equalities: Vec<Poly> = Vec::new();
+
+    // Copy-symmetry invariant (load-bearing for wire-keyed propagation):
+    // every R1CS constraint is lowered into BOTH copies below — the original
+    // over `x_*` and the alt over `y_*` (input wires share `x_*` in both; see
+    // `block_to_linear`). The wire-keyed propagation lemmas (linear,
+    // binary01, bim, basis2) match a structural pattern in one copy and
+    // promote a *wire* — both copies at once — to "known"; their soundness
+    // relies on the matched structure having an identical mirror in the other
+    // copy. Emitting a constraint for only one copy, or asymmetrically,
+    // breaks that assumption and can make those lemmas unsound (a wire marked
+    // "known" whose two copies need not actually agree).
 
     // Original-copy constraints.
     for c in &r1cs.constraints.constraints {
@@ -387,7 +294,7 @@ pub fn r1cs_to_poly_ir(
     // Inputs share their value across copies. `block_to_linear` emits
     // `x_i` (not `y_i`) for input wires in alt-copy constraints, so no
     // explicit `x_i - y_i = 0` equality is required: `y_i` for input
-    // wires is simply never referenced.
+    // wires is never referenced.
 
     // R1CS lowering populates the general-purpose GB query fields
     // for the uniqueness query: a single disequality at the target
@@ -419,7 +326,7 @@ pub fn r1cs_to_poly_ir(
 /// `Ok(None)` when the resulting polynomial is the zero polynomial,
 /// `Err` when any block references an out-of-bounds wire id.
 fn constraint_to_poly(
-    ring: &Arc<IrPolyRing>,
+    ring: &Arc<FfPolyRing>,
     a: &ConstraintBlock,
     b: &ConstraintBlock,
     c: &ConstraintBlock,
@@ -451,7 +358,7 @@ fn constraint_to_poly(
 /// pattern matchers like `binary01` don't need to track `x_0`
 /// separately.
 fn block_to_linear(
-    ring: &Arc<IrPolyRing>,
+    ring: &Arc<FfPolyRing>,
     block: &ConstraintBlock,
     input_indices: &HashSet<usize>,
     is_alt: bool,
@@ -488,3 +395,7 @@ fn block_to_linear(
     }
     Ok(acc)
 }
+
+#[cfg(test)]
+#[path = "poly_ir_tests.rs"]
+mod tests;

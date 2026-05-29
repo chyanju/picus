@@ -4,6 +4,10 @@
 //! field form, `x^2 + (p-1) * x` with no other terms). The constraint
 //! pins the wire's value to `{0, 1}`. Once a wire's range collapses
 //! to a singleton, it joins the known set.
+//!
+//! Wire-keyed: promoting a wire to known relies on the `x^2-x=0` match
+//! being mirrored in both copies (the copy-symmetry invariant documented
+//! in `picus_smt::poly_ir::r1cs_to_poly_ir`).
 
 use std::collections::HashSet;
 
@@ -27,14 +31,12 @@ impl PropagationLemma for Binary01Lemma {
     }
 
     fn run(&mut self, ir: &PolyIR, ctx: &mut PropagationCtx) -> bool {
-        let p = ir.ring.field().prime();
-        let p_minus_1 = p - BigUint::one();
         let binary_set: HashSet<BigUint> =
             [BigUint::zero(), BigUint::one()].into_iter().collect();
 
         let mut progress = false;
         for poly in &ir.equalities {
-            if let Some(wire) = match_x_squared_minus_x(ir, poly, &p_minus_1)
+            if let Some(wire) = match_x_squared_minus_x(ir, poly)
                 && self.binary_wires.insert(wire)
             {
                 let entry = ctx.ranges.entry(wire).or_insert(RangeValue::Bottom);
@@ -65,7 +67,6 @@ impl PropagationLemma for Binary01Lemma {
 fn match_x_squared_minus_x(
     ir: &PolyIR,
     poly: &picus_core::poly::IrPoly,
-    p_minus_1: &BigUint,
 ) -> Option<usize> {
     // Two-term degree-2 polynomial: gather terms sparse-natively as
     // (coeff, nonzero (var, exp) pairs) — no `0..n_vars` scan, no dense
@@ -109,7 +110,7 @@ fn match_x_squared_minus_x(
     } else {
         p - sq_coeff
     };
-    if lin_coeff == &neg_sq_coeff || (sq_coeff == &BigUint::one() && lin_coeff == p_minus_1) {
+    if lin_coeff == &neg_sq_coeff {
         return Some(ir.var_to_wire(var));
     }
     None
@@ -121,3 +122,7 @@ inventory::submit! {
         factory: || Box::new(Binary01Lemma::default()),
     }
 }
+
+#[cfg(test)]
+#[path = "binary01_tests.rs"]
+mod tests;

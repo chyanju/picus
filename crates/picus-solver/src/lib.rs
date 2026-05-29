@@ -21,21 +21,26 @@ pub mod split_gb;
 pub(crate) mod sat;
 
 // Shared substrate (runtime config, polynomial ring, profiler, cancellation)
-// lives in picus-core; re-bound so in-crate code uses
+// lives in picus-core; in-crate code refers to it as
 // `crate::{config, poly, profile, timeout}`.
 pub(crate) use picus_core::{config, poly, profile, timeout};
+// The `metric::` namespace (incr!/add!/max!/timer!): in-crate call sites
+// read `metric::incr!(..)` etc., syntactically distinct from logic.
+// `metric` (module, type namespace) and the `#[metric]` attribute (macro
+// namespace) coexist under one name; `use crate::metric` brings both.
+pub(crate) use picus_core::metric;
+pub(crate) use picus_metric_macros::metric;
 
 use thiserror::Error;
 
-/// Internal error type for the Groebner-basis engine. Used as the
-/// `Err` arm of `Result<_, SolverError>` throughout `ff::buchberger`
-/// and `ideal::*` to surface cooperative cancellation
-/// (`SolverError::Timeout`) and internal failures. The backend-facing
-/// error type — the one returned by [`crate::core::solve_encoded_with_cancel`]
-/// callers and `picus_smt::backends::SolverBackend::solve` — is the
-/// distinct [`picus_smt::backends::SolverError`].
+/// Internal error type for the Gröbner-basis engine: the `Err` arm of
+/// `Result<_, EngineError>` throughout `ff::buchberger` and `gb::ideal`,
+/// surfacing cooperative cancellation (`EngineError::Timeout`) and internal
+/// failures. Distinct from the backend-facing `picus_smt::backends::SolverError`
+/// returned to `SolverBackend::solve` callers (this one never crosses the
+/// crate boundary).
 #[derive(Debug, Error)]
-pub enum SolverError {
+pub enum EngineError {
     #[error("solver error: {0}")]
     Internal(String),
     #[error("encoding error: {0}")]

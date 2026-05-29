@@ -1,6 +1,10 @@
 pub mod backends;
 pub mod poly_ir;
 
+#[cfg(test)]
+#[path = "lib_tests.rs"]
+mod tests;
+
 /// Reserved variable names for field constants the witness post-
 /// processor must filter out of solver-produced models. `p` is the
 /// field prime; `ps1`..`ps5` are `p-1`..`p-5`; `zero` and `one` are
@@ -9,6 +13,16 @@ pub const SUBP_CONSTANT_NAMES: &[&str] =
     &["p", "ps1", "ps2", "ps3", "ps4", "ps5", "zero", "one"];
 
 /// Solver backend selection.
+///
+/// Making a backend selectable via `--solver <name>` touches several
+/// sites — registering a descriptor alone is dispatchable but not
+/// name-selectable:
+///   1. a variant here, with its `as_str` arm below;
+///   2. a `SolverKind::from_str` arm (this file) mapping the name;
+///   3. `validate_combination` (this file) for any rejected theory pairing;
+///   4. an `inventory::submit!` of a `backends::SolverBackendDescriptor`
+///      in the backend module, so `create_backend_by_name` can build it;
+///   5. the `solver_display` match in `picus-cli` for the human-readable header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SolverKind {
     Z3,
@@ -103,9 +117,10 @@ pub fn validate_combination(solver: SolverKind, theory: Theory) -> Result<(), St
 /// Returns `None` for `SolverKind::None` (propagation-only mode).
 ///
 /// Dispatch is via the inventory registry of
-/// [`backends::SolverBackendDescriptor`] entries: adding a new
-/// `(name, theory)` pair is a new `inventory::submit!` block in the
-/// new backend's file — no edits to this function required.
+/// [`backends::SolverBackendDescriptor`] entries, so this function needs
+/// no edits to support a new backend. Reaching it from `--solver`, though,
+/// requires a [`SolverKind`] variant whose `as_str` matches the
+/// descriptor's `name` (see [`SolverKind::from_str`]).
 pub fn create_backend(
     solver: SolverKind,
     theory: Theory,

@@ -37,3 +37,7 @@ pub fn parse_var_index(name: &str) -> Option<usize> {
         None
     }
 }
+
+#[cfg(test)]
+#[path = "lib_tests.rs"]
+mod tests;

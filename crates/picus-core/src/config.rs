@@ -8,9 +8,9 @@
 //! [`set`] (one-shot) or [`ConfigGuard`] (RAII scope); per-thread
 //! storage keeps concurrent solves on different threads independent.
 //!
-//! [`RuntimeConfig::from_env`] seeds the defaults from the
-//! `PICUS_*` environment variables so existing benchmark scripts
-//! and CLI invocations keep their behaviour without code changes.
+//! The thread-local seed is the compiled [`RuntimeConfig::default`];
+//! file and CLI layers are merged on top by the `picus` facade
+//! (`resolve_config`) via [`RuntimeConfig::apply_overlay`].
 
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -53,7 +53,7 @@ pub struct RuntimeConfig {
     /// Use F4 matrix reduction for batched same-sugar S-pairs.
     pub use_f4: bool,
     /// DNF expansion cap (max disjunct count) before
-    /// [`crate::boolean::solve_boolean_query_dnf`] returns `Unknown`.
+    /// `solve_boolean_query_dnf` (in picus-solver) returns `Unknown`.
     pub dnf_cap: u64,
     /// Pick DNF instead of CNF for the boolean layer.
     pub dnf_enabled: bool,
@@ -78,14 +78,54 @@ pub struct RuntimeConfig {
     /// proved non-zero, feeding the disjunction-aware solver path. On by
     /// default: each clause follows from an `s * o = 0` equality already
     /// in the IR, so it is sound and verdict-neutral; this keeps the
-    /// pipeline's disjunction path live. Set `PICUS_NO_ABOZ_DISJ` to
-    /// disable (e.g. for an A/B perf comparison).
+    /// pipeline's disjunction path live. Set `aboz_emit_disjunctions =
+    /// false` in config (CLI `--no-aboz-disj`) to disable (e.g. for an
+    /// A/B perf comparison).
     pub aboz_emit_disjunctions: bool,
     /// Representation of the IR poly type ([`ReprKind`]). Defaults to
     /// `Sparse` so lowering + the cvc5 path scale on wide rings (the dense
-    /// form OOMs there); set `PICUS_POLY_REPR=dense` to force the dense
-    /// representation (the differential-test oracle, faster on small rings).
+    /// form OOMs there); set `poly_repr = "dense"` in config (CLI
+    /// `--poly-repr dense`) to force the dense representation (the
+    /// differential-test oracle, faster on small rings).
     pub poly_repr: ReprKind,
+    /// Opt-in linear (Gaussian) pre-elimination (cvc5 `gauss.cpp`
+    /// analogue): before solving, reduce the nonlinear constraints modulo
+    /// a Gröbner basis of the linear subsystem, substituting out pivot
+    /// variables. Off by default — split-GB already handles linear
+    /// constraints in basis 0, and the substitution can densify the
+    /// nonlinear part and add per-`solve` overhead, so it is a net loss on
+    /// the general workload. Exposed as a knob for linear-heavy
+    /// conjunctive circuits where it may pay off.
+    pub linear_elim: bool,
+    /// Track inter-reduction reducer dependencies in the single-GB UNSAT-core
+    /// tracer (`GbTracer`), so a trivial core reflects the basis elements that
+    /// actually reduced the contradiction — matching cvc5/CoCoA's precise
+    /// cores. On by default, and only meaningful on the non-default SingleGb
+    /// path: that path tail-reduces the basis and emits `on_inter_reduce`
+    /// events (gated by this flag). The default split-GB path never
+    /// tail-reduces during its incremental extends, so no inter-reduce events
+    /// fire there regardless of this flag; its UNSAT core is instead
+    /// attributed by a conservative union (see `split_gb::fixpoint`). Set
+    /// false to drop the small per-reduce counting cost on the SingleGb path.
+    pub track_inter_reduce_deps: bool,
+    /// Triangular model construction (cvc5 `multi_roots` analogue) on the
+    /// default split-GB path: decide a zero-dimensional combined system by
+    /// univariate-root + back-substitution enumeration instead of the
+    /// brancher DFS. Sound — SAT returns a verified witness, UNSAT comes only
+    /// from a complete zero-dimensional enumeration, and any other case
+    /// (positive-dimensional, inconclusive, cancelled) falls back to the DFS,
+    /// so it can change timing and `Unknown` resolution but never a definite
+    /// verdict. Off by default: it builds the combined GB the split path
+    /// otherwise avoids, so it is opt-in for zero-dimensional workloads the
+    /// bounded brancher leaves `Unknown`.
+    pub split_triangular: bool,
+    /// Cache the geobucket reducer's divisor index (DivMask buckets + degree
+    /// order) across S-pair reductions whose active basis is unchanged,
+    /// instead of rebuilding it per call. Result-preserving (same normal
+    /// form). Off by default: a growing basis changes the active set often,
+    /// so the rebuild on a cache miss offsets the saving; opt-in for long
+    /// runs of reductions against a stable basis.
+    pub reducer_index_cache: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -102,21 +142,15 @@ impl Default for RuntimeConfig {
             cache_enabled: true,
             aboz_emit_disjunctions: true,
             poly_repr: ReprKind::Sparse,
+            linear_elim: false,
+            track_inter_reduce_deps: true,
+            split_triangular: false,
+            reducer_index_cache: false,
         }
     }
 }
 
 impl RuntimeConfig {
-    /// Seed the compiled defaults, then apply any `PICUS_*` environment
-    /// overrides. Used to initialise the thread-local config the first
-    /// time a thread asks for it, so existing benchmark scripts and CLI
-    /// invocations keep their behaviour.
-    pub fn from_env() -> Self {
-        let mut c = Self::default();
-        c.apply_overlay(&EngineOverlay::from_env());
-        c
-    }
-
     /// Merge the `Some` fields of `o` onto `self`; `None` fields are
     /// left untouched. This is the overlay/merge step that layers a
     /// config file, environment, or CLI flags onto a base config.
@@ -132,6 +166,10 @@ impl RuntimeConfig {
         if let Some(v) = o.cache_enabled { self.cache_enabled = v; }
         if let Some(v) = o.aboz_emit_disjunctions { self.aboz_emit_disjunctions = v; }
         if let Some(v) = o.poly_repr { self.poly_repr = v; }
+        if let Some(v) = o.linear_elim { self.linear_elim = v; }
+        if let Some(v) = o.track_inter_reduce_deps { self.track_inter_reduce_deps = v; }
+        if let Some(v) = o.split_triangular { self.split_triangular = v; }
+        if let Some(v) = o.reducer_index_cache { self.reducer_index_cache = v; }
     }
 }
 
@@ -158,57 +196,14 @@ pub struct EngineOverlay {
     pub cache_enabled: Option<bool>,
     pub aboz_emit_disjunctions: Option<bool>,
     pub poly_repr: Option<ReprKind>,
-}
-
-impl EngineOverlay {
-    /// Read the `PICUS_*` environment variables into an overlay. Absent
-    /// variables stay `None` so they don't clobber lower config layers.
-    pub fn from_env() -> Self {
-        let mut o = Self::default();
-        if std::env::var_os("PICUS_USE_F4").is_some() {
-            o.use_f4 = Some(true);
-        }
-        if let Ok(v) = std::env::var("PICUS_BOOLEAN") {
-            o.dnf_enabled = Some(v == "dnf");
-        }
-        if let Ok(v) = std::env::var("PICUS_DNF_CAP") {
-            if let Ok(n) = v.parse::<u64>() {
-                o.dnf_cap = Some(n);
-            }
-        }
-        if let Ok(v) = std::env::var("PICUS_CDCLT_ITER_CAP") {
-            if let Ok(n) = v.parse::<u64>() {
-                o.cdclt_iter_cap = Some(n);
-            }
-        }
-        if std::env::var_os("PICUS_GB_STATS").is_some() {
-            o.gb_stats_enabled = Some(true);
-        }
-        if std::env::var_os("PICUS_GB_TRACE").is_some() {
-            o.gb_trace_enabled = Some(true);
-        }
-        if std::env::var_os("PICUS_PROFILE").is_some() {
-            o.profile_enabled = Some(true);
-        }
-        if std::env::var_os("PICUS_NO_INCREMENTAL_CACHE").is_some() {
-            o.cache_enabled = Some(false);
-        }
-        if std::env::var_os("PICUS_NO_ABOZ_DISJ").is_some() {
-            o.aboz_emit_disjunctions = Some(false);
-        }
-        if let Ok(v) = std::env::var("PICUS_POLY_REPR") {
-            match v.as_str() {
-                "dense" => o.poly_repr = Some(ReprKind::Dense),
-                "sparse" => o.poly_repr = Some(ReprKind::Sparse),
-                _ => {}
-            }
-        }
-        o
-    }
+    pub linear_elim: Option<bool>,
+    pub track_inter_reduce_deps: Option<bool>,
+    pub split_triangular: Option<bool>,
+    pub reducer_index_cache: Option<bool>,
 }
 
 thread_local! {
-    static THREAD_CONFIG: RefCell<RuntimeConfig> = RefCell::new(RuntimeConfig::from_env());
+    static THREAD_CONFIG: RefCell<RuntimeConfig> = RefCell::new(RuntimeConfig::default());
 }
 
 /// Read a snapshot of the current thread's config.
@@ -251,3 +246,7 @@ impl Drop for ConfigGuard {
         THREAD_CONFIG.with(|c| *c.borrow_mut() = self.prev.clone());
     }
 }
+
+#[cfg(test)]
+#[path = "config_tests.rs"]
+mod tests;

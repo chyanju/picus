@@ -71,8 +71,7 @@ dependencies.
   `aboz_emit_disjunctions`, `poly_repr`), plus `ReprKind` and `GbStrategy`.
   Thread-local storage with `ConfigGuard` for RAII overrides; the
   `picus::check_r1cs` driver installs the resolved engine config per call.
-  `EngineOverlay` is the all-optional partial used for config layering;
-  `from_env()` seeds the thread-local from the `PICUS_*` environment.
+  `EngineOverlay` is the all-optional partial used for config layering.
 - **`poly.rs`** — `FfPolyRing` (multivariate polynomial ring over
   `PrimeField`), `Poly` / `Mono` aliases, `PolyRingFacade` (`terms`,
   `exponent_at`, `appearing_indeterminates`, owned-`Poly` `add` / `sub` /
@@ -99,9 +98,12 @@ homogenisation, tracing), `frontend/` (encoding and IO: `encoder`, `parse`,
 CDCL(T) layers), `ff/` (the GB / root-finding engine over the `picus-core`
 algebra), `smt2/`, and `split_gb/`, with `core.rs`, `boolean.rs`, and
 `incremental_context.rs` at the root.
-- **`ideal.rs`** — `Ideal` + `compute_gb_with_order`
-  (`_traced`, `_incremental`) + `interreduce_basis`. Every public
-  GB entry point routes through `compute_gb_dispatch`, which reads
+- **`ideal.rs`** — the `Ideal` type + `interreduce_basis`. Its
+  `engine` submodule (`ideal/engine.rs`, re-exported so
+  `gb::ideal::*` paths are unchanged) holds the `compute_gb_*` family
+  (`with_order`, `_traced`, `_incremental`) and the dense/sparse
+  representation routing. Every public GB entry point routes through
+  `compute_gb_dispatch`, which reads
   `config::with(|c| c.gb_strategy)` and forwards to the configured
   `GbAlgorithm` impl. The trait signature is:
 
@@ -109,10 +111,10 @@ algebra), `smt2/`, and `split_gb/`, with `core.rs`, `boolean.rs`, and
   pub trait GbAlgorithm {
       fn name(&self) -> &'static str;
       fn compute(&self, pr, gens, cancel, order)
-          -> Result<Vec<Poly>, SolverError>;
+          -> Result<Vec<Poly>, EngineError>;
       fn supports_tracing(&self) -> bool { false }
       fn compute_traced(&self, pr, gens, cancel, order, tracer)
-          -> Result<Vec<Poly>, SolverError> { /* default panics */ }
+          -> Result<Vec<Poly>, EngineError> { /* default panics */ }
   }
   ```
 
@@ -127,13 +129,12 @@ algebra), `smt2/`, and `split_gb/`, with `core.rs`, `boolean.rs`, and
   bypasses dispatch; algorithm implementations call it directly to
   avoid recursive dispatch (e.g. `BuchbergerByHomog` lowers its
   inner DegRevLex computation through this entry).
-- **`core.rs`** — `solve_split_gb`, `solve_single_gb`, `SolverMode`,
-  `SolveOutcome`. The top-level QF_FF solving entry point used by
-  the `native_ff` backend.
+- **`core.rs`** — `solve_split_gb`, `solve_single_gb`, `SolveOutcome`.
+  The top-level QF_FF solving entry point used by the `native_ff` backend.
 - **`split_gb/`** — Split GB algorithm with inter-basis propagation
   (OKTB23). `split_gb_cancel_traced` carries per-polynomial
   dependency sets through the fixpoint so whole-ring detection
-  reports a precise UNSAT core.
+  reports a sound (conservative over-approximation) UNSAT core.
 - **`gb.rs`** — Single GB solver (DegRevLex → Lex) with cooperative
   timeout.
 - **`gb_homog.rs`** + **`homog_ring.rs`** — Homogenisation extension
@@ -145,7 +146,10 @@ algebra), `smt2/`, and `split_gb/`, with `core.rs`, `boolean.rs`, and
 - **`encoder.rs`** — `ConstraintSystem` → polynomial encoding. Runs
   `rewriter::rewrite_system` then `auto_extract_bitsums` before
   `encode_impl`; bitsum-defining polynomials route into
-  `bitsum_polys` (basis 0 only).
+  `bitsum_polys` (basis 0 only). The `ConstraintSystem` type family
+  lives in the `constraint_system` submodule and the bitsum extractor
+  (`auto_extract_bitsums`, `bitsum_fits`) in `bitsum_extract`, both
+  re-exported.
 - **`rewriter.rs`** — Flat term-list canonicalisation: sort vars
   within each term, sort terms by vars, merge like terms mod prime,
   drop zero-coefficient terms, drop `0 = 0` equalities. Mirrors
@@ -163,9 +167,10 @@ algebra), `smt2/`, and `split_gb/`, with `core.rs`, `boolean.rs`, and
   LBool), `clause` (Clause / ClauseArena), `solver` (Solver).
   Watched-literal unit propagation, 1-UIP conflict analysis with
   VSIDS variable activity, phase saving, Luby restart, max-heap
-  variable order; theory integration via `add_theory_lemma` (sorts
-  by descending level, backtracks to the conflict's second-highest
-  level, enqueues the asserting literal) and `enqueue_theory`
+  variable order; theory integration via `add_theory_lemma_with_trail`
+  (sorts by descending level, backtracks to the conflict's second-highest
+  level, enqueues the asserting literal, returns the post-backtrack trail
+  length) and `enqueue_theory`
   (theory-propagated literal with a learnt reason clause
   `(lit ∨ ¬r_i …)`).
 - **`cdclt/`** — CDCL(T) orchestration. `atoms` (canonical FF atom
@@ -218,7 +223,8 @@ algebra), `smt2/`, and `split_gb/`, with `core.rs`, `boolean.rs`, and
   preprocessing), `sparse_gb` (Buchberger on the sparse representation with the
   same product / M / B criteria, sugar selection, and incremental seeding),
   `hilbert`, `spair`, `univariate` (Cantor-Zassenhaus), and `repr_oracle`
-  (cross-checks the sparse GB against the dense engine).
+  (cross-checks the sparse GB and the F4 path against the dense per-pair
+  engine at the full reduced-GB level).
 
 ### `picus-smt`
 
@@ -278,8 +284,7 @@ R1CS-to-PolyIR lowering and solver-backend trait.
     primes; prohibitive for cryptographic primes). The
     `IncrementalSolverContext` cache is enabled by default;
     `RuntimeConfig::cache_enabled = false` (`--no-cache` on the
-    CLI, or `PICUS_NO_INCREMENTAL_CACHE=1` at process start) opts
-    out.
+    CLI, or `cache_enabled = false` in config) opts out.
   - `mod.rs` defines the `SolverBackend` trait
     (`solve(&PolyIR, timeout_ms, &CancelToken)` + `dump_smt(&PolyIR)`),
     the `SolverResult { Unsat, Sat(model), Unknown(UnknownReason) }`
@@ -292,9 +297,11 @@ R1CS-to-PolyIR lowering and solver-backend trait.
   `validate_combination`, `create_backend`. Dispatch goes through
   the inventory of `SolverBackendDescriptor`s: built-in `SolverKind`
   variants are ergonomic aliases that match the descriptor's `name`
-  field. Adding a new backend (research solver, in-house QF_FF
-  alternative, etc.) is a new `inventory::submit!` block — no edits
-  to enums or match tables required. `SUBP_CONSTANT_NAMES` lists the
+  field. A new backend registers via an `inventory::submit!` block and
+  is then reachable through `create_backend_by_name`; selection by name
+  (`--solver`, config) additionally needs a matching `SolverKind`
+  variant, since `SolverKind::from_str` resolves the built-in names.
+  `SUBP_CONSTANT_NAMES` lists the
   named field constants that the `picus` witness post-processor
   filters out of solver-produced models.
 
@@ -358,8 +365,8 @@ Public library facade.
   the remaining toggles off). `default()` is zero-I/O.
 - **`resolve_config(path, cli_overlay)`** — layers, in increasing
   precedence, built-in defaults < config file (`--config`, else
-  `./picus.toml`) < `PICUS_*` environment < CLI overlay, into one
-  `PicusConfig`. `PicusConfig::from_file` / `from_env` are library shortcuts.
+  `./picus.toml`) < CLI overlay, into one `PicusConfig`.
+  `PicusConfig::from_file` is a library shortcut.
 - **`CheckResult`** — `Safe`, `Unsafe { witness_1, witness_2 }`,
   or `Unknown`.
 - **`dump_profile(tag)`** / **`dump_gb_stats()`** — facade for the
@@ -374,9 +381,9 @@ Thin CLI entry point:
   TOML config (else `./picus.toml` when present); the flags (`--solver`,
   `--timeout`, `--profile wall`, `--gb-by-homog`, `--poly-repr`, `--use-f4`,
   `--dnf`, `--gb-stats`, `--gb-trace`, `--no-cache`, `--no-aboz-disj`, …)
-  form the highest-precedence overlay over the file, the `PICUS_*`
-  environment, and the built-in defaults (`picus::resolve_config`). Depends
-  only on `picus`; does not import `picus_solver::*`.
+  form the highest-precedence overlay over the file and the built-in
+  defaults (`picus::resolve_config`). Depends only on `picus`; does not
+  import `picus_solver::*`.
 - **`picus info`** — Prints R1CS metadata and optionally all
   constraints in human-readable form.
 

@@ -26,9 +26,14 @@
 //! smallest nonzero `x_k`-exponent across those generators; both
 //! subproblems are strictly smaller, ensuring termination.
 //!
-//! Standalone module — no callers inside `picus-solver` at this
-//! version. Provided as a building block for monomial-ideal
-//! heuristics.
+//! [`quotient_dimension`] reads the `k`-vector-space dimension of
+//! `S/I` (= the number of standard monomials = the solution count of a
+//! zero-dimensional ideal with multiplicity over the algebraic
+//! closure) off the leading monomials of a *finished* Gröbner basis,
+//! via the graded Hilbert function [`HilbertNum::hf_at`]. This is a
+//! sound, verdict-neutral oracle — pure combinatorics on exponent
+//! vectors — used by [`crate::gb::ideal::Ideal::quotient_dimension`]
+//! and as an FGLM staircase cross-check.
 
 use super::monomial::Monomial;
 
@@ -121,7 +126,7 @@ impl HilbertNum {
         self.coeffs = new_coeffs;
     }
 
-    /// DensePoly multiplication: returns `self * other`. Per-pair
+    /// Polynomial multiplication: returns `self * other`. Per-pair
     /// `i64::saturating_mul` followed by per-cell
     /// `i64::saturating_add`.
     pub fn mul(&self, other: &Self) -> Self {
@@ -148,6 +153,35 @@ impl HilbertNum {
     /// tests and diagnostic comparisons.
     pub fn coeffs(&self) -> &[i64] {
         &self.coeffs
+    }
+
+    /// Value of the graded Hilbert function `HF(S/I)(d)` in `n_vars`
+    /// variables, where `self = N(t)` is the Hilbert numerator: the
+    /// coefficient of `t^d` in `N(t) / (1 - t)^{n_vars}`, i.e.
+    /// `HF(d) = Σ_k N_k · C(d − k + n_vars − 1, n_vars − 1)`
+    /// (using `1/(1−t)^n = Σ_m C(m+n−1, n−1) t^m`). `i128` saturating
+    /// arithmetic; `n_vars == 0` gives `S = k`, so `HF(d) = N_d`.
+    ///
+    /// For a genuine monomial ideal this is a non-negative integer; the
+    /// saturating arithmetic only guards a pathological (overflowing)
+    /// input from panicking.
+    pub fn hf_at(&self, d: u32, n_vars: usize) -> i128 {
+        if n_vars == 0 {
+            return self.coeff(d) as i128;
+        }
+        let r = (n_vars - 1) as u64;
+        let dmax = self.degree().unwrap_or(0).min(d);
+        let mut sum: i128 = 0;
+        for k in 0..=dmax {
+            let nk = self.coeff(k) as i128;
+            if nk == 0 {
+                continue;
+            }
+            // C((d-k) + r, r) = C((d-k)+r, d-k): choose the smaller index.
+            let binom = binom_sat((d - k) as u64 + r, r);
+            sum = sum.saturating_add(nk.saturating_mul(binom));
+        }
+        sum
     }
 
     fn trim(&mut self) {
@@ -267,164 +301,103 @@ pub fn hilbert_numerator(gens: &[Monomial]) -> HilbertNum {
     result
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn x(n_vars: usize, var: usize, exp: u16) -> Monomial {
-        Monomial::single_var(n_vars, var, exp)
+/// Binomial coefficient `C(m, r)` as `i128`, saturating on overflow.
+/// Iterates over `min(r, m − r)` terms via the integer recurrence
+/// `C(m, i+1) = C(m, i) · (m − i) / (i + 1)` (each partial product is a
+/// binomial, so the division is exact). Picking the smaller index keeps
+/// the loop short even when `m ≈ n_vars` is large.
+fn binom_sat(m: u64, r: u64) -> i128 {
+    if r > m {
+        return 0;
     }
-
-    fn from_exps(e: Vec<u16>) -> Monomial {
-        Monomial::from_exponents(e)
+    let r = r.min(m - r);
+    let mut res: i128 = 1;
+    for i in 0..r {
+        res = res.saturating_mul((m - i) as i128) / ((i + 1) as i128);
     }
-
-    #[test]
-    fn hn_empty_ideal_is_one() {
-        let hn = hilbert_numerator(&[]);
-        assert_eq!(hn, HilbertNum::one());
-    }
-
-    #[test]
-    fn hn_unit_ideal_is_zero() {
-        let unit = Monomial::one(3);
-        let hn = hilbert_numerator(&[unit]);
-        assert_eq!(hn, HilbertNum::zero());
-    }
-
-    #[test]
-    fn hn_single_variable() {
-        // I = (x) in k[x, y] → N = 1 - t
-        let hn = hilbert_numerator(&[x(2, 0, 1)]);
-        assert_eq!(hn.coeffs(), &[1, -1]);
-    }
-
-    #[test]
-    fn hn_single_higher_power() {
-        // I = (x^3) in k[x] → N = 1 - t^3
-        let hn = hilbert_numerator(&[x(1, 0, 3)]);
-        assert_eq!(hn.coeffs(), &[1, 0, 0, -1]);
-    }
-
-    #[test]
-    fn hn_two_coprime_vars() {
-        // I = (x, y) coprime → N = (1-t)^2 = 1 - 2t + t^2
-        let hn = hilbert_numerator(&[x(2, 0, 1), x(2, 1, 1)]);
-        assert_eq!(hn.coeffs(), &[1, -2, 1]);
-    }
-
-    #[test]
-    fn hn_three_coprime_vars() {
-        // I = (x, y, z) → N = (1-t)^3 = 1 - 3t + 3t^2 - t^3
-        let hn = hilbert_numerator(&[x(3, 0, 1), x(3, 1, 1), x(3, 2, 1)]);
-        assert_eq!(hn.coeffs(), &[1, -3, 3, -1]);
-    }
-
-    #[test]
-    fn hn_xx_xy_known_textbook_case() {
-        // I = (x^2, x*y) in k[x, y].
-        // Std monomials: {1, x, y, y^2, y^3, …}.
-        // HS = 1 + 2t + t^2/(1-t) ⇒ HS*(1-t)^2 = 1 - 2t^2 + t^3.
-        let hn = hilbert_numerator(&[from_exps(vec![2, 0]), from_exps(vec![1, 1])]);
-        assert_eq!(hn.coeffs(), &[1, 0, -2, 1]);
-    }
-
-    #[test]
-    fn hn_square_of_max_ideal() {
-        // I = m^2 = (x^2, x*y, y^2) in k[x, y].
-        // S/I has basis {1, x, y} (HF = 1, 2). HN = 1 - 3t^2 + 2t^3.
-        let hn = hilbert_numerator(&[
-            from_exps(vec![2, 0]),
-            from_exps(vec![1, 1]),
-            from_exps(vec![0, 2]),
-        ]);
-        assert_eq!(hn.coeffs(), &[1, 0, -3, 2]);
-    }
-
-    #[test]
-    fn hn_chain_overlap_xy_yz() {
-        // I = (x*y, y*z) in k[x, y, z]. Standard monomials are
-        // monomials with `b = 0` (no `y`) plus pure powers `y^k`.
-        // HF(0) = 1, HF(d) = d+2 for d ≥ 1; HN = 1 - 2t^2 + t^3.
-        let hn = hilbert_numerator(&[from_exps(vec![1, 1, 0]), from_exps(vec![0, 1, 1])]);
-        assert_eq!(hn.coeffs(), &[1, 0, -2, 1]);
-    }
-
-    #[test]
-    fn hn_redundant_generators_are_minimised() {
-        // (x, x*y) ⇒ x*y is redundant, so HN = 1 - t (same as `(x)`).
-        let hn = hilbert_numerator(&[x(2, 0, 1), from_exps(vec![1, 1])]);
-        assert_eq!(hn.coeffs(), &[1, -1]);
-    }
-
-    #[test]
-    fn hn_artinian_ideal_coeffs_sum_to_zero() {
-        // For an artinian ideal I (i.e. `S/I` finite-dimensional),
-        // `HN(1) = 0`: `HS(t) = HN(t) / (1-t)^n` is defined at `t=1`
-        // only when `(1-t)^n | HN(t)`, which forces `HN(1) = 0`.
-        // I = (x^2, x*y, y^2) ⇒ HN = 1 - 3t^2 + 2t^3, sum = 0.
-        let hn = hilbert_numerator(&[
-            from_exps(vec![2, 0]),
-            from_exps(vec![1, 1]),
-            from_exps(vec![0, 2]),
-        ]);
-        let sum: i64 = hn.coeffs().iter().sum();
-        assert_eq!(sum, 0);
-    }
-
-    #[test]
-    fn hn_addition_subtraction_round_trip() {
-        let mut a = HilbertNum { coeffs: vec![1, -2, 3] };
-        let b = HilbertNum { coeffs: vec![0, 1, 0, -4] };
-        a.add_assign(&b);
-        assert_eq!(a.coeffs(), &[1, -1, 3, -4]);
-        a.sub_assign(&b);
-        assert_eq!(a.coeffs(), &[1, -2, 3]);
-    }
-
-    #[test]
-    fn hn_mul_t_pow_shifts() {
-        let mut a = HilbertNum { coeffs: vec![1, -2, 3] };
-        a.mul_t_pow_assign(2);
-        assert_eq!(a.coeffs(), &[0, 0, 1, -2, 3]);
-        let mut z = HilbertNum::zero();
-        z.mul_t_pow_assign(5);
-        assert_eq!(z, HilbertNum::zero());
-    }
-
-    #[test]
-    fn hn_mul_polynomials() {
-        // (1 - t) * (1 - t) = 1 - 2t + t^2
-        let a = HilbertNum::one_minus_t_pow(1);
-        let b = HilbertNum::one_minus_t_pow(1);
-        assert_eq!(a.mul(&b).coeffs(), &[1, -2, 1]);
-    }
-
-    #[test]
-    fn hn_degree_and_trim() {
-        let a = HilbertNum { coeffs: vec![1, 0, 0, 0] };
-        assert_eq!(a.degree(), Some(0));
-        let z = HilbertNum::zero();
-        assert_eq!(z.degree(), None);
-    }
-
-    #[test]
-    fn hn_saturating_arithmetic_does_not_panic_on_extreme_input() {
-        // `i64::MAX`-valued coefficients exercise the saturating
-        // arithmetic in `mul` and `add_assign`. Result coefficients
-        // clamp to `i64::{MIN, MAX}` rather than wrapping.
-        let huge = HilbertNum { coeffs: vec![i64::MAX, i64::MAX] };
-        let other = HilbertNum { coeffs: vec![2, 2] };
-        let prod = huge.mul(&other);
-        // All coefficients are saturated; no panic.
-        for &c in prod.coeffs() {
-            assert!(c >= 0 || c == i64::MIN, "saturated coefficient must be in range");
-        }
-
-        let mut acc = HilbertNum { coeffs: vec![i64::MAX] };
-        let plus_one = HilbertNum { coeffs: vec![1] };
-        acc.add_assign(&plus_one);
-        assert_eq!(acc.coeff(0), i64::MAX, "add_assign saturates at i64::MAX");
-    }
-
+    res
 }
+
+/// Socle-degree bound past which [`quotient_dimension`] declines
+/// (returns `None`) instead of summing the Hilbert function term by
+/// term. Reduced-GB leading terms of real circuit ideals carry small
+/// pure powers (bit constraints give `x^2`), so this is never reached in
+/// practice; it bounds a pathological input (e.g. a large explicit
+/// field equation) to a quick, sound `None`.
+const QUOT_DIM_DEGREE_CAP: u32 = 1 << 16;
+
+/// `dim_k(S/I)` for the monomial ideal generated by `gens` — the number
+/// of standard monomials, i.e. the `k`-vector-space dimension of `S/I`.
+/// For `gens = LT(J)` (the leading monomials of a Gröbner basis of `J`)
+/// this equals `dim_k(R/J)`, the number of solutions of `J` with
+/// multiplicity over the algebraic closure (Macaulay: the standard
+/// monomials are a `k`-basis of `R/J`).
+///
+/// Returns `None` when `S/I` is **not** finite-dimensional — some
+/// variable lacks a pure power in `gens`, so the ideal is positive-
+/// dimensional — or when the socle-degree bound exceeds
+/// [`QUOT_DIM_DEGREE_CAP`] (declined; never returns a wrong value).
+///
+/// Sound and verdict-neutral by construction: pure combinatorics on the
+/// exponent vectors of an already-computed basis, no field arithmetic.
+pub fn quotient_dimension(gens: &[Monomial], n_vars: usize) -> Option<u128> {
+    // Unit ideal `I = (1)`: `S/I = 0`.
+    if gens.iter().any(|m| m.is_one()) {
+        return Some(0);
+    }
+    // `S = k` with `I = 0` (no unit generator above): `dim_k k = 1`.
+    if n_vars == 0 {
+        return Some(1);
+    }
+    // Zero-dimensionality test and socle-degree bound: each variable
+    // needs a pure power `x_v^{a_v}` among the generators. `a_v` is the
+    // minimal such exponent; every standard monomial has `x_v`-degree
+    // `< a_v`, so the top standard-monomial degree is at most
+    // `Σ (a_v − 1)`. (Matches `Ideal::is_zero_dim`'s pure-power test.)
+    let mut pure: Vec<Option<u32>> = vec![None; n_vars];
+    for m in gens {
+        let exps = m.exponents();
+        let mut nz: Option<usize> = None;
+        let mut multi = false;
+        for v in 0..n_vars {
+            if exps[v] > 0 {
+                if nz.is_some() {
+                    multi = true;
+                    break;
+                }
+                nz = Some(v);
+            }
+        }
+        if !multi {
+            if let Some(v) = nz {
+                let e = exps[v] as u32;
+                pure[v] = Some(pure[v].map_or(e, |c| c.min(e)));
+            }
+        }
+    }
+    let mut d_max: u64 = 0;
+    for slot in &pure {
+        match slot {
+            Some(a) => d_max += a.saturating_sub(1) as u64,
+            None => return None, // positive-dimensional
+        }
+    }
+    if d_max > QUOT_DIM_DEGREE_CAP as u64 {
+        return None; // declined: pathologically large, never wrong
+    }
+
+    let num = hilbert_numerator(gens);
+    let mut dim: u128 = 0;
+    for d in 0..=(d_max as u32) {
+        let hf = num.hf_at(d, n_vars);
+        if hf <= 0 {
+            break; // Artinian: HF(d)=0 ⇒ HF(e)=0 for all e ≥ d
+        }
+        dim = dim.saturating_add(hf as u128);
+    }
+    Some(dim)
+}
+
+#[cfg(test)]
+#[path = "hilbert_tests.rs"]
+mod tests;

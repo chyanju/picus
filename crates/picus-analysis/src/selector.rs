@@ -46,7 +46,10 @@ impl SelectorState {
     /// solver. Returns `None` when the pool is empty.
     pub fn select(&mut self, uspool: &HashSet<usize>) -> Option<usize> {
         match self.kind {
-            SelectorKind::First => uspool.iter().copied().next(),
+            // Smallest index, not `iter().next()`: HashSet iteration order
+            // is nondeterministic across runs/builds, which would make the
+            // `first` selector irreproducible.
+            SelectorKind::First => uspool.iter().copied().min(),
             SelectorKind::Counter => self.select_counter(uspool),
         }
     }
@@ -61,11 +64,15 @@ impl SelectorState {
     }
 
     fn select_counter(&mut self, uspool: &HashSet<usize>) -> Option<usize> {
-        // Highest (connectivity + weight) wins.
+        // Highest (connectivity + weight) wins; ties broken by smallest
+        // wire index. Folding the index into the key makes every key
+        // unique, so the pick is deterministic regardless of the
+        // (nondeterministic) HashSet iteration order — matching the
+        // reproducibility the `First` selector gets from `.min()`.
         uspool.iter().copied().max_by_key(|&sig| {
             let c = self.connectivity.get(&sig).copied().unwrap_or(0) as i64;
             let w = self.weights.get(&sig).copied().unwrap_or(0);
-            c + w
+            (c + w, std::cmp::Reverse(sig))
         })
     }
 }
@@ -77,3 +84,7 @@ pub enum SolverFeedback {
     /// Signal was skipped (SAT for non-target, timeout, or error).
     Skip,
 }
+
+#[cfg(test)]
+#[path = "selector_tests.rs"]
+mod tests;

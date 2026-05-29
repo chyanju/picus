@@ -107,6 +107,18 @@ struct Args {
     iters: usize,
 }
 
+/// Fetch the value following the flag at position `i`, or exit with a
+/// usage error if it is missing (e.g. the flag was the final argument).
+fn next_value(args: &[String], i: usize, flag: &str) -> String {
+    match args.get(i + 1) {
+        Some(v) => v.clone(),
+        None => {
+            eprintln!("error: {flag} expects a value");
+            std::process::exit(2);
+        }
+    }
+}
+
 fn parse_args() -> Args {
     let default_cvc5 = "/home/ubuntu/Downloads/suite-picus/picus/target/release/build/cvc5-ff-sys-12df471d7dc7fff0/out/cvc5/build/bin/cvc5";
     let mut a = Args {
@@ -119,15 +131,19 @@ fn parse_args() -> Args {
     while i < args.len() {
         match args[i].as_str() {
             "--cvc5" => {
-                a.cvc5 = args[i + 1].clone();
+                a.cvc5 = next_value(&args, i, "--cvc5");
                 i += 2;
             }
             "--timeout-ms" => {
-                a.timeout_ms = args[i + 1].parse().expect("--timeout-ms expects integer");
+                a.timeout_ms = next_value(&args, i, "--timeout-ms")
+                    .parse()
+                    .expect("--timeout-ms expects integer");
                 i += 2;
             }
             "--iters" => {
-                a.iters = args[i + 1].parse().expect("--iters expects integer");
+                a.iters = next_value(&args, i, "--iters")
+                    .parse()
+                    .expect("--iters expects integer");
                 i += 2;
             }
             _ => {

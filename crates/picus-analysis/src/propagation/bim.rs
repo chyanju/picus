@@ -4,12 +4,15 @@
 //! IR. If the variables that appear in the collected equations form
 //! a square invertible system over GF(p), every variable in it is
 //! uniquely determined and can be marked known.
+//!
+//! Wire-keyed: marking a wire known relies on the collected equations
+//! being mirrored in both copies (the copy-symmetry invariant documented
+//! in `picus_smt::poly_ir::r1cs_to_poly_ir`).
 #![allow(clippy::needless_range_loop)]
 
 use std::collections::{HashMap, HashSet};
 
-use num_bigint::{BigInt, BigUint};
-use num_integer::Integer;
+use num_bigint::BigUint;
 use num_traits::{One, Zero};
 use picus_smt::poly_ir::PolyIR;
 
@@ -37,6 +40,15 @@ impl PropagationLemma for BimLemma {
 
         // Only apply when the variable count matches the equation count
         // and all variables are currently unknown.
+        //
+        // Note on R1CS-lowered input: this lemma is effectively inert there.
+        // `r1cs_to_poly_ir` emits each linear constraint in both copies
+        // (`Σ a_i x_{w_i}` and `Σ a_i y_{w_i}`), and `collect_linear_homogeneous`
+        // maps both through `var_to_wire` (which collapses x_i and y_i to the
+        // same wire) — so the two copies become identical matrix rows. A square
+        // system with duplicate rows is singular (det = 0 below), so the lemma
+        // declines. It can still fire on a non-mirrored linear-homogeneous
+        // system built directly via the `PolyIR` API; it is not dead code.
         if equations.len() != all_sigs.len()
             || !all_sigs.iter().all(|s| ctx.unknown.contains(s))
         {
@@ -52,12 +64,13 @@ impl PropagationLemma for BimLemma {
 
         let mut matrix: Vec<Vec<BigUint>> = vec![vec![BigUint::zero(); n]; n];
         for (row, eq) in equations.iter().enumerate() {
-            if row >= n {
-                break;
-            }
             for (sig, coeff) in eq {
                 if let Some(&col) = sig_idx.get(sig) {
-                    matrix[row][col] = coeff.clone();
+                    // Accumulate (mod p): a wire appearing more than once in
+                    // one equation must sum its coefficients, not keep only
+                    // the last (an overwrite would mis-build the matrix).
+                    let acc = (&matrix[row][col] + coeff) % p;
+                    matrix[row][col] = acc;
                 }
             }
         }
@@ -125,7 +138,7 @@ fn matrix_det_mod(matrix: &[Vec<BigUint>], p: &BigUint) -> Option<BigUint> {
             sign_flip = !sign_flip;
         }
         det = (&det * &m[col][col]) % p;
-        let pivot_inv = mod_inverse(&m[col][col], p)?;
+        let pivot_inv = super::mod_inverse(&m[col][col], p)?;
         for row in (col + 1)..n {
             if m[row][col].is_zero() {
                 continue;
@@ -147,20 +160,13 @@ fn matrix_det_mod(matrix: &[Vec<BigUint>], p: &BigUint) -> Option<BigUint> {
     Some(det)
 }
 
-fn mod_inverse(a: &BigUint, p: &BigUint) -> Option<BigUint> {
-    let a_int = BigInt::from(a.clone());
-    let p_int = BigInt::from(p.clone());
-    let gcd = a_int.extended_gcd(&p_int);
-    if gcd.gcd != BigInt::one() {
-        return None;
-    }
-    let inv = ((gcd.x % &p_int) + &p_int) % &p_int;
-    Some(inv.to_biguint().expect("inverse should be non-negative"))
-}
-
 inventory::submit! {
     LemmaDescriptor {
         name: "bim",
         factory: || Box::new(BimLemma::default()),
     }
 }
+
+#[cfg(test)]
+#[path = "bim_tests.rs"]
+mod tests;

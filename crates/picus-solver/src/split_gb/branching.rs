@@ -11,12 +11,10 @@
 //!   [`SplitGb`] before falling back to round-robin on basis 0. Used by
 //!   the search-frame branching point in [`super::search`].
 
-use std::collections::HashMap;
-
-use crate::gb::brancher::Brancher;
-use crate::ff::field::FieldElem;
+use crate::gb::brancher::{univariate_coeffs, Brancher};
 use crate::gb::ideal::Ideal;
-use crate::poly::{FfPolyRing, Poly};
+use crate::metric;
+use crate::poly::FfPolyRing;
 
 use super::PartialPoint;
 
@@ -34,7 +32,7 @@ pub fn apply_rule<'r>(
     r: &PartialPoint,
 ) -> Brancher {
     let ring = &poly_ring.ring;
-    let field = &poly_ring.field;
+    let field = &poly_ring.field();
 
     // (1) univariate polynomial in an unassigned variable
     for p in &gb.basis {
@@ -43,10 +41,16 @@ pub fn apply_rule<'r>(
             let (var_idx, _) = appearing[0];
             if r[var_idx].is_none() {
                 if let Some(coeffs) = univariate_coeffs(poly_ring, p, var_idx) {
-                    let roots = crate::gb::roots::find_roots(field, &coeffs);
-                    return Brancher::Roots(
-                        roots.into_iter().map(|v| (var_idx, v)).collect()
-                    );
+                    let (roots, complete) = crate::gb::roots::find_roots_checked(field, &coeffs);
+                    if complete {
+                        return Brancher::Roots(
+                            roots.into_iter().map(|v| (var_idx, v)).collect()
+                        );
+                    }
+                    // Incomplete root extraction: a partial root set treated as
+                    // exhaustive could prune a satisfying assignment (unsound
+                    // UNSAT). Fall through to the non-exhaustive round-robin
+                    // brancher (→ Unknown on large primes).
                 }
             }
         }
@@ -54,59 +58,43 @@ pub fn apply_rule<'r>(
 
     // (2) zero-dim: compute minimal polynomial
     if gb.is_zero_dim() {
-        for v in 0..poly_ring.n_vars {
+        for v in 0..poly_ring.n_vars() {
             if r[v].is_none() {
                 if let Some(coeffs) = gb.min_poly(v) {
-                    let roots = crate::gb::roots::find_roots(field, &coeffs);
-                    // If roots is empty, the ideal is inconsistent under
-                    // any assignment to this variable — return empty to
-                    // trigger backtracking.
-                    return Brancher::Roots(
-                        roots.into_iter().map(|val| (v, val)).collect()
-                    );
+                    let (roots, complete) = crate::gb::roots::find_roots_checked(field, &coeffs);
+                    // A *complete* empty root set proves the ideal inconsistent
+                    // under any assignment to this variable (empty Roots ⇒
+                    // backtrack). An *incomplete* set must not be trusted as
+                    // exhaustive, so fall through to round-robin instead.
+                    if complete {
+                        return Brancher::Roots(
+                            roots.into_iter().map(|val| (v, val)).collect()
+                        );
+                    }
                 }
             }
         }
     }
 
     // (3) round-robin: lazy enumeration.
-    let unassigned: Vec<usize> = (0..poly_ring.n_vars).filter(|i| r[*i].is_none()).collect();
+    let unassigned: Vec<usize> = (0..poly_ring.n_vars()).filter(|i| r[*i].is_none()).collect();
     if unassigned.is_empty() {
         return Brancher::Roots(Vec::new());
     }
-
-    let prime = field.prime();
-    // No per-variable cap: the count is the field size (saturated to
-    // `u64::MAX` for primes larger than 64 bits). Termination on large
-    // primes relies on the cancel token / caller timeout.
-    let exhaustive = prime.bits() <= 16;
-    let per_var: u64 = if exhaustive {
-        let x = prime.iter_u64_digits().next().unwrap_or(2);
-        x.max(2)
-    } else {
-        u64::MAX
-    };
-    let total = per_var.saturating_mul(unassigned.len() as u64);
-
-    Brancher::RoundRobin {
-        unassigned,
-        idx: 0,
-        total,
-        exhaustive,
-    }
+    Brancher::round_robin(unassigned, field.prime())
 }
 
 /// Like [`apply_rule`] but checks every basis for univariate / zero-dim
 /// structure. The detected branching structure is mathematically valid
 /// in any of the bases.
+#[metric]
 pub(super) fn apply_rule_multi<'r>(
     poly_ring: &'r FfPolyRing,
     bases: &[Ideal<'r>],
     r: &PartialPoint,
 ) -> Brancher {
-    let _t = crate::profile::ScopedTimer::new("apply_rule_multi");
     let ring = &poly_ring.ring;
-    let field = &poly_ring.field;
+    let field = &poly_ring.field();
 
     // (1) Check all bases for a univariate polynomial in an unassigned
     // variable.
@@ -117,10 +105,14 @@ pub(super) fn apply_rule_multi<'r>(
                 let (var_idx, _) = appearing[0];
                 if r[var_idx].is_none() {
                     if let Some(coeffs) = univariate_coeffs(poly_ring, p, var_idx) {
-                        let roots = crate::gb::roots::find_roots(field, &coeffs);
-                        return Brancher::Roots(
-                            roots.into_iter().map(|v| (var_idx, v)).collect()
-                        );
+                        let (roots, complete) = crate::gb::roots::find_roots_checked(field, &coeffs);
+                        if complete {
+                            return Brancher::Roots(
+                                roots.into_iter().map(|v| (var_idx, v)).collect()
+                            );
+                        }
+                        // Incomplete: fall through rather than risk an unsound
+                        // infeasible conclusion (see `apply_rule`).
                     }
                 }
             }
@@ -130,13 +122,16 @@ pub(super) fn apply_rule_multi<'r>(
     // (2) Check all bases for a zero-dimensional ideal → minimal polynomial.
     for gb in bases {
         if gb.is_zero_dim() {
-            for v in 0..poly_ring.n_vars {
+            for v in 0..poly_ring.n_vars() {
                 if r[v].is_none() {
                     if let Some(coeffs) = gb.min_poly(v) {
-                        let roots = crate::gb::roots::find_roots(field, &coeffs);
-                        return Brancher::Roots(
-                            roots.into_iter().map(|val| (v, val)).collect()
-                        );
+                        let (roots, complete) = crate::gb::roots::find_roots_checked(field, &coeffs);
+                        if complete {
+                            return Brancher::Roots(
+                                roots.into_iter().map(|val| (v, val)).collect()
+                            );
+                        }
+                        // Incomplete: fall through to round-robin (see `apply_rule`).
                     }
                 }
             }
@@ -151,29 +146,10 @@ pub(super) fn apply_rule_multi<'r>(
     }
 }
 
-/// Extract univariate coefficients (assumes only `var_idx` appears in `p`).
-fn univariate_coeffs(
-    poly_ring: &FfPolyRing,
-    p: &Poly,
-    var_idx: usize,
-) -> Option<Vec<FieldElem>> {
-    let ring = &poly_ring.ring;
-    let fp = &poly_ring.field;
-    let appearing = ring.appearing_indeterminates(p);
-    for (v, _) in &appearing {
-        if *v != var_idx { return None; }
-    }
-    let mut coeffs: HashMap<usize, FieldElem> = HashMap::new();
-    let mut max_deg = 0usize;
-    for (c, m) in ring.terms(p) {
-        let d = ring.exponent_at(&m, var_idx);
-        if d > max_deg { max_deg = d; }
-        let entry = coeffs.entry(d).or_insert_with(|| fp.zero());
-        fp.add_assign(entry, fp.clone_el(c));
-    }
-    let mut out = Vec::with_capacity(max_deg + 1);
-    for d in 0..=max_deg {
-        out.push(coeffs.remove(&d).unwrap_or_else(|| fp.zero()));
-    }
-    Some(out)
-}
+// `univariate_coeffs` and the round-robin constructor are shared with
+// `gb::model` via `gb::brancher`, so the load-bearing `exhaustive`
+// predicate has a single source.
+
+#[cfg(test)]
+#[path = "branching_tests.rs"]
+mod tests;

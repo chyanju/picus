@@ -2,7 +2,7 @@
 //!
 //! Shape matches cvc5's FF sub-theory. Facts arrive via
 //! [`Theory::notify_fact`] onto a level-indexed trail. Each
-//! [`Theory::post_check`] at `Effort::Full` walks the trail
+//! [`Theory::post_check`] walks the trail
 //! through [`ConstraintSystemBuilder`] to build a canonical
 //! [`ConstraintSystem`], runs the GB solver via
 //! [`encode`], and maps any returned UNSAT core indices
@@ -15,15 +15,15 @@ use num_bigint::BigUint;
 use num_traits::Zero;
 
 use crate::core::{solve_encoded_with_cancel, SolveOutcome};
-use crate::frontend::encoder::{encode, ConstraintSystemBuilder, PolyTerm};
+use crate::frontend::encoder::{encode, ConstraintSystemBuilder, EncodedSystem, PolySource, PolyTerm};
 use crate::sat::Var;
 use crate::timeout::CancelToken;
 
 use super::atoms::AtomTable;
-use super::theory::{CheckOutcome, Effort, Theory};
+use super::theory::{CheckOutcome, Theory};
 
 /// FF theory plug-in: maintains an asserted-fact trail and dispatches
-/// `post_check(Full)` to [`solve_encoded_with_cancel`].
+/// `post_check` to [`solve_encoded_with_cancel`].
 pub struct FfTheory<'a> {
     atoms: &'a AtomTable,
     cancel: &'a CancelToken,
@@ -52,12 +52,14 @@ impl<'a> FfTheory<'a> {
         }
     }
 
-    /// Build an `ConstraintSystem` from the trail via
+    /// Build a `ConstraintSystem` from the trail via
     /// `ConstraintSystemBuilder`, encode, dispatch to the GB solver,
-    /// and map any returned `original_polys` core indices back to
-    /// atom variables. Encoded-input ordering is
-    /// `equality_atoms ++ disequality_atoms` (see
-    /// `encoder::encode_impl`).
+    /// and map any returned core polynomial indices back to atom
+    /// variables. The mapping uses `EncodedSystem::poly_provenance`
+    /// (per-polynomial source tags) rather than positional layout, so
+    /// it is robust to the encoder's interleaving of assignment /
+    /// Rabinowitsch / field polynomials and to dropped zero
+    /// polynomials.
     fn check_full_with_mapping(&mut self) -> CheckOutcome {
         let prime = self.atoms.prime().clone();
 
@@ -86,18 +88,8 @@ impl<'a> FfTheory<'a> {
                 builder.add_equality(terms);
                 equality_atoms.push(atom_var);
             } else {
-                let d_name = format!("__diseq_d_{}", diseq_counter);
-                diseq_counter += 1;
-                let d_idx = builder.var(&d_name);
-                let zero = match zero_idx {
-                    Some(z) => z,
-                    None => {
-                        let z = builder.var("__zero");
-                        builder.add_assignment(z, BigUint::zero());
-                        zero_idx = Some(z);
-                        z
-                    }
-                };
+                let (d_idx, zero) =
+                    builder.fresh_disequality_vars(&mut diseq_counter, &mut zero_idx);
 
                 // Encode `(d - lhs) = 0`: starts with `+1 * d_var`
                 // then appends the atom's polynomial with each coeff
@@ -139,18 +131,15 @@ impl<'a> FfTheory<'a> {
             }
             SolveOutcome::Unsat(core_indices) => {
                 self.has_model = false;
-                let mut input_atom_in_encode_order = equality_atoms;
-                input_atom_in_encode_order.extend(disequality_atoms);
-                let mut atom_core: Vec<Var> = core_indices
-                    .iter()
-                    .filter_map(|&i| input_atom_in_encode_order.get(i).copied())
-                    .collect();
-                atom_core.sort();
-                atom_core.dedup();
-                if atom_core.is_empty() {
-                    return CheckOutcome::Unknown;
+                match map_core_to_atoms(
+                    &core_indices,
+                    &encoded,
+                    &equality_atoms,
+                    &disequality_atoms,
+                ) {
+                    Some(core) => CheckOutcome::Unsat { core },
+                    None => CheckOutcome::Unknown,
                 }
-                CheckOutcome::Unsat { core: atom_core }
             }
             SolveOutcome::Unknown => {
                 self.has_model = false;
@@ -158,9 +147,7 @@ impl<'a> FfTheory<'a> {
             }
         }
     }
-}
 
-impl<'a> FfTheory<'a> {
     /// `var_name -> (value, source_atom)` from positive single-variable
     /// equalities on the trail.
     fn pinned_vars(&self) -> HashMap<String, (BigUint, Var)> {
@@ -262,7 +249,6 @@ impl<'a> FfTheory<'a> {
         let on_trail: std::collections::HashSet<Var> =
             self.facts.iter().map(|&(av, _)| av).collect();
         let one = BigUint::from(1u32);
-        let two = BigUint::from(2u32);
         let mut results = Vec::new();
         for &(src_av, src_pol) in &self.facts {
             if !src_pol {
@@ -335,13 +321,9 @@ impl<'a> FfTheory<'a> {
             } else {
                 prime - &acc_const
             };
-            let inv_a = if unpinned_coeff == one {
-                one.clone()
-            } else {
-                if prime <= &two {
-                    continue;
-                }
-                unpinned_coeff.modpow(&(prime - &two), prime)
+            let inv_a = match super::field_inverse(&unpinned_coeff, prime) {
+                Some(i) => i,
+                None => continue,
             };
             let derived_value = (neg_c * inv_a) % prime;
             let mut reason_base: Vec<(Var, bool)> =
@@ -365,6 +347,62 @@ impl<'a> FfTheory<'a> {
     }
 }
 
+/// Map a theory UNSAT core (polynomial indices into `encoded`) back to the
+/// trail atom variables responsible, via per-polynomial provenance.
+///
+/// `Equality(j)` is reliable only when the pre-encode rewrite dropped no
+/// equality — detected by `encoded.n_input_equalities == equality_atoms.len()`;
+/// otherwise a specific equality cannot be pinned and the whole trail is
+/// returned. `Rabinowitsch(d)` always aligns (disequalities are never dropped
+/// or reordered). `Other` / unattributable polynomials (zero assignment, field
+/// polys) contribute no removable atom.
+///
+/// Returns the sorted, deduped core — the precise atom set, or the full trail
+/// when a core index cannot be attributed — or `None` when even the full-trail
+/// fallback is empty (the caller then reports Unknown).
+fn map_core_to_atoms(
+    core_indices: &[usize],
+    encoded: &EncodedSystem,
+    equality_atoms: &[Var],
+    disequality_atoms: &[Var],
+) -> Option<Vec<Var>> {
+    let eq_aligned = encoded.n_input_equalities == equality_atoms.len();
+    let mut atom_core: Vec<Var> = Vec::new();
+    let mut need_full = false;
+    for &i in core_indices {
+        match encoded.poly_provenance.get(i) {
+            Some(PolySource::Equality(j)) => match (eq_aligned, equality_atoms.get(*j)) {
+                (true, Some(&av)) => atom_core.push(av),
+                _ => need_full = true,
+            },
+            Some(PolySource::Rabinowitsch(d)) => match disequality_atoms.get(*d) {
+                Some(&av) => atom_core.push(av),
+                None => need_full = true,
+            },
+            Some(PolySource::Other) | None => {}
+        }
+    }
+    if !need_full {
+        atom_core.sort();
+        atom_core.dedup();
+    }
+    if need_full || atom_core.is_empty() {
+        // Coarser but sound: the whole trail is inconsistent (the GB proved
+        // UNSAT over all asserted facts). Used when a core index cannot be
+        // precisely attributed, or when only encoder-internal polynomials
+        // were named.
+        let mut full: Vec<Var> = equality_atoms.to_vec();
+        full.extend_from_slice(disequality_atoms);
+        full.sort();
+        full.dedup();
+        if full.is_empty() {
+            return None;
+        }
+        return Some(full);
+    }
+    Some(atom_core)
+}
+
 impl<'a> Theory for FfTheory<'a> {
     fn notify_fact(&mut self, atom: Var, polarity: bool) {
         if self.atoms.is_auxiliary(atom) {
@@ -386,10 +424,7 @@ impl<'a> Theory for FfTheory<'a> {
         self.pending_reasons.clear();
     }
 
-    fn post_check(&mut self, effort: Effort) -> CheckOutcome {
-        if effort != Effort::Full {
-            return CheckOutcome::Unknown;
-        }
+    fn post_check(&mut self) -> CheckOutcome {
         self.check_full_with_mapping()
     }
 
@@ -421,10 +456,6 @@ impl<'a> Theory for FfTheory<'a> {
             .unwrap_or_default()
     }
 
-    fn level(&self) -> u32 {
-        self.levels.len() as u32
-    }
-
     fn collect_model(&self) -> Option<HashMap<String, BigUint>> {
         if self.has_model {
             self.last_model.clone()
@@ -435,4 +466,5 @@ impl<'a> Theory for FfTheory<'a> {
 }
 
 #[cfg(test)]
+#[path = "ff_theory_tests.rs"]
 mod tests;

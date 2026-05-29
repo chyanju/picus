@@ -3,7 +3,7 @@
 //!
 //! - Buchberger's algorithm with Gebauer-Möller / sugar pair management and
 //!   geobucket reduction, plus the F4-lite matrix path.
-//! - Hilbert-numerator driven selection.
+//! - Hilbert numerator + quotient-dimension oracle over finished bases.
 //! - Univariate root finding via Cantor-Zassenhaus.
 
 // Algebra primitives (field, dense/sparse polynomials, reduction) live in
@@ -15,6 +15,7 @@ pub mod buchberger;
 pub mod f4;
 pub mod hilbert;
 pub mod spair;
+pub(crate) mod spair_criteria;
 pub mod sparse_gb;
 pub mod univariate;
 

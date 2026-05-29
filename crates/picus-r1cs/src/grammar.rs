@@ -68,7 +68,9 @@ impl R1csFile {
 
     #[must_use]
     pub fn constraint_to_string(&self, id: usize) -> String {
-        let c = &self.constraints.constraints[id];
+        let Some(c) = self.constraints.constraints.get(id) else {
+            return format!("<constraint index {id} out of range>");
+        };
         let block_str = |b: &ConstraintBlock| -> String {
             if b.nnz == 0 {
                 return "0".to_string();
@@ -88,3 +90,7 @@ impl R1csFile {
         )
     }
 }
+
+#[cfg(test)]
+#[path = "grammar_tests.rs"]
+mod tests;

@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use crate::config::{self, ReprKind};
+use crate::config::ReprKind;
 use crate::ff::field::{FieldElem, PrimeField};
 use crate::ff::monomial::{Monomial, MonomialOrder};
 use crate::ff::polynomial::{DensePoly, PolyRing as FfPolyRingCtx, Polynomial};
@@ -25,27 +25,32 @@ pub type PolyRingType = PolyRingFacade;
 
 /// A multivariate polynomial ring GF(p)[x_0, ..., x_{n-1}].
 ///
-/// `pr.ring` is a thin facade around the underlying [`ff::PolyRing`]
+/// `pr.ring` is a thin facade around the underlying [`crate::ff::polynomial::PolyRing`]
 /// context, exposing `terms`, `create_term`, `exponent_at`, etc.
 pub struct FfPolyRing {
-    pub field: PrimeField,
     pub ring: PolyRingFacade,
-    pub n_vars: usize,
-    pub var_names: Vec<String>,
 }
 
 impl FfPolyRing {
     /// Create a new polynomial ring with degrevlex term order.
     pub fn new(field: PrimeField, var_names: Vec<String>) -> Self {
-        let n_vars = var_names.len();
-        let ctx = FfPolyRingCtx::new(
-            field.clone(),
-            var_names.clone(),
-            MonomialOrder::DegRevLex,
-        );
-        let ring = PolyRingFacade { ctx };
-        FfPolyRing { field, ring, n_vars, var_names }
+        let ctx = FfPolyRingCtx::new(field, var_names, MonomialOrder::DegRevLex);
+        FfPolyRing { ring: PolyRingFacade { ctx } }
     }
+
+    /// Like [`Self::new`] but with an explicit polynomial representation,
+    /// bypassing the thread-local `config::poly_repr`.
+    pub fn new_with_repr(field: PrimeField, var_names: Vec<String>, repr: ReprKind) -> Self {
+        let ctx = FfPolyRingCtx::new_with_repr(field, var_names, MonomialOrder::DegRevLex, repr);
+        FfPolyRing { ring: PolyRingFacade { ctx } }
+    }
+
+    /// The prime field, read from the shared ring context.
+    pub fn field(&self) -> &PrimeField { &self.ring.ctx.field }
+    /// Number of indeterminates.
+    pub fn n_vars(&self) -> usize { self.ring.ctx.n_vars }
+    /// Variable names, in index order.
+    pub fn var_names(&self) -> &[String] { &self.ring.ctx.var_names }
 
     /// i-th indeterminate as a polynomial.
     pub fn var(&self, index: usize) -> Poly {
@@ -58,7 +63,7 @@ impl FfPolyRing {
     }
 
     pub fn zero(&self) -> Poly { Polynomial::zero() }
-    pub fn one(&self) -> Poly { Polynomial::constant(self.field.one(), &self.ring.ctx) }
+    pub fn one(&self) -> Poly { Polynomial::constant(self.ring.ctx.field.one(), &self.ring.ctx) }
 
     pub fn add(&self, a: Poly, b: Poly) -> Poly { a.add(&b, &self.ring.ctx) }
     pub fn sub(&self, a: Poly, b: Poly) -> Poly { a.sub(&b, &self.ring.ctx) }
@@ -74,11 +79,18 @@ impl FfPolyRing {
 
     /// Look up variable index by name.
     pub fn var_index(&self, name: &str) -> Option<usize> {
-        self.var_names.iter().position(|n| n == name)
+        self.ring.ctx.var_names.iter().position(|n| n == name)
     }
 
     /// Reference to the underlying `ff::PolyRing` context.
     pub fn ctx(&self) -> &Arc<FfPolyRingCtx> { &self.ring.ctx }
+
+    /// Variables that actually appear in `p` (delegates to the inner
+    /// [`PolyRingFacade`]). Exposed here so the IR ring — which is just an
+    /// `FfPolyRing` — offers the structural query the propagation lemmas use.
+    pub fn appearing_indeterminates(&self, p: &Poly) -> AppearingVars {
+        self.ring.appearing_indeterminates(p)
+    }
 }
 
 /// Facade exposing the `.ring.` method surface used throughout
@@ -245,117 +257,15 @@ impl<'a> IntoIterator for &'a AppearingVars {
 
 // ─── IR-layer polynomial ────────────────────────────────────────────
 //
-// The IR layer and the engine share one dense/sparse polynomial type:
-// `IrPoly` aliases `Polynomial`, `IrTermsIter` aliases the facade
-// `TermsIter`, and `IrPolyRing` is a thin representation-aware facade over
-// `FfPolyRing` whose constructors build the arm fixed by the ring's
-// `repr` (seeded from config).
+// The IR layer and the engine share one dense/sparse polynomial type, so
+// the IR ring is just [`FfPolyRing`] (its method surface already covers
+// everything `picus-smt`'s `PolyIR` needs) and the IR polynomial is
+// `IrPoly`, an alias for [`Polynomial`]. Keeping the alias documents intent
+// at the `picus-smt` / `picus-analysis` use sites without a second facade.
 
 /// IR polynomial — the dense/sparse `Polynomial` enum.
 pub type IrPoly = Polynomial;
 
-/// Term iterator over an `IrPoly` (the facade `TermsIter`).
-pub type IrTermsIter<'a> = TermsIter<'a>;
-
-/// IR-layer ring facade producing [`IrPoly`] in the configured
-/// representation. All polynomials built over one ring share one arm.
-pub struct IrPolyRing {
-    inner: FfPolyRing,
-    repr: ReprKind,
-}
-
-impl IrPolyRing {
-    /// New ring; representation taken from the current thread config.
-    pub fn new(field: PrimeField, var_names: Vec<String>) -> Self {
-        let repr = config::with(|c| c.poly_repr);
-        IrPolyRing { inner: FfPolyRing::new(field, var_names), repr }
-    }
-
-    /// New ring with an explicit representation (tests / oracle). The
-    /// inner ring's `ctx.repr` is seeded from config at construction, so
-    /// we install `repr` for that construction.
-    pub fn new_with_repr(field: PrimeField, var_names: Vec<String>, repr: ReprKind) -> Self {
-        let _g = config::ConfigGuard::with_override(|c| c.poly_repr = repr);
-        IrPolyRing { inner: FfPolyRing::new(field, var_names), repr }
-    }
-
-    pub fn repr(&self) -> ReprKind { self.repr }
-    pub fn n_vars(&self) -> usize { self.inner.n_vars }
-    pub fn var_names(&self) -> &[String] { &self.inner.var_names }
-    pub fn field(&self) -> &PrimeField { &self.inner.field }
-    pub fn ctx(&self) -> &Arc<FfPolyRingCtx> { &self.inner.ring.ctx }
-    pub fn var_index(&self, name: &str) -> Option<usize> { self.inner.var_index(name) }
-
-    pub fn var(&self, index: usize) -> IrPoly { self.inner.var(index) }
-    pub fn constant(&self, el: FieldElem) -> IrPoly { self.inner.constant(el) }
-    pub fn zero(&self) -> IrPoly { self.inner.zero() }
-    pub fn one(&self) -> IrPoly { self.inner.one() }
-
-    pub fn add(&self, a: IrPoly, b: IrPoly) -> IrPoly { a.add(&b, &self.inner.ring.ctx) }
-    pub fn sub(&self, a: IrPoly, b: IrPoly) -> IrPoly { a.sub(&b, &self.inner.ring.ctx) }
-    pub fn mul(&self, a: IrPoly, b: IrPoly) -> IrPoly { a.mul(&b, &self.inner.ring.ctx) }
-    pub fn neg(&self, a: IrPoly) -> IrPoly { a.negate(&self.inner.ring.ctx) }
-    pub fn scale(&self, coeff: FieldElem, poly: IrPoly) -> IrPoly {
-        poly.scale(&coeff, &self.inner.ring.ctx)
-    }
-
-    pub fn clone_poly(&self, p: &IrPoly) -> IrPoly { p.clone() }
-    pub fn is_zero(&self, p: &IrPoly) -> bool { p.is_zero() }
-
-    pub fn terms<'a>(&'a self, p: &'a IrPoly) -> IrTermsIter<'a> {
-        self.inner.ring.terms(p)
-    }
-    pub fn exponent_at<M: std::borrow::Borrow<Monomial>>(&self, m: M, var: usize) -> usize {
-        self.inner.ring.exponent_at(m, var)
-    }
-    pub fn appearing_indeterminates(&self, p: &IrPoly) -> AppearingVars {
-        self.inner.ring.appearing_indeterminates(p)
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use num_bigint::BigUint;
-
-    #[test]
-    fn test_poly_basic() {
-        let field = PrimeField::new(BigUint::from(17u32));
-        let pr = FfPolyRing::new(field, vec!["x".into(), "y".into()]);
-
-        let x = pr.var(0);
-        let y = pr.var(1);
-        let sum = pr.add(x, y);
-        assert!(!pr.is_zero(&sum));
-
-        let neg_sum = pr.neg(pr.clone_poly(&sum));
-        let zero = pr.add(sum, neg_sum);
-        assert!(pr.is_zero(&zero));
-    }
-
-    /// The dense and sparse arms of `IrPolyRing` must agree term-for-term
-    /// (the heavy randomised differential check lives in `ff::repr_oracle`;
-    /// this is a facade-dispatch smoke test).
-    #[test]
-    fn irpoly_dense_sparse_arms_agree() {
-        let field = PrimeField::new(BigUint::from(101u32));
-        let names: Vec<String> = (0..5).map(|i| format!("x{}", i)).collect();
-
-        let build = |repr| -> Vec<(BigUint, Vec<(usize, u16)>)> {
-            let pr = IrPolyRing::new_with_repr(field.clone(), names.clone(), repr);
-            // p = (x0 + x1) * (x2 - 1) + x3
-            let a = pr.add(pr.var(0), pr.var(1));
-            let b = pr.sub(pr.var(2), pr.one());
-            let p = pr.add(pr.mul(a, b), pr.var(3));
-            assert!(!pr.is_zero(&p));
-            // p - p == 0
-            let z = pr.sub(pr.clone_poly(&p), pr.clone_poly(&p));
-            assert!(z.is_zero());
-            assert_eq!(z.num_terms(), 0);
-            assert!(pr.zero().is_zero());
-            p.collect_terms_idx(pr.ctx())
-        };
-
-        assert_eq!(build(ReprKind::Dense), build(ReprKind::Sparse));
-    }
-}
+#[path = "poly_tests.rs"]
+mod tests;

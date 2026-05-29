@@ -6,8 +6,8 @@
 //! ([`Solver::backtrack_to`]), Luby-sequence restarts
 //! ([`Solver::should_restart`] + [`perform_restart`]), and a top-level
 //! [`Solver::solve`] driver. Theory clients call
-//! [`Solver::add_theory_lemma`] to inject conflict / propagation
-//! clauses and read assignments via [`Solver::value`] +
+//! [`Solver::add_theory_lemma_with_trail`] to inject conflict /
+//! propagation clauses and read assignments via [`Solver::value`] +
 //! [`Solver::trail`].
 
 use super::clause::{Clause, ClauseArena, ClauseRef};
@@ -469,7 +469,23 @@ impl Solver {
                     break 'next_clause;
                 }
                 let ok = self.enqueue(other, Some(cref));
-                debug_assert!(ok, "unit-propagated literal must be Undef");
+                if !ok {
+                    // The watched-literal logic above proves `other` is
+                    // Undef before this enqueue (False branched into the
+                    // conflict path; True continued); a False return signals
+                    // a broken SAT/theory layering invariant. Fail closed:
+                    // mark give_up and surface the current clause as a
+                    // conflict so the caller routes to Unknown rather than
+                    // silently dropping a propagation.
+                    self.give_up = true;
+                    while read < watchers.len() {
+                        watchers[write] = watchers[read];
+                        write += 1;
+                        read += 1;
+                    }
+                    conflict = Some(cref);
+                    break 'next_clause;
+                }
             }
             watchers.truncate(write);
             self.watches[neg_p_idx] = watchers;
@@ -504,17 +520,12 @@ impl Solver {
     /// be False. Sorts by descending decision level, computes the
     /// assertion level (largest literal-level strictly less than the
     /// max, or `max_level - 1` if every literal sits at the max),
-    /// backtracks, then registers via [`Self::learn_clause`]. Returns
-    /// `false` when the lemma forces root-level UNSAT.
-    pub fn add_theory_lemma(&mut self, lits: Vec<Lit>) -> bool {
-        self.add_theory_lemma_with_trail(lits).is_some()
-    }
-
-    /// Like [`Self::add_theory_lemma`], but on success returns the trail
-    /// length right after the internal backtrack and before
-    /// `learn_clause` enqueues the asserting literal. Callers thread
-    /// this through their `notified` pointer so the asserting literal
-    /// is included in the next theory-notify pass.
+    /// backtracks, then registers via [`Self::learn_clause`]. On success
+    /// returns the trail length right after the internal backtrack and
+    /// before `learn_clause` enqueues the asserting literal: callers
+    /// thread this through their `notified` pointer so the asserting
+    /// literal is included in the next theory-notify pass. Returns `None`
+    /// when the lemma forces root-level UNSAT.
     pub fn add_theory_lemma_with_trail(&mut self, mut lits: Vec<Lit>) -> Option<usize> {
         if lits.is_empty() {
             self.unsat = true;
@@ -576,6 +587,15 @@ impl Solver {
         self.give_up
     }
 
+    /// Force the give-up flag. Used when an external invariant makes the
+    /// current conflict unrepresentable (e.g. a theory core literal that is
+    /// unassigned in SAT, indicating theory/SAT trail divergence): reporting
+    /// UNSAT or SAT would then be unsound, so the only safe outcome is
+    /// Unknown. The CDCL(T) caller observes this via [`Self::gave_up`].
+    pub fn mark_give_up(&mut self) {
+        self.give_up = true;
+    }
+
     /// Number of literals on the trail.
     pub fn trail_len(&self) -> usize {
         self.trail.len()
@@ -610,8 +630,8 @@ impl Solver {
         loop {
             // `conf` is `Some` for the initial conflict and is re-set to
             // each resolved pivot's reason below. If a non-final pivot
-            // turns out to have no reason clause (a CDCL(T)/theory
-            // interaction gap on some inputs), `conf?` bails to `None`
+            // has no reason clause (a CDCL(T)/theory interaction gap on
+            // some inputs), `conf?` bails to `None`
             // here rather than panicking — the caller then falls back to
             // a complete engine instead of producing a bogus learnt
             // clause.
@@ -639,7 +659,15 @@ impl Solver {
                 }
             }
             let next_lit = loop {
-                debug_assert!(trail_idx > 0, "trail exhausted before 1-UIP");
+                if trail_idx == 0 {
+                    // 1-UIP trail walk exhausted without finding the next
+                    // resolved literal — an invariant the SAT/theory layering
+                    // is expected to uphold. Fail closed: mark give_up and
+                    // bail so the caller routes to Unknown rather than
+                    // emitting a wrong verdict.
+                    self.give_up = true;
+                    return None;
+                }
                 trail_idx -= 1;
                 let l = self.trail[trail_idx];
                 if seen[l.var().index()] {
@@ -745,6 +773,15 @@ impl Solver {
                         self.learn_clause(learnt);
                         if self.should_restart() {
                             self.perform_restart();
+                            // Drain the root-level propagation the restart
+                            // exposed (the just-learned unit, and anything it
+                            // forces) before the next decision raises the
+                            // level — otherwise a root conflict would be
+                            // analyzed at level 1 instead of ending in UNSAT.
+                            // Mirrors the pre-loop drain at the top of solve().
+                            if self.propagate().is_some() {
+                                return SolveResult::Unsat;
+                            }
                             break;
                         }
                     }
@@ -782,14 +819,19 @@ impl Solver {
         let mut clause_lits: Vec<Lit> = Vec::with_capacity(reason_facts.len() + 1);
         clause_lits.push(lit);
         let mut reason_neg: Vec<Lit> = reason_facts.iter().map(|&r| -r).collect();
+        // Each negated reason fact must be currently False (the reason fact
+        // currently True). A stale/incorrect reason would build a malformed
+        // justification clause and corrupt later 1-UIP analysis, so bail
+        // rather than trust it — a real guard, not a debug-only assert.
+        if reason_neg
+            .iter()
+            .any(|&r| !matches!(self.lit_value(r), LBool::False))
+        {
+            log::debug!("enqueue_theory: reason fact not currently True; skipping propagation");
+            return false;
+        }
         // lits[1] = highest-level reason negation, mirroring `learn_clause`.
         reason_neg.sort_by_key(|&l| std::cmp::Reverse(self.level[l.var().index()]));
-        for r in &reason_neg {
-            debug_assert!(
-                matches!(self.lit_value(*r), LBool::False),
-                "negated reason fact must be currently False"
-            );
-        }
         clause_lits.extend(reason_neg);
         let cref = self.arena.add(Clause::new(clause_lits, true));
         let lits_ref = &self.arena.get(cref).lits;
@@ -805,7 +847,14 @@ impl Solver {
     /// level (i.e. all literals in `lits[1..]` are currently False and
     /// `lits[0]` is currently Undef).
     pub fn learn_clause(&mut self, lits: Vec<Lit>) -> ClauseRef {
-        debug_assert!(!lits.is_empty(), "cannot learn empty clause");
+        // Always-on (not debug-only): an empty clause would index-panic at
+        // `lits[0]` below in release. `analyze` always yields a non-empty
+        // learnt clause and its `None` (resolution-bail) path routes to
+        // `give_up`, so this is unreachable today; enforce it loudly anyway —
+        // a panic here is caught at the backend `catch_unwind` (→ Unknown),
+        // never a wrong verdict. The `len() == 1` arm guards the `>= 2`
+        // indexing that follows.
+        assert!(!lits.is_empty(), "cannot learn empty clause");
         let asserting = lits[0];
         if lits.len() == 1 {
             let cref = self.arena.add(Clause::new(lits, true));
@@ -813,8 +862,11 @@ impl Solver {
             debug_assert!(ok, "asserting literal must be Undef before learning");
             return cref;
         }
-        // Watch lits[0] (1-UIP) and lits[1] (next-highest level, per
-        // analyze()'s ordering invariant).
+        // Watch lits[0] (the 1-UIP asserting literal) and lits[1]. `analyze`
+        // does not sort lits[1..], so lits[1] is an arbitrary lower-level
+        // literal, not necessarily the highest. Correctness is independent of
+        // the choice: after the backjump every literal except the asserting
+        // lits[0] is False, so any of them is a valid second watch.
         let cref = self.arena.add(Clause::new(lits, true));
         let lits_ref = &self.arena.get(cref).lits;
         let w0 = lits_ref[0];
@@ -834,4 +886,5 @@ impl Default for Solver {
 }
 
 #[cfg(test)]
+#[path = "solver_tests.rs"]
 mod tests;

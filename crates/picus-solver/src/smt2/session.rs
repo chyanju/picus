@@ -9,14 +9,14 @@
 //! into the in-tree CDCL(T) entry point [`crate::cdclt::solve_formula`].
 //! Per-check timeouts honour `(set-option :tlimit-per <ms>)`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use num_bigint::BigUint;
 
 use super::tokenizer::{parse_sexprs, tokenize, Sexpr};
 use super::{
-    assert_to_formula, classify_sort, parse_define_fun, MacroDef, ParseCtx, ParseError, Polynomial,
-    VarSort,
+    assert_to_formula, classify_declare, collect_ff_literal_primes, finite_field_prime_str,
+    has_ff_op, parse_define_fun, MacroDef, ParseCtx, ParseError, Polynomial, VarSort,
 };
 use crate::boolean::{Formula, Literal};
 use crate::frontend::encoder::{ConstraintSystemBuilder, PolyTerm};
@@ -186,6 +186,27 @@ impl SmtSession {
                 // wrapper. Any other attribute on `!` is silently
                 // ignored; the inner term is used as the assertion.
                 let (inner, name) = strip_named_annotation(&list[1]);
+                // If the session has no prime yet, infer it from this
+                // assert's `#fNmP` literals (every literal carries its
+                // modulus); reject `ff.*` ops with no literal hint so the
+                // term is not silently encoded under the builder's prime-2
+                // default. Mirrors the one-shot parsers.
+                if self.prime.is_none() {
+                    let mut lit_primes: BTreeSet<BigUint> = BTreeSet::new();
+                    collect_ff_literal_primes(inner, &mut lit_primes);
+                    if lit_primes.len() > 1 {
+                        return Err(ParseError::Malformed(format!(
+                            "multiple FF primes in literals: {:?}",
+                            lit_primes.iter().collect::<Vec<_>>()
+                        )));
+                    }
+                    if let Some(p) = lit_primes.into_iter().next() {
+                        self.builder.set_prime(p.clone());
+                        self.prime = Some(p);
+                    } else if has_ff_op(inner) {
+                        return Err(ParseError::MissingPrime);
+                    }
+                }
                 let mut ctx = self.borrow_ctx();
                 let formula = match assert_to_formula(inner, &mut ctx) {
                     Ok(f) => f,
@@ -284,6 +305,7 @@ impl SmtSession {
             next_ite_skolem: self.next_ite_skolem,
             side_constraints: Vec::new(),
             builder,
+            expansion_depth: 0,
         }
     }
 
@@ -424,59 +446,30 @@ impl SmtSession {
         if list.len() < 4 {
             return Ok(());
         }
-        let body = &list[3];
-        if let Sexpr::List(inner) = body {
-            if inner.len() == 3 {
-                if let (Sexpr::Atom(u), Sexpr::Atom(ff), Sexpr::Atom(p)) =
-                    (&inner[0], &inner[1], &inner[2])
-                {
-                    if u == "_" && ff == "FiniteField" {
-                        let n = p.parse::<BigUint>().map_err(|_| {
-                            ParseError::Malformed(format!("bad prime: {}", p))
-                        })?;
-                        self.builder.set_prime(n.clone());
-                        self.prime = Some(n);
-                    }
-                }
-            }
+        if let Some(p) = finite_field_prime_str(&list[3]) {
+            let n = p
+                .parse::<BigUint>()
+                .map_err(|_| ParseError::Malformed(format!("bad prime: {}", p)))?;
+            self.builder.set_prime(n.clone());
+            self.prime = Some(n);
         }
         Ok(())
     }
 
     fn eval_declare(&mut self, head: &str, list: &[Sexpr]) -> Result<(), ParseError> {
-        if list.len() < 2 {
+        let Some((name, sort, inferred)) = classify_declare(head, list) else {
             return Ok(());
-        }
-        let name = match &list[1] {
-            Sexpr::Atom(n) => n.clone(),
-            _ => return Ok(()),
         };
-        let sort_sexpr = if head == "declare-fun" {
-            list.get(3)
-        } else {
-            list.get(2)
-        };
-        let sort = classify_sort(sort_sexpr).unwrap_or(VarSort::Ff);
         if self.prime.is_none() {
-            if let Some(Sexpr::List(inner)) = sort_sexpr {
-                if inner.len() == 3 {
-                    if let (Sexpr::Atom(u), Sexpr::Atom(ff), Sexpr::Atom(p)) =
-                        (&inner[0], &inner[1], &inner[2])
-                    {
-                        if u == "_" && ff == "FiniteField" {
-                            if let Ok(n) = p.parse::<BigUint>() {
-                                self.builder.set_prime(n.clone());
-                                self.prime = Some(n);
-                            }
-                        }
-                    }
-                }
+            if let Some(n) = inferred {
+                self.builder.set_prime(n.clone());
+                self.prime = Some(n);
             }
         }
         if !self.vars.contains_key(&name) {
             self.var_order.push(name.clone());
         }
-        self.vars.insert(name, sort);
+        self.vars.insert(name, sort.unwrap_or(VarSort::Ff));
         Ok(())
     }
 
@@ -650,3 +643,7 @@ impl SessionOutput {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "session_tests.rs"]
+mod tests;

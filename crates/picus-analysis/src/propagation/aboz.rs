@@ -3,7 +3,7 @@
 //! In R1CS shape the original pattern is two `A * B = 0` constraints
 //! plus a linear "constant-and-mux-bits" sum that ties them together;
 //! after polynomial lowering each `A * B = 0` is a single bilinear
-//! monomial. We look for triples
+//! monomial. The lemma looks for triples
 //!     `x * y0 = 0`,  `x * y1 = 0`,  `x + y0 + y1 + c = 0`
 //! where `x` and `c` are known. From `x * y_i = 0` and `x ≠ 0` we
 //! conclude `y_i = 0`. The lemma only fires when `x`'s range proves
@@ -131,10 +131,19 @@ impl PropagationLemma for AbozLemma {
 impl AbozLemma {
     /// Push the zero-product disjunction `(var_s = 0) ∨ (var_o = 0)` for
     /// both the original and alt copies, deduplicating on `(s, o)` so
-    /// fixed-point re-runs don't flood `learned_disjunctions`. Each
-    /// clause is entailed by an `s * o = 0` equality already in the IR,
-    /// so adding it never changes the solution set. Returns whether a
+    /// fixed-point re-runs don't flood `learned_disjunctions`. Each clause
+    /// is entailed by the `s * o = 0` equality already in the IR for that
+    /// copy, so adding it never changes the solution set. Returns whether a
     /// new clause was emitted.
+    ///
+    /// Copy-awareness: an input wire reuses `x_w` in both copies (see
+    /// `block_to_linear`), so its alt-copy constraint is `x_s · y_o = 0`,
+    /// not `y_s · y_o = 0`. Emitting `alt_var` (a fresh, unconstrained
+    /// `y_s`) for an input would push a clause not entailed by any equality.
+    /// `copy_var` therefore selects the variable that actually appears in
+    /// the constraint: `orig_var` for inputs, `alt_var` otherwise — keeping
+    /// soundness resting on entailment rather than on `y_s` happening to be
+    /// free.
     fn emit_zero_product(
         &mut self,
         ir: &PolyIR,
@@ -145,10 +154,17 @@ impl AbozLemma {
         if !self.emitted.insert((s, o)) {
             return false;
         }
+        let alt_copy_var = |w: usize| {
+            if ir.input_indices.contains(&w) {
+                ir.orig_var(w)
+            } else {
+                ir.alt_var(w)
+            }
+        };
         ctx.learned_disjunctions
             .push(vec![ir.ring.var(ir.orig_var(s)), ir.ring.var(ir.orig_var(o))]);
         ctx.learned_disjunctions
-            .push(vec![ir.ring.var(ir.alt_var(s)), ir.ring.var(ir.alt_var(o))]);
+            .push(vec![ir.ring.var(alt_copy_var(s)), ir.ring.var(alt_copy_var(o))]);
         true
     }
 }
@@ -225,3 +241,7 @@ inventory::submit! {
         factory: || Box::new(AbozLemma::default()),
     }
 }
+
+#[cfg(test)]
+#[path = "aboz_tests.rs"]
+mod tests;

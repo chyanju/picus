@@ -1,8 +1,16 @@
-//! Groebner Basis computation over GF(p) using the in-tree Buchberger
-//! algorithm (`crate::ff::buchberger`, exposed via `crate::gb::ideal`).
+//! Higher-level Gröbner-basis orchestration, layered over the low-level
+//! engine in [`crate::ff`]. The split: [`crate::ff`] holds the algorithms
+//! (Buchberger, F4, sparse GB, Cantor-Zassenhaus root finding) over
+//! [`picus_core::ff`]'s GF(p) data types; this `gb` module groups the
+//! work that drives them — the ideal API ([`ideal`]), model construction
+//! ([`model`]), root extraction ([`roots`]), the FGLM order change
+//! ([`fglm`]), homogenisation ([`gb_homog`] / [`homog_ring`]), incremental
+//! push/pop ([`incremental`]), and UNSAT-core tracing ([`tracer`]). Both
+//! are named for GF(p) algebra but sit at different layers.
 //!
-//! Provides a single-GB solver mode (DegRevLex → Lex) with cooperative
-//! timeout. Thin wrapper over `ideal::compute_gb_with_order{,_traced}`.
+//! The root module itself provides a single-GB solver mode (DegRevLex →
+//! Lex) with cooperative timeout — a thin wrapper over
+//! `ideal::compute_gb_with_order{,_traced}`.
 
 use std::time::Duration;
 
@@ -67,8 +75,9 @@ pub fn compute_gb_with_timeout(
         return GbResult::Trivial;
     }
 
-    // Phase 2: Lex GB (for model extraction via back-substitution)
-    let gb_lex = compute_gb_with_order(poly_ring, gb_degrevlex, &cancel, MonomialOrder::Lex);
+    // Phase 2: Lex GB (for model extraction via back-substitution),
+    // via FGLM when zero-dimensional.
+    let gb_lex = degrevlex_to_lex(poly_ring, gb_degrevlex, &cancel);
 
     if cancel.is_cancelled() {
         return GbResult::Timeout;
@@ -126,8 +135,9 @@ pub fn compute_gb_with_timeout_traced(
         return GbResultTraced::Trivial(core);
     }
 
-    // Phase 2: Lex GB (no tracing needed — only used for model extraction)
-    let gb_lex = compute_gb_with_order(poly_ring, gb_degrevlex, &cancel, MonomialOrder::Lex);
+    // Phase 2: Lex GB (no tracing needed — only used for model extraction),
+    // via FGLM when zero-dimensional.
+    let gb_lex = degrevlex_to_lex(poly_ring, gb_degrevlex, &cancel);
 
     if cancel.is_cancelled() {
         return GbResultTraced::Timeout;
@@ -138,6 +148,27 @@ pub fn compute_gb_with_timeout_traced(
     }
 
     GbResultTraced::NonTrivial(gb_lex)
+}
+
+/// Convert a DegRevLex Gröbner basis to a Lex GB for model extraction.
+///
+/// Uses FGLM order conversion ([`crate::gb::fglm`]) when the ideal is
+/// zero-dimensional — linear algebra in the finite quotient `R/I`, far
+/// cheaper than a second Buchberger run — and falls back to a direct Lex
+/// Buchberger computation otherwise.
+fn degrevlex_to_lex(
+    poly_ring: &FfPolyRing,
+    gb_degrevlex: Vec<Poly>,
+    cancel: &CancelToken,
+) -> Vec<Poly> {
+    let ideal = crate::gb::ideal::Ideal::from_gb(poly_ring, gb_degrevlex);
+    match crate::gb::fglm::fglm_to_lex(&ideal) {
+        Some(lex) => lex,
+        None => {
+            let basis = ideal.basis;
+            compute_gb_with_order(poly_ring, basis, cancel, MonomialOrder::Lex)
+        }
+    }
 }
 
 /// Check if a GB is trivial (ideal = whole ring).
@@ -159,47 +190,14 @@ fn find_trivial_element(ring: &crate::poly::PolyRingType, gb: &[Poly]) -> Option
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ff::field::PrimeField;
-    use num_bigint::BigUint;
-
-    #[test]
-    fn test_trivial_gb() {
-        // x = 0 and x = 1 over GF(17) → UNSAT
-        let field = PrimeField::new(BigUint::from(17u32));
-        let pr = FfPolyRing::new(field, vec!["x".into()]);
-
-        let x = pr.var(0);
-        let p1 = pr.clone_poly(&x);
-        let p2 = pr.sub(x, pr.one());
-
-        match compute_gb(&pr, vec![p1, p2]) {
-            GbResult::Trivial => {}
-            GbResult::NonTrivial(_) | GbResult::Timeout => panic!("expected trivial GB"),
-        }
-    }
-
-    #[test]
-    fn test_nontrivial_gb() {
-        // x * y = 1 over GF(17) → SAT
-        let field = PrimeField::new(BigUint::from(17u32));
-        let pr = FfPolyRing::new(field, vec!["x".into(), "y".into()]);
-
-        let xy = pr.mul(pr.var(0), pr.var(1));
-        let p = pr.sub(xy, pr.one());
-
-        match compute_gb(&pr, vec![p]) {
-            GbResult::Trivial | GbResult::Timeout => panic!("expected non-trivial"),
-            GbResult::NonTrivial(gb) => assert!(!gb.is_empty()),
-        }
-    }
-}
+mod tests;
 
 // Submodules: ideal operations, incremental GB, root finding, homogenization
 // pipeline, model construction, branching, and UNSAT-core tracing.
+pub mod fglm;
 pub mod ideal;
 pub mod incremental;
+pub mod linsolve;
 pub mod roots;
 pub(crate) mod gb_homog;
 pub(crate) mod homog_ring;

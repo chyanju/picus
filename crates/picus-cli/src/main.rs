@@ -36,16 +36,16 @@ enum Commands {
         r1cs: PathBuf,
 
         /// Config file (TOML). Layered under the flags below, over the
-        /// `PICUS_*` environment, over the built-in defaults. If omitted,
-        /// `./picus.toml` is used when present. See `picus.default.toml`
-        /// for the full schema and defaults.
+        /// built-in defaults. If omitted, `./picus.toml` is used when
+        /// present. See `picus.default.toml` for the full schema and
+        /// defaults.
         #[arg(long)]
         config: Option<PathBuf>,
 
-        /// Solver backend. Names are looked up against the inventory of
-        /// registered `SolverBackendDescriptor`s, so a downstream crate
-        /// can ship a new backend without touching the CLI. Built-in
-        /// names: native, cvc5, z3, none. [default: native]
+        /// Solver backend. Built-in names: native, cvc5, z3, none.
+        /// Resolved through `SolverKind::from_str`; the inventory of
+        /// registered backends supplies the "known backends" list shown
+        /// on an unknown name. [default: native]
         #[arg(long)]
         solver: Option<String>,
 
@@ -81,13 +81,18 @@ enum Commands {
         #[arg(long, value_parser = ["none", "wall"])]
         profile: Option<String>,
 
-        /// GB strategy:
-        ///   off  — direct DegRevLex Buchberger on P (default, baseline);
-        ///   on   — homogenize → GB on P[h] → dehom → interreduce;
-        ///   auto — pick `on` iff at least one input is non-homogeneous (cheap test).
-        /// Targets the bit-decomp benchmark family where sugar mis-prediction
-        /// causes intermediate expression swell. [default: off]
-        #[arg(long, value_parser = ["off", "on", "auto"])]
+        /// GB strategy (native only), matching the `gb_strategy` config key:
+        ///   direct   — DegRevLex Buchberger on P (default, baseline);
+        ///   by-homog — homogenize → GB on P[h] → dehom → interreduce;
+        ///   auto     — pick by-homog iff some input is non-homogeneous.
+        /// Targets the bit-decomp family where sugar mis-prediction swells
+        /// intermediate expressions. [default: direct]
+        #[arg(long, value_parser = ["direct", "by-homog", "auto"])]
+        gb_strategy: Option<String>,
+
+        /// Deprecated alias for `--gb-strategy` (off→direct, on→by-homog).
+        /// Kept for backward compatibility; prefer `--gb-strategy`.
+        #[arg(long, value_parser = ["off", "on", "auto"], hide = true)]
         gb_by_homog: Option<String>,
 
         /// Polynomial representation for the native FF backend:
@@ -137,6 +142,26 @@ enum Commands {
         /// (native FF backend only). Default: enabled.
         #[arg(long)]
         no_aboz_disj: bool,
+
+        /// Enable linear (Gaussian) pre-elimination before solving (native
+        /// FF backend only). Off by default; may help linear-heavy
+        /// conjunctive circuits, but densifies the nonlinear part on the
+        /// general workload.
+        #[arg(long)]
+        linear_elim: bool,
+
+        /// Triangular model construction (cvc5 multi_roots analogue) on the
+        /// default split-GB path: on | off. Decides a zero-dimensional
+        /// combined system by univariate-root enumeration instead of the
+        /// brancher DFS. Omit to use the built-in default.
+        #[arg(long, value_parser = ["on", "off"])]
+        split_triangular: Option<String>,
+
+        /// Cache the reducer's divisor index across reductions with an
+        /// unchanged active basis (native FF backend only): on | off. Omit
+        /// to use the built-in default.
+        #[arg(long, value_parser = ["on", "off"])]
+        reducer_index_cache: Option<String>,
     },
 
     /// Print R1CS circuit information
@@ -172,6 +197,7 @@ fn main() {
             dump_smt,
             format,
             profile,
+            gb_strategy,
             gb_by_homog,
             poly_repr,
             use_f4,
@@ -182,13 +208,16 @@ fn main() {
             gb_trace,
             no_cache,
             no_aboz_disj,
+            linear_elim,
+            split_triangular,
+            reducer_index_cache,
         } => {
             // CLI overlay — the highest-precedence config layer. Only the
             // flags the user actually passed become `Some`; everything
             // else stays `None` and falls through to the config file,
-            // environment, then built-in defaults (see `resolve_config`).
-            // On/off bool flags can only turn a knob *on* (or, for the
-            // `no_*` flags, off), mirroring the `PICUS_*` env vars.
+            // then built-in defaults (see `resolve_config`). On/off bool
+            // flags can only turn a knob *on* (or, for the `no_*` flags,
+            // off).
             let overlay = PicusConfigOverlay {
                 analysis: AnalysisOverlay {
                     solver,
@@ -199,11 +228,22 @@ fn main() {
                     dump_smt,
                 },
                 engine: EngineOverlay {
-                    gb_strategy: gb_by_homog.as_deref().map(|s| match s {
-                        "on" => GbStrategy::ByHomog,
-                        "auto" => GbStrategy::Auto,
-                        _ => GbStrategy::Direct,
-                    }),
+                    // Prefer the canonical --gb-strategy; fall back to the
+                    // deprecated --gb-by-homog alias (off/on/auto).
+                    gb_strategy: gb_strategy
+                        .as_deref()
+                        .map(|s| match s {
+                            "by-homog" => GbStrategy::ByHomog,
+                            "auto" => GbStrategy::Auto,
+                            _ => GbStrategy::Direct,
+                        })
+                        .or_else(|| {
+                            gb_by_homog.as_deref().map(|s| match s {
+                                "on" => GbStrategy::ByHomog,
+                                "auto" => GbStrategy::Auto,
+                                _ => GbStrategy::Direct,
+                            })
+                        }),
                     poly_repr: poly_repr.as_deref().map(|s| match s {
                         "dense" => ReprKind::Dense,
                         _ => ReprKind::Sparse,
@@ -217,6 +257,12 @@ fn main() {
                     cache_enabled: no_cache.then_some(false),
                     aboz_emit_disjunctions: no_aboz_disj.then_some(false),
                     profile_enabled: profile.as_deref().map(|s| s == "wall"),
+                    linear_elim: linear_elim.then_some(true),
+                    // Config-file only (no CLI flag): precise inter-reduce
+                    // core tracking is a niche knob; set it via picus.toml.
+                    track_inter_reduce_deps: None,
+                    split_triangular: split_triangular.as_deref().map(|s| s == "on"),
+                    reducer_index_cache: reducer_index_cache.as_deref().map(|s| s == "on"),
                 },
             };
             let resolved = resolve_config(config.as_deref(), &overlay)
@@ -322,7 +368,7 @@ fn exit_error(msg: &str) -> ! {
 }
 
 /// On SIGTERM/SIGINT, dump profile counters to stderr before exiting.
-/// Lets us profile runs that don't terminate cleanly. The dumps are
+/// Enables profiling of runs that don't terminate cleanly. The dumps are
 /// no-ops when no profile/stats data has been recorded.
 fn install_profile_signal_handler() {
     use signal_hook::consts::{SIGINT, SIGTERM};

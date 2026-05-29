@@ -12,25 +12,19 @@
 //! Key sparse simplification over the dense geobucket: multiplying a
 //! sorted-descending polynomial by a single monomial preserves the order
 //! (the monomial order is multiplicative), so the scaled divisor tail in
-//! [`SparseGeobucket::sub_scaled_tail`] needs no re-sort.
+//! `SparseGeobucket::sub_scaled_tail` needs no re-sort.
 
 use std::cmp::Ordering;
 
 use super::divmask::DivMask;
 use super::field::FieldElem;
+use super::geobucket_params::{BASE_CAPACITY, MAX_BUCKETS, RATIO};
 use super::polynomial::PolyRing;
 use super::repr::MonomialRepr;
 use super::sparse_monomial::SparseMonomial;
 use super::sparse_polynomial::SparsePolynomial;
 
 type Term = (SparseMonomial, FieldElem);
-
-/// Smallest bucket capacity (in terms).
-const BASE_CAPACITY: usize = 128;
-/// Geometric growth factor between consecutive buckets.
-const RATIO: usize = 4;
-/// Hard cap on the number of buckets (128·4^19 ≈ 10^13 terms).
-const MAX_BUCKETS: usize = 20;
 
 /// A geobucket: `buckets[i]` is a descending-sorted term list with a
 /// `heads[i]` cursor, so popping a leading term advances the cursor in O(1)
@@ -243,6 +237,7 @@ pub(super) fn reduce(
     subject: &SparsePolynomial,
     divisors: &[&SparsePolynomial],
     ring: &PolyRing,
+    cancel: Option<&crate::timeout::CancelToken>,
 ) -> SparsePolynomial {
     // Cache each divisor's leading (monomial, coeff) and a presence
     // DivMask of its leading monomial for O(1) divisibility rejection.
@@ -256,8 +251,29 @@ pub(super) fn reduce(
     let mut gb = SparseGeobucket::new(ring);
     gb.add_terms(subject.terms_ref().to_vec());
 
+    // Coarse cancel throttle: checking the atomic every step would
+    // dominate the reduction cost, so check once per `CANCEL_STRIDE`
+    // popped terms. On cancel, drain the remaining geobucket into the
+    // result (best-effort partial reduction — still a valid coset
+    // representative) and return.
+    const CANCEL_STRIDE: u32 = 1024;
+    let mut steps: u32 = 0;
+
     let mut result: Vec<Term> = Vec::new();
     while let Some((lm, lc)) = gb.pop_leading_term() {
+        if let Some(c) = cancel {
+            steps += 1;
+            if steps >= CANCEL_STRIDE {
+                steps = 0;
+                if c.is_cancelled() {
+                    result.push((lm, lc));
+                    while let Some(t) = gb.pop_leading_term() {
+                        result.push(t);
+                    }
+                    return SparsePolynomial::from_sorted_terms(result);
+                }
+            }
+        }
         let lm_mask = lm.divmask();
         let mut chosen: Option<usize> = None;
         for (di, lt) in div_lt.iter().enumerate() {
@@ -290,3 +306,7 @@ pub(super) fn reduce(
     }
     SparsePolynomial::from_sorted_terms(result)
 }
+
+#[cfg(test)]
+#[path = "sparse_geobucket_tests.rs"]
+mod tests;

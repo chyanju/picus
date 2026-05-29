@@ -28,7 +28,7 @@ picus check --r1cs circuit.r1cs --dump-smt /tmp/smt/         # dump SMT queries
 | `--format <human\|json>` | `human` | Output format |
 | `--dump-smt <dir>` | — | Dump SMT-LIB queries to a directory |
 | `--profile <none\|wall>` | `none` | Emit per-site wall-clock profile to stderr |
-| `--gb-by-homog <off\|on\|auto>` | `off` | GB algorithm: direct Buchberger / homogenisation pipeline / auto-pick by homogeneity test (`native` only) |
+| `--gb-strategy <direct\|by-homog\|auto>` | `direct` | GB algorithm: direct Buchberger / homogenisation pipeline / auto-pick by homogeneity test (`native` only). Matches the `gb_strategy` config key. (`--gb-by-homog <off\|on\|auto>` is a deprecated alias.) |
 
 ### Advanced / research flags
 
@@ -43,6 +43,9 @@ picus check --r1cs circuit.r1cs --dump-smt /tmp/smt/         # dump SMT queries
 | `--gb-trace` | off | Emit GB trace events to stderr (`native`) |
 | `--no-cache` | off | Disable the native FF backend's incremental Buchberger cache between successive `solve()` calls |
 | `--no-aboz-disj` | off | Disable the `aboz` lemma's entailed zero-product disjunctions (`native`) |
+| `--linear-elim` | off | Linear (Gaussian) pre-elimination before solving (`native`); may help linear-heavy circuits |
+| `--split-triangular <on\|off>` | off | Triangular model construction for a zero-dimensional combined system on the split-GB path, in place of the brancher DFS (`native`) |
+| `--reducer-index-cache <on\|off>` | off | Cache the reducer's divisor index across reductions with an unchanged active basis (`native`) |
 
 > `z3 + ff` is rejected (z3 has no finite-field theory); `native + nia` is
 > rejected (the native backend implements only QF_FF).
@@ -57,19 +60,18 @@ picus info --r1cs circuit.r1cs --constraints   # also print every constraint
 ## Configuration
 
 Every knob has a built-in default, so no configuration is required. When you
-do want to pin settings, Picus resolves them in four layers, each overriding
+do want to pin settings, Picus resolves them in three layers, each overriding
 only the keys it sets (later wins):
 
 1. **Built-in defaults** — compiled in; what a library import (`Config::default()`) and a flagless CLI run get. No file is read.
 2. **Config file** — the TOML passed to `--config <FILE>`, or `./picus.toml` in the working directory when present. A missing *explicit* `--config` file is an error; a missing `./picus.toml` is skipped silently.
-3. **`PICUS_*` environment variables** — engine knobs (e.g. `PICUS_POLY_REPR`, `PICUS_USE_F4`).
-4. **CLI flags** — highest precedence.
+3. **CLI flags** — highest precedence.
 
 [`picus.default.toml`](../picus.default.toml) at the repo root documents every
 key at its default value — copy it and edit. Keys are split into two tables:
 
 - `[analysis]` — `solver`, `theory`, `timeout_ms`, `selector`, `lemmas`, `dump_smt`. Backend-agnostic.
-- `[engine]` — Picus's in-tree engine: the native FF Gröbner solver knobs (`gb_strategy`, `use_f4`, `dnf_enabled`, `dnf_cap`, `cdclt_iter_cap`, `cache_enabled`) plus the IR/lemma knobs that also shape the cvc5 path (`poly_repr`, `aboz_emit_disjunctions`) and the diagnostics (`gb_stats_enabled`, `gb_trace_enabled`, `profile_enabled`). The native-solver-only keys are unused when delegating to cvc5 / z3.
+- `[engine]` — Picus's in-tree engine: the native FF Gröbner solver knobs (`gb_strategy`, `use_f4`, `dnf_enabled`, `dnf_cap`, `cdclt_iter_cap`, `cache_enabled`, `linear_elim`, `split_triangular`, `reducer_index_cache`, `track_inter_reduce_deps`) plus the IR/lemma knobs that also shape the cvc5 path (`poly_repr`, `aboz_emit_disjunctions`) and the diagnostics (`gb_stats_enabled`, `gb_trace_enabled`, `profile_enabled`). The native-solver-only keys are unused when delegating to cvc5 / z3.
 
 ```toml
 [analysis]
@@ -124,4 +126,4 @@ timeout. Options:
 - Increase `--timeout` (e.g. `--timeout 60000`).
 - Try another backend (`--solver z3 --theory nia`, or `--solver cvc5 --theory ff` if built with `--features cvc5`).
 - `--solver none` to see how far propagation alone gets.
-- On `native + ff`: `--gb-by-homog auto` routes through the homogenisation GB pipeline that wins on bit-decomposition-shaped ideals; `--use-f4` enables the F4 matrix path (research flag).
+- On `native + ff`: `--gb-strategy auto` routes through the homogenisation GB pipeline that wins on bit-decomposition-shaped ideals; `--use-f4` enables the F4 matrix path (research flag).

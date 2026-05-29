@@ -20,9 +20,10 @@
 
 use num_bigint::BigUint;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use picus_r1cs::grammar::*;
 use picus_smt::backends::{SolverBackend, SolverResult};
-use picus_smt::poly_ir::{r1cs_to_poly_ir, PolyIR};
+use picus_smt::poly_ir::{r1cs_to_poly_ir, LowerError, PolyIR};
 use picus_smt::{SolverKind, Theory};
 use picus_core::poly::IrPoly as Poly;
 use std::collections::{HashMap, HashSet};
@@ -225,8 +226,19 @@ pub struct DpvlOverlay {
     pub dump_smt: Option<PathBuf>,
 }
 
+/// Failure modes of [`run_dpvl`], surfaced as typed variants so callers
+/// can distinguish a malformed input (lowering) from a bad solver/theory
+/// configuration (backend) rather than parsing a flattened string.
+#[derive(Debug, Error)]
+pub enum DpvlError {
+    #[error("R1CS lowering failed: {0}")]
+    Lower(#[from] LowerError),
+    #[error("{0}")]
+    Backend(String),
+}
+
 /// Run DPVL on a parsed R1CS file.
-pub fn run_dpvl(r1cs: &R1csFile, config: &DpvlConfig) -> Result<DpvlResult, String> {
+pub fn run_dpvl(r1cs: &R1csFile, config: &DpvlConfig) -> Result<DpvlResult, DpvlError> {
     let nwires = r1cs.n_wires() as usize;
     let input_set: HashSet<usize> = r1cs.inputs.iter().copied().collect();
     let output_set: HashSet<usize> = r1cs.outputs.iter().copied().collect();
@@ -239,8 +251,7 @@ pub fn run_dpvl(r1cs: &R1csFile, config: &DpvlConfig) -> Result<DpvlResult, Stri
     // Lower R1CS → PolyIR once per DPVL run. The target signal stored in
     // the IR is a placeholder; propagation only consumes the constraint
     // set and metadata, not `target_signal`.
-    let mut ir = r1cs_to_poly_ir(r1cs, &ks, 0)
-        .map_err(|e| format!("R1CS lowering failed: {}", e))?;
+    let mut ir = r1cs_to_poly_ir(r1cs, &ks, 0)?;
 
     // Instantiate enabled lemma plugins.
     let mut lemma_instances: Vec<Box<dyn PropagationLemma>> = all_descriptors()
@@ -252,7 +263,8 @@ pub fn run_dpvl(r1cs: &R1csFile, config: &DpvlConfig) -> Result<DpvlResult, Stri
     // Per-wire connectivity score for the counter selector.
     let connectivity = wire_connectivity_score(&ir);
 
-    let backend = picus_smt::create_backend(config.solver, config.theory)?;
+    let backend =
+        picus_smt::create_backend(config.solver, config.theory).map_err(DpvlError::Backend)?;
     let mut ctx = DpvlContext {
         target_set,
         selector: SelectorState::new(config.selector, connectivity),
@@ -299,7 +311,6 @@ impl DpvlContext {
                 return DpvlResult::Unknown;
             }
 
-            let us_before = us.len();
             let mut uspool: HashSet<usize> = us.clone();
             let mut made_progress = false;
 
@@ -342,9 +353,9 @@ impl DpvlContext {
             }
 
             if !made_progress {
-                if us.len() < us_before {
-                    continue;
-                }
+                // No wire was verified this round (the only `us`-shrinking
+                // path, `Verified`, sets `made_progress`), so `us` is
+                // unchanged and another iteration cannot help: decide now.
                 return if self.target_set.iter().all(|t| ks.contains(t)) {
                     DpvlResult::Safe
                 } else {
@@ -477,3 +488,7 @@ enum SolveResult {
     Sat(HashMap<String, BigUint>),
     Skip,
 }
+
+#[cfg(test)]
+#[path = "dpvl_tests.rs"]
+mod tests;

@@ -10,6 +10,20 @@
 //! single lemma so adding a new range-aware lemma does not require
 //! reaching into another lemma's file or coupling consumers to a
 //! particular producer.
+//!
+//! Soundness invariant for producers (copy-awareness). A range is keyed
+//! by **wire**, and a consumer that promotes a wire to *known* from its
+//! range — aboz via [`RangeValue::excludes_zero`], binary01 via
+//! [`RangeValue::is_singleton`] — relies on the recorded constraint
+//! holding in **every** satisfying witness, i.e. for both DPVL copies
+//! `x_w` and `y_w`. The two existing producers are copy-safe by
+//! construction: wire 0 is pinned to `1` in both copies, and binary01's
+//! `{0, 1}` comes from a `w·(w-1)=0` equality the lowering emits for both
+//! copies (input wires reuse `x_w`, so the fact holds trivially for both).
+//! A new producer that records a range from a fact true of only one copy
+//! would let those consumers promote a wire that is not actually
+//! determined — a false "safe" verdict. Establish the fact over both
+//! copies before inserting.
 
 use std::collections::{HashMap, HashSet};
 
@@ -47,12 +61,17 @@ impl RangeValue {
         matches!(self, RangeValue::Values(v) if v.len() == 1)
     }
 
-    /// Range is a subset of `{0, 1}`. `Bottom` is not binary.
+    /// Range is a non-empty subset of `{0, 1}`. `Bottom` (unconstrained)
+    /// and the empty set (contradictory) are both not binary — matching
+    /// [`Self::excludes_zero`], so a consumer can't admit a wire as a
+    /// "bit" on a vacuously-true empty range.
     #[must_use]
     pub fn is_binary(&self) -> bool {
         match self {
             RangeValue::Bottom => false,
-            RangeValue::Values(v) => v.iter().all(|x| x.is_zero() || x == &BigUint::one()),
+            RangeValue::Values(v) => {
+                !v.is_empty() && v.iter().all(|x| x.is_zero() || x == &BigUint::one())
+            }
         }
     }
 
@@ -87,3 +106,7 @@ pub fn initial_ranges() -> HashMap<usize, RangeValue> {
     );
     ranges
 }
+
+#[cfg(test)]
+#[path = "range_tests.rs"]
+mod tests;

@@ -2,16 +2,128 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
+The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/). Entries are telegraphic: one line per change — what changed plus the key term/API — with no narrative, mechanism explanations, or "no verdict change" boilerplate.
+
+## [1.8.17] - 2026-05-29
+- Soundness: `sat::Solver::solve` drains root-level propagation after `perform_restart` and returns `Unsat` on a root conflict (was: post-restart root unit left unpropagated, root conflict analyzed at level 1 ⇒ wrong `Sat` under aggressive restart). Regression `audit_solve_sound_under_aggressive_restart`.
+- Workspace lib unit-test coverage 83.02% → 91.92%: picus-analysis 5.60% → 90.40%, picus-smt 2.01% → 85.94%, picus-r1cs 74.63% → 98.16%, picus-core 83.58% → 87.20%, picus-solver 87.90% → 97.59%. 1874 lib tests total.
+- Test layout: large sibling files split by prefix; `smt2/tests.rs` → `tests.rs` + `tests_session.rs` + `tests_property.rs`; `split_gb/tests.rs` → `tests.rs` + `tests_prop.rs` + `tests_hard.rs`; `frontend/encoder_tests.rs` → `encoder_tests.rs` + `encoder_tests_spec.rs`.
+- Sibling test files added for previously-untested algorithmic modules in `picus-analysis` (propagation/aboz/bim/basis2/binary01/linear/range/lemma + dpvl + selector), `picus-smt` (poly_ir, native_ff, native_lower), `picus-r1cs` (parser, grammar), and `picus-core` (dense_reduce, sparse_geobucket, sparse_monomial).
+
+## [1.8.16] - 2026-05-28
+- Test layout: unit tests move to sibling files (`mod.rs`→`tests.rs`, leaf→`<name>_tests.rs`); no inline `mod tests {}` blocks remain in `src/`.
+- Integration tests renamed by scenario; `cdclt_regression` split into `cdclt_vs_dnf_parity` + `cdclt_scenarios`; `cvc5_*` corpus/unit files renamed.
+- 3 semantically-unit `tests/*.rs` (parse, uni-roots, split-gb) reverse-migrated to `src/` siblings.
+- Regression tests gain `audit_`/`bug_` fn-name prefixes for `cargo test <prefix>` filtering.
+
+## [1.8.15] - 2026-05-28
+- Profiling refactor: instrumentation moves to a `metric::` DSL (`incr!`/`add!`/`max!`/`timer!`/`timer_local!`/`gate!`/`stopwatch!`/`clock!`/`def!`/`bump!`/`scope!`/`trace!`/`next!` + `#[metric]` proc-macro in the new `picus-metric-macros` crate) replacing the hand-cached `if gb_stats_enabled() { ... }` / bare `Instant::now()` / `ScopedTimer::new` pattern across solver, `native_ff` backend, and `dense_reduce` / `geobucket` hot paths; `metric::gate!` caches the flag once for per-monomial timers.
+- Buchberger engine telemetry strictly separated from logic: new always-on logic field `BuchbergerState::useful_reductions` drives the interreduce schedule; `GbEngineStats` renamed to `GbProfileCounters`, field `stats` renamed to `profile`, all writes routed through gb-stats-gated `metric::scope!`; `engine_stats()` returns the pure-telemetry bundle (`&GbProfileCounters`).
+- `compute_gb_dispatch` gets `#[metric]`; `compute_gb_with_order`'s `log::trace!` drops the hand-timed `Instant` substring — timing through the metric channel, log channel keeps the operator diagnostic.
+- Maintainability: removed seven unused `observe_*_max` methods (superseded by `metric::max!` lowering to the free `observe_max`), the unused `metric::flush!` macro, and the unused `log` dep in `picus-core`; ~200 added unit/integration tests pushing modules past 85% coverage (`incremental_context`, `split_gb/{search,fixpoint,branching}`, `gb/ideal/engine`, `buchberger/{mod,incremental}`, `smt2/{session,tokenizer,parser}`, `brancher`, `spair`, `criteria`, `sparse_gb`, `f4_matrix`, `constraint_system`, `bitsum_extract`, `cdclt`, `gb_incremental`, `gb_model::verify_model`, `gb_mod` public API); `scripts/coverage.sh` for reproducible per-crate coverage.
+
+## [1.8.14] - 2026-05-28
+- Soundness: `linsolve::eliminate_linear` passes through on an empty linear GB without cancellation (engine error); SMT-LIB parsers (`parse`/`parse_boolean`/`SmtSession`) infer the session prime from `#fNmP` literal moduli and reject `ff.*` without an inferable prime (was: defaulted to 2); `parse_ff_const` validates the literal's `P` matches.
+- `sat::Solver::analyze`/`::propagate` route 1-UIP trail exhaustion and watched-literal enqueue-of-non-Undef through `give_up`→Unknown in release (was `debug_assert!`-only).
+- Doc: `sparse_gb::groebner_basis(_incremental)` cancel return is a sub-ideal; `digest_constraint_side` ~2⁻¹²⁸ is benign-collision only (`DefaultHasher` fixed key).
+
+## [1.8.13] - 2026-05-27
+- Soundness backstops: cached SAT verdicts now re-verify the model against `bitsum_polys` (the non-cached `core::solve_split_gb_cancel` path already did); `verify_model` returns `false` on a model missing an appearing variable (was defaulted to zero, which could vacuously pass a narrow check).
+- `R1csFile::constraint_to_string` returns a placeholder on an out-of-range id (was index panic); F4 S-poly extraction debug-asserts on the unreachable "leads on a reducer column" branch (silent skip would drop a generator and weaken the ideal); `cvc5_compare` arg parser reports a usage error on a trailing flag with no value (was index panic).
+- Maintainability: single-sourced the split-GB propagation iteration cap (`max_fixpoint_iters`), the SMT-LIB `declare-fun`/`declare-const` scan (`classify_declare`), and the CDCL(T) UNSAT-core back-mapping (`map_core_to_atoms`); removed unused `GbTracer` API (`checkpoint`/`restore`/`next_input_idx`/`unsat_core_for_trivial`/`deps_of`); documented the `SolverKind` dispatch-vs-selection checklist.
+
+## [1.8.12] - 2026-05-27
+- `DensePoly::from_raw_sorted` drops the total-degree-monotonicity debug assert (invalid under Lex) — fixes a debug/test-build panic on the Lex model-extraction reduction path.
+- SMT-LIB term builders (`build_poly`/`build_poly_with_ctx`) reject a zero-argument `-` instead of indexing out of bounds (was a `run_smt2` process abort).
+- Maintainability: `encode_impl` derives the bitsum aux index from `bitsum_aux_index` (was a debug-only cross-check); single-sourced `propagation::mod_inverse`, the split-GB partition layout (`build_partitions`), and the GB `resolve_strategy`; removed dead guards (`bim` bound, `binary01` subsumed disjunct, `_GbBaseRing`); fixed all picus-core rustdoc intra-doc links.
+
+## [1.8.11] - 2026-05-27
+- `set_target` asserts a non-input uniqueness target in release builds (was debug-only); split-GB SAT models are re-verified against the bitsum polynomials in addition to the original generators.
+- Sparse Gröbner-basis path (the default representation) wraps the engine in `catch_unwind`, degrading a panic to an empty basis → `Unknown` via `finish_gb` (was a process abort); matches the dense path.
+- `linalg` echelon `expect`s that a nonzero leading coefficient is invertible (was a silently unnormalized pivot row); `min_poly_cancel` uses the cancel-aware reduction.
+- Single-sourced the bitsum aux-variable index (`bitsum_aux_index`), the geobucket reducer thresholds (`ReducerIndex`), and the split-GB self-membership memo seeding (`seed_self_membership`); added dense incremental-vs-from-scratch GB, encoder `n_diseq > 0` bitsum, and lowering copy-symmetry tests.
+
+## [1.8.10] - 2026-05-27
+- SMT-LIB parser caps S-expression nesting and `define-fun` expansion depth (stack overflow → malformed-input error); `ff.mul` exponent overflow returns a parse error instead of panicking.
+- R1CS parser accepts a non-multiple-of-8 `field_size` (1-byte small primes, e.g. GF(7)).
+- `PolyIR::set_target` debug-asserts a non-input target; `Counter` selector tie-breaks by wire index; cvc5/z3 backends error instead of dropping a target disequality on a missing copy variable.
+- Maintainability: removed the `IrPolyRing` facade and a dead `FieldElem` drop guard; single-sourced the `(_ FiniteField N)` sort detection and disequality-witness naming; `serde_json` to workspace deps; by-homog reduced-GB differential test.
+
+## [1.8.9] - 2026-05-27
+- Soundness (false UNSAT, small primes): bit propagation gates the bitsum bit-pinning on `2^len <= p` (shared `bitsum_fits`) in both phases, so a modular collision (GF(7): `0b111 ≡ 0b000`) no longer prunes a satisfying assignment; +2 GF(7) regression tests.
+- R1CS section-table parser computes section ends with `checked_add` (rejects a near-`usize::MAX` size instead of wrapping past the bounds check).
+- Split-GB `Ideal` routes through `compute_gb_with_order`, so `poly_repr` (sparse default) and the `finish_gb` cancel/error/backup contract apply to the split-GB solve.
+- `--gb-strategy` flag (`--gb-by-homog` kept as a hidden alias).
+- Single-sourced the split-GB propagation decision, univariate-coefficient extractor, round-robin brancher, and bitsum chain-length cap; `BitProp::get_bit_equalities` takes `&self`; four engine files split into re-exported submodules; added a config-overlay drift guard and an F4-vs-per-pair reduced-GB differential test.
+
+## [1.8.8] - 2026-05-26
+- R1CS parser bounds the header wire/IO counts before allocating (`HeaderImplausible`; iden3 invariants `1 + n_pub_out + n_pub_in + n_prv_in <= n_wires`, `n_wires <= w2l.labels.len()`).
+- `IncrementalGB::pop` restores the basis polynomial bodies, not only the active flags.
+- Incremental-solver cache key is a 128-bit digest (was 64-bit), so a constraint-side collision can't yield an unsound UNSAT.
+- SMT-LIB front end rejects an `=`/`distinct` chain mixing Bool and FF sorts; the tokenizer errors instead of indexing out of bounds on a truncated stream.
+- BIM lemma accumulates repeated-wire coefficients (mod p) instead of keeping only the last.
+- Witness output filters internal aux variables (`__w_diseq_*`, `__bitsum_*`).
+- Removed dead code (`Solver::add_theory_lemma`, `Theory::level`); single-sourced the geobucket cascade constants, Fermat inverse, GB-entry error/cancel fallback, and disequality witness naming.
+
+## [1.8.7] - 2026-05-26
+- Soundness (false UNSAT): `BitProp::is_bit` is a pure query — it no longer caches a per-basis `x^2 - x ∈ I` proof into the persistent global bit set (never rolled back on split-GB backtrack), which let a sibling branch derive a spurious bitsum-overflow contradiction; +GF(7) regression test.
+- Dense geobucket reduction re-attaches the in-flight leading term before draining on cancellation (matches the indexed/sparse paths); was dropped.
+- SMT-LIB rewriter and naive reduction oracle accumulate exponents with `checked_add` (`u16` discipline).
+- cvc5 backend refuses a query carrying `assignments`/`bitsums` it does not lower (`Unknown(IncompleteTheory)`), matching the NIA backends.
+- Incremental solver falls back to a stateless solve when a cached ring cannot resolve a disequality variable.
+- Documented the copy-symmetry lowering invariant at the emission site and on each wire-keyed lemma; `split_model` echoes shared inputs into the second witness.
+
+## [1.8.6] - 2026-05-26
+- Traced incremental GB (`compute_gb_incremental_with_order_traced`) returns an empty basis on a genuine engine error (not the unreduced generators), matching its non-traced sibling, so a non-GB can't be consumed as a GB.
+- aboz zero-product lemma emits each alt-copy disjunction over the variable in that copy's constraint (`x_w` for an input wire), not the unconstrained `y_w`.
+- R1CS parser rejects a field modulus ≤ 1 (`InvalidPrime`).
+- SMT-LIB term builder accumulates exponents with `checked_add` (`u16` discipline).
+- `Solver::learn_clause` enforces its non-empty precondition in release builds.
+
+## [1.8.5] - 2026-05-26
+- CDCL(T) maps a theory UNSAT core to trail atoms via per-polynomial provenance (`EncodedSystem::poly_provenance`), not an assumed positional layout; an unattributable index falls back to the full trail core.
+- `compute_gb_*` distinguishes cancellation from a genuine engine error: an error yields an empty basis (not the unreduced generators), so a non-GB can't be consumed as a GB.
+- `fglm_to_lex` verifies the staircase size against the Hilbert quotient dimension in release builds, returning `None` (→ direct Lex) on mismatch.
+- `interreduce` de-duplicates equal-leading-monomial elements (dense and sparse).
+- Sparse Buchberger reduction is cancel-aware (`reduce_by_refs_cancel`).
+- `CancelToken` evaluates timeouts / `either` lazily in `is_cancelled()` instead of spawning a watcher thread per token.
+- `native_ff` installs its panic-silencing hook once per process.
+- `enqueue_theory` rejects a stale theory reason in release builds.
+- `r1cs_to_poly_ir` validates `target_signal` against the wire count (`WireOutOfBounds`).
+- QF_NIA backends (`cvc5_nia`, `z3_nia`) return `Unknown(IncompleteTheory)` for disjunctions/assignments/bitsums they do not lower.
+
+## [1.8.4] - 2026-05-25
+- Unified the Gebauer–Möller M/B-criteria and S-pair queue merge into a representation-agnostic `ff::spair_criteria` module (shared by the dense and sparse Buchberger engines).
+- `ff::buchberger` factors out `build_spoly` / `deactivate_superseded` (shared across per-pair, F4, seeding).
+- CDCL(T) main loop is generic over the `Theory` trait; removed the unused `Effort` / `pre_check` scaffolding.
+- `PolyIR` depends only on `picus-core`: its native-engine lowering moves to the native backend.
+- `FfPolyRing` reads field / variable count / names from the shared ring context.
+- `run_dpvl` returns a typed `DpvlError`; `PicusError` gains a `Dpvl` variant.
+- Removed the unused `SolverMode` enum and `solve_encoded_with_mode`.
+
+## [1.8.3] - 2026-05-25
+- Split-GB UNSAT core is a sound conservative over-approximation (union of a partition's original inputs), closing an under-approximation hazard; consumed only by the CDCL(T) path, so verdicts are unchanged.
+- Univariate root-finding returns `(roots, complete)`; the brancher and model search treat an incomplete Cantor–Zassenhaus split as inconclusive (→ round-robin → `unknown`), never as infeasibility.
+- CDCL(T): a theory core mapping to no trail atom falls back to the full trail; an unassigned theory-core literal yields `unknown` instead of a panic.
+- `--selector first` selects the smallest unknown signal index (deterministic).
+- Renamed the engine error `SolverError` → `EngineError`; `new_with_repr` sets the representation explicitly; added Goldilocks (`u64` arm above 2^63) and F4-vs-per-pair differential tests and a config drift guard.
+
+## [1.8.2] - 2026-05-25
+- `ff::hilbert::quotient_dimension` + `Ideal::quotient_dimension`: `dim_k(R/I)` from the basis leading terms via the graded Hilbert function; cross-checks the FGLM staircase.
+- Geobucket reducer reads each divisor's leading coefficient lazily (only the selected divisor).
+- Incremental GB extends run the per-pair engine; F4 (`use_f4`) is used only for from-scratch GB.
+- New config keys / CLI flags (default off): `split_triangular` (`--split-triangular`, triangular model construction on the split-GB path) and `reducer_index_cache` (`--reducer-index-cache`, cache the divisor index across reductions with an unchanged basis).
+
+## [1.8.1] - 2026-05-25
+- Removed the `PICUS_*` runtime environment overrides (`PICUS_USE_F4`, `PICUS_POLY_REPR`, `PICUS_BOOLEAN`, `PICUS_DNF_CAP`, `PICUS_CDCLT_ITER_CAP`, `PICUS_GB_STATS`, `PICUS_GB_TRACE`, `PICUS_PROFILE`, `PICUS_NO_INCREMENTAL_CACHE`, `PICUS_NO_ABOZ_DISJ`). Every engine knob is now set through the config file (`--config` / `./picus.toml`) or a CLI flag only; config resolves as built-in defaults < file < CLI. Build-time locators (`CVC5_LIB_DIR`, …) are unaffected.
 
 ## [1.8.0] - 2026-05-25
-- Default solver is now `native` (was `cvc5`), matching the default `native`-only build — a bare `picus check` / `Config::default()` now works without opt-in Cargo features. `cvc5` / `z3` need their features and an explicit `--solver`.
-- Workspace `default-members` excludes the `cvc5-ff` / `cvc5-ff-sys` / `z3` crates: the default commands (`cargo build`, `cargo test`, `cargo install --path crates/picus-cli`) compile only the native solver. cvc5 / z3 build solely on opt-in (`--features cvc5` / `z3`, or an explicit `cargo build --workspace`).
-- Layered configuration: built-in defaults < config file < `PICUS_*` environment < CLI flags, each layer overriding only the keys it sets. `picus check` gains `--config <FILE>` (TOML); `./picus.toml` in the working directory is auto-loaded when present. A commented [`picus.default.toml`](picus.default.toml) documents every knob at its default value, with a test asserting it matches the compiled defaults.
-- Config types unified: the public `Config` is now `PicusConfig { analysis, engine }` — `analysis` (solver/theory/lemmas/selector/timeout/dump) and `engine` (the native-FF knobs). Each knob is declared once; `picus::Config` stays as an alias. `EngineOverlay` / `DpvlOverlay` carry the partial (all-optional) config layers, parsed via serde + TOML.
-- `poly_repr` and the `aboz` zero-product disjunction toggle — previously settable only through `PICUS_*` — are now first-class config keys and CLI flags (`--poly-repr`, `--no-aboz-disj`); `--gb-stats` added.
-- Docker image is native-only (drops the cvc5 / z3 build chain), matching the default build.
-- Documentation reorganised: a slimmer README, the full flag / configuration reference in `docs/usage.md`, and cvc5 / z3 build instructions + licensing in `docs/building.md`; removed `docs/TODO.md`.
+- Default solver is `native` (was `cvc5`): a bare `picus check` / `Config::default()` works without opt-in features. `cvc5` / `z3` need their features and an explicit `--solver`.
+- Workspace `default-members` excludes `cvc5-ff` / `cvc5-ff-sys` / `z3`; default commands compile only the native solver.
+- Layered configuration (defaults < config file < `PICUS_*` env < CLI flags); `--config <FILE>`, auto-loaded `./picus.toml`, documented `picus.default.toml`.
+- Public `Config` is `PicusConfig { analysis, engine }`; `EngineOverlay` / `DpvlOverlay` carry the partial layers (serde + TOML).
+- `poly_repr` and the `aboz` disjunction toggle become config keys / CLI flags (`--poly-repr`, `--no-aboz-disj`); `--gb-stats` added.
+- Docker image is native-only; docs reorganised (slimmer README, `docs/usage.md`, `docs/building.md`; removed `docs/TODO.md`).
 
 ## [1.7.35] - 2026-05-25
 - New `picus-core` crate holding the shared GF(p) algebra (`ff` field / monomial / dense+sparse polynomials / reduction, the `poly` ring facade), runtime `config`, `timeout::CancelToken`, and `profile`, extracted from `picus-solver`. `picus-solver` keeps the Gröbner / CDCL(T) engine and depends on `picus-core`; `picus-analysis` depends on `picus-core` instead of `picus-solver`.

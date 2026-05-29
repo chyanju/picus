@@ -48,7 +48,7 @@ picus check --r1cs circuit.r1cs --config my.toml  # load settings from a config 
 picus info --r1cs circuit.r1cs --constraints      # inspect R1CS metadata
 ```
 
-**Configuration.** No config is required — every setting has a built-in default. To customise, copy [`picus.default.toml`](picus.default.toml) (it documents every key), edit it, and pass it with `--config <file>`; or drop a `./picus.toml` in the working directory and it is picked up automatically. Sources layer, with later winning: built-in defaults < config file < `PICUS_*` environment < individual CLI flags. Full flag and configuration reference: [docs/usage.md](docs/usage.md).
+**Configuration.** No config is required — every setting has a built-in default. To customise, copy [`picus.default.toml`](picus.default.toml) (it documents every key), edit it, and pass it with `--config <file>`; or drop a `./picus.toml` in the working directory and it is picked up automatically. Sources layer, with later winning: built-in defaults < config file < individual CLI flags. Full flag and configuration reference: [docs/usage.md](docs/usage.md).
 
 ## Use as a Rust Library
 

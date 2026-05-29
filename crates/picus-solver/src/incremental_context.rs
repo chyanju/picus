@@ -13,8 +13,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use num_bigint::BigUint;
-
 use crate::frontend::bitprop::{BitProp, BitPropState};
 use crate::core::{populate_bitprop, SolveOutcome};
 use crate::frontend::encoder::{
@@ -24,9 +22,12 @@ use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
 use crate::ff::monomial::MonomialOrder;
 use crate::gb::ideal::{interreduce_basis, ring_for_order, unwrap_dense_vec, wrap_dense_vec, Ideal};
 use crate::gb::model;
+use crate::metric;
+use crate::profile::NATIVE_FF;
 use crate::poly::{FfPolyRing, Poly};
 use crate::split_gb::{
-    admit, split_find_zero_cancel, split_gb_cancel, split_gb_extend_cancel, SplitFindZeroOutcome,
+    admit, build_partitions, classify_propagation, max_fixpoint_iters, seed_self_membership,
+    split_find_zero_cancel, split_gb_cancel, split_gb_extend_cancel, Propagate, SplitFindZeroOutcome,
 };
 use crate::timeout::CancelToken;
 
@@ -43,7 +44,7 @@ pub struct CachedBase {
     /// `split_gb_owned[1]` = nonlinear basis.
     pub split_gb_owned: Vec<Vec<Poly>>,
     pub bit_prop_state: BitPropState,
-    pub digest: u64,
+    pub digest: u128,
 }
 
 /// Partial GB build state preserved across solve calls. Used when the
@@ -52,7 +53,7 @@ pub struct CachedBase {
 /// in-flight [`IncrementalGB`] per partition so the open S-pair queue
 /// is not lost.
 struct PartialBuild {
-    digest: u64,
+    digest: u128,
     poly_ring: Arc<FfPolyRing>,
     var_map: HashMap<String, usize>,
     constraint_polys: Vec<Poly>,
@@ -70,7 +71,7 @@ pub struct IncrementalSolverContext {
     /// The cache builds only when two consecutive calls share a
     /// digest; circuits whose per-call constraint sides never repeat
     /// skip the cache-build cost entirely.
-    last_digest: Option<u64>,
+    last_digest: Option<u128>,
     /// In-flight partial GB build saved from a cancelled call. Resumed
     /// on the next call with the same digest.
     partial_build: Option<PartialBuild>,
@@ -91,7 +92,6 @@ impl IncrementalSolverContext {
     }
 
     pub fn solve(&mut self, cs: &ConstraintSystem, cancel: &CancelToken) -> SolveOutcome {
-        let stats_on = crate::profile::gb_stats_enabled();
         let digest = digest_constraint_side(cs);
 
         let cache_matches = matches!(&self.cached_base, Some(c) if c.digest == digest);
@@ -110,30 +110,15 @@ impl IncrementalSolverContext {
 
         // Resume an in-flight partial build.
         if !cache_matches && partial_matches {
-            if stats_on {
-                use std::sync::atomic::Ordering::Relaxed;
-                crate::profile::NATIVE_FF
-                    .cache_partial_resumes
-                    .fetch_add(1, Relaxed);
-            }
-            let t0 = std::time::Instant::now();
+            metric::incr!(NATIVE_FF.cache_partial_resumes);
             let mut partial = self.partial_build.take().unwrap();
-            let outcome = continue_partial(&mut partial, cancel);
-            let dt = t0.elapsed().as_nanos() as u64;
-            if stats_on {
-                use std::sync::atomic::Ordering::Relaxed;
-                crate::profile::NATIVE_FF
-                    .cache_rebuild_time_ns
-                    .fetch_add(dt, Relaxed);
-            }
+            let outcome = {
+                metric::timer!(NATIVE_FF.cache_rebuild_time_ns);
+                continue_partial(&mut partial, cancel)
+            };
             match outcome {
                 ResumeOutcome::Complete(cached) => {
-                    if stats_on {
-                        use std::sync::atomic::Ordering::Relaxed;
-                        crate::profile::NATIVE_FF
-                            .cache_partial_completions
-                            .fetch_add(1, Relaxed);
-                    }
+                    metric::incr!(NATIVE_FF.cache_partial_completions);
                     self.cached_base = Some(cached);
                 }
                 ResumeOutcome::StillPartial => {
@@ -146,46 +131,30 @@ impl IncrementalSolverContext {
             }
         } else if !cache_matches {
             // Fresh build attempt via the fast path.
-            if stats_on {
-                use std::sync::atomic::Ordering::Relaxed;
-                crate::profile::NATIVE_FF
-                    .distinct_cs_digests
-                    .fetch_add(1, Relaxed);
-            }
-            let t0 = std::time::Instant::now();
-            match self.rebuild_base(cs, digest, cancel) {
-                Ok(()) => {}
-                Err(()) => {
-                    return stateless_solve(cs, cancel);
+            metric::incr!(NATIVE_FF.distinct_cs_digests);
+            {
+                metric::timer!(NATIVE_FF.cache_rebuild_time_ns);
+                match self.rebuild_base(cs, digest, cancel) {
+                    Ok(()) => {}
+                    Err(()) => {
+                        return stateless_solve(cs, cancel);
+                    }
                 }
-            }
-            if stats_on {
-                use std::sync::atomic::Ordering::Relaxed;
-                let dt = t0.elapsed().as_nanos() as u64;
-                crate::profile::NATIVE_FF
-                    .cache_rebuild_time_ns
-                    .fetch_add(dt, Relaxed);
             }
             // If the rebuild was cancelled, `rebuild_base` left
             // `partial_build` populated for resumption.
             if self.partial_build.is_some() && self.cached_base.is_none() {
                 return SolveOutcome::Unknown;
             }
-        } else if stats_on {
-            use std::sync::atomic::Ordering::Relaxed;
-            crate::profile::NATIVE_FF.cache_hits.fetch_add(1, Relaxed);
+        } else {
+            metric::incr!(NATIVE_FF.cache_hits);
         }
 
         let cached = self.cached_base.as_ref().expect("cache must be built");
-        let t0 = std::time::Instant::now();
-        let outcome = solve_with_cached(cached, cs, cancel);
-        if stats_on {
-            use std::sync::atomic::Ordering::Relaxed;
-            let dt = t0.elapsed().as_nanos() as u64;
-            crate::profile::NATIVE_FF
-                .cache_query_diff_time_ns
-                .fetch_add(dt, Relaxed);
-        }
+        let outcome = {
+            metric::timer!(NATIVE_FF.cache_query_diff_time_ns);
+            solve_with_cached(cached, cs, cancel)
+        };
         outcome
     }
 
@@ -195,7 +164,7 @@ impl IncrementalSolverContext {
     fn rebuild_base(
         &mut self,
         cs: &ConstraintSystem,
-        digest: u64,
+        digest: u128,
         cancel: &CancelToken,
     ) -> Result<(), ()> {
         self.cached_base = None;
@@ -215,32 +184,18 @@ impl IncrementalSolverContext {
             return Err(());
         }
 
-        let nl_gens: Vec<Poly> = encoded
-            .polynomials
-            .iter()
-            .map(|p| encoded.poly_ring.ring.clone_el(p))
-            .collect();
-        let mut l_gens: Vec<Poly> = Vec::new();
-        for p in &encoded.bitsum_polys {
-            l_gens.push(encoded.poly_ring.ring.clone_el(p));
-        }
-        for p in &encoded.polynomials {
-            if admit(&encoded.poly_ring, 0, p) {
-                l_gens.push(encoded.poly_ring.ring.clone_el(p));
-            }
-        }
+        // basis 0 (linear) = bitsum polys + admitted originals; basis 1
+        // (nonlinear) = all originals. The provenance is unused here: the
+        // cached path does not extract an UNSAT core.
+        let (gens, _prov) =
+            build_partitions(&encoded.poly_ring, &encoded.polynomials, &encoded.bitsum_polys);
 
         let mut bit_prop = BitProp::new(&encoded.poly_ring);
         populate_bitprop(&encoded.poly_ring, &encoded.polynomials, &mut bit_prop);
 
         // Fast-path build. On cancel, `split_gb_cancel` returns
         // `Cancelled` and we transition to the resumable path.
-        match split_gb_cancel(
-            &encoded.poly_ring,
-            vec![l_gens.clone(), nl_gens.clone()],
-            &mut bit_prop,
-            cancel,
-        ) {
+        match split_gb_cancel(&encoded.poly_ring, gens.clone(), &mut bit_prop, cancel) {
             Ok(split_basis) => {
                 let split_gb_owned: Vec<Vec<Poly>> = split_basis
                     .into_iter()
@@ -282,7 +237,7 @@ impl IncrementalSolverContext {
                     IncrementalGB::new(ring.clone(), cfg.clone()),
                     IncrementalGB::new(ring, cfg),
                 ];
-                let pending = vec![l_gens, nl_gens];
+                let pending = gens;
                 let bit_prop_state = bit_prop.to_state();
                 self.partial_build = Some(PartialBuild {
                     digest,
@@ -320,9 +275,9 @@ fn continue_partial(partial: &mut PartialBuild, cancel: &CancelToken) -> ResumeO
     }
     let poly_ring: &FfPolyRing = &partial.poly_ring;
     let k = partial.inflight.len();
-    let mut bit_prop = BitProp::from_state(poly_ring, partial.bit_prop_state.clone());
+    let bit_prop = BitProp::from_state(poly_ring, partial.bit_prop_state.clone());
 
-    let max_fixpoint_iters = (k * 64).max(256);
+    let iter_cap = max_fixpoint_iters(k);
     let mut fixpoint_iter: u64 = 0;
     loop {
         if cancel.is_cancelled() {
@@ -330,7 +285,7 @@ fn continue_partial(partial: &mut PartialBuild, cancel: &CancelToken) -> ResumeO
             return ResumeOutcome::StillPartial;
         }
         fixpoint_iter += 1;
-        if fixpoint_iter > max_fixpoint_iters as u64 {
+        if fixpoint_iter > iter_cap {
             log::warn!("continue_partial: fixpoint cap reached");
             break;
         }
@@ -394,11 +349,7 @@ fn continue_partial(partial: &mut PartialBuild, cancel: &CancelToken) -> ResumeO
             .iter()
             .map(|igb| Ideal::from_gb(poly_ring, wrap_dense_vec(igb.basis())))
             .collect();
-        for j in 0..k {
-            for p in &split_basis[j].basis {
-                partial.contains_memo.insert((p.content_hash(), j));
-            }
-        }
+        seed_self_membership(&mut partial.contains_memo, &split_basis);
 
         let mut to_propagate =
             bit_prop.get_bit_equalities_with_cancel(&split_basis, Some(cancel));
@@ -420,19 +371,11 @@ fn continue_partial(partial: &mut PartialBuild, cancel: &CancelToken) -> ResumeO
             }
             let p_hash = p.content_hash();
             for j in 0..k {
-                if admit(poly_ring, j, p) {
-                    let key = (p_hash, j);
-                    if partial.contains_memo.contains(&key) {
-                        continue;
-                    }
-                    let in_basis = split_basis[j].contains_with_cancel(p, cancel);
-                    if in_basis {
-                        partial.contains_memo.insert(key);
-                    } else {
-                        partial.pending[j].push(poly_ring.ring.clone_el(p));
-                        any_new = true;
-                        partial.contains_memo.insert(key);
-                    }
+                if classify_propagation(
+                    poly_ring, &split_basis[j], j, p, p_hash, &mut partial.contains_memo, cancel,
+                ) == Propagate::NewGenerator {
+                    partial.pending[j].push(poly_ring.ring.clone_el(p));
+                    any_new = true;
                 }
             }
         }
@@ -503,12 +446,11 @@ fn encode_query_disequalities(
     let mut out = Vec::with_capacity(cs.disequalities.len());
     for (i, &(a, b)) in cs.disequalities.iter().enumerate() {
         // Translate the query's producer-frame VarIdx into the
-        // cached ring's frame via name lookup. The cached ring's
-        // variables are stored in alphabetically sorted order
-        // (see `encode_impl`), so the integer `a`/`b`
-        // from the input cannot be used directly as a ring slot
-        // index — they refer to positions in `cs.var_names`, not
-        // in the ring.
+        // cached ring's frame via name lookup. The ring's slot order is
+        // `cs.var_names` order followed by appended aux vars
+        // (`__w_diseq_*` / `__bitsum_*`); `encode_impl` does not sort.
+        // The integer `a`/`b` index `cs.var_names`, not ring slots, so
+        // they must be re-resolved by name through `var_map`.
         let a_name = cs
             .var_names
             .get(a as usize)
@@ -544,7 +486,13 @@ fn solve_with_cached(
 
     let query_polys = match encode_query_disequalities(cs, poly_ring, &cached.var_map) {
         Ok(polys) => polys,
-        Err(_) => return SolveOutcome::Unknown,
+        // The cache key (digest) excludes disequalities, so a hit can occur
+        // for a query whose disequality references a variable the cached ring
+        // dropped during compaction (compaction keeps disequality endpoints,
+        // but only those of the query that originally built the cache).
+        // Rather than return Unknown, fall back to a fresh stateless solve for
+        // this query — sound, just without the cache reuse.
+        Err(_) => return stateless_solve(cs, cancel),
     };
 
     let starting: Vec<Ideal> = cached
@@ -598,10 +546,10 @@ fn solve_with_cached(
     let outcome = match split_find_zero_cancel(poly_ring, new_basis, &mut bit_prop, cancel) {
         Ok(SplitFindZeroOutcome::Sat(point)) => {
             let mut model_map = HashMap::new();
-            let field = &poly_ring.field;
+            let field = &poly_ring.field();
             for (idx, val) in point.iter().enumerate() {
-                if idx < poly_ring.var_names.len() {
-                    model_map.insert(poly_ring.var_names[idx].clone(), field.to_biguint(val));
+                if idx < poly_ring.var_names().len() {
+                    model_map.insert(poly_ring.var_names()[idx].clone(), field.to_biguint(val));
                 }
             }
             let mut full_polys: Vec<Poly> = cached
@@ -610,6 +558,13 @@ fn solve_with_cached(
                 .map(|p| poly_ring.ring.clone_el(p))
                 .collect();
             for p in &query_polys {
+                full_polys.push(poly_ring.ring.clone_el(p));
+            }
+            // Verify against the bitsum definitions as well, matching the
+            // non-cached path (core::solve_split_gb_cancel): the model
+            // search extends bases seeded with these, so a sound model must
+            // satisfy them too.
+            for p in &cached.bitsum_polys {
                 full_polys.push(poly_ring.ring.clone_el(p));
             }
             if model::verify_model(poly_ring, &full_polys, &model_map) {
@@ -624,7 +579,6 @@ fn solve_with_cached(
         Ok(SplitFindZeroOutcome::Unknown) => SolveOutcome::Unknown,
         Err(_) => SolveOutcome::Unknown,
     };
-    let _ = outcome.clone();
     outcome
 }
 
@@ -636,12 +590,30 @@ fn stateless_solve(cs: &ConstraintSystem, cancel: &CancelToken) -> SolveOutcome 
 }
 
 /// Hash an [`ConstraintSystem`]'s constraint side (everything
-/// except `disequalities`) into a `u64` cache key. Self-consistent:
+/// except `disequalities`) into a 128-bit cache key. Self-consistent:
 /// two systems agreeing on `(prime, var_names, equalities,
 /// assignments, bitsums, add_field_polys)` produce the same digest.
-pub fn digest_constraint_side(cs: &crate::frontend::encoder::ConstraintSystem) -> u64 {
+///
+/// The key is 128 bits, not 64, because a digest match is trusted to
+/// reuse a prior split-GB without re-deriving it, and an UNSAT result
+/// from a cache hit is returned without a model re-check (unlike SAT,
+/// which `model::verify_model` validates). A two-distinct-constraint-side
+/// collision would therefore be an unsound UNSAT. The two SipHash-1-3
+/// passes over distinct domain prefixes act as independent 64-bit PRF
+/// outputs on benign inputs, so a chance collision is ~2^-128. The
+/// hasher uses `std::collections`'s fixed key, so this resistance is
+/// against accidental collision on developer-controlled R1CS — not
+/// against an adversary tailoring `ConstraintSystem`s to collide.
+pub fn digest_constraint_side(cs: &crate::frontend::encoder::ConstraintSystem) -> u128 {
+    let lo = hash_constraint_side(cs, 0x01);
+    let hi = hash_constraint_side(cs, 0xA5);
+    ((hi as u128) << 64) | (lo as u128)
+}
+
+fn hash_constraint_side(cs: &crate::frontend::encoder::ConstraintSystem, domain: u64) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
+    domain.hash(&mut h);
     cs.prime.hash(&mut h);
     cs.add_field_polys.hash(&mut h);
     // `var_names` is part of the system's identity for caching:
@@ -679,7 +651,6 @@ pub fn digest_constraint_side(cs: &crate::frontend::encoder::ConstraintSystem) -
     h.finish()
 }
 
-#[allow(dead_code)]
-fn _unused() -> BigUint {
-    BigUint::from(0u32)
-}
+#[cfg(test)]
+#[path = "incremental_context_tests.rs"]
+mod tests;

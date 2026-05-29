@@ -1,11 +1,20 @@
-//! Representation-agnostic interface for monomials.
+//! Representation-agnostic interfaces for monomials ([`MonomialRepr`]) and
+//! polynomials ([`PolyRepr`]), implemented by both the dense
+//! ([`super::monomial::Monomial`] / [`super::polynomial::DensePoly`]) and
+//! sparse ([`super::sparse_monomial::SparseMonomial`] /
+//! [`super::sparse_polynomial::SparsePolynomial`]) representations.
 //!
-//! Both the dense [`super::monomial::Monomial`] and the sparse
-//! [`super::sparse_monomial::SparseMonomial`] implement [`MonomialRepr`].
-//! The polynomial layer and Gröbner-basis engine are generic over it, so
-//! the representation can be switched at runtime (see `RuntimeConfig`)
-//! while sharing one engine. The dense implementation is also the
-//! differential-test oracle for the sparse one.
+//! The active representation is chosen by `RuntimeConfig::poly_repr`. The
+//! runtime dispatch mechanism is the [`super::polynomial::Polynomial`]
+//! enum, which matches `Dense` / `Sparse` per operation — *not* a generic
+//! bound on these traits, and the dense and sparse Gröbner engines are
+//! themselves separate (`buchberger` over `DensePoly`, `sparse_gb` over
+//! `SparsePolynomial`). The traits' primary role is the `repr_oracle`
+//! differential test, which checks the two implementations agree
+//! bit-for-bit; the dense side is the oracle. Adding a third
+//! representation therefore means a new enum arm wired through
+//! `Polynomial`'s per-arm methods (and its own reduction path), not just
+//! a new trait impl.
 
 use std::cmp::Ordering;
 use std::fmt::Debug;

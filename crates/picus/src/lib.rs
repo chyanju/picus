@@ -94,6 +94,10 @@ pub enum PicusError {
     #[error("solver error: {0}")]
     Solver(String),
 
+    /// DPVL analysis error (R1CS lowering or backend construction).
+    #[error("analysis error: {0}")]
+    Dpvl(#[from] picus_analysis::dpvl::DpvlError),
+
     /// Invalid solver/theory combination or other configuration issue.
     #[error("invalid configuration: {0}")]
     Config(String),
@@ -117,8 +121,8 @@ pub enum PicusError {
 ///
 /// `PicusConfig::default()` is the compiled-in default (zero I/O — what
 /// a library import gets with no config). The CLI builds its config by
-/// layering, in increasing precedence: defaults → config file →
-/// `PICUS_*` environment → CLI flags (see [`resolve_config`]).
+/// layering, in increasing precedence: defaults → config file → CLI
+/// flags (see [`resolve_config`]).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PicusConfig {
     /// Analysis-layer configuration.
@@ -149,15 +153,6 @@ pub struct PicusConfigOverlay {
 }
 
 impl PicusConfig {
-    /// Defaults plus `PICUS_*` environment overrides (engine knobs).
-    /// Use this instead of [`PicusConfig::default`] when a library
-    /// caller wants the environment honoured the way the CLI does.
-    pub fn from_env() -> Self {
-        let mut c = Self::default();
-        c.engine.apply_overlay(&EngineOverlay::from_env());
-        c
-    }
-
     /// Merge an overlay (one config layer) onto this config; only the
     /// overlay's `Some` fields override. A bad enum string in the
     /// analysis layer surfaces as [`PicusError::Config`].
@@ -187,9 +182,8 @@ impl PicusConfig {
 }
 
 /// Build the effective configuration by layering, in increasing
-/// precedence: compiled defaults → config file → `PICUS_*` environment
-/// → CLI overlay. Each layer overrides only the fields it sets; later
-/// layers win.
+/// precedence: compiled defaults → config file → CLI overlay. Each
+/// layer overrides only the fields it sets; later layers win.
 ///
 /// File selection: the explicit `config_path` (`--config`) if given;
 /// otherwise `./picus.toml` in the current directory when it exists;
@@ -208,10 +202,7 @@ pub fn resolve_config(
         cfg.apply_overlay(&overlay)?;
     }
 
-    // Layer 2: PICUS_* environment (engine knobs only).
-    cfg.engine.apply_overlay(&EngineOverlay::from_env());
-
-    // Layer 3: CLI flags (highest precedence).
+    // Layer 2: CLI flags (highest precedence).
     cfg.apply_overlay(cli)?;
 
     Ok(cfg)
@@ -326,8 +317,7 @@ pub fn check_r1cs(
     let _engine_guard = picus_core::config::ConfigGuard::install(config.engine.clone());
 
     // Run DPVL on the analysis-layer config.
-    let result = picus_analysis::dpvl::run_dpvl(r1cs, &config.analysis)
-        .map_err(PicusError::Solver)?;
+    let result = picus_analysis::dpvl::run_dpvl(r1cs, &config.analysis)?;
 
     // Convert internal result to public API result
     match result {
@@ -368,16 +358,27 @@ pub fn dump_gb_stats() {
 // Internal helpers
 // ============================================================
 
-/// Split a raw solver model into two clean witness maps, filtering
-/// out internal constants (ps1, zero, etc.). Routing is by the
-/// PolyIR convention: keys matching `x<digits>` go to witness 1, keys
-/// matching `y<digits>` to witness 2. Anything else (an aux var the
-/// solver invented, a Rabinowitsch witness, ...) is treated as
-/// witness 1 by default rather than misclassified by prefix.
+/// Split a raw solver model into two clean witness maps. Routing is by
+/// the PolyIR convention: `x<digits>` keys go to witness 1, `y<digits>`
+/// keys to witness 2. An input wire shares `x_i` across both copies (no
+/// `y_i` is emitted), so its value is echoed into witness 2 as well —
+/// keeping witness 2 a complete assignment rather than only the non-input
+/// alt vars. Filtered out of both maps: named field constants
+/// (`SUBP_CONSTANT_NAMES`) and solver-internal auxiliary variables
+/// (the encoder's `__w_diseq_*` Rabinowitsch witnesses and `__bitsum_*`
+/// aux), which are not circuit signals.
 fn split_model(
     model: &HashMap<String, BigUint>,
 ) -> (HashMap<String, BigUint>, HashMap<String, BigUint>) {
     let constants: HashSet<&str> = picus_smt::SUBP_CONSTANT_NAMES.iter().copied().collect();
+
+    // Wire indices that have an alt copy (`y_i`) in the model. A wire with
+    // no `y_i` is an input — it shares `x_i` across both copies.
+    let alt_indices: HashSet<usize> = model
+        .keys()
+        .filter(|k| k.starts_with('y'))
+        .filter_map(|k| picus_r1cs::parse_var_index(k))
+        .collect();
 
     let mut w1 = HashMap::new();
     let mut w2 = HashMap::new();
@@ -386,14 +387,31 @@ fn split_model(
         if constants.contains(var.as_str()) {
             continue;
         }
-        let is_alt_copy = var.starts_with('y')
-            && picus_r1cs::parse_var_index(var).is_some();
-        if is_alt_copy {
+        // Encoder-internal aux vars (`__w_diseq_*`, `__bitsum_*`) are not
+        // circuit signals; they would otherwise fall through to witness 1
+        // (no `x`/`y` prefix, no parseable index).
+        if var.starts_with("__") {
+            continue;
+        }
+        let idx = picus_r1cs::parse_var_index(var);
+        if var.starts_with('y') && idx.is_some() {
             w2.insert(var.clone(), val.clone());
         } else {
             w1.insert(var.clone(), val.clone());
+            // An input wire (`x_i` with no `y_i`) is shared by both copies;
+            // echo it into the alt witness so witness_2 is complete.
+            if var.starts_with('x') {
+                if let Some(i) = idx {
+                    if !alt_indices.contains(&i) {
+                        w2.insert(var.clone(), val.clone());
+                    }
+                }
+            }
         }
     }
 
     (w1, w2)
 }
+
+#[cfg(test)]
+mod tests;

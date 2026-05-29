@@ -1,8 +1,8 @@
 //! Soundness regression tests for propagation lemmas.
 //!
-//! Each test constructs a synthetic R1CS that previously triggered a
-//! lemma misfire (the lemma marking wires uniquely-determined when
-//! they aren't) and asserts that the analyzer either:
+//! Each test constructs a synthetic R1CS that exercises a lemma misfire
+//! pattern (the lemma marking wires uniquely-determined when they
+//! aren't) and asserts that the analyzer either:
 //!   * with `SolverKind::None`: does NOT report `Safe` — propagation
 //!     alone must not overpromote, and
 //!   * with `SolverKind::Native` / `SolverKind::Cvc5`: reports
@@ -177,7 +177,7 @@ fn basis2_trap_r1cs() -> R1csFile {
 }
 
 #[test]
-fn aboz_does_not_overreport_when_selector_can_be_zero() {
+fn bug_aboz_does_not_overreport_when_selector_can_be_zero() {
     let r1cs = aboz_trap_r1cs();
     let result = run_dpvl(&r1cs, &propagation_only_config()).expect("DPVL should not error");
     assert!(
@@ -188,7 +188,7 @@ fn aboz_does_not_overreport_when_selector_can_be_zero() {
 }
 
 #[test]
-fn basis2_does_not_overreport_when_bitwidth_exceeds_prime() {
+fn bug_basis2_does_not_overreport_when_bitwidth_exceeds_prime() {
     let r1cs = basis2_trap_r1cs();
     let result = run_dpvl(&r1cs, &propagation_only_config()).expect("DPVL should not error");
     assert!(
@@ -213,7 +213,7 @@ fn basis2_does_not_overreport_when_bitwidth_exceeds_prime() {
 /// conflict analysis. The native backend routes disjunctions solely
 /// through CDCL(T), so this asserts CDCL(T) handles it directly.
 #[test]
-fn aboz_native_ff_finds_counterexample() {
+fn bug_aboz_native_ff_finds_counterexample() {
     let r1cs = aboz_trap_r1cs();
     let result = run_dpvl(&r1cs, &native_ff_config()).expect("DPVL should not error");
     assert!(
@@ -230,7 +230,7 @@ fn aboz_native_ff_finds_counterexample() {
 /// otherwise distinct bit patterns can collide modulo `p` and the
 /// rewrite over-constrains.
 #[test]
-fn basis2_native_ff_finds_counterexample() {
+fn bug_basis2_native_ff_finds_counterexample() {
     let r1cs = basis2_trap_r1cs();
     let result = run_dpvl(&r1cs, &native_ff_config()).expect("DPVL should not error");
     assert!(
@@ -246,7 +246,7 @@ fn basis2_native_ff_finds_counterexample() {
 /// Requires the cvc5 backend, so it is gated on the `cvc5` feature.
 #[cfg(feature = "cvc5")]
 #[test]
-fn basis2_cvc5_ff_finds_counterexample() {
+fn bug_basis2_cvc5_ff_finds_counterexample() {
     let r1cs = basis2_trap_r1cs();
     let mut cfg = native_ff_config();
     cfg.solver = SolverKind::Cvc5;
@@ -276,7 +276,7 @@ fn basis2_cvc5_ff_finds_counterexample() {
 /// `Safe` assertion is a direct regression guard for the relaxation.
 /// Skips if the benchmark fixture is unavailable.
 #[test]
-fn basis2_relaxes_with_compconstant_companion() {
+fn bug_basis2_relaxes_with_compconstant_companion() {
     let path = std::path::Path::new(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../benchmarks/circom/circomlib-cff5ab6/Num2Bits_strict@bitify.r1cs"

@@ -6,8 +6,8 @@
 //! returns `Sat` / `Unsat(core)` / `Unknown`; the orchestrator turns the
 //! core into a SAT lemma.
 //!
-//! [`pre_check`], [`propagate`], and [`explain`] have default no-op
-//! implementations; the FF theory does not override them.
+//! [`propagate`] defaults to no propagation and [`explain`] to a panic;
+//! the FF theory overrides both.
 
 use std::collections::HashMap;
 
@@ -15,19 +15,7 @@ use num_bigint::BigUint;
 
 use crate::sat::Var;
 
-/// Granularity of a theory check call.
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub enum Effort {
-    /// Cheap consistency check during propagation. May return
-    /// `Unknown` to defer expensive work to the full-effort check.
-    Standard,
-    /// SAT has a complete truth assignment; theory must definitively
-    /// answer `Sat` or `Unsat(core)`. The FF theory does its GB call
-    /// here.
-    Full,
-}
-
-/// Outcome of a theory check (pre or post).
+/// Outcome of a theory check.
 #[derive(Debug)]
 pub enum CheckOutcome {
     /// All asserted facts are consistent.
@@ -54,14 +42,9 @@ pub trait Theory {
     /// matters: facts arrive in SAT trail order.
     fn notify_fact(&mut self, atom: Var, polarity: bool);
 
-    /// Optional cheap consistency check. Default: return `Sat`.
-    fn pre_check(&mut self, _effort: Effort) -> CheckOutcome {
-        CheckOutcome::Sat
-    }
-
-    /// Required full-effort check (called when SAT has a candidate
-    /// model). The FF theory's GB invocation lives here.
-    fn post_check(&mut self, effort: Effort) -> CheckOutcome;
+    /// Required check, called when SAT has a candidate model. The FF
+    /// theory's GB invocation lives here.
+    fn post_check(&mut self) -> CheckOutcome;
 
     /// Theory propagation: atoms the theory derives must be True or
     /// False given the current facts. Each entry is `(atom_var,
@@ -84,14 +67,17 @@ pub trait Theory {
     /// roll its state back symmetrically. Default: noop.
     fn pop(&mut self) {}
 
-    /// Number of `push`-without-`pop` performed so far.
-    fn level(&self) -> u32 {
-        0
-    }
-
-    /// On a `Sat` outcome, return the FF variable assignments that
-    /// realize the model. Used by the orchestrator to compose the
-    /// final SMT model. Default: empty.
+    /// On a `Sat` outcome, return the variable assignments that realize
+    /// the model. Used by the orchestrator to compose the final SMT model.
+    /// Default: empty.
+    ///
+    /// The return type (`String` → field element) is FF-shaped, so this
+    /// trait is effectively single-theory today (the only impl is
+    /// `FfTheory`). A second theory with a different model domain (UF,
+    /// bitvector) would need this widened to an opaque per-theory fragment
+    /// the orchestrator composes; the rest of the trait (`notify_fact`,
+    /// `post_check`, the `Vec<Var>` conflict core) is already
+    /// theory-agnostic.
     fn collect_model(&self) -> Option<HashMap<String, BigUint>> {
         None
     }

@@ -6,8 +6,8 @@
 # copied-and-edited config.
 #
 # Resolution order (later wins): built-in defaults < this file (the file
-# passed to `--config`, else `./picus.toml` when present) < `PICUS_*`
-# environment variables < CLI flags. Every key is optional — omit a key
+# passed to `--config`, else `./picus.toml` when present) < CLI flags.
+# Every key is optional — omit a key
 # to keep the value from a lower layer. Keys mirror the struct field
 # names exactly; an unknown key is an error.
 
@@ -50,6 +50,29 @@ dnf_cap = 100000
 cdclt_iter_cap = 1000000
 # Reuse the incremental Buchberger cache between successive solve() calls.
 cache_enabled = true
+# Opt-in linear (Gaussian) pre-elimination before solving: reduce the
+# nonlinear constraints modulo a Groebner basis of the linear subsystem.
+# Off by default — split-GB already handles linear constraints in basis 0,
+# and the substitution densifies the nonlinear part / adds per-solve
+# overhead (net loss on the general workload). May help linear-heavy
+# conjunctive circuits.
+linear_elim = false
+# Track inter-reduction reducer deps in the single-GB UNSAT-core tracer for
+# precise (cvc5/CoCoA-style) cores. On by default: only affects the
+# non-default SingleGb path (no cost on the main/PLDI workload).
+track_inter_reduce_deps = true
+# Triangular model construction (cvc5 `multi_roots` analogue) on the default
+# split-GB path: decide a zero-dimensional combined system by univariate-root
+# + back-substitution enumeration instead of the brancher DFS. Sound (SAT =
+# verified witness; UNSAT = complete zero-dim enumeration; else falls back to
+# the DFS). Off by default: builds the combined GB the split path avoids.
+# CLI: --split-triangular on|off.
+split_triangular = false
+# Cache the reducer's divisor index (DivMask buckets + degree order) across
+# S-pair reductions with an unchanged active basis. Result-preserving. Off by
+# default: a growing basis makes cache misses, and the rebuild, frequent.
+# CLI: --reducer-index-cache on|off.
+reducer_index_cache = false
 
 # --- IR / lemma layer (also affects the cvc5 path) ---
 # Polynomial representation: "sparse" (scales on wide rings) | "dense"

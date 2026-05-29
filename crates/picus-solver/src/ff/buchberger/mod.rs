@@ -19,14 +19,15 @@
 use std::sync::Arc;
 
 use crate::timeout::CancelToken;
-use crate::SolverError;
+use crate::EngineError;
+use crate::metric;
 
 use super::divmask::DivMask;
 use super::field::FieldElem;
 #[cfg(test)]
 use super::field::PrimeField;
 use super::monomial::{Monomial, MonomialOrder};
-use super::polynomial::{PolyRing, DensePoly};
+use super::polynomial::{PolyRing, DensePoly, ReducerIndex};
 use super::spair::SPair;
 
 /// Configuration for `groebner_basis`.
@@ -38,7 +39,7 @@ pub struct BuchbergerConfig {
     pub abort_on_trivial: bool,
     /// Dispatch the inner loop to F4-lite (degree-batched matrix
     /// reduction) instead of one-S-pair-at-a-time geobucket reduction.
-    /// Default: enabled iff `PICUS_USE_F4=1` is set in the environment.
+    /// Default: the `use_f4` config value (compiled default `false`).
     pub use_f4: bool,
 }
 
@@ -84,15 +85,23 @@ pub trait BuchbergerObserver {
     /// under-approximate the dependency set.
     fn on_pair_reducers(&mut self, _reducer_indices: &[usize]) {}
     fn on_new_poly(&mut self, _idx: usize, _poly: &DensePoly, _from_pair: (usize, usize)) {}
-    fn on_inter_reduce(&mut self, _old_idx: usize, _new_idx: usize) {}
+    /// True if the engine should track inter-reduction reducer dependencies
+    /// and report them via [`on_inter_reduce`]. Off by default — the extra
+    /// counted reduction in `tail_reduce_active` costs a little, so only
+    /// observers that consume precise inter-reduce deps opt in.
+    fn wants_inter_reduce_deps(&self) -> bool { false }
+    /// Reports that basis element `affected` (a basis position) was
+    /// tail-reduced using the elements at the given `reducer` basis
+    /// positions. Observers fold the reducers' deps into `affected`'s.
+    fn on_inter_reduce(&mut self, _affected: usize, _reducers: &[usize]) {}
 }
 
 /// No-op observer.
 pub struct NoObserver;
 impl BuchbergerObserver for NoObserver {}
 
-/// Internal basis element. Visible to sibling submodules
-/// (`spair_criteria`, `incremental`) so they can index into the
+/// Internal basis element. Visible to the `incremental` submodule and
+/// the `spair_criteria::LeadingTerms` impl so they can index into the
 /// `BuchbergerState::basis` slice.
 #[derive(Clone, Debug)]
 pub(super) struct BasisElement {
@@ -121,18 +130,11 @@ pub fn groebner_basis(
     generators: Vec<DensePoly>,
     ring: &Arc<PolyRing>,
     config: &BuchbergerConfig,
-) -> Result<GBasis, SolverError> {
+) -> Result<GBasis, EngineError> {
     let mut state = BuchbergerState::new(ring.clone(), config.clone());
     let mut obs = NoObserver;
-    {
-        let _t = crate::profile::ScopedTimer::new("buchberger::add_generators");
-        state.add_generators(generators, &mut obs)?;
-    }
-    {
-        let _t = crate::profile::ScopedTimer::new("buchberger::run");
-        state.run(&mut obs)?;
-    }
-    let _t = crate::profile::ScopedTimer::new("buchberger::finalize_basis");
+    state.add_generators(generators, &mut obs)?;
+    state.run(&mut obs)?;
     let basis = state.finalize_basis();
     Ok(GBasis { basis, order: ring.order })
 }
@@ -143,7 +145,7 @@ pub fn groebner_basis_observed<O: BuchbergerObserver>(
     ring: &Arc<PolyRing>,
     config: &BuchbergerConfig,
     observer: &mut O,
-) -> Result<GBasis, SolverError> {
+) -> Result<GBasis, EngineError> {
     let mut state = BuchbergerState::new(ring.clone(), config.clone());
     state.add_generators(generators, observer)?;
     state.run(observer)?;
@@ -157,7 +159,7 @@ pub fn groebner_basis_incremental(
     new_generators: Vec<DensePoly>,
     ring: &Arc<PolyRing>,
     config: &BuchbergerConfig,
-) -> Result<GBasis, SolverError> {
+) -> Result<GBasis, EngineError> {
     let mut all = existing.basis;
     all.extend(new_generators);
     groebner_basis(all, ring, config)
@@ -199,8 +201,11 @@ pub fn interreduce_with_cancel(
         for j in 0..basis.len() {
             if i == j || !keep[j] { continue; }
             let lj = basis[j].leading_monomial(ring).unwrap();
-            // Drop j if li strictly divides lj (and both are different)
-            if li.divides(&lj) && li != lj {
+            // Drop j if li divides lj. On equal leading monomials keep the
+            // lowest index (`j > i`), so duplicate-LT elements — which
+            // dehomogenization can produce, e.g. `h²·m` and `h·m` both
+            // collapsing to `m` — are de-duplicated rather than both kept.
+            if li.divides(&lj) && (li != lj || j > i) {
                 keep[j] = false;
             }
         }
@@ -210,10 +215,10 @@ pub fn interreduce_with_cancel(
         .zip(keep.iter())
         .filter_map(|(p, &k)| if k { Some(p) } else { None })
         .collect();
-    // Single-pass tail reduction. After divisible-LT pruning above,
-    // every surviving element's leading term is incomparable to every
-    // other's, so reducing each element's tail by the others cannot
-    // re-introduce monomials that some other element's LT divides —
+    // Single-pass tail reduction. After the pruning above no surviving
+    // element's leading term divides another's (equal LTs are
+    // de-duplicated too), so reducing each element's tail by the others
+    // cannot re-introduce a monomial that another element's LT divides —
     // one pass suffices.
     let n = filtered.len();
     for i in 0..n {
@@ -246,16 +251,27 @@ pub fn interreduce_with_cancel(
     filtered
 }
 
-mod spair_criteria;
-use spair_criteria::{b_criterion_kill, gm_insert, merge_sorted_descending};
+use crate::ff::spair_criteria::{b_criterion_kill, gm_insert, merge_sorted_descending};
+
+impl crate::ff::spair_criteria::LeadingTerms for Vec<BasisElement> {
+    type Mono = Monomial;
+    fn lt_at(&self, idx: usize) -> &Monomial {
+        &self[idx].lt
+    }
+}
 
 // ────────────────────────────── Buchberger ─────────────────────────────────
 
-/// Per-run engine counters. Filled unconditionally during a GB run;
-/// printed to stderr at the end of [`BuchbergerState::run`] only when
-/// the `PICUS_GB_STATS` environment variable is set.
+/// Per-run profiling counters. Pure telemetry: no field is read by
+/// engine logic. Written only through gb-stats-gated `metric::scope!`
+/// blocks, so when `gb_stats` is off they stay zero at no cost. Printed
+/// to stderr at the end of [`BuchbergerState::run`] when enabled (CLI
+/// `--gb-stats`); also readable by tests that enable `gb_stats`.
+/// The interreduce schedule's useful-reduction count lives in the
+/// separate logic field [`BuchbergerState::useful_reductions`] so that
+/// disabling profiling cannot perturb the schedule.
 #[derive(Clone, Debug, Default)]
-pub struct GbEngineStats {
+pub struct GbProfileCounters {
     pub pairs_generated: u64,
     pub pairs_killed_coprime: u64,
     pub pairs_killed_gm: u64,
@@ -283,13 +299,26 @@ pub(super) struct BuchbergerState {
     pub(super) generation: u32,
     /// True once a constant (nonzero) has entered the basis.
     pub(super) trivial: bool,
-    /// GB-engine counters; written unconditionally, printed only on
-    /// `PICUS_GB_STATS=1`.
-    stats: GbEngineStats,
+    /// Running count of useful (non-zero) reductions. Pure engine logic:
+    /// drives the periodic interreduce schedule in [`Self::run`]. Held
+    /// separate from [`GbProfileCounters`] so profiling can be turned off
+    /// without altering the schedule. Numerically equal to
+    /// `profile.reductions_useful` when profiling is on; distinct field
+    /// because the schedule must not depend on profiling state.
+    useful_reductions: u64,
+    /// Per-run profiling counters. Written only through gb-stats-gated
+    /// `metric::scope!`, so disabling `gb_stats` makes them a no-op.
+    profile: GbProfileCounters,
     /// Set when every initial generator shares the same total degree.
     /// Enables periodic in-loop tail-reduction. Set by
     /// [`Self::add_generators`] based on input shape.
     input_is_homog: bool,
+    /// Cached divisor index for the reducer, paired with the active-basis
+    /// index list it was built for. Reused across S-pair reductions whose
+    /// active set is unchanged; a mismatch forces a rebuild. Populated only
+    /// when `config.reducer_index_cache` is on and the active basis reaches
+    /// `ReducerIndex::SORT_THRESHOLD`.
+    red_index: Option<(Vec<usize>, ReducerIndex)>,
 }
 
 /// Minimum active-basis size for use-count-based reductor reordering to
@@ -323,15 +352,17 @@ impl BuchbergerState {
             age_counter: 0,
             generation: 0,
             trivial: false,
-            stats: GbEngineStats::default(),
+            useful_reductions: 0,
+            profile: GbProfileCounters::default(),
             input_is_homog: false,
+            red_index: None,
         }
     }
 
-    fn check_cancel(&self) -> Result<(), SolverError> {
+    fn check_cancel(&self) -> Result<(), EngineError> {
         if let Some(t) = &self.cfg.cancel_token {
             if t.is_cancelled() {
-                return Err(SolverError::Timeout);
+                return Err(EngineError::Timeout);
             }
         }
         Ok(())
@@ -360,11 +391,7 @@ impl BuchbergerState {
             // `add_generators` does, so the seeded basis matches what
             // sequential `add_generators` would have produced.
             let new_idx = self.basis.len();
-            for k in 0..new_idx {
-                if self.basis[k].active && lt.divides(&self.basis[k].lt) {
-                    self.basis[k].active = false;
-                }
-            }
+            self.deactivate_superseded(new_idx, &lt);
             self.basis.push(BasisElement {
                 poly,
                 lt,
@@ -376,11 +403,12 @@ impl BuchbergerState {
         }
     }
 
+    #[metric("buchberger::add_generators")]
     pub(super) fn add_generators<O: BuchbergerObserver>(
         &mut self,
         generators: Vec<DensePoly>,
         observer: &mut O,
-    ) -> Result<(), SolverError> {
+    ) -> Result<(), EngineError> {
         // Detect homogeneous input. If every generator's terms all
         // share the same total degree, the input is homogeneous, and
         // the main loop enables periodic in-loop tail-reduction.
@@ -429,7 +457,7 @@ impl BuchbergerState {
             }
             if let Some(c) = &self.cfg.cancel_token {
                 if c.is_cancelled() {
-                    return Err(SolverError::Timeout);
+                    return Err(EngineError::Timeout);
                 }
             }
             if g_red.is_zero() { continue; }
@@ -464,14 +492,10 @@ impl BuchbergerState {
             observer.on_initial_basis(idx, &g_red);
             // Generate S-pairs against all earlier ACTIVE elements BEFORE
             // deactivation, so we don't lose pairs that involve elements about
-            // to become inactive (D3: non-strict deactivation).
+            // to become inactive (non-strict deactivation).
             self.generate_pairs_against(idx, &lt, sugar);
             // Non-strict deactivation: deactivate older elements whose LT is divisible by lt.
-            for k in 0..idx {
-                if self.basis[k].active && lt.divides(&self.basis[k].lt) {
-                    self.basis[k].active = false;
-                }
-            }
+            self.deactivate_superseded(idx, &lt);
             self.basis.push(BasisElement { poly: g_red, lt, lt_divmask, active: true, sugar, use_count: 0 });
         }
         Ok(())
@@ -497,16 +521,16 @@ impl BuchbergerState {
         //   5. Sort surviving new_pairs descending and merge into
         //      `self.open`.
         let mut new_pairs: Vec<SPair> = Vec::with_capacity(new_idx);
-        let mut pairs_built: u64 = 0;
-        let mut coprime_skipped: u64 = 0;
+        metric::def!(pairs_built);
+        metric::def!(coprime_skipped);
         for k in 0..new_idx {
             if !self.basis[k].active {
                 continue;
             }
-            pairs_built += 1;
+            metric::bump!(pairs_built);
             let basis_k_lt = &self.basis[k].lt;
             if new_lt.is_coprime(basis_k_lt) {
-                coprime_skipped += 1;
+                metric::bump!(coprime_skipped);
                 continue;
             }
             let lcm = new_lt.lcm(basis_k_lt);
@@ -530,24 +554,56 @@ impl BuchbergerState {
             };
             gm_insert(&mut new_pairs, pair);
         }
-        self.stats.pairs_generated += pairs_built;
-        self.stats.pairs_killed_coprime += coprime_skipped;
-        let after_gm = new_pairs.len() as u64;
-        let non_coprime = pairs_built.saturating_sub(coprime_skipped);
-        self.stats.pairs_killed_gm += non_coprime.saturating_sub(after_gm);
+        metric::scope! {
+            self.profile.pairs_generated += pairs_built;
+            self.profile.pairs_killed_coprime += coprime_skipped;
+            let after_gm = new_pairs.len() as u64;
+            let non_coprime = pairs_built.saturating_sub(coprime_skipped);
+            self.profile.pairs_killed_gm += non_coprime.saturating_sub(after_gm);
+        }
         // B-criterion: prune the existing open queue using the new
         // polynomial's leading term. Runs after `new_pairs` has been
         // built and filtered.
         let new_lt_divmask = self.ring.divmask.compute(new_lt);
-        let open_before_b = self.open.len() as u64;
+        metric::def!(open_before_b = self.open.len() as u64);
         b_criterion_kill(&mut self.open, new_lt, new_lt_divmask, &self.basis);
-        let open_after_b = self.open.len() as u64;
-        self.stats.pairs_killed_b += open_before_b.saturating_sub(open_after_b);
+        metric::scope! {
+            self.profile.pairs_killed_b += open_before_b.saturating_sub(self.open.len() as u64);
+        }
         // Merge into self.open while keeping descending sort (so pop_back
         // returns the smallest pair). new_pairs is currently in arbitrary
         // order from `gm_insert`; sort it once, then merge.
         new_pairs.sort_by(|a, b| b.cmp(a));
         merge_sorted_descending(&mut self.open, new_pairs);
+    }
+
+    /// Build the S-polynomial of `pair`:
+    /// `(lcm/LT_i)·f_i − (lc_i/lc_j)·(lcm/LT_j)·f_j`, scaled so the two
+    /// leading terms cancel.
+    fn build_spoly(&self, pair: &SPair) -> DensePoly {
+        let bi = &self.basis[pair.i];
+        let bj = &self.basis[pair.j];
+        let mul_i = pair.lcm.div(&bi.lt);
+        let mul_j = pair.lcm.div(&bj.lt);
+        let lc_i = bi.poly.leading_coefficient().unwrap();
+        let lc_j = bj.poly.leading_coefficient().unwrap();
+        let scale_j = self.ring.field.div(lc_i, lc_j).unwrap();
+        let term_i = self.ring.field.one();
+        let part_i = bi.poly.mul_term(mul_i.exponents(), &term_i, &self.ring);
+        let part_j = bj.poly.mul_term(mul_j.exponents(), &scale_j, &self.ring);
+        part_i.sub(&part_j, &self.ring)
+    }
+
+    /// Non-strict deactivation: deactivate every active element in
+    /// `0..upto` whose leading monomial is divisible by `lt`. Run after
+    /// `generate_pairs_against`, so pairs involving an element about to be
+    /// deactivated are still generated.
+    fn deactivate_superseded(&mut self, upto: usize, lt: &Monomial) {
+        for k in 0..upto {
+            if self.basis[k].active && lt.divides(&self.basis[k].lt) {
+                self.basis[k].active = false;
+            }
+        }
     }
 
     pub(super) fn active_polys(&self) -> Vec<DensePoly> {
@@ -576,21 +632,27 @@ impl BuchbergerState {
     ///
     /// If a polynomial reduces to zero, it is deactivated (and all bookkeeping
     /// invariants — including `Checkpoint::active_snapshot` — remain stable
-    /// because we never resize `self.basis`).
-    pub(super) fn tail_reduce_active(&mut self) {
+    /// because `self.basis` is never resized).
+    pub(super) fn tail_reduce_active(&mut self, track: bool) -> Vec<(usize, Vec<usize>)> {
         // Snapshot the active indices and clone their polys ONCE into a
         // workspace. We then reduce each workspace[i] by &workspace[j] for
         // j ≠ i with `reduce_by_refs`. Repeating to a fixed point isn't
         // necessary because tail reduction is monotone (each pass strictly
         // shrinks tails or leaves them unchanged).
-        self.stats.interreduces_run += 1;
+        //
+        // When `track`, a counted reduction records which other elements
+        // actually reduced each one; the returned `(affected, reducers)`
+        // pairs (basis positions) let the UNSAT-core tracer fold the
+        // reducers' dependencies into the reduced element.
+        metric::scope! { self.profile.interreduces_run += 1; }
         let active_idx: Vec<usize> = self.basis.iter()
             .enumerate()
             .filter(|(_, e)| e.active)
             .map(|(i, _)| i)
             .collect();
+        let mut log: Vec<(usize, Vec<usize>)> = Vec::new();
         if active_idx.len() < 2 {
-            return;
+            return log;
         }
         // Workspace = active polys, in active_idx order.
         let mut workspace: Vec<DensePoly> = active_idx.iter()
@@ -612,17 +674,37 @@ impl BuchbergerState {
         };
         for i in 0..workspace.len() {
             if cancel.is_cancelled() {
-                return;
+                return log;
             }
-            let others: Vec<&DensePoly> = workspace.iter()
-                .enumerate()
-                .filter(|(j, p)| *j != i && !p.is_zero())
-                .map(|(_, p)| p)
-                .collect();
+            // Other active elements (skip self / already-zero), keeping
+            // their basis positions parallel for the reducer log.
+            let mut others: Vec<&DensePoly> = Vec::new();
+            let mut other_pos: Vec<usize> = Vec::new();
+            for (j, p) in workspace.iter().enumerate() {
+                if j != i && !p.is_zero() {
+                    others.push(p);
+                    other_pos.push(active_idx[j]);
+                }
+            }
             if others.is_empty() {
                 continue;
             }
-            let red = workspace[i].reduce_by_refs_cancel(&others, &self.ring, cancel);
+            let red = if track {
+                let mut use_counts = vec![0u64; others.len()];
+                let r = workspace[i].reduce_by_refs_counted_cancel(
+                    &others, &self.ring, cancel, &mut use_counts,
+                );
+                let reducers: Vec<usize> = (0..other_pos.len())
+                    .filter(|&k| use_counts[k] > 0)
+                    .map(|k| other_pos[k])
+                    .collect();
+                if !reducers.is_empty() {
+                    log.push((active_idx[i], reducers));
+                }
+                r
+            } else {
+                workspace[i].reduce_by_refs_cancel(&others, &self.ring, cancel)
+            };
             workspace[i] = red;
         }
 
@@ -638,6 +720,7 @@ impl BuchbergerState {
                 // lt/lt_divmask unchanged: tail reduction preserves leading term.
             }
         }
+        log
     }
 
     /// Indices (into `self.basis`) of currently-active basis elements.
@@ -651,32 +734,105 @@ impl BuchbergerState {
             .collect()
     }
 
-    pub(super) fn run<O: BuchbergerObserver>(&mut self, observer: &mut O) -> Result<(), SolverError> {
+    /// Reduce `s_poly` against the current active basis, returning the
+    /// normal form, the active-basis index list used (reduction order), and
+    /// the per-divisor use counts (parallel to that list).
+    ///
+    /// When `config.reducer_index_cache` is on and the active basis reaches
+    /// `ReducerIndex::SORT_THRESHOLD`, the divisor index is cached in
+    /// `self.red_index` and reused while the active set is unchanged (the
+    /// active list stays in basis order there — the lookup is order-tolerant
+    /// on a GB-shaped set). Otherwise the per-call borrowing reducer is used
+    /// unchanged, keeping its `use_count`-ordered scan.
+    fn reduce_spoly_against_active(
+        &mut self,
+        s_poly: &DensePoly,
+    ) -> (DensePoly, Vec<usize>, Vec<u64>) {
+        let cancel = self.cfg.cancel_token.clone();
+        let mut active_idxs: Vec<usize> = (0..self.basis.len())
+            .filter(|&i| self.basis[i].active)
+            .collect();
+        let mut use_counts = vec![0u64; active_idxs.len()];
+
+        let use_cache = crate::config::with(|c| c.reducer_index_cache)
+            && active_idxs.len() >= ReducerIndex::SORT_THRESHOLD;
+
+        if !use_cache {
+            if active_idxs.len() >= USE_COUNT_SORT_THRESHOLD {
+                active_idxs.sort_by(|&a, &b| {
+                    self.basis[b].use_count.cmp(&self.basis[a].use_count)
+                });
+            }
+            let active_refs: Vec<&DensePoly> =
+                active_idxs.iter().map(|&i| &self.basis[i].poly).collect();
+            let active_dms: Vec<DivMask> =
+                active_idxs.iter().map(|&i| self.basis[i].lt_divmask).collect();
+            let nf = match cancel.as_ref() {
+                Some(c) => s_poly.reduce_by_refs_counted_cancel_dms(
+                    &active_refs, &self.ring, c, &mut use_counts, &active_dms,
+                ),
+                None => s_poly.reduce_by_refs_counted_dms(
+                    &active_refs, &self.ring, &mut use_counts, &active_dms,
+                ),
+            };
+            return (nf, active_idxs, use_counts);
+        }
+
+        // Cached path: reuse the index iff it was built for this exact active
+        // set; otherwise rebuild and cache it.
+        let mut cached = self.red_index.take();
+        let reuse = matches!(&cached, Some((idxs, _)) if *idxs == active_idxs);
+        if !reuse {
+            let active_refs: Vec<&DensePoly> =
+                active_idxs.iter().map(|&i| &self.basis[i].poly).collect();
+            let active_dms: Vec<DivMask> =
+                active_idxs.iter().map(|&i| self.basis[i].lt_divmask).collect();
+            let index = ReducerIndex::build(&active_refs, &self.ring, Some(&active_dms));
+            cached = Some((active_idxs.clone(), index));
+        }
+        let active_refs: Vec<&DensePoly> =
+            active_idxs.iter().map(|&i| &self.basis[i].poly).collect();
+        let index = &cached.as_ref().unwrap().1;
+        #[cfg(debug_assertions)]
+        debug_assert!(
+            index.matches_active(&active_refs, &self.ring),
+            "cached ReducerIndex is stale: active leading terms changed \
+             without an active-set change"
+        );
+        let nf = s_poly.reduce_by_refs_geobucket_indexed(
+            index, &active_refs, &self.ring, cancel.as_ref(), Some(&mut use_counts),
+        );
+        drop(active_refs);
+        self.red_index = cached;
+        (nf, active_idxs, use_counts)
+    }
+
+    #[metric("buchberger::run")]
+    pub(super) fn run<O: BuchbergerObserver>(&mut self, observer: &mut O) -> Result<(), EngineError> {
         if self.cfg.use_f4 {
             return self.run_f4(observer);
         }
         if self.trivial && self.cfg.abort_on_trivial { return Ok(()); }
-        // Granular per-phase timing inside the main loop.
-        let stats_on = crate::profile::gb_stats_enabled();
-        let mut t_spoly_ns: u64 = 0;
-        let mut t_reduce_ns: u64 = 0;
-        let mut t_genpairs_ns: u64 = 0;
-        let initial_open_size = self.open.len();
-        let run_start = std::time::Instant::now();
+        // Granular per-phase timing for the gb-stats dump (profiling locals).
+        metric::def!(t_spoly_ns);
+        metric::def!(t_reduce_ns);
+        metric::def!(t_genpairs_ns);
+        metric::def!(initial_open_size = self.open.len() as u64);
+        metric::stopwatch!(run_start);
         // self.open is sorted descending — `pop()` returns the smallest pair
         // (lowest sugar, then lcm_deg, then age).
         while let Some(pair) = self.open.pop() {
             if let Err(e) = self.check_cancel() {
-                if stats_on {
-                    let s = &self.stats;
-                    let total_ns = run_start.elapsed().as_nanos() as u64;
+                metric::scope! {
+                    let s = &self.profile;
+                    let total_ms = run_start.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
                     let active_count = self.basis.iter().filter(|e| e.active).count();
                     eprintln!(
                         "[picus-gb-stats CANCELLED] pairs={} cop={} gm={} b={} red={} useful={} useless={} initial_open={} remaining_open={} basis_size={} active={} time_run_ms={:.2} time_spoly_ms={:.2} time_reduce_ms={:.2} time_genpairs_ms={:.2}",
                         s.pairs_generated, s.pairs_killed_coprime, s.pairs_killed_gm, s.pairs_killed_b,
                         s.reductions_total, s.reductions_useful, s.reductions_useless,
                         initial_open_size, self.open.len(), self.basis.len(), active_count,
-                        total_ns as f64 / 1e6,
+                        total_ms,
                         t_spoly_ns as f64 / 1e6,
                         t_reduce_ns as f64 / 1e6,
                         t_genpairs_ns as f64 / 1e6,
@@ -693,23 +849,10 @@ impl BuchbergerState {
             // pair-generation time, so coprime and dominated pairs do
             // not reach this loop.
 
-            let t_spoly_start = if stats_on { Some(std::time::Instant::now()) } else { None };
-            // Build the S-polynomial: (lcm/LT_i) * f_i - (lcm/LT_j) * f_j
-            let bi = &self.basis[pair.i];
-            let bj = &self.basis[pair.j];
-            let mul_i = pair.lcm.div(&bi.lt);
-            let mul_j = pair.lcm.div(&bj.lt);
-            let lc_i = bi.poly.leading_coefficient().unwrap();
-            let lc_j = bj.poly.leading_coefficient().unwrap();
-            // Scale fj by (lc_i / lc_j) so leading coefficients cancel.
-            let scale_j = self.ring.field.div(lc_i, lc_j).unwrap();
-            let term_i = self.ring.field.one();
-            let part_i = bi.poly.mul_term(mul_i.exponents(), &term_i, &self.ring);
-            let part_j = bj.poly.mul_term(mul_j.exponents(), &scale_j, &self.ring);
-            let s_poly = part_i.sub(&part_j, &self.ring);
-            if let Some(t0) = t_spoly_start {
-                t_spoly_ns += t0.elapsed().as_nanos() as u64;
-            }
+            let s_poly = {
+                metric::timer_local!(t_spoly_ns);
+                self.build_spoly(&pair)
+            };
 
             // Reduce against the current active basis. Reference-based
             // reduction avoids cloning every active polynomial for each
@@ -718,64 +861,52 @@ impl BuchbergerState {
             // honoured. Above `USE_COUNT_SORT_THRESHOLD`, divisors are
             // tried in `use_count` descending order; the inner stable
             // sort by LT degree preserves this for equal-degree ties.
-            let t_red_start = if stats_on { Some(std::time::Instant::now()) } else { None };
-            let mut active_idxs: Vec<usize> = (0..self.basis.len())
-                .filter(|&i| self.basis[i].active)
-                .collect();
-            if active_idxs.len() >= USE_COUNT_SORT_THRESHOLD {
-                active_idxs.sort_by(|&a, &b| {
-                    self.basis[b].use_count.cmp(&self.basis[a].use_count)
-                });
-            }
-            let mut use_counts = vec![0u64; active_idxs.len()];
-            let mut nf = {
-                let active_refs: Vec<&DensePoly> = active_idxs
-                    .iter()
-                    .map(|&i| &self.basis[i].poly)
-                    .collect();
-                match &self.cfg.cancel_token {
-                    Some(c) => s_poly.reduce_by_refs_counted_cancel(
-                        &active_refs, &self.ring, c, &mut use_counts,
-                    ),
-                    None => s_poly.reduce_by_refs_counted(
-                        &active_refs, &self.ring, &mut use_counts,
-                    ),
+            // Reduce against the active basis. With `reducer_index_cache` on
+            // this reuses a cached divisor index across reductions whose
+            // active set is unchanged (see `reduce_spoly_against_active`).
+            let (mut nf, active_idxs, use_counts) = {
+                metric::timer_local!(t_reduce_ns);
+                let (nf_reduced, active_idxs, use_counts) =
+                    self.reduce_spoly_against_active(&s_poly);
+                for (slot, &basis_i) in active_idxs.iter().enumerate() {
+                    self.basis[basis_i].use_count = self.basis[basis_i]
+                        .use_count
+                        .saturating_add(use_counts[slot]);
                 }
+                (nf_reduced, active_idxs, use_counts)
             };
-            for (slot, &basis_i) in active_idxs.iter().enumerate() {
-                self.basis[basis_i].use_count = self.basis[basis_i]
-                    .use_count
-                    .saturating_add(use_counts[slot]);
-            }
-            if let Some(t0) = t_red_start {
-                t_reduce_ns += t0.elapsed().as_nanos() as u64;
-            }
             if let Some(c) = &self.cfg.cancel_token {
                 if c.is_cancelled() {
-                    if stats_on {
-                        let s = &self.stats;
-                        let total_ns = run_start.elapsed().as_nanos() as u64;
+                    metric::scope! {
+                        let s = &self.profile;
+                        let total_ms = run_start.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
                         let active_count = self.basis.iter().filter(|e| e.active).count();
                         eprintln!(
                             "[picus-gb-stats CANCELLED-MIDLOOP] pairs={} cop={} gm={} b={} red={} useful={} useless={} initial_open={} remaining_open={} basis_size={} active={} time_run_ms={:.2} time_spoly_ms={:.2} time_reduce_ms={:.2} time_genpairs_ms={:.2}",
                             s.pairs_generated, s.pairs_killed_coprime, s.pairs_killed_gm, s.pairs_killed_b,
                             s.reductions_total, s.reductions_useful, s.reductions_useless,
                             initial_open_size, self.open.len(), self.basis.len(), active_count,
-                            total_ns as f64 / 1e6,
+                            total_ms,
                             t_spoly_ns as f64 / 1e6,
                             t_reduce_ns as f64 / 1e6,
                             t_genpairs_ns as f64 / 1e6,
                         );
                     }
-                    return Err(SolverError::Timeout);
+                    return Err(EngineError::Timeout);
                 }
             }
-            self.stats.reductions_total += 1;
             if nf.is_zero() {
-                self.stats.reductions_useless += 1;
+                metric::scope! {
+                    self.profile.reductions_total += 1;
+                    self.profile.reductions_useless += 1;
+                }
                 continue;
             }
-            self.stats.reductions_useful += 1;
+            self.useful_reductions += 1;
+            metric::scope! {
+                self.profile.reductions_total += 1;
+                self.profile.reductions_useful += 1;
+            }
 
             nf = nf.make_monic(&self.ring);
 
@@ -814,35 +945,31 @@ impl BuchbergerState {
             // Non-strict deactivation.
             // Generate new pairs FIRST, so we don't drop pairs against
             // elements about to be deactivated.
-            let t_genpairs_start = if stats_on { Some(std::time::Instant::now()) } else { None };
-            self.generate_pairs_against(new_idx, &lt, sugar);
-            if let Some(t0) = t_genpairs_start {
-                t_genpairs_ns += t0.elapsed().as_nanos() as u64;
+            {
+                metric::timer_local!(t_genpairs_ns);
+                self.generate_pairs_against(new_idx, &lt, sugar);
             }
-            for k in 0..new_idx {
-                if self.basis[k].active && lt.divides(&self.basis[k].lt) {
-                    self.basis[k].active = false;
-                }
-            }
+            self.deactivate_superseded(new_idx, &lt);
             self.basis.push(BasisElement { poly: nf, lt, lt_divmask, active: true, sugar, use_count: 0 });
             // Periodic in-loop tail-reduction. Tail-reduction preserves
             // the gradedness invariant exactly for homogeneous input;
             // for non-homogeneous input it can perturb sugar-degree
             // pair selection, so it runs less often there.
             let interreduce_period: u64 = if self.input_is_homog { 32 } else { 128 };
-            if self.stats.reductions_useful > 0
-                && self.stats.reductions_useful % interreduce_period == 0
+            if self.useful_reductions > 0
+                && self.useful_reductions % interreduce_period == 0
             {
-                self.tail_reduce_active();
+                let track = observer.wants_inter_reduce_deps();
+                let log = self.tail_reduce_active(track);
+                for (affected, reducers) in &log {
+                    observer.on_inter_reduce(*affected, reducers);
+                }
             }
         }
-        // Optional GB-engine telemetry: only emit when the user opts in
-        // via `RuntimeConfig::gb_stats_enabled`. Mirrors the
-        // `RuntimeConfig::profile_enabled` pattern; default behavior
-        // is unchanged.
-        if crate::config::with(|c| c.gb_stats_enabled) {
-            let s = &self.stats;
-            let total_ns = run_start.elapsed().as_nanos() as u64;
+        // Optional GB-engine telemetry: emitted only when gb-stats is on.
+        metric::scope! {
+            let s = &self.profile;
+            let total_ms = run_start.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
             let active_count = self.basis.iter().filter(|e| e.active).count();
             eprintln!(
                 "[picus-gb-stats] pairs={} cop={} gm={} b={} red={} useful={} useless={} interreduces={} basis_size={} active={} initial_open={} time_run_ms={:.2} time_spoly_ms={:.2} time_reduce_ms={:.2} time_genpairs_ms={:.2}",
@@ -857,7 +984,7 @@ impl BuchbergerState {
                 self.basis.len(),
                 active_count,
                 initial_open_size,
-                total_ns as f64 / 1e6,
+                total_ms,
                 t_spoly_ns as f64 / 1e6,
                 t_reduce_ns as f64 / 1e6,
                 t_genpairs_ns as f64 / 1e6,
@@ -866,6 +993,7 @@ impl BuchbergerState {
         Ok(())
     }
 
+    #[metric("buchberger::finalize_basis")]
     fn finalize_basis(self) -> Vec<DensePoly> {
         // Take active polynomials and inter-reduce once.
         let active: Vec<DensePoly> = self
@@ -882,25 +1010,15 @@ impl BuchbergerState {
     }
 
     /// Per-pair S-poly construction + geobucket reduction. Shared
-    /// with `run()` so `run_f4` can fall back to it for size-1
-    /// batches (where F4's matrix amortization wins zero and the
-    /// safety-net reduction is pure overhead).
+    /// with `run()` so `run_f4` can fall back to it for batches
+    /// below [`F4_MIN_BATCH`], where the matrix-build overhead
+    /// outweighs the amortization gain.
     fn process_pair_geobucket<O: BuchbergerObserver>(
         &mut self,
         pair: SPair,
         observer: &mut O,
-    ) -> Result<(), SolverError> {
-        let bi = &self.basis[pair.i];
-        let bj = &self.basis[pair.j];
-        let mul_i = pair.lcm.div(&bi.lt);
-        let mul_j = pair.lcm.div(&bj.lt);
-        let lc_i = bi.poly.leading_coefficient().unwrap();
-        let lc_j = bj.poly.leading_coefficient().unwrap();
-        let scale_j = self.ring.field.div(lc_i, lc_j).unwrap();
-        let term_i = self.ring.field.one();
-        let part_i = bi.poly.mul_term(mul_i.exponents(), &term_i, &self.ring);
-        let part_j = bj.poly.mul_term(mul_j.exponents(), &scale_j, &self.ring);
-        let s_poly = part_i.sub(&part_j, &self.ring);
+    ) -> Result<(), EngineError> {
+        let s_poly = self.build_spoly(&pair);
         let mut active_idxs: Vec<usize> = (0..self.basis.len())
             .filter(|&i| self.basis[i].active)
             .collect();
@@ -915,12 +1033,16 @@ impl BuchbergerState {
                 .iter()
                 .map(|&i| &self.basis[i].poly)
                 .collect();
+            let active_dms: Vec<_> = active_idxs
+                .iter()
+                .map(|&i| self.basis[i].lt_divmask)
+                .collect();
             match &self.cfg.cancel_token {
-                Some(c) => s_poly.reduce_by_refs_counted_cancel(
-                    &active_refs, &self.ring, c, &mut use_counts,
+                Some(c) => s_poly.reduce_by_refs_counted_cancel_dms(
+                    &active_refs, &self.ring, c, &mut use_counts, &active_dms,
                 ),
-                None => s_poly.reduce_by_refs_counted(
-                    &active_refs, &self.ring, &mut use_counts,
+                None => s_poly.reduce_by_refs_counted_dms(
+                    &active_refs, &self.ring, &mut use_counts, &active_dms,
                 ),
             }
         };
@@ -931,15 +1053,21 @@ impl BuchbergerState {
         }
         if let Some(c) = &self.cfg.cancel_token {
             if c.is_cancelled() {
-                return Err(SolverError::Timeout);
+                return Err(EngineError::Timeout);
             }
         }
-        self.stats.reductions_total += 1;
         if nf.is_zero() {
-            self.stats.reductions_useless += 1;
+            metric::scope! {
+                self.profile.reductions_total += 1;
+                self.profile.reductions_useless += 1;
+            }
             return Ok(());
         }
-        self.stats.reductions_useful += 1;
+        self.useful_reductions += 1;
+        metric::scope! {
+            self.profile.reductions_total += 1;
+            self.profile.reductions_useful += 1;
+        }
         nf = nf.make_monic(&self.ring);
 
         let new_idx = self.basis.len();
@@ -968,11 +1096,7 @@ impl BuchbergerState {
         }
 
         self.generate_pairs_against(new_idx, &lt, sugar);
-        for k in 0..new_idx {
-            if self.basis[k].active && lt.divides(&self.basis[k].lt) {
-                self.basis[k].active = false;
-            }
-        }
+        self.deactivate_superseded(new_idx, &lt);
         self.basis.push(BasisElement { poly: nf, lt, lt_divmask, active: true, sugar, use_count: 0 });
         Ok(())
     }
@@ -981,25 +1105,23 @@ impl BuchbergerState {
     /// reduces them simultaneously via [`f4::process_batch`], then
     /// integrates each new generator (generating cross-pairs against
     /// the existing basis exactly as the per-pair path does).
-    fn run_f4<O: BuchbergerObserver>(&mut self, observer: &mut O) -> Result<(), SolverError> {
+    fn run_f4<O: BuchbergerObserver>(&mut self, observer: &mut O) -> Result<(), EngineError> {
         if self.trivial && self.cfg.abort_on_trivial {
             return Ok(());
         }
-        let stats_on = crate::profile::gb_stats_enabled();
-        let run_start = std::time::Instant::now();
-        let initial_open_size = self.open.len();
+        metric::stopwatch!(run_start);
+        metric::def!(initial_open_size = self.open.len() as u64);
 
         // Per-run reducer cache: monomials whose reducer-row was
         // computed in an earlier batch are reused when the cached
         // basis element is still active. See [`super::f4::F4Workspace`].
         let mut f4_workspace = super::f4::F4Workspace::new();
-        // F4 counters accumulate on `self.stats`; readable from
-        // tests via `IncrementalGB::engine_stats()`. Snapshot the
-        // entry values so the trailing `[picus-gb-stats F4]`
-        // `eprintln!` emits per-run deltas.
-        let f4_batches_entry = self.stats.f4_batches;
-        let f4_pair_total_entry = self.stats.f4_pair_total;
-        let f4_fallback_pairs_entry = self.stats.f4_fallback_pairs;
+        // F4 counters accumulate on `self.profile`; readable from tests via
+        // `IncrementalGB::engine_stats()`. Snapshot the entry values so the
+        // trailing `[picus-gb-stats F4]` dump emits per-run deltas.
+        metric::def!(f4_batches_entry = self.profile.f4_batches);
+        metric::def!(f4_pair_total_entry = self.profile.f4_pair_total);
+        metric::def!(f4_fallback_pairs_entry = self.profile.f4_fallback_pairs);
 
         loop {
             self.check_cancel()?;
@@ -1032,18 +1154,20 @@ impl BuchbergerState {
             // back to the single-pair path. The threshold is
             // calibrated against `bench_f4_vs_per_pair_large`:
             // cyclic-4 produces 3 batches of size ≤ 3 with no cache
-            // reuse, so threshold = 4 leaves all of them on the
+            // reuse, so `F4_MIN_BATCH` leaves all of them on the
             // per-pair path while keeping cyclic-5 / cyclic-6
             // batches (avg 10–30 pairs) in the F4 path.
             if batch.len() < F4_MIN_BATCH {
-                self.stats.f4_fallback_pairs += batch.len() as u64;
+                metric::scope! { self.profile.f4_fallback_pairs += batch.len() as u64; }
                 for pair in batch {
                     self.process_pair_geobucket(pair, observer)?;
                 }
                 continue;
             }
-            self.stats.f4_batches += 1;
-            self.stats.f4_pair_total += batch.len() as u64;
+            metric::scope! {
+                self.profile.f4_batches += 1;
+                self.profile.f4_pair_total += batch.len() as u64;
+            }
 
             // Build F4BasisRef array (same indexing as self.basis).
             // `lt_divmask` is the precomputed divisibility fingerprint
@@ -1073,10 +1197,13 @@ impl BuchbergerState {
 
             // Stats: each batch entry counts as one reduction. Useful
             // = produced a new generator; useless = produced nothing.
-            self.stats.reductions_total += batch.len() as u64;
-            self.stats.reductions_useful += new_polys.len() as u64;
-            if batch.len() >= new_polys.len() {
-                self.stats.reductions_useless += (batch.len() - new_polys.len()) as u64;
+            self.useful_reductions += new_polys.len() as u64;
+            metric::scope! {
+                self.profile.reductions_total += batch.len() as u64;
+                self.profile.reductions_useful += new_polys.len() as u64;
+                if batch.len() >= new_polys.len() {
+                    self.profile.reductions_useless += (batch.len() - new_polys.len()) as u64;
+                }
             }
 
             // Integrate each new generator. F4 monic-normalises every
@@ -1147,11 +1274,7 @@ impl BuchbergerState {
                 }
 
                 self.generate_pairs_against(new_idx, &lt, sugar);
-                for k in 0..new_idx {
-                    if self.basis[k].active && lt.divides(&self.basis[k].lt) {
-                        self.basis[k].active = false;
-                    }
-                }
+                self.deactivate_superseded(new_idx, &lt);
                 self.basis.push(BasisElement {
                     poly,
                     lt,
@@ -1163,15 +1286,15 @@ impl BuchbergerState {
             }
         }
 
-        if stats_on {
-            let s = &self.stats;
-            let total_ns = run_start.elapsed().as_nanos() as u64;
+        metric::scope! {
+            let s = &self.profile;
+            let total_ms = run_start.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
             let active_count = self.basis.iter().filter(|e| e.active).count();
             // Per-run deltas; the stats struct accumulates across all
             // `run_f4` invocations on the same `BuchbergerState`.
-            let f4_batches_delta = self.stats.f4_batches - f4_batches_entry;
-            let f4_pair_total_delta = self.stats.f4_pair_total - f4_pair_total_entry;
-            let f4_fallback_delta = self.stats.f4_fallback_pairs - f4_fallback_pairs_entry;
+            let f4_batches_delta = self.profile.f4_batches - f4_batches_entry;
+            let f4_pair_total_delta = self.profile.f4_pair_total - f4_pair_total_entry;
+            let f4_fallback_delta = self.profile.f4_fallback_pairs - f4_fallback_pairs_entry;
             let avg_batch = if f4_batches_delta > 0 {
                 f4_pair_total_delta as f64 / f4_batches_delta as f64
             } else {
@@ -1197,7 +1320,7 @@ impl BuchbergerState {
                 ws.reducer_hits,
                 ws.reducer_misses,
                 ws.reducer_stale,
-                total_ns as f64 / 1e6,
+                total_ms,
             );
         }
         Ok(())

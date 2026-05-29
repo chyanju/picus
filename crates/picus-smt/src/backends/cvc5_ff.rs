@@ -41,6 +41,15 @@ impl SolverBackend for Cvc5FfBackend {
         if cancel.is_cancelled() {
             return Ok(SolverResult::Unknown(UnknownReason::Timeout));
         }
+        // This backend lowers equalities, the target disequality, and
+        // disjunctions, but not `assignments` or `bitsums`. Silently
+        // ignoring them would weaken the query (dropped constraints ->
+        // spurious SAT), so refuse rather than solve a different problem —
+        // matching the NIA backends' guard. The R1CS uniqueness query never
+        // populates these, so the guard is inert on the supported path.
+        if !ir.assignments.is_empty() || !ir.bitsums.is_empty() {
+            return Ok(SolverResult::Unknown(UnknownReason::IncompleteTheory));
+        }
         let tm = cvc5_ff::TermManager::new();
         let mut solver = cvc5_ff::Solver::new(&tm);
         solver.set_logic("QF_FF");
@@ -68,19 +77,29 @@ impl SolverBackend for Cvc5FfBackend {
             solver.assert_formula(tm.mk_term(cvc5_ff::Kind::Equal, &[lhs, zero.clone()]));
         }
 
-        // Target disequality.
+        // Target disequality. Both copy vars must be declared; a missing
+        // one would silently drop the `x_target != y_target` constraint,
+        // leaving the query trivially SAT — a spurious counter-example.
+        // Surface it as an error (→ Unknown) rather than a false UNSAFE.
         let target_x = vars.get(ir.x_name(ir.target_signal)).cloned();
         let target_y = vars.get(ir.y_name(ir.target_signal)).cloned();
-        if let (Some(x), Some(y)) = (target_x, target_y) {
-            let eq = tm.mk_term(cvc5_ff::Kind::Equal, &[x, y]);
-            solver.assert_formula(tm.mk_term(cvc5_ff::Kind::Not, &[eq]));
+        match (target_x, target_y) {
+            (Some(x), Some(y)) => {
+                let eq = tm.mk_term(cvc5_ff::Kind::Equal, &[x, y]);
+                solver.assert_formula(tm.mk_term(cvc5_ff::Kind::Not, &[eq]));
+            }
+            _ => {
+                return Err(SolverError::Internal(format!(
+                    "target wire {} missing a declared copy variable",
+                    ir.target_signal
+                )));
+            }
         }
 
         // Disjunctions: clause `[p_1, ..., p_k]` ⇒ `(or (= p_1 0) ... (=
         // p_k 0))`. We hand cvc5 the `or` directly (no special-casing);
-        // its QF_FF DPLL(T) does the case split. The dpvl-level target
-        // disequality guard is the backstop for cvc5's known
-        // `or`-spurious-SAT defect.
+        // its QF_FF DPLL(T) does the case split. (cvc5's `or` soundness
+        // is cvc5's own responsibility; picus adds no guard.)
         for clause in &ir.disjunctions {
             let mut alts: Vec<cvc5_ff::Term> = Vec::with_capacity(clause.len());
             for poly in clause {
@@ -204,50 +223,5 @@ inventory::submit! {
 }
 
 #[cfg(test)]
-mod tests {
-    use num_bigint::BigUint;
-
-    /// Regression for the cvc5 finite-field split-solver soundness bug
-    /// (cvc5 PR #12457: present in 1.2.0–1.3.3, fixed in 1.3.4). The
-    /// bitsum overflow check in `BitProp::getBitEqualities` did not
-    /// require the bitsum's elements to be `{0,1}`, so `2*_0 + _1 = 4`
-    /// over BN254 — plainly SAT (e.g. `_0=2, _1=0`) — was wrongly
-    /// reported UNSAT. This drives cvc5 directly and asserts SAT, so it
-    /// fails if the vendored cvc5 is ever downgraded below the fix.
-    /// Ported from cvc5's `regress0/ff/bitsum_overflow.smt2`.
-    #[test]
-    fn cvc5_ff_split_bitsum_overflow_is_sat() {
-        let p = BigUint::parse_bytes(
-            b"21888242871839275222246405745257275088548364400416034343698204186575808495617",
-            10,
-        )
-        .unwrap();
-        let p_str = p.to_string();
-        let neg2 = (&p - 2u32).to_string();
-        let neg1 = (&p - 1u32).to_string();
-
-        let tm = cvc5_ff::TermManager::new();
-        let mut solver = cvc5_ff::Solver::new(&tm);
-        solver.set_logic("QF_FF");
-        let ff = tm.mk_ff_sort(&p_str, 10);
-        let x0 = tm.mk_const(ff.clone(), "_0");
-        let x1 = tm.mk_const(ff.clone(), "_1");
-        let c_neg2 = tm.mk_ff_elem(&neg2, ff.clone(), 10);
-        let c_neg1 = tm.mk_ff_elem(&neg1, ff.clone(), 10);
-        let c4 = tm.mk_ff_elem("4", ff.clone(), 10);
-        let zero = tm.mk_ff_elem("0", ff.clone(), 10);
-        // (-2)*_0 + (-1)*_1 + 4 = 0   (i.e. 2*_0 + _1 = 4)
-        let t0 = tm.mk_term(cvc5_ff::Kind::FiniteFieldMult, &[c_neg2, x0]);
-        let t1 = tm.mk_term(cvc5_ff::Kind::FiniteFieldMult, &[c_neg1, x1]);
-        let sum = tm.mk_term(cvc5_ff::Kind::FiniteFieldAdd, &[t0, t1, c4]);
-        let eq = tm.mk_term(cvc5_ff::Kind::Equal, &[sum, zero]);
-        solver.assert_formula(eq);
-
-        let result = solver.check_sat();
-        assert!(
-            result.is_sat(),
-            "cvc5 must return SAT for 2*_0 + _1 = 4 over BN254 (FF split-solver \
-             bug, cvc5 PR #12457); got non-SAT — vendored cvc5 regressed below 1.3.4"
-        );
-    }
-}
+#[path = "cvc5_ff_tests.rs"]
+mod tests;

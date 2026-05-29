@@ -260,7 +260,23 @@ impl SparsePolynomial {
         if self.is_zero() || divisors.is_empty() {
             return self.clone();
         }
-        super::sparse_geobucket::reduce(self, divisors, ring)
+        super::sparse_geobucket::reduce(self, divisors, ring, None)
+    }
+
+    /// Cancel-aware [`Self::reduce_by_refs`]. On cancellation returns the
+    /// best-effort partial reduction (a valid representative of the same
+    /// coset), so a single large reduction inside Buchberger can be
+    /// interrupted rather than running to completion.
+    pub fn reduce_by_refs_cancel(
+        &self,
+        divisors: &[&SparsePolynomial],
+        ring: &PolyRing,
+        cancel: Option<&crate::timeout::CancelToken>,
+    ) -> SparsePolynomial {
+        if self.is_zero() || divisors.is_empty() {
+            return self.clone();
+        }
+        super::sparse_geobucket::reduce(self, divisors, ring, cancel)
     }
 
     /// Reference multivariate division: keep the partially-reduced
@@ -407,3 +423,7 @@ impl super::repr::PolyRepr for SparsePolynomial {
             .collect()
     }
 }
+
+#[cfg(test)]
+#[path = "sparse_polynomial_tests.rs"]
+mod tests;

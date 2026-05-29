@@ -9,20 +9,24 @@
 
 use std::sync::Arc;
 
-use crate::SolverError;
+use crate::EngineError;
 use crate::timeout::CancelToken;
 
 use super::super::polynomial::{PolyRing, DensePoly};
 use super::super::spair::SPair;
-use super::{BuchbergerConfig, BuchbergerObserver, BuchbergerState, NoObserver};
+use super::{BasisElement, BuchbergerConfig, BuchbergerObserver, BuchbergerState, NoObserver};
 
 /// Snapshot of the engine state at a `push` point. Restored on `pop`.
 #[derive(Clone, Debug)]
 struct Checkpoint {
-    basis_len: usize,
-    /// `active` flags for the elements that existed at push time, so any
-    /// deactivations between push and pop are reverted on pop.
-    active_snapshot: Vec<bool>,
+    /// Complete snapshot of the basis elements present at push time,
+    /// including polynomial bodies. `add_generators` / `run_only` run
+    /// `tail_reduce_active`, which rewrites the bodies of pre-push
+    /// elements using post-push (higher-generation) reducers; those
+    /// contributions need not lie in the pre-push ideal, so `pop` must
+    /// restore the bodies — not just the `active` flags — or the
+    /// popped-level basis is no longer a basis of the pre-push ideal.
+    basis_snapshot: Vec<BasisElement>,
     /// Generation at this level — bumped on `pop`.
     generation: u32,
     /// Snapshot of the open S-pair queue (sorted descending, same
@@ -55,14 +59,14 @@ impl IncrementalGB {
         self.state.seed_with_reduced_basis(basis);
     }
 
-    pub fn add_generators(&mut self, polys: Vec<DensePoly>) -> Result<bool, SolverError> {
+    pub fn add_generators(&mut self, polys: Vec<DensePoly>) -> Result<bool, EngineError> {
         let mut obs = NoObserver;
         self.state.add_generators(polys, &mut obs)?;
         self.state.run(&mut obs)?;
         // Tail-reduce the active basis to prevent monotonic growth across
         // successive `add_generators` calls.
         if !self.state.trivial {
-            self.state.tail_reduce_active();
+            self.state.tail_reduce_active(false);
         }
         Ok(self.state.trivial)
     }
@@ -74,11 +78,11 @@ impl IncrementalGB {
     /// Semantics are identical to `add_generators(vec![])` but skips the
     /// no-op generator append and the homogeneous-input flag detection
     /// (which is set on the first call and is immutable thereafter).
-    pub fn run_only(&mut self) -> Result<bool, SolverError> {
+    pub fn run_only(&mut self) -> Result<bool, EngineError> {
         let mut obs = NoObserver;
         self.state.run(&mut obs)?;
         if !self.state.trivial {
-            self.state.tail_reduce_active();
+            self.state.tail_reduce_active(false);
         }
         Ok(self.state.trivial)
     }
@@ -112,7 +116,7 @@ impl IncrementalGB {
         &mut self,
         polys: Vec<DensePoly>,
         observer: &mut O,
-    ) -> Result<bool, SolverError> {
+    ) -> Result<bool, EngineError> {
         self.state.add_generators(polys, observer)?;
         self.state.run(observer)?;
         // Skip tail-reduce: the observer relies on basis-element identity
@@ -121,13 +125,15 @@ impl IncrementalGB {
         Ok(self.state.trivial)
     }
 
-    /// Save a checkpoint for backtracking. Cost: O(basis_len + open_len)
-    /// (clones the S-pair vector — already sorted, no extra ordering work).
+    /// Save a checkpoint for backtracking. Clones the surviving basis
+    /// elements (with their polynomial bodies) and the open S-pair queue,
+    /// so cost is O(sum of basis body sizes + open_len). Cloning bodies is
+    /// required, not optional: `tail_reduce_active` rewrites pre-push
+    /// element bodies with post-push contributions that `pop` must roll
+    /// back.
     pub fn push(&mut self) {
-        let active_snapshot: Vec<bool> = self.state.basis.iter().map(|e| e.active).collect();
         self.trail.push(Checkpoint {
-            basis_len: self.state.basis.len(),
-            active_snapshot,
+            basis_snapshot: self.state.basis.clone(),
             generation: self.state.generation,
             saved_open: self.state.open.clone(),
             age_counter: self.state.age_counter,
@@ -138,12 +144,11 @@ impl IncrementalGB {
 
     pub fn pop(&mut self) {
         if let Some(cp) = self.trail.pop() {
-            self.state.basis.truncate(cp.basis_len);
-            for (idx, was_active) in cp.active_snapshot.into_iter().enumerate() {
-                if idx < self.state.basis.len() {
-                    self.state.basis[idx].active = was_active;
-                }
-            }
+            // Restore the basis to its exact push-time state in one move:
+            // this drops every element added since the push and rolls back
+            // the bodies / `active` flags of the survivors (which
+            // tail-reduction may have rewritten).
+            self.state.basis = cp.basis_snapshot;
             self.state.open = cp.saved_open;
             self.state.age_counter = cp.age_counter;
             self.state.generation = cp.generation;
@@ -168,10 +173,15 @@ impl IncrementalGB {
         self.trail.len()
     }
 
-    /// Engine-level counters accumulated across every
-    /// `add_generators` / `run_only` call. Same data emitted on
-    /// stderr under `PICUS_GB_STATS=1`, exposed here for tests.
-    pub fn engine_stats(&self) -> &super::GbEngineStats {
-        &self.state.stats
+    /// Per-run profiling counters accumulated across every
+    /// `add_generators` / `run_only` call. Pure telemetry — no field
+    /// drives engine logic; counters only advance when the
+    /// `metric::` DSL is active.
+    pub fn engine_stats(&self) -> &super::GbProfileCounters {
+        &self.state.profile
     }
 }
+
+#[cfg(test)]
+#[path = "incremental_tests.rs"]
+mod tests;

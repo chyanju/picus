@@ -3,7 +3,7 @@
 //! Drives [`sat::Solver`] step by step, notifying the theory plug-in
 //! of each newly-committed literal and consulting it at full
 //! assignment. Theory conflicts become learnt clauses via
-//! [`sat::Solver::add_theory_lemma`].
+//! [`sat::Solver::add_theory_lemma_with_trail`].
 
 use std::collections::HashMap;
 
@@ -17,7 +17,7 @@ use crate::timeout::CancelToken;
 use super::atoms::AtomTable;
 use super::cnf::{tseitin, TseitinResult};
 use super::ff_theory::FfTheory;
-use super::theory::{CheckOutcome, Effort, Theory};
+use super::theory::{CheckOutcome, Theory};
 
 /// Solve a `Formula` over GF(`prime`) via CDCL(T) with the FF theory.
 /// `var_names` is the producing builder's variable frame (used by
@@ -55,9 +55,9 @@ pub fn iter_cap() -> u64 {
     crate::config::with(|c| c.cdclt_iter_cap)
 }
 
-fn cdclt_loop(
+fn cdclt_loop<T: Theory>(
     sat: &mut Solver,
-    theory: &mut FfTheory<'_>,
+    theory: &mut T,
     cancel: &CancelToken,
 ) -> SolveOutcome {
     let mut notified: usize = 0;
@@ -91,8 +91,7 @@ fn cdclt_loop(
             if sat.should_restart() {
                 sat.perform_restart();
             }
-            sync_theory_after_backtrack(sat, theory, &mut theory_levels);
-            notified = notified.min(trail_pre_lemma).min(sat.trail_len());
+            resync_after_lemma(sat, theory, &mut theory_levels, &mut notified, trail_pre_lemma);
             continue;
         }
 
@@ -107,8 +106,7 @@ fn cdclt_loop(
         match run_theory_propagation(sat, theory) {
             TheoryStep::Progressed => continue,
             TheoryStep::Conflict(trail_pre_lemma) => {
-                sync_theory_after_backtrack(sat, theory, &mut theory_levels);
-                notified = notified.min(trail_pre_lemma).min(sat.trail_len());
+                resync_after_lemma(sat, theory, &mut theory_levels, &mut notified, trail_pre_lemma);
                 continue;
             }
             TheoryStep::RootUnsat => return SolveOutcome::Unsat(Vec::new()),
@@ -117,10 +115,10 @@ fn cdclt_loop(
         }
 
         if sat.all_assigned() {
-            match theory.post_check(Effort::Full) {
+            match theory.post_check() {
                 CheckOutcome::Sat => {
                     // The model returned by the theory's final
-                    // `post_check(Full)` already covers every named
+                    // `post_check` already covers every named
                     // variable: Bool vars are encoded as FF elements
                     // in {0, 1} in the polynomial namespace, so they
                     // come through the GB SAT point alongside the FF
@@ -136,15 +134,13 @@ fn cdclt_loop(
                         None if sat.gave_up() => return SolveOutcome::Unknown,
                         None => return SolveOutcome::Unsat(Vec::new()),
                     };
-                    sync_theory_after_backtrack(sat, theory, &mut theory_levels);
-                    notified = notified.min(trail_pre_lemma).min(sat.trail_len());
+                    resync_after_lemma(sat, theory, &mut theory_levels, &mut notified, trail_pre_lemma);
                     continue;
                 }
                 CheckOutcome::Unknown => return SolveOutcome::Unknown,
             }
         }
 
-        // Step 4: Decide.
         let next = sat.pick_decision().expect("not all assigned ⇒ Undef var exists");
         let ok = sat.decide(next);
         debug_assert!(ok);
@@ -169,7 +165,7 @@ enum TheoryStep {
 /// One round of theory propagation. Each derived `(atom, polarity)`
 /// becomes a no-op (SAT agrees), an `enqueue_theory` (SAT Undef), or a
 /// theory lemma (SAT disagrees).
-fn run_theory_propagation(sat: &mut Solver, theory: &mut FfTheory<'_>) -> TheoryStep {
+fn run_theory_propagation<T: Theory>(sat: &mut Solver, theory: &mut T) -> TheoryStep {
     let props = theory.propagate();
     if props.is_empty() {
         return TheoryStep::Idle;
@@ -228,30 +224,51 @@ fn apply_theory_conflict(sat: &mut Solver, core: &[Var]) -> Option<usize> {
         match sat.value(v) {
             LBool::True => lits.push(Lit::neg(v)),
             LBool::False => lits.push(Lit::pos(v)),
-            LBool::Undef => unreachable!(
-                "theory core var {:?} is Undef: theory/SAT push/pop diverged",
-                v
-            ),
+            LBool::Undef => {
+                // A theory core literal that is unassigned in SAT means the
+                // theory's fact trail diverged from SAT's assignment (a
+                // push/pop accounting violation). Building a conflict clause
+                // from a partial core, or reporting UNSAT, would be unsound;
+                // bail to Unknown instead of panicking on a valid input.
+                log::warn!(
+                    "theory core var {:?} is Undef (theory/SAT trail divergence); giving up to Unknown",
+                    v
+                );
+                sat.mark_give_up();
+                return None;
+            }
         }
     }
     sat.add_theory_lemma_with_trail(lits)
 }
 
-fn sync_theory_after_propagate(
+fn sync_theory_after_propagate<T: Theory>(
     sat: &Solver,
-    theory: &mut FfTheory<'_>,
+    theory: &mut T,
     theory_levels: &mut usize,
 ) {
     let dl = sat.decision_level() as usize;
+    // The main loop makes at most one decision per iteration and syncs every
+    // iteration, so `dl` rises by at most 1 per call: the loop pushes a single
+    // level whose `facts.len()` snapshot (see `Theory::push`) belongs to
+    // exactly that decision level. If decisions were ever batched, multiple
+    // pushes here would snapshot the same `facts.len()` and a later single
+    // `pop()` would discard several levels' facts at once, desyncing the theory
+    // trail from SAT. Enforce the invariant so such a change fails loudly.
+    debug_assert!(
+        dl <= *theory_levels + 1,
+        "theory push assumes <=1 new decision level per sync (dl={dl}, theory_levels={})",
+        *theory_levels
+    );
     while *theory_levels < dl {
         theory.push();
         *theory_levels += 1;
     }
 }
 
-fn sync_theory_after_backtrack(
+fn sync_theory_after_backtrack<T: Theory>(
     sat: &Solver,
-    theory: &mut FfTheory<'_>,
+    theory: &mut T,
     theory_levels: &mut usize,
 ) {
     let dl = sat.decision_level() as usize;
@@ -261,103 +278,22 @@ fn sync_theory_after_backtrack(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::boolean::{Formula, Literal};
-    use crate::frontend::encoder::PolyTerm;
-    use num_bigint::BigUint;
-
-    /// `coeff * <var idx> = rhs_const`.
-    fn eq(coeff_lhs: u64, var_idx: u32, rhs_const: u64) -> Formula {
-        Formula::Lit(Literal::Eq(
-            vec![PolyTerm {
-                coeff: BigUint::from(coeff_lhs),
-                vars: vec![(var_idx, 1)],
-            }],
-            vec![PolyTerm {
-                coeff: BigUint::from(rhs_const),
-                vars: vec![],
-            }],
-        ))
-    }
-
-    fn names(ns: &[&str]) -> Vec<String> {
-        ns.iter().map(|s| s.to_string()).collect()
-    }
-
-    #[test]
-    fn solve_trivial_eq() {
-        let vn = names(&["x"]);
-        let f = eq(1, 0, 5);
-        let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
-        match r {
-            SolveOutcome::Sat(m) => {
-                assert_eq!(m.get("x"), Some(&BigUint::from(5u32)));
-            }
-            other => panic!("expected Sat, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn solve_contradictory_eqs() {
-        let vn = names(&["x"]);
-        let f = Formula::And(vec![eq(1, 0, 5), eq(1, 0, 6)]);
-        let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
-        assert!(matches!(r, SolveOutcome::Unsat(_)));
-    }
-
-    #[test]
-    fn solve_or_picks_satisfiable_branch() {
-        let vn = names(&["x"]);
-        let f = Formula::Or(vec![eq(1, 0, 5), eq(1, 0, 6)]);
-        let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
-        match r {
-            SolveOutcome::Sat(m) => {
-                let v = m.get("x").expect("x assigned").clone();
-                assert!(v == BigUint::from(5u32) || v == BigUint::from(6u32));
-            }
-            other => panic!("expected Sat, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn solve_disjunctive_bit_via_cdclt() {
-        let vn = names(&["x"]);
-        let f = Formula::And(vec![
-            Formula::Or(vec![eq(1, 0, 0), eq(1, 0, 1)]),
-            eq(1, 0, 7),
-        ]);
-        let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
-        assert!(matches!(r, SolveOutcome::Unsat(_)));
-    }
-
-    #[test]
-    fn solve_eq_and_neq() {
-        let vn = names(&["x"]);
-        let f = Formula::And(vec![eq(1, 0, 5), Formula::Not(Box::new(eq(1, 0, 5)))]);
-        let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
-        assert!(matches!(r, SolveOutcome::Unsat(_)));
-    }
-
-    #[test]
-    fn solve_implies_chain() {
-        let vn = names(&["x", "y"]);
-        let f = Formula::And(vec![
-            eq(1, 0, 0),
-            Formula::Or(vec![Formula::Not(Box::new(eq(1, 0, 0))), eq(1, 1, 0)]),
-            Formula::Not(Box::new(eq(1, 1, 0))),
-        ]);
-        let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
-        assert!(matches!(r, SolveOutcome::Unsat(_)));
-    }
-
-    #[test]
-    fn iter_cap_returns_unknown_on_pathological_input() {
-        let _g = crate::config::ConfigGuard::with_override(|c| c.cdclt_iter_cap = 0);
-        let vn = names(&["x"]);
-        let f = Formula::Or(vec![eq(1, 0, 5), eq(1, 0, 6)]);
-        let r = solve_formula(BigUint::from(101u32), &vn, &f, &CancelToken::none());
-        assert!(matches!(r, SolveOutcome::Unknown));
-    }
+/// Resync after a lemma forced a backjump: rewind the theory trail to the
+/// new decision level and rewind `notified` so the next pass re-notifies
+/// from the position the asserting literal now occupies. The three lemma
+/// sites (propagation conflict, theory-propagation disagreement, post-check
+/// UNSAT) must use the identical rewind formula, so it lives here once.
+fn resync_after_lemma<T: Theory>(
+    sat: &Solver,
+    theory: &mut T,
+    theory_levels: &mut usize,
+    notified: &mut usize,
+    trail_pre_lemma: usize,
+) {
+    sync_theory_after_backtrack(sat, theory, theory_levels);
+    *notified = (*notified).min(trail_pre_lemma).min(sat.trail_len());
 }
+
+#[cfg(test)]
+#[path = "orchestrator_tests.rs"]
+mod tests;

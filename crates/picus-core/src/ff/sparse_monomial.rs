@@ -26,7 +26,7 @@ impl SparseMonomial {
     /// every variable `v` with nonzero exponent, set bit `h(v)` where `h`
     /// is a multiplicative hash into `0..128`. If a bit is set in `a`'s
     /// mask but not `b`'s, some variable of `a` is absent from `b`, so
-    /// `a ∤ b` — checked via [`DivMask::divides_consistent_with`].
+    /// `a ∤ b` — checked via [`crate::ff::divmask::DivMask::divides_consistent_with`].
     ///
     /// Unlike the dense [`DivMaskScheme`](super::divmask::DivMaskScheme)
     /// (thresholds over the first 128 variables only — useless on the wide
@@ -329,3 +329,7 @@ impl MonomialRepr for SparseMonomial {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "sparse_monomial_tests.rs"]
+mod tests;

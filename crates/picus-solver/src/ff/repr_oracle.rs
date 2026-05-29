@@ -373,7 +373,7 @@ fn reduce_geobucket_matches_naive_random() {
             continue;
         }
         let refs: Vec<&DensePoly> = divisors.iter().collect();
-        let geo = subject.reduce_by_refs_geobucket(&refs, &r, None, None);
+        let geo = subject.reduce_by_refs_geobucket(&refs, &r, None, None, None);
         let naive = subject.reduce_by_refs_naive(&refs, &r);
         assert_eq!(dense_to_map(&geo, &r), dense_to_map(&naive, &r));
     }
@@ -485,6 +485,69 @@ fn sparse_groebner_basis_matches_dense_random() {
     }
 }
 
+/// The F4 matrix path (`use_f4 = true`) must produce the same reduced
+/// Gröbner basis as the per-pair path (`use_f4 = false`) on random
+/// generator sets. The reduced GB under a fixed order is unique, so any
+/// divergence is an F4 bug. The F4 unit tests in `ff/f4/tests.rs` compare
+/// only leading-term sets (necessary but not sufficient for ideal
+/// equality); this is the full-reduced-GB oracle that closes that gap.
+#[test]
+fn f4_groebner_basis_matches_per_pair_random() {
+    use super::buchberger::{groebner_basis, interreduce, BuchbergerConfig};
+    const GV: usize = 4;
+    const GMAX: u64 = 2;
+    let arc_r = PolyRing::new(
+        PrimeField::new(BigUint::from(PRIME)),
+        (0..GV).map(|i| format!("v{i}")).collect(),
+        MonomialOrder::DegRevLex,
+    );
+    let r: &PolyRing = &arc_r;
+    let mut rng = Rng::new(173);
+
+    for _ in 0..300 {
+        let n_gen = 2 + rng.below(3) as usize; // 2–4 generators
+        let gen_terms: Vec<Vec<(Vec<u16>, u64)>> = (0..n_gen)
+            .map(|_| {
+                let n = 1 + rng.below(3) as usize;
+                (0..n)
+                    .map(|_| {
+                        let e: Vec<u16> = (0..GV).map(|_| rng.below(GMAX + 1) as u16).collect();
+                        (e, 1 + rng.below(PRIME - 1))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        let gens: Vec<DensePoly> = gen_terms
+            .iter()
+            .map(|t| build_dense(t, r))
+            .filter(|p| !p.is_zero())
+            .collect();
+        if gens.is_empty() {
+            continue;
+        }
+
+        let per_pair = BuchbergerConfig { use_f4: false, ..BuchbergerConfig::default() };
+        let f4 = BuchbergerConfig { use_f4: true, ..BuchbergerConfig::default() };
+
+        let gb_pp = groebner_basis(gens.clone(), &arc_r, &per_pair).expect("per-pair gb");
+        let mut canon_pp: Vec<PolyMap> =
+            interreduce(gb_pp.basis, &arc_r).iter().map(|p| dense_to_map(p, r)).collect();
+        canon_pp.sort();
+
+        let gb_f4 = groebner_basis(gens, &arc_r, &f4).expect("f4 gb");
+        let mut canon_f4: Vec<PolyMap> =
+            interreduce(gb_f4.basis, &arc_r).iter().map(|p| dense_to_map(p, r)).collect();
+        canon_f4.sort();
+
+        assert_eq!(
+            canon_pp, canon_f4,
+            "F4 vs per-pair reduced GB mismatch for generators {:?}",
+            gen_terms
+        );
+    }
+}
+
 /// Incremental sparse GB (seed the reduced GB of A, extend with B) must
 /// equal the from-scratch reduced GB of A ∪ B — the incremental-seeding
 /// soundness oracle. Both are GBs of the same ideal, and the reduced GB
@@ -501,7 +564,7 @@ fn sparse_groebner_incremental_matches_from_scratch_random() {
     let r: &PolyRing = &arc_r;
     let mut rng = Rng::new(73);
 
-    let mut rand_gens = |rng: &mut Rng| -> Vec<SparsePolynomial> {
+    let rand_gens = |rng: &mut Rng| -> Vec<SparsePolynomial> {
         let count = 1 + rng.below(2) as usize;
         (0..count)
             .map(|_| {
@@ -542,6 +605,70 @@ fn sparse_groebner_incremental_matches_from_scratch_random() {
         canon_inc.sort();
 
         assert_eq!(canon_full, canon_inc, "incremental vs from-scratch GB mismatch");
+    }
+}
+
+/// Incremental dense GB (seed the reduced GB of A into `IncrementalGB`,
+/// extend with B) must equal the from-scratch reduced GB of A ∪ B — the
+/// dense-path analogue of the sparse incremental oracle above. The
+/// seeding skips intra-seed S-pairs trusting the seed is a reduced GB, so
+/// this pins that the extension is still a complete GB of the full ideal.
+#[test]
+fn dense_groebner_incremental_matches_from_scratch_random() {
+    use super::buchberger::{groebner_basis, interreduce, BuchbergerConfig, IncrementalGB};
+    const GV: usize = 4;
+    const GMAX: u64 = 2;
+    let arc_r = PolyRing::new(
+        PrimeField::new(BigUint::from(PRIME)),
+        (0..GV).map(|i| format!("v{i}")).collect(),
+        MonomialOrder::DegRevLex,
+    );
+    let r: &PolyRing = &arc_r;
+    let mut rng = Rng::new(91);
+
+    let rand_gens = |rng: &mut Rng| -> Vec<DensePoly> {
+        let count = 1 + rng.below(2) as usize;
+        (0..count)
+            .map(|_| {
+                let n = 1 + rng.below(3) as usize;
+                let terms: Vec<(Vec<u16>, u64)> = (0..n)
+                    .map(|_| {
+                        let e: Vec<u16> = (0..GV).map(|_| rng.below(GMAX + 1) as u16).collect();
+                        (e, 1 + rng.below(PRIME - 1))
+                    })
+                    .collect();
+                build_dense(&terms, r)
+            })
+            .filter(|p| !p.is_zero())
+            .collect()
+    };
+
+    for _ in 0..300 {
+        let gens_a = rand_gens(&mut rng);
+        let gens_b = rand_gens(&mut rng);
+        if gens_a.is_empty() {
+            continue;
+        }
+
+        // From scratch: reduced GB of A ∪ B.
+        let mut all = gens_a.clone();
+        all.extend(gens_b.clone());
+        let gb_full = groebner_basis(all, &arc_r, &BuchbergerConfig::default()).expect("full gb");
+        let mut canon_full: Vec<PolyMap> =
+            interreduce(gb_full.basis, &arc_r).iter().map(|p| dense_to_map(p, r)).collect();
+        canon_full.sort();
+
+        // Incremental: reduced GB of A, seeded into IncrementalGB, then B.
+        let gb_a = groebner_basis(gens_a, &arc_r, &BuchbergerConfig::default()).expect("gb a");
+        let known = interreduce(gb_a.basis, &arc_r);
+        let mut igb = IncrementalGB::new(arc_r.clone(), BuchbergerConfig::default());
+        igb.seed_reduced_basis(known);
+        igb.add_generators(gens_b).expect("incremental extend");
+        let mut canon_inc: Vec<PolyMap> =
+            interreduce(igb.basis(), &arc_r).iter().map(|p| dense_to_map(p, r)).collect();
+        canon_inc.sort();
+
+        assert_eq!(canon_full, canon_inc, "dense incremental vs from-scratch GB mismatch");
     }
 }
 

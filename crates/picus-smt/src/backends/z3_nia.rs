@@ -35,6 +35,14 @@ impl SolverBackend for Z3NiaBackend {
         if cancel.is_cancelled() {
             return Ok(SolverResult::Unknown(UnknownReason::Timeout));
         }
+        // This backend lowers only equalities + the target disequality.
+        // Disjunctions / assignments / bitsums would silently weaken the
+        // query (dropping constraints → spurious SAT), so refuse rather
+        // than solve a different problem. The R1CS uniqueness query never
+        // populates these, so this is inert on the supported path.
+        if !ir.disjunctions.is_empty() || !ir.assignments.is_empty() || !ir.bitsums.is_empty() {
+            return Ok(SolverResult::Unknown(UnknownReason::IncompleteTheory));
+        }
         let solver = Solver::new();
         let mut params = Params::new();
         params.set_u32("timeout", timeout_ms.min(u32::MAX as u64) as u32);
@@ -58,10 +66,20 @@ impl SolverBackend for Z3NiaBackend {
             solver.assert(sum.rem(&p_ast).eq(Int::from_u64(0)));
         }
 
-        // Target disequality.
+        // Target disequality. A missing copy var would silently drop the
+        // `x_target != y_target` constraint → trivially SAT → spurious
+        // counter-example; error out (→ Unknown) instead of a false UNSAFE.
         let s = ir.target_signal;
-        if let (Some(x), Some(y)) = (vars.get(ir.x_name(s)), vars.get(ir.y_name(s))) {
-            solver.assert(x.eq(y).not());
+        match (vars.get(ir.x_name(s)), vars.get(ir.y_name(s))) {
+            (Some(x), Some(y)) => {
+                solver.assert(x.eq(y).not());
+            }
+            _ => {
+                return Err(SolverError::Internal(format!(
+                    "target wire {} missing a declared copy variable",
+                    s
+                )));
+            }
         }
 
         match solver.check() {

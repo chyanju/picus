@@ -21,6 +21,7 @@ use super::repr::MonomialRepr;
 use super::sparse_monomial::SparseMonomial;
 use super::sparse_polynomial::SparsePolynomial;
 use crate::config::ReprKind;
+use crate::metric;
 
 /// Shared context describing the polynomial ring `GF(p)[x_0, ..., x_{n-1}]`.
 ///
@@ -44,11 +45,24 @@ pub struct PolyRing {
 
 impl PolyRing {
     pub fn new(field: PrimeField, var_names: Vec<String>, order: MonomialOrder) -> Arc<Self> {
+        let repr = crate::config::with(|c| c.poly_repr);
+        Self::new_with_repr(field, var_names, order, repr)
+    }
+
+    /// Like [`Self::new`] but with an explicit storage representation,
+    /// bypassing the thread-local `config::poly_repr`. Lets callers (tests,
+    /// the differential oracle) pin a representation without mutating global
+    /// config.
+    pub fn new_with_repr(
+        field: PrimeField,
+        var_names: Vec<String>,
+        order: MonomialOrder,
+        repr: ReprKind,
+    ) -> Arc<Self> {
         let n_vars = var_names.len();
         // Heuristic exponent cap: monomials beyond degree 16 in any
         // single variable are rare for the inputs the solver sees.
         let divmask = DivMaskScheme::build(n_vars, 16);
-        let repr = crate::config::with(|c| c.poly_repr);
         Arc::new(PolyRing { field, n_vars, order, var_names, divmask, repr })
     }
 
@@ -273,10 +287,7 @@ impl Polynomial {
                 let ds: Vec<SparsePolynomial> =
                     divisors.iter().map(|p| p.to_sparse(ring)).collect();
                 let dr: Vec<&SparsePolynomial> = ds.iter().collect();
-                // Sparse reducer has no cooperative cancel yet; it is used
-                // on the (small) per-branch cores where this is acceptable.
-                let _ = cancel;
-                Polynomial::Sparse(s.reduce_by_refs(&dr, ring))
+                Polynomial::Sparse(s.reduce_by_refs_cancel(&dr, ring, Some(cancel)))
             }
             Polynomial::Dense(d) => {
                 let ds: Vec<std::borrow::Cow<DensePoly>> =
@@ -372,6 +383,118 @@ impl<'a> TermRef<'a> {
     }
 }
 
+/// Prebuilt divisor-lookup structure for the geobucket reducer, owning its
+/// data so it can be **cached across reduce calls** whose divisor set is
+/// unchanged (the Buchberger active basis between basis mutations). Mirrors
+/// the per-call structure that `reduce_by_refs_geobucket` builds: a degree-
+/// sorted `order` (from `SORT_THRESHOLD` divisors) and DivMask `buckets`
+/// (from `BUCKET_THRESHOLD`). The leading *coefficient* is NOT stored — it is
+/// read lazily from the live divisor at reduce time, matching the per-call
+/// reducer. Built by [`ReducerIndex::build`], consumed by
+/// [`DensePoly::reduce_by_refs_geobucket_indexed`].
+pub struct ReducerIndex {
+    /// Per divisor `i`: `(owned LT exponents, LT total degree, LT DivMask)`,
+    /// or `None` if the divisor was zero.
+    div_lt: Vec<Option<(Vec<u16>, u32, super::divmask::DivMask)>>,
+    /// Degree-ascending order of divisor indices (early-break scan), present
+    /// at `>= SORT_THRESHOLD` divisors.
+    order: Option<Vec<usize>>,
+    /// DivMask-keyed buckets (each sorted by LT degree), present at
+    /// `>= BUCKET_THRESHOLD` divisors.
+    buckets: Option<std::collections::HashMap<u128, Vec<usize>>>,
+}
+
+impl ReducerIndex {
+    /// Divisor count from which the degree-`order` index is built. Single
+    /// source for this threshold, shared with the inline index built in
+    /// `reduce_by_refs_geobucket`.
+    pub const SORT_THRESHOLD: usize = 64;
+    /// Divisor count from which the DivMask bucket index is built. Single
+    /// source for this threshold, shared with the inline index built in
+    /// `reduce_by_refs_geobucket`.
+    pub const BUCKET_THRESHOLD: usize = 256;
+
+    /// Build the index over `divisors` (in caller order). `div_dms[i]`, when
+    /// supplied, is divisor `i`'s precomputed leading-term DivMask. Exponent
+    /// vectors are cloned (owned) so the index outlives the `divisors` borrow.
+    pub fn build(
+        divisors: &[&DensePoly],
+        ring: &PolyRing,
+        div_dms: Option<&[super::divmask::DivMask]>,
+    ) -> Self {
+        use super::divmask::DivMask;
+        let div_lt: Vec<Option<(Vec<u16>, u32, DivMask)>> = divisors
+            .iter()
+            .enumerate()
+            .map(|(i, d)| {
+                d.leading_term(ring).map(|lt| {
+                    let exps = lt.exponents();
+                    let dm = match div_dms {
+                        Some(dms) => dms[i],
+                        None => ring.divmask.compute_from_slice(exps),
+                    };
+                    (exps.to_vec(), lt.total_degree(), dm)
+                })
+            })
+            .collect();
+        let order = if div_lt.len() >= Self::SORT_THRESHOLD {
+            let mut o: Vec<usize> = (0..div_lt.len()).collect();
+            o.sort_by_key(|&i| div_lt[i].as_ref().map(|t| t.1).unwrap_or(u32::MAX));
+            Some(o)
+        } else {
+            None
+        };
+        let buckets = if div_lt.len() >= Self::BUCKET_THRESHOLD {
+            let mut b: std::collections::HashMap<u128, Vec<usize>> =
+                std::collections::HashMap::new();
+            for (i, lt_opt) in div_lt.iter().enumerate() {
+                if let Some((_, _, dm)) = lt_opt {
+                    b.entry(dm.0).or_default().push(i);
+                }
+            }
+            for indices in b.values_mut() {
+                indices.sort_by_key(|&i| div_lt[i].as_ref().map(|t| t.1).unwrap_or(u32::MAX));
+            }
+            Some(b)
+        } else {
+            None
+        };
+        ReducerIndex { div_lt, order, buckets }
+    }
+
+    /// Number of divisors the index was built over.
+    pub fn len(&self) -> usize {
+        self.div_lt.len()
+    }
+
+    /// `true` when the index is empty.
+    pub fn is_empty(&self) -> bool {
+        self.div_lt.is_empty()
+    }
+
+    /// Whether the cached leading-term data still matches `divisors`'
+    /// current leading terms (exponents + degree). A debug-only staleness
+    /// guard for the Buchberger cache: an unchanged active-index set must
+    /// imply unchanged leading terms (tail reduction preserves them).
+    pub fn matches_active(&self, divisors: &[&DensePoly], ring: &PolyRing) -> bool {
+        if self.div_lt.len() != divisors.len() {
+            return false;
+        }
+        for (entry, d) in self.div_lt.iter().zip(divisors.iter()) {
+            match (entry, d.leading_term(ring)) {
+                (Some((exps, deg, _)), Some(lt)) => {
+                    if exps.as_slice() != lt.exponents() || *deg != lt.total_degree() {
+                        return false;
+                    }
+                }
+                (None, None) => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+}
+
 impl DensePoly {
     /// The zero polynomial.
     pub fn zero() -> Self {
@@ -437,10 +560,12 @@ impl DensePoly {
         if !coeffs.is_empty() {
             debug_assert_eq!(exponents.len() / coeffs.len() * coeffs.len(), exponents.len());
         }
-        debug_assert!(
-            total_degs.windows(2).all(|w| w[0] >= w[1]),
-            "from_raw_sorted: total_degs must be non-increasing (descending order)"
-        );
+        // No total-degree monotonicity check: "descending" is by the ring's
+        // monomial order, which implies non-increasing total degree under
+        // DegRevLex but not under Lex (e.g. `x0` > `x1^5` in Lex, yet has lower
+        // degree). This function holds no ring and so cannot validate the
+        // order-relative descent; callers build these arrays by popping the
+        // geobucket in `ring.order` and own that contract.
         DensePoly { exponents, coeffs, total_degs }
     }
 
@@ -695,12 +820,13 @@ impl DensePoly {
         if other.is_zero() {
             return self;
         }
-        if crate::profile::gb_stats_enabled() {
-            crate::profile::SPLIT_GB.merge_owned_calls
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            crate::profile::SPLIT_GB.merge_owned_terms_total
-                .fetch_add((self.coeffs.len() + other.coeffs.len()) as u64,
-                    std::sync::atomic::Ordering::Relaxed);
+        // Two counters under one gb-stats read (this is a hot cascade-merge
+        // path); same single-read batching as the reducer drain.
+        metric::scope! {
+            let g = &crate::profile::SPLIT_GB;
+            metric::add!(g.merge_owned_calls, 1);
+            metric::add!(g.merge_owned_terms_total,
+                (self.coeffs.len() + other.coeffs.len()) as u64);
         }
         let n = ring.n_vars;
         let la = self.coeffs.len();
@@ -892,8 +1018,6 @@ impl DensePoly {
         let appearing = self.appearing_variables(ring);
         if appearing.len() == 1 {
             Some(appearing[0].0)
-        } else if appearing.is_empty() {
-            None
         } else {
             None
         }
@@ -957,7 +1081,9 @@ impl DensePoly {
             let de_base = &divisor.exponents[di * n..(di + 1) * n];
             let dd = divisor.total_degs[di] + shift_deg;
             for k in 0..n {
-                shifted[k] = de_base[k] + shift[k];
+                shifted[k] = de_base[k]
+                    .checked_add(shift[k])
+                    .expect("exponent exceeds u16 in merge_sub_scaled_tail");
             }
 
             match Self::cmp_term_at(se, sd, &shifted, dd, ring.order) {
@@ -1002,7 +1128,9 @@ impl DensePoly {
             let de_base = &divisor.exponents[di * n..(di + 1) * n];
             let dd = divisor.total_degs[di] + shift_deg;
             for k in 0..n {
-                shifted[k] = de_base[k] + shift[k];
+                shifted[k] = de_base[k]
+                    .checked_add(shift[k])
+                    .expect("exponent exceeds u16 in merge_sub_scaled_tail");
             }
             out_exps.extend_from_slice(&shifted);
             out_coeffs.push(ring.field.mul(&divisor.coeffs[di], neg_coeff));
@@ -1013,423 +1141,9 @@ impl DensePoly {
         DensePoly { exponents: out_exps, coeffs: out_coeffs, total_degs: out_degs }
     }
 
-    /// Like `reduce_by` but takes references to divisors — avoids cloning
-    /// the divisor list when the caller already holds polynomials inside
-    /// some larger container (e.g. `BuchbergerState::basis`).
-    ///
-    /// Geobucket-based accumulator (Yan 1998). Each reduction step is
-    /// O(D · log(N / D)) where D is the divisor length and N is the
-    /// running tail size.
-    pub fn reduce_by_refs(&self, divisors: &[&DensePoly], ring: &PolyRing) -> DensePoly {
-        if self.is_zero() || divisors.is_empty() {
-            return self.clone();
-        }
-        self.reduce_by_refs_geobucket(divisors, ring, None, None)
-    }
-
-    /// Cancel-aware variant of [`reduce_by_refs`]. On cancel, returns
-    /// the partial remainder accumulated so far — sound (same residue
-    /// class) but not necessarily a normal form. Hot paths (Buchberger
-    /// main loop, interreduce, bit-prop `contains`) should prefer this
-    /// over [`reduce_by_refs`] so the cancel token is honoured on
-    /// dense polynomials.
-    pub fn reduce_by_refs_cancel(
-        &self,
-        divisors: &[&DensePoly],
-        ring: &PolyRing,
-        cancel: &crate::timeout::CancelToken,
-    ) -> DensePoly {
-        if self.is_zero() || divisors.is_empty() {
-            return self.clone();
-        }
-        self.reduce_by_refs_geobucket(divisors, ring, Some(cancel), None)
-    }
-
-    /// Variant of [`reduce_by_refs_cancel`] that also records, in
-    /// `use_counts`, how many times each divisor was selected as the
-    /// reducer during this call. `use_counts.len()` must equal
-    /// `divisors.len()`; entries are incremented (not zeroed).
-    pub fn reduce_by_refs_counted_cancel(
-        &self,
-        divisors: &[&DensePoly],
-        ring: &PolyRing,
-        cancel: &crate::timeout::CancelToken,
-        use_counts: &mut [u64],
-    ) -> DensePoly {
-        debug_assert_eq!(divisors.len(), use_counts.len());
-        if self.is_zero() || divisors.is_empty() {
-            return self.clone();
-        }
-        self.reduce_by_refs_geobucket(divisors, ring, Some(cancel), Some(use_counts))
-    }
-
-    /// Non-cancel-aware version of [`reduce_by_refs_counted_cancel`].
-    pub fn reduce_by_refs_counted(
-        &self,
-        divisors: &[&DensePoly],
-        ring: &PolyRing,
-        use_counts: &mut [u64],
-    ) -> DensePoly {
-        debug_assert_eq!(divisors.len(), use_counts.len());
-        if self.is_zero() || divisors.is_empty() {
-            return self.clone();
-        }
-        self.reduce_by_refs_geobucket(divisors, ring, None, Some(use_counts))
-    }
-
-    /// Geobucket-based reduction. Public for testing — production code should
-    /// go through `reduce_by_refs` so the dispatch (currently always geobucket)
-    /// stays in one place.
-    ///
-    /// When `use_counts` is provided, the per-divisor counter at the
-    /// index of the selected reducer is incremented every iteration.
-    pub fn reduce_by_refs_geobucket(
-        &self,
-        divisors: &[&DensePoly],
-        ring: &PolyRing,
-        cancel: Option<&crate::timeout::CancelToken>,
-        mut use_counts: Option<&mut [u64]>,
-    ) -> DensePoly {
-        let n = ring.n_vars;
-        let stats_on = crate::profile::gb_stats_enabled();
-        if stats_on {
-            crate::profile::SPLIT_GB.reduce_calls
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        let setup_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
-
-        // Precompute LT info for each divisor. The exponent slice is
-        // BORROWED rather than cloned, saving an O(n_vars) Vec allocation
-        // per divisor.
-        use super::divmask::DivMask;
-        let div_lt: Vec<Option<(&[u16], u32, FieldElem, DivMask)>> = divisors
-            .iter()
-            .map(|d| {
-                if let Some(lt) = d.leading_term(ring) {
-                    let exps = lt.exponents();  // borrows from divisor
-                    let total_deg = lt.total_degree();
-                    let dm = ring.divmask.compute_from_slice(exps);
-                    Some((exps, total_deg, lt.coefficient().clone(), dm))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        // When the divisor set is large, build an auxiliary index
-        // sorted by leading-term total degree ascending. The lookup
-        // loop iterates this index and `break`s on the first divisor
-        // whose LT degree exceeds `lt_deg`. The normal-form output is
-        // unchanged because the first divisor whose LT divides
-        // `lt_exps` is unique on a Groebner-basis-shaped divisor set;
-        // for small divisor sets the linear scan path is kept so
-        // unit-tests' "reducer matches naive" property is preserved.
-        const SORT_THRESHOLD: usize = 64;
-        let order_opt: Option<Vec<usize>> = if div_lt.len() >= SORT_THRESHOLD {
-            let mut order: Vec<usize> = (0..div_lt.len()).collect();
-            order.sort_by_key(|&i| div_lt[i].as_ref().map(|t| t.1).unwrap_or(u32::MAX));
-            Some(order)
-        } else {
-            None
-        };
-
-        // Hash-bucketed divisor index, keyed on `DivMask`. Only enabled
-        // at ≥ 256 divisors, where `DivMask` filtering wins over the
-        // sort + early-break path; below this threshold the cost of
-        // building / iterating the buckets outweighs the savings.
-        const BUCKET_THRESHOLD: usize = 256;
-        let bucket_index_opt: Option<std::collections::HashMap<u128, Vec<usize>>> =
-            if div_lt.len() >= BUCKET_THRESHOLD {
-                let mut buckets: std::collections::HashMap<u128, Vec<usize>> =
-                    std::collections::HashMap::new();
-                for (i, lt_opt) in div_lt.iter().enumerate() {
-                    if let Some((_, _, _, dm)) = lt_opt {
-                        buckets.entry(dm.0).or_default().push(i);
-                    }
-                }
-                // Sort each bucket by leading-term total degree
-                // ascending so the lookup loop can `break` (not
-                // `continue`) on the first divisor with deg > lt_deg.
-                for indices in buckets.values_mut() {
-                    indices.sort_by_key(|&i| div_lt[i].as_ref().map(|t| t.1).unwrap_or(u32::MAX));
-                }
-                Some(buckets)
-            } else {
-                None
-            };
-
-        let mut gb = super::geobucket::Geobucket::from_poly(self.clone(), ring);
-        let mut result_exps: Vec<u16> = Vec::new();
-        let mut result_coeffs: Vec<FieldElem> = Vec::new();
-        let mut result_degs: Vec<u32> = Vec::new();
-        let mut shift = vec![0u16; n];
-
-        if let Some(t0) = setup_t0 {
-            crate::profile::SPLIT_GB.time_div_lt_setup_ns
-                .fetch_add(t0.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
-        }
-        let mut local_pops: u64 = 0;
-        let mut local_lookups: u64 = 0;
-        let mut local_sub_scaled: u64 = 0;
-        let mut local_pop_ns: u64 = 0;
-        let mut local_lookup_ns: u64 = 0;
-        let mut local_sub_ns: u64 = 0;
-
-        // Throttle the cancel check coarsely. Checking the atomic on
-        // every iteration measurably slows reduction; period = 4096
-        // keeps the per-iteration overhead unmeasurable while still
-        // bounding cancel latency at the millisecond scale.
-        let mut iter_counter: u32 = 0;
-        const CANCEL_CHECK_PERIOD: u32 = 4096;
-        // Bind the cancel reference outside the loop so the per-iteration
-        // path doesn't re-pattern-match the Option.
-        let cancel_ref = cancel;
-        loop {
-            let pop_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
-            let popped = gb.pop_leading_term();
-            if let Some(t0) = pop_t0 {
-                local_pop_ns += t0.elapsed().as_nanos() as u64;
-            }
-            let (lt_exps, lt_deg, lt_coeff) = match popped {
-                Some(t) => t,
-                None => break,
-            };
-            local_pops += 1;
-            iter_counter = iter_counter.wrapping_add(1);
-            if iter_counter & (CANCEL_CHECK_PERIOD - 1) == 0 {
-                if let Some(c) = cancel_ref {
-                    if c.is_cancelled() {
-                        while let Some((e, d, c2)) = gb.pop_leading_term() {
-                            result_exps.extend_from_slice(&e);
-                            result_coeffs.push(c2);
-                            result_degs.push(d);
-                        }
-                        if stats_on {
-                            let g = &crate::profile::SPLIT_GB;
-                            g.reduce_lt_pops.fetch_add(local_pops, std::sync::atomic::Ordering::Relaxed);
-                            g.reduce_div_lookups.fetch_add(local_lookups, std::sync::atomic::Ordering::Relaxed);
-                            g.reduce_sub_scaled_calls.fetch_add(local_sub_scaled, std::sync::atomic::Ordering::Relaxed);
-                            g.time_pop_lt_ns.fetch_add(local_pop_ns, std::sync::atomic::Ordering::Relaxed);
-                            g.time_div_lookup_ns.fetch_add(local_lookup_ns, std::sync::atomic::Ordering::Relaxed);
-                            g.time_sub_scaled_ns.fetch_add(local_sub_ns, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        return DensePoly::from_raw_sorted(result_exps, result_coeffs, result_degs);
-                    }
-                }
-            }
-            let lookup_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
-            let cur_dm = ring.divmask.compute_from_slice(&lt_exps);
-            let mut chosen: Option<usize> = None;
-            if let Some(buckets) = &bucket_index_opt {
-                // Hash-bucketed divisor lookup. Iterate only buckets
-                // whose mask is a submask of `cur_dm` — others contain
-                // divisors whose `DivMask` has bits `cur_dm` does not,
-                // so they cannot divide. Within a compatible bucket
-                // perform the full exponent check; break on the first
-                // match. The pick is process-deterministic but may
-                // differ from the linear-scan first-match across runs.
-                let cur_bits = cur_dm.0;
-                'outer: for (&mask, indices) in buckets {
-                    if (mask & !cur_bits) != 0 {
-                        // mask has bits cur_dm doesn't → no divisor in
-                        // this bucket can divide LT.
-                        continue;
-                    }
-                    for &di in indices {
-                        local_lookups += 1;
-                        if let Some((d_exps, d_deg, _, _)) = &div_lt[di] {
-                            if *d_deg > lt_deg {
-                                // Bucket is sorted by LT degree ascending;
-                                // once it exceeds `lt_deg`, every later
-                                // divisor in this bucket is also too big.
-                                break;
-                            }
-                            let mut divides = true;
-                            for k in 0..n {
-                                if d_exps[k] > lt_exps[k] {
-                                    divides = false;
-                                    break;
-                                }
-                            }
-                            if divides {
-                                chosen = Some(di);
-                                break 'outer;
-                            }
-                        }
-                    }
-                }
-            } else if let Some(order) = &order_opt {
-                // Sorted-ascending iteration with early break on
-                // exceeded-degree divisors.
-                for &di in order {
-                    local_lookups += 1;
-                    if let Some((d_exps, d_deg, _, d_dm)) = &div_lt[di] {
-                        if *d_deg > lt_deg {
-                            break;
-                        }
-                        if !d_dm.divides_consistent_with(cur_dm) {
-                            continue;
-                        }
-                        let mut divides = true;
-                        for k in 0..n {
-                            if d_exps[k] > lt_exps[k] {
-                                divides = false;
-                                break;
-                            }
-                        }
-                        if divides {
-                            chosen = Some(di);
-                            break;
-                        }
-                    }
-                }
-            } else {
-                for (di, lt_opt) in div_lt.iter().enumerate() {
-                    local_lookups += 1;
-                    if let Some((d_exps, d_deg, _, d_dm)) = lt_opt {
-                        if *d_deg > lt_deg {
-                            continue;
-                        }
-                        if !d_dm.divides_consistent_with(cur_dm) {
-                            continue;
-                        }
-                        let mut divides = true;
-                        for k in 0..n {
-                            if d_exps[k] > lt_exps[k] {
-                                divides = false;
-                                break;
-                            }
-                        }
-                        if divides {
-                            chosen = Some(di);
-                            break;
-                        }
-                    }
-                }
-            }
-            if let Some(t0) = lookup_t0 {
-                local_lookup_ns += t0.elapsed().as_nanos() as u64;
-            }
-
-            if let Some(di) = chosen {
-                let sub_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
-                let (d_exps, _d_deg, d_lc, _) = div_lt[di].as_ref().unwrap();
-                let coeff_ratio = ring.field.div(&lt_coeff, d_lc).expect("nonzero divisor LC");
-                let neg_coeff = ring.field.neg(&coeff_ratio);
-                for k in 0..n {
-                    shift[k] = lt_exps[k] - d_exps[k];
-                }
-                gb.sub_scaled_tail(&shift, &neg_coeff, divisors[di]);
-                local_sub_scaled += 1;
-                if let Some(counts) = use_counts.as_deref_mut() {
-                    counts[di] = counts[di].saturating_add(1);
-                }
-                if let Some(t0) = sub_t0 {
-                    local_sub_ns += t0.elapsed().as_nanos() as u64;
-                }
-            } else {
-                result_exps.extend_from_slice(&lt_exps);
-                result_coeffs.push(lt_coeff);
-                result_degs.push(lt_deg);
-            }
-        }
-
-        let fin_t0 = if stats_on { Some(std::time::Instant::now()) } else { None };
-        let result = DensePoly::from_raw_sorted(result_exps, result_coeffs, result_degs);
-        if let Some(t0) = fin_t0 {
-            crate::profile::SPLIT_GB.time_finalize_ns
-                .fetch_add(t0.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
-        }
-        if stats_on {
-            let g = &crate::profile::SPLIT_GB;
-            g.reduce_lt_pops.fetch_add(local_pops, std::sync::atomic::Ordering::Relaxed);
-            g.reduce_div_lookups.fetch_add(local_lookups, std::sync::atomic::Ordering::Relaxed);
-            g.reduce_sub_scaled_calls.fetch_add(local_sub_scaled, std::sync::atomic::Ordering::Relaxed);
-            g.time_pop_lt_ns.fetch_add(local_pop_ns, std::sync::atomic::Ordering::Relaxed);
-            g.time_div_lookup_ns.fetch_add(local_lookup_ns, std::sync::atomic::Ordering::Relaxed);
-            g.time_sub_scaled_ns.fetch_add(local_sub_ns, std::sync::atomic::Ordering::Relaxed);
-        }
-        result
-    }
-
-    /// Single-vector reduction with fused `merge_sub_scaled_tail`. The
-    /// cross-validation reference for the geobucket-based `reduce_by_refs`.
-    pub fn reduce_by_refs_naive(&self, divisors: &[&DensePoly], ring: &PolyRing) -> DensePoly {
-        if self.is_zero() || divisors.is_empty() {
-            return self.clone();
-        }
-        let n = ring.n_vars;
-        let mut current = self.clone();
-        let mut cursor: usize = 0;
-        let mut result_exps: Vec<u16> = Vec::new();
-        let mut result_coeffs: Vec<FieldElem> = Vec::new();
-        let mut result_degs: Vec<u32> = Vec::new();
-
-        use super::divmask::DivMask;
-        let div_lt: Vec<Option<(Vec<u16>, u32, FieldElem, DivMask)>> = divisors
-            .iter()
-            .map(|d| {
-                if let Some(lt) = d.leading_term(ring) {
-                    let mon = lt.monomial();
-                    let dm = ring.divmask.compute(&mon);
-                    Some((lt.exponents().to_vec(), lt.total_degree(), lt.coefficient().clone(), dm))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        while cursor < current.coeffs.len() {
-            let lt_exps: &[u16] = &current.exponents[cursor * n..(cursor + 1) * n];
-            let lt_deg = current.total_degs[cursor];
-            let cur_dm = ring.divmask.compute_from_slice(lt_exps);
-
-            let mut chosen: Option<usize> = None;
-            for (di, lt_opt) in div_lt.iter().enumerate() {
-                if let Some((d_exps, d_deg, _, d_dm)) = lt_opt {
-                    if *d_deg > lt_deg {
-                        continue;
-                    }
-                    if !d_dm.divides_consistent_with(cur_dm) {
-                        continue;
-                    }
-                    let mut divides = true;
-                    for k in 0..n {
-                        if d_exps[k] > lt_exps[k] {
-                            divides = false;
-                            break;
-                        }
-                    }
-                    if divides {
-                        chosen = Some(di);
-                        break;
-                    }
-                }
-            }
-
-            if let Some(di) = chosen {
-                let (d_exps, _d_deg, d_lc, _) = div_lt[di].as_ref().unwrap();
-                let lt_coeff = &current.coeffs[cursor];
-                let coeff_ratio = ring.field.div(lt_coeff, d_lc).expect("nonzero divisor LC");
-                let neg_coeff = ring.field.neg(&coeff_ratio);
-                let mut shift = vec![0u16; n];
-                for k in 0..n {
-                    shift[k] = lt_exps[k] - d_exps[k];
-                }
-                current = current.merge_sub_scaled_tail(
-                    cursor, divisors[di], &shift, &neg_coeff, ring,
-                );
-                cursor = 0;
-            } else {
-                result_exps.extend_from_slice(&current.exponents[cursor * n..(cursor + 1) * n]);
-                result_coeffs.push(current.coeffs[cursor].clone());
-                result_degs.push(current.total_degs[cursor]);
-                cursor += 1;
-            }
-        }
-
-        DensePoly::from_raw_sorted(result_exps, result_coeffs, result_degs)
-    }
 }
+
+mod dense_reduce;
 
 impl super::repr::PolyRepr for DensePoly {
     type Mono = Monomial;

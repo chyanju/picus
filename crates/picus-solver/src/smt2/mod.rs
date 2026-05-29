@@ -26,7 +26,7 @@ mod tokenizer;
 
 pub use session::{SessionOutput, SessionVerdict, SmtSession};
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 
 use num_bigint::BigUint;
@@ -95,19 +95,60 @@ pub(in crate::smt2) fn classify_sort(s: Option<&Sexpr>) -> Option<VarSort> {
             "F" => Some(VarSort::Ff),
             _ => None,
         },
-        Sexpr::List(inner) => {
-            if inner.len() == 3 {
-                if let (Sexpr::Atom(u), Sexpr::Atom(ff), Sexpr::Atom(_)) =
-                    (&inner[0], &inner[1], &inner[2])
-                {
-                    if u == "_" && ff == "FiniteField" {
-                        return Some(VarSort::Ff);
-                    }
+        Sexpr::List(_) => finite_field_prime_str(sexpr).map(|_| VarSort::Ff),
+    }
+}
+
+/// If `sort` is `(_ FiniteField <p>)`, return the prime literal `<p>` as a
+/// string; otherwise `None`. Centralises the shape detection repeated at
+/// every sort site (define-sort / declare-fun / declare-const, conjunctive
+/// and Boolean parsers, and the session). Callers apply their own
+/// prime-parse policy (error vs. ignore) to the returned string.
+pub(in crate::smt2) fn finite_field_prime_str(sort: &Sexpr) -> Option<&str> {
+    if let Sexpr::List(inner) = sort {
+        if inner.len() == 3 {
+            if let (Sexpr::Atom(u), Sexpr::Atom(ff), Sexpr::Atom(p)) =
+                (&inner[0], &inner[1], &inner[2])
+            {
+                if u == "_" && ff == "FiniteField" {
+                    return Some(p.as_str());
                 }
             }
-            None
         }
     }
+    None
+}
+
+/// Extract `(name, sort, inferred prime)` from a `declare-fun` /
+/// `declare-const` form: `name` is the declared symbol, `sort` its
+/// classified sort (`None` if unrecognised), and `inferred prime` the
+/// modulus parsed from an inline `(_ FiniteField p)` sort, if present.
+/// Returns `None` when the form is too short or the name is not an atom.
+/// Centralises the declaration scan shared by the conjunctive parser, the
+/// Boolean parser, and the incremental session; each caller applies its own
+/// policy to the result (reject Bool, default to `Ff`, thread the prime,
+/// track declaration order).
+pub(in crate::smt2) fn classify_declare(
+    head: &str,
+    list: &[Sexpr],
+) -> Option<(String, Option<VarSort>, Option<BigUint>)> {
+    if list.len() < 2 {
+        return None;
+    }
+    let name = match &list[1] {
+        Sexpr::Atom(n) => n.clone(),
+        _ => return None,
+    };
+    let sort_sexpr = if head == "declare-fun" {
+        list.get(3)
+    } else {
+        list.get(2)
+    };
+    let sort = classify_sort(sort_sexpr);
+    let inferred_prime = sort_sexpr
+        .and_then(finite_field_prime_str)
+        .and_then(|p| p.parse::<BigUint>().ok());
+    Some((name, sort, inferred_prime))
 }
 
 // ─────────────────────── Polynomial-expression builder ───────────────────
@@ -136,7 +177,7 @@ fn add_polys(a: Polynomial, b: Polynomial) -> Polynomial {
 /// Multiply two `Vec<PolyTerm>` lists. For each cross-product
 /// `t_a * t_b`, merge exponents per variable via `BTreeMap` (so
 /// `x*x` stays as `(x_idx, 2)` rather than two `(x_idx, 1)` entries).
-fn mul_polys(a: &Polynomial, b: &Polynomial, prime: &BigUint) -> Polynomial {
+fn mul_polys(a: &Polynomial, b: &Polynomial, prime: &BigUint) -> Result<Polynomial, ParseError> {
     let mut out = Vec::with_capacity(a.len() * b.len());
     for ta in a {
         for tb in b {
@@ -145,11 +186,17 @@ fn mul_polys(a: &Polynomial, b: &Polynomial, prime: &BigUint) -> Polynomial {
                 continue;
             }
             let mut counts: BTreeMap<VarIdx, u16> = BTreeMap::new();
-            for &(idx, exp) in &ta.vars {
-                *counts.entry(idx).or_insert(0) += exp;
-            }
-            for &(idx, exp) in &tb.vars {
-                *counts.entry(idx).or_insert(0) += exp;
+            // Accumulate per-variable exponents with `checked_add`, matching the
+            // engine's u16-exponent discipline (monomial.rs / polynomial.rs).
+            // An `ff.mul` chain raising one variable past 65535 is a clean
+            // parse error rather than a panic, so every entry point (including
+            // `run_smt2`, which runs outside the backend `catch_unwind`) fails
+            // gracefully instead of aborting or mistranslating the polynomial.
+            for &(idx, exp) in ta.vars.iter().chain(tb.vars.iter()) {
+                let e = counts.entry(idx).or_insert(0);
+                *e = e.checked_add(exp).ok_or_else(|| {
+                    ParseError::Malformed("monomial exponent exceeds u16".into())
+                })?;
             }
             out.push(PolyTerm {
                 coeff,
@@ -157,7 +204,7 @@ fn mul_polys(a: &Polynomial, b: &Polynomial, prime: &BigUint) -> Polynomial {
             });
         }
     }
-    out
+    Ok(out)
 }
 
 /// Parse `ffN`, `ff-N`, `#fNmP`, or `#f-NmP` constant. Negative forms
@@ -184,10 +231,51 @@ fn parse_ff_const(sym: &str, prime: &BigUint) -> Option<BigUint> {
     if let Some(rest) = sym.strip_prefix("#f") {
         let mut split = rest.splitn(2, 'm');
         let n_str = split.next()?;
-        let _ = split.next()?;
+        let p_str = split.next()?;
+        // `#fNmP` carries its modulus in the literal; validate that P parses
+        // and matches the active session prime. A mismatch is malformed
+        // input — return None so the caller surfaces it rather than silently
+        // encoding `N mod session_prime` (a different field element).
+        let p_parsed: BigUint = p_str.parse().ok()?;
+        if &p_parsed != prime {
+            return None;
+        }
         return parse_signed(n_str);
     }
     None
+}
+
+/// Collect the modulus P from every `#fNmP` literal in `s` (recursively).
+/// Used by the pre-scan to infer the session prime when no FF sort
+/// declaration is present.
+pub(in crate::smt2) fn collect_ff_literal_primes(s: &Sexpr, primes: &mut BTreeSet<BigUint>) {
+    match s {
+        Sexpr::Atom(a) => {
+            if let Some(rest) = a.strip_prefix("#f") {
+                if let Some(m_pos) = rest.find('m') {
+                    let p_str = &rest[m_pos + 1..];
+                    if let Ok(p) = p_str.parse::<BigUint>() {
+                        primes.insert(p);
+                    }
+                }
+            }
+        }
+        Sexpr::List(elts) => {
+            for e in elts {
+                collect_ff_literal_primes(e, primes);
+            }
+        }
+    }
+}
+
+/// Recursively check whether `s` mentions any `ff.<op>` atom (`ff.add`,
+/// `ff.mul`, `ff.bitsum`, `ff.neg`, etc.) — a non-`define-fun` form's
+/// strongest signal that the session is FF-typed.
+pub(in crate::smt2) fn has_ff_op(s: &Sexpr) -> bool {
+    match s {
+        Sexpr::Atom(a) => a.starts_with("ff."),
+        Sexpr::List(elts) => elts.iter().any(has_ff_op),
+    }
 }
 
 fn build_poly(
@@ -270,7 +358,7 @@ fn build_poly(
                     }];
                     for child in &elts[1..] {
                         let p = build_poly(child, prime, vars, builder)?;
-                        acc = mul_polys(&acc, &p, prime);
+                        acc = mul_polys(&acc, &p, prime)?;
                     }
                     Ok(acc)
                 }
@@ -286,6 +374,9 @@ fn build_poly(
                     Ok(neg_poly(&p, prime))
                 }
                 "-" => {
+                    if elts.len() < 2 {
+                        return Err(ParseError::Malformed("'-' arity".into()));
+                    }
                     let mut acc = build_poly(&elts[1], prime, vars, builder)?;
                     for child in &elts[2..] {
                         let p = build_poly(child, prime, vars, builder)?;
@@ -306,7 +397,7 @@ fn handle_assert(
     prime: &BigUint,
     vars: &HashMap<String, VarSort>,
     builder: &mut ConstraintSystemBuilder,
-    diseq_zero_pinned: &mut bool,
+    diseq_zero: &mut Option<VarIdx>,
     diseq_counter: &mut usize,
 ) -> Result<(), ParseError> {
     let list = match s {
@@ -352,15 +443,11 @@ fn handle_assert(
             let a = build_poly(&inner[1], prime, vars, builder)?;
             let b = build_poly(&inner[2], prime, vars, builder)?;
 
-            // d = a - b; assert d != 0 via the disequality list.
-            let d_name = format!("__diseq_d_{}", diseq_counter);
-            *diseq_counter += 1;
-            let d_idx = builder.var(&d_name);
-            let zero_idx = builder.var("__zero");
-            if !*diseq_zero_pinned {
-                builder.add_assignment(zero_idx, BigUint::zero());
-                *diseq_zero_pinned = true;
-            }
+            // d = a - b; assert d != 0 via the disequality list. Uses the
+            // shared `fresh_disequality_vars` so the synthetic
+            // `__diseq_d_N` / `__zero` naming matches the DNF and CDCL(T)
+            // disequality encoders.
+            let (d_idx, zero_idx) = builder.fresh_disequality_vars(diseq_counter, diseq_zero);
             let mut def: Vec<PolyTerm> = vec![PolyTerm {
                 coeff: BigUint::from(1u32),
                 vars: vec![(d_idx, 1)],
@@ -413,55 +500,25 @@ pub fn parse(src: &str) -> Result<ConstraintSystem, ParseError> {
                 if list.len() < 4 {
                     continue;
                 }
-                let body = &list[3];
-                if let Sexpr::List(inner) = body {
-                    if inner.len() == 3 {
-                        if let (Sexpr::Atom(u), Sexpr::Atom(ff), Sexpr::Atom(p)) =
-                            (&inner[0], &inner[1], &inner[2])
-                        {
-                            if u == "_" && ff == "FiniteField" {
-                                let n = p.parse::<BigUint>().map_err(|_| {
-                                    ParseError::Malformed(format!("bad prime: {}", p))
-                                })?;
-                                prime = Some(n);
-                            }
-                        }
-                    }
+                if let Some(p) = finite_field_prime_str(&list[3]) {
+                    let n = p
+                        .parse::<BigUint>()
+                        .map_err(|_| ParseError::Malformed(format!("bad prime: {}", p)))?;
+                    prime = Some(n);
                 }
             }
             "declare-fun" | "declare-const" => {
-                if list.len() < 2 {
-                    continue;
-                }
-                let name = match &list[1] {
-                    Sexpr::Atom(n) => n.clone(),
-                    _ => continue,
-                };
-                let sort_sexpr = if head == "declare-fun" {
-                    list.get(3)
-                } else {
-                    list.get(2)
-                };
-                let sort = classify_sort(sort_sexpr);
-                if matches!(sort, Some(VarSort::Bool)) {
-                    return Err(ParseError::Malformed(format!(
-                        "Bool sort '{}' not supported by conjunctive parser; use parse_boolean",
-                        name
-                    )));
-                }
-                vars.insert(name, VarSort::Ff);
-                if prime.is_none() {
-                    if let Some(Sexpr::List(inner)) = sort_sexpr {
-                        if inner.len() == 3 {
-                            if let (Sexpr::Atom(u), Sexpr::Atom(ff), Sexpr::Atom(p)) =
-                                (&inner[0], &inner[1], &inner[2])
-                            {
-                                if u == "_" && ff == "FiniteField" {
-                                    if let Ok(n) = p.parse::<BigUint>() {
-                                        prime = Some(n);
-                                    }
-                                }
-                            }
+                if let Some((name, sort, inferred)) = classify_declare(head, list) {
+                    if matches!(sort, Some(VarSort::Bool)) {
+                        return Err(ParseError::Malformed(format!(
+                            "Bool sort '{}' not supported by conjunctive parser; use parse_boolean",
+                            name
+                        )));
+                    }
+                    vars.insert(name, VarSort::Ff);
+                    if prime.is_none() {
+                        if let Some(n) = inferred {
+                            prime = Some(n);
                         }
                     }
                 }
@@ -470,10 +527,28 @@ pub fn parse(src: &str) -> Result<ConstraintSystem, ParseError> {
         }
     }
 
-    let prime_val = prime.ok_or(ParseError::MissingPrime)?;
+    // Fall back to literal-based prime inference when no FF sort
+    // declaration supplied one: every `#fNmP` carries its modulus in the
+    // suffix. Multiple distinct moduli are malformed (single-prime
+    // session); none at all keeps the existing `MissingPrime` error.
+    let prime_val = if let Some(p) = prime {
+        p
+    } else {
+        let mut lit_primes: BTreeSet<BigUint> = BTreeSet::new();
+        for s in &sexprs {
+            collect_ff_literal_primes(s, &mut lit_primes);
+        }
+        if lit_primes.len() > 1 {
+            return Err(ParseError::Malformed(format!(
+                "multiple FF primes in literals: {:?}",
+                lit_primes.iter().collect::<Vec<_>>()
+            )));
+        }
+        lit_primes.into_iter().next().ok_or(ParseError::MissingPrime)?
+    };
     let mut builder = ConstraintSystemBuilder::new(prime_val.clone());
     let mut diseq_counter = 0usize;
-    let mut diseq_zero_pinned = false;
+    let mut diseq_zero: Option<VarIdx> = None;
 
     // Second pass: handle asserts now that the builder is ready.
     for s in &sexprs {
@@ -494,7 +569,7 @@ pub fn parse(src: &str) -> Result<ConstraintSystem, ParseError> {
                 &prime_val,
                 &vars,
                 &mut builder,
-                &mut diseq_zero_pinned,
+                &mut diseq_zero,
                 &mut diseq_counter,
             )?;
         }
@@ -526,9 +601,39 @@ pub(in crate::smt2) struct ParseCtx {
     /// Query-level builder; owned here, donated to `BooleanQuery`
     /// at the end of `parse_boolean`.
     builder: ConstraintSystemBuilder,
+    /// Current `define-fun` macro-expansion recursion depth. Bounds the
+    /// only term-building recursion that is *not* already bounded by the
+    /// S-expression depth cap: a macro whose body (transitively) calls
+    /// itself would otherwise expand without limit. Guarded at each
+    /// expansion site by [`ParseCtx::enter_expansion`].
+    expansion_depth: usize,
 }
 
+/// Maximum `define-fun` expansion-recursion depth. A cyclic / self-
+/// referential macro is rejected as malformed once it exceeds this,
+/// rather than overflowing the stack. Acyclic nesting this deep is not
+/// produced by any realistic input.
+const MAX_MACRO_DEPTH: usize = 256;
+
 impl ParseCtx {
+    /// Enter one macro expansion; errors if the recursion is too deep
+    /// (a recursive `define-fun`, which SMT-LIB forbids). Pair with
+    /// [`ParseCtx::exit_expansion`].
+    fn enter_expansion(&mut self) -> Result<(), ParseError> {
+        self.expansion_depth += 1;
+        if self.expansion_depth > MAX_MACRO_DEPTH {
+            return Err(ParseError::Malformed(format!(
+                "macro expansion exceeds depth {} (recursive define-fun?)",
+                MAX_MACRO_DEPTH
+            )));
+        }
+        Ok(())
+    }
+
+    fn exit_expansion(&mut self) {
+        self.expansion_depth = self.expansion_depth.saturating_sub(1);
+    }
+
     fn fresh_ite_var(&mut self) -> String {
         let name = format!("__ite_{}", self.next_ite_skolem);
         self.next_ite_skolem += 1;
@@ -570,7 +675,13 @@ fn substitute_sexpr(s: &Sexpr, bindings: &HashMap<String, Sexpr>) -> Sexpr {
 /// Heuristic Bool-context detector: does the expression `s` produce a
 /// Bool value (rather than an FF term)? Used to dispatch `=` to iff
 /// vs. FF equality, and to detect Bool ite vs term ite.
-fn is_bool_expr(s: &Sexpr, ctx: &ParseCtx) -> bool {
+fn is_bool_expr(s: &Sexpr, ctx: &ParseCtx, depth: usize) -> bool {
+    // A cyclic `define-fun` would otherwise recurse without bound here via
+    // the macro-body arm below. Past the cap, decline to classify as Bool;
+    // the malformed/recursive macro is then rejected in the build pass.
+    if depth > MAX_MACRO_DEPTH {
+        return false;
+    }
     match s {
         Sexpr::Atom(a) => {
             if a == "true" || a == "false" {
@@ -581,11 +692,11 @@ fn is_bool_expr(s: &Sexpr, ctx: &ParseCtx) -> bool {
         Sexpr::List(elts) => match elts.first() {
             Some(Sexpr::Atom(h)) => match h.as_str() {
                 "and" | "or" | "not" | "=>" | "xor" | "=" | "distinct" | "true" | "false" => true,
-                "ite" if elts.len() == 4 => is_bool_expr(&elts[2], ctx),
+                "ite" if elts.len() == 4 => is_bool_expr(&elts[2], ctx, depth + 1),
                 name => {
                     // Macro: classify by body.
                     if let Some(m) = ctx.macros.get(name) {
-                        is_bool_expr(&m.body, ctx)
+                        is_bool_expr(&m.body, ctx, depth + 1)
                     } else {
                         false
                     }
@@ -594,6 +705,22 @@ fn is_bool_expr(s: &Sexpr, ctx: &ParseCtx) -> bool {
             _ => false,
         },
     }
+}
+
+/// Sort of an `=` / `distinct` chain, checked for consistency. SMT-LIB
+/// requires every operand to share one sort; classifying by the first
+/// argument alone (as the dispatch needs) would silently mis-route a
+/// mixed Bool/FF chain. Confirm the rest agree, rejecting a mismatch as
+/// malformed rather than picking a branch. `args` is the operand slice
+/// (`list[1..]`), guaranteed non-empty by the caller's arity check.
+fn chain_is_bool(args: &[Sexpr], ctx: &ParseCtx) -> Result<bool, ParseError> {
+    let first = is_bool_expr(&args[0], ctx, 0);
+    if args[1..].iter().any(|a| is_bool_expr(a, ctx, 0) != first) {
+        return Err(ParseError::Malformed(
+            "'=' / 'distinct' operands mix Bool and FF sorts".into(),
+        ));
+    }
+    Ok(first)
 }
 
 /// Build an FF polynomial recursively. Threads `ctx.builder` so
@@ -699,7 +826,7 @@ fn build_poly_with_ctx(s: &Sexpr, ctx: &mut ParseCtx) -> Result<Polynomial, Pars
                     }];
                     for child in &elts[1..] {
                         let p = build_poly_with_ctx(child, ctx)?;
-                        acc = mul_polys(&acc, &p, &ctx.prime);
+                        acc = mul_polys(&acc, &p, &ctx.prime)?;
                     }
                     Ok(acc)
                 }
@@ -717,6 +844,9 @@ fn build_poly_with_ctx(s: &Sexpr, ctx: &mut ParseCtx) -> Result<Polynomial, Pars
                     Ok(neg_poly(&p, &prime))
                 }
                 "-" => {
+                    if elts.len() < 2 {
+                        return Err(ParseError::Malformed("'-' arity".into()));
+                    }
                     let mut acc = build_poly_with_ctx(&elts[1], ctx)?;
                     let prime = ctx.prime.clone();
                     for child in &elts[2..] {
@@ -728,7 +858,10 @@ fn build_poly_with_ctx(s: &Sexpr, ctx: &mut ParseCtx) -> Result<Polynomial, Pars
                 name => {
                     if ctx.macros.contains_key(name) {
                         let expanded = ctx.expand_macro(name, &elts[1..])?;
-                        return build_poly_with_ctx(&expanded, ctx);
+                        ctx.enter_expansion()?;
+                        let r = build_poly_with_ctx(&expanded, ctx);
+                        ctx.exit_expansion();
+                        return r;
                     }
                     Err(ParseError::UnknownOperator(name.into()))
                 }
@@ -844,7 +977,7 @@ pub(in crate::smt2) fn assert_to_formula(s: &Sexpr, ctx: &mut ParseCtx) -> Resul
             if list.len() < 3 {
                 return Err(ParseError::Malformed("'=' arity".into()));
             }
-            let bool_args = is_bool_expr(&list[1], ctx);
+            let bool_args = chain_is_bool(&list[1..], ctx)?;
             if bool_args {
                 let mut bools: Vec<Formula> = Vec::with_capacity(list.len() - 1);
                 for c in &list[1..] {
@@ -863,7 +996,7 @@ pub(in crate::smt2) fn assert_to_formula(s: &Sexpr, ctx: &mut ParseCtx) -> Resul
             if list.len() < 3 {
                 return Err(ParseError::Malformed("'distinct' arity".into()));
             }
-            let bool_args = is_bool_expr(&list[1], ctx);
+            let bool_args = chain_is_bool(&list[1..], ctx)?;
             if bool_args {
                 let mut bools: Vec<Formula> = Vec::with_capacity(list.len() - 1);
                 for c in &list[1..] {
@@ -939,7 +1072,7 @@ pub(in crate::smt2) fn assert_to_formula(s: &Sexpr, ctx: &mut ParseCtx) -> Resul
             if list.len() != 4 {
                 return Err(ParseError::Malformed("'ite' arity".into()));
             }
-            let then_is_bool = is_bool_expr(&list[2], ctx);
+            let then_is_bool = is_bool_expr(&list[2], ctx, 0);
             if !then_is_bool {
                 // Term-level ite at the assertion site: assertion is
                 // `(ite c x y)` itself, which doesn't yield a Bool.
@@ -959,7 +1092,10 @@ pub(in crate::smt2) fn assert_to_formula(s: &Sexpr, ctx: &mut ParseCtx) -> Resul
             // Macro? Expand and recurse.
             if ctx.macros.contains_key(other) {
                 let expanded = ctx.expand_macro(other, &list[1..])?;
-                return assert_to_formula(&expanded, ctx);
+                ctx.enter_expansion()?;
+                let r = assert_to_formula(&expanded, ctx);
+                ctx.exit_expansion();
+                return r;
             }
             Err(ParseError::Malformed(format!(
                 "unsupported assert head '{}'",
@@ -1035,49 +1171,19 @@ pub fn parse_boolean(src: &str) -> Result<BooleanQuery, ParseError> {
                 if list.len() < 4 {
                     continue;
                 }
-                let body = &list[3];
-                if let Sexpr::List(inner) = body {
-                    if inner.len() == 3 {
-                        if let (Sexpr::Atom(u), Sexpr::Atom(ff), Sexpr::Atom(p)) =
-                            (&inner[0], &inner[1], &inner[2])
-                        {
-                            if u == "_" && ff == "FiniteField" {
-                                let n = p.parse::<BigUint>().map_err(|_| {
-                                    ParseError::Malformed(format!("bad prime: {}", p))
-                                })?;
-                                prime = Some(n);
-                            }
-                        }
-                    }
+                if let Some(p) = finite_field_prime_str(&list[3]) {
+                    let n = p
+                        .parse::<BigUint>()
+                        .map_err(|_| ParseError::Malformed(format!("bad prime: {}", p)))?;
+                    prime = Some(n);
                 }
             }
             "declare-fun" | "declare-const" => {
-                if list.len() < 2 {
-                    continue;
-                }
-                let name = match &list[1] {
-                    Sexpr::Atom(n) => n.clone(),
-                    _ => continue,
-                };
-                let sort_sexpr = if head == "declare-fun" {
-                    list.get(3)
-                } else {
-                    list.get(2)
-                };
-                let sort = classify_sort(sort_sexpr).unwrap_or(VarSort::Ff);
-                vars.insert(name, sort);
-                if prime.is_none() {
-                    if let Some(Sexpr::List(inner)) = sort_sexpr {
-                        if inner.len() == 3 {
-                            if let (Sexpr::Atom(u), Sexpr::Atom(ff), Sexpr::Atom(p)) =
-                                (&inner[0], &inner[1], &inner[2])
-                            {
-                                if u == "_" && ff == "FiniteField" {
-                                    if let Ok(n) = p.parse::<BigUint>() {
-                                        prime = Some(n);
-                                    }
-                                }
-                            }
+                if let Some((name, sort, inferred)) = classify_declare(head, list) {
+                    vars.insert(name, sort.unwrap_or(VarSort::Ff));
+                    if prime.is_none() {
+                        if let Some(n) = inferred {
+                            prime = Some(n);
                         }
                     }
                 }
@@ -1090,8 +1196,35 @@ pub fn parse_boolean(src: &str) -> Result<BooleanQuery, ParseError> {
         }
     }
 
-    // Default prime if only Bool decls appeared (still need *some* field).
-    let prime = prime.unwrap_or_else(|| BigUint::from(2u32));
+    // No FF sort declared? Try literal-based inference: every `#fNmP`
+    // carries its modulus in the suffix, so a file using only literals
+    // (no sort declarations) still pins the session prime. Multiple
+    // distinct moduli are malformed (Picus is single-prime per session).
+    // If neither sorts nor literals supply a prime, the session is
+    // either Bool-only (GF(2) default is harmless) or it uses `ff.*`
+    // operators on variables that lack a sort — reject the latter as
+    // MissingPrime so an `ff.bitsum` is not silently encoded mod 2.
+    let prime = if let Some(p) = prime {
+        p
+    } else {
+        let mut lit_primes: BTreeSet<BigUint> = BTreeSet::new();
+        for s in &sexprs {
+            collect_ff_literal_primes(s, &mut lit_primes);
+        }
+        if lit_primes.len() > 1 {
+            return Err(ParseError::Malformed(format!(
+                "multiple FF primes in literals: {:?}",
+                lit_primes.iter().collect::<Vec<_>>()
+            )));
+        }
+        if let Some(p) = lit_primes.into_iter().next() {
+            p
+        } else if sexprs.iter().any(has_ff_op) {
+            return Err(ParseError::MissingPrime);
+        } else {
+            BigUint::from(2u32)
+        }
+    };
 
     let mut ctx = ParseCtx {
         prime: prime.clone(),
@@ -1100,6 +1233,7 @@ pub fn parse_boolean(src: &str) -> Result<BooleanQuery, ParseError> {
         next_ite_skolem: 0,
         side_constraints: Vec::new(),
         builder: ConstraintSystemBuilder::new(prime),
+        expansion_depth: 0,
     };
 
     // Second pass: handle asserts in order. Asserts come after macros and
@@ -1158,3 +1292,9 @@ pub fn parse_boolean(src: &str) -> Result<BooleanQuery, ParseError> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+#[path = "tests_session.rs"]
+mod tests_session;
+#[cfg(test)]
+#[path = "tests_property.rs"]
+mod tests_property;

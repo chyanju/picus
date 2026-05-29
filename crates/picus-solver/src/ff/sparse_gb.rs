@@ -4,15 +4,17 @@
 //! the dense engine applies: Buchberger's product (coprime) criterion and
 //! the Gebauer-Möller M-criterion at pair generation, the B-criterion at
 //! basis-add, and a sugar-degree priority queue for pair selection. The
-//! criteria mirror [`super::buchberger`]'s `spair_criteria`, with a
-//! presence-based DivMask prefilter ([`SparseMonomial::divmask`]) on the
-//! divisibility checks.
+//! M / B criteria and the descending merge are the shared,
+//! representation-generic [`super::spair_criteria`] functions; the sparse
+//! S-pair supplies a presence-based DivMask ([`SparseMonomial::divmask`])
+//! for the prefilter.
 //!
 //! The reduced Gröbner basis of an ideal under a fixed monomial order is
 //! unique, so the criteria (which only change *which* S-pairs are
 //! processed, never the final ideal) leave the result identical to the
 //! dense engine's; `repr_oracle` checks that term-for-term.
 
+use crate::ff::spair_criteria::{b_criterion_kill, gm_insert, merge_sorted_descending};
 use crate::timeout::CancelToken;
 
 use super::divmask::DivMask;
@@ -70,96 +72,26 @@ impl SPair {
     }
 }
 
-/// Gebauer-Möller M-criterion insertion (mirror of
-/// `spair_criteria::gm_insert`). A pair whose `lcm` divides
-/// another's dominates it: drop the new pair if an existing one dominates
-/// it, and erase existing pairs the new one dominates. Coprime pairs never
-/// reach here (the product criterion drops them at generation), so the
-/// dense same-lcm coprime-replacement special case cannot fire and is
-/// omitted. The list is left unsorted; the caller sorts before merging.
-fn gm_insert(list: &mut Vec<SPair>, pair: SPair) {
-    let mut idx = 0;
-    while idx < list.len() {
-        // Existing dominates the new pair iff LCM(existing) divides
-        // LCM(pair) (this covers the equal-LCM case: keep existing).
-        // DivMask prefilter before the full monomial check.
-        if list[idx].lcm_divmask.divides_consistent_with(pair.lcm_divmask)
-            && MonomialRepr::divides(&list[idx].lcm, &pair.lcm)
-        {
-            return;
-        }
-        // Else the new pair strictly dominates existing iff LCM(pair)
-        // divides LCM(existing); erase existing without advancing.
-        if pair.lcm_divmask.divides_consistent_with(list[idx].lcm_divmask)
-            && MonomialRepr::divides(&pair.lcm, &list[idx].lcm)
-        {
-            list.swap_remove(idx);
-            continue;
-        }
-        idx += 1;
+impl super::spair_criteria::CriterionPair for SPair {
+    type Mono = SparseMonomial;
+    fn lcm(&self) -> &SparseMonomial {
+        &self.lcm
     }
-    list.push(pair);
-}
-
-/// Buchberger B-criterion (mirror of `spair_criteria::b_criterion_kill`).
-/// Erase every pending pair `(i, j)` that the newly-added
-/// element's leading term `new_lt` makes redundant: `new_lt | lcm`,
-/// `lcm(LT_j, new_lt) != lcm`, and `lcm(LT_i, new_lt) != lcm`.
-fn b_criterion_kill(pairs: &mut Vec<SPair>, new_lt: &SparseMonomial, basis: &[BasisElement]) {
-    let new_lt_mask = new_lt.divmask();
-    pairs.retain(|p| {
-        // new_lt must divide p.lcm to kill it (DivMask prefilter first).
-        if !new_lt_mask.divides_consistent_with(p.lcm_divmask) {
-            return true;
-        }
-        if !MonomialRepr::divides(new_lt, &p.lcm) {
-            return true;
-        }
-        if MonomialRepr::lcm(&basis[p.j].lt, new_lt) == p.lcm {
-            return true;
-        }
-        if MonomialRepr::lcm(&basis[p.i].lt, new_lt) == p.lcm {
-            return true;
-        }
+    fn lcm_divmask(&self) -> DivMask {
+        self.lcm_divmask
+    }
+    /// Coprime pairs never reach `gm_insert` here (the product criterion
+    /// drops them at generation), so the same-lcm coprime-replacement
+    /// branch in the shared `gm_insert` must stay inert.
+    fn is_coprime(&self) -> bool {
         false
-    });
-}
-
-/// Merge `incoming` (sorted descending by `ordering_key`) into `dst` (also
-/// descending), preserving the descending invariant. O(n + m).
-fn merge_sorted_descending(dst: &mut Vec<SPair>, incoming: Vec<SPair>) {
-    if incoming.is_empty() {
-        return;
     }
-    if dst.is_empty() {
-        *dst = incoming;
-        return;
+    fn parents(&self) -> (usize, usize) {
+        (self.i, self.j)
     }
-    let mut out: Vec<SPair> = Vec::with_capacity(dst.len() + incoming.len());
-    let old = std::mem::take(dst);
-    let mut a = old.into_iter().peekable();
-    let mut b = incoming.into_iter().peekable();
-    loop {
-        match (a.peek(), b.peek()) {
-            (Some(x), Some(y)) => {
-                if x.ordering_key() > y.ordering_key() {
-                    out.push(a.next().unwrap());
-                } else {
-                    out.push(b.next().unwrap());
-                }
-            }
-            (Some(_), None) => {
-                out.extend(a);
-                break;
-            }
-            (None, Some(_)) => {
-                out.extend(b);
-                break;
-            }
-            (None, None) => break,
-        }
+    fn cmp_key(&self) -> (u32, u32, u64) {
+        self.ordering_key()
     }
-    *dst = out;
 }
 
 // ──────────────────────────────── Buchberger ───────────────────────────────
@@ -171,6 +103,13 @@ struct BasisElement {
     lt: SparseMonomial,
     active: bool,
     sugar: u32,
+}
+
+impl super::spair_criteria::LeadingTerms for Vec<BasisElement> {
+    type Mono = SparseMonomial;
+    fn lt_at(&self, idx: usize) -> &SparseMonomial {
+        &self[idx].lt
+    }
 }
 
 /// Stateful sparse Buchberger run. Mirrors the dense
@@ -254,7 +193,10 @@ impl<'a> Buchberger<'a> {
             }
             let active_refs: Vec<&SparsePolynomial> =
                 self.basis.iter().filter(|e| e.active).map(|e| &e.poly).collect();
-            let g_red = g.reduce_by_refs(&active_refs, self.ring);
+            let g_red = g.reduce_by_refs_cancel(&active_refs, self.ring, self.cancel);
+            if self.cancelled() {
+                return;
+            }
             if g_red.is_zero() {
                 continue;
             }
@@ -312,7 +254,7 @@ impl<'a> Buchberger<'a> {
             let pair = SPair { i: k, j: new_idx, sugar, lcm, lcm_divmask, lcm_deg, age: self.age_counter };
             gm_insert(&mut new_pairs, pair);
         }
-        b_criterion_kill(&mut self.open, new_lt, &self.basis);
+        b_criterion_kill(&mut self.open, new_lt, new_lt.divmask(), &self.basis);
         new_pairs.sort_by(|a, b| b.ordering_key().cmp(&a.ordering_key()));
         merge_sorted_descending(&mut self.open, new_pairs);
     }
@@ -332,8 +274,13 @@ impl<'a> Buchberger<'a> {
             let nf = {
                 let active_refs: Vec<&SparsePolynomial> =
                     self.basis.iter().filter(|e| e.active).map(|e| &e.poly).collect();
-                s.reduce_by_refs(&active_refs, self.ring)
+                s.reduce_by_refs_cancel(&active_refs, self.ring, self.cancel)
             };
+            // A reduction interrupted by cancellation returns a partial
+            // normal form; bail before integrating it.
+            if self.cancelled() {
+                return;
+            }
             if nf.is_zero() {
                 continue;
             }
@@ -362,8 +309,10 @@ impl<'a> Buchberger<'a> {
 /// A Gröbner basis of the ideal generated by `gens` (Buchberger with the
 /// product / Gebauer-Möller M / B criteria and sugar selection). The result
 /// is a — not necessarily reduced — Gröbner basis; call [`interreduce`] for
-/// the canonical reduced form. Returns the basis built so far if `cancel`
-/// fires (still a valid generating set for the same ideal).
+/// the canonical reduced form. On `cancel`, returns the basis built so far,
+/// which generates a **sub-ideal** of the input (unprocessed generators are
+/// dropped and any in-flight reduction halts mid-step); the caller must
+/// check `is_cancelled()` before relying on the result.
 pub fn groebner_basis(
     gens: Vec<SparsePolynomial>,
     ring: &PolyRing,
@@ -381,6 +330,9 @@ pub fn groebner_basis(
 /// S-pairs. The result is a Gröbner basis of the combined ideal — equal,
 /// after [`interreduce`], to recomputing from scratch on the union (the
 /// reduced GB is unique). `known_gb` must be a reduced GB in `ring.order`.
+/// On `cancel`, returns the basis built so far, which generates a sub-ideal
+/// of the combined ideal; the caller must check `is_cancelled()` before
+/// relying on the result.
 pub fn groebner_basis_incremental(
     known_gb: Vec<SparsePolynomial>,
     new_gens: Vec<SparsePolynomial>,
@@ -418,8 +370,10 @@ pub fn interreduce(
         let lb = b.leading_monomial().unwrap();
         MonomialRepr::cmp_with_order(lb, la, ring.order)
     });
-    // Minimise: drop any element whose leading monomial is strictly
-    // divisible by another's.
+    // Minimise: drop any element whose leading monomial is divisible by
+    // another's. On equal leading monomials keep the lowest index, so
+    // duplicate-LT elements (which dehomogenization can produce) are
+    // de-duplicated rather than both kept.
     let mut keep = vec![true; basis.len()];
     for i in 0..basis.len() {
         if !keep[i] {
@@ -431,7 +385,7 @@ pub fn interreduce(
                 continue;
             }
             let lj = basis[j].leading_monomial().unwrap();
-            if MonomialRepr::divides(&li, lj) && &li != lj {
+            if MonomialRepr::divides(&li, lj) && (&li != lj || j > i) {
                 keep[j] = false;
             }
         }
@@ -442,8 +396,8 @@ pub fn interreduce(
         .filter_map(|(p, k)| k.then_some(p))
         .collect();
 
-    // Single-pass tail reduction (LTs are pairwise incomparable after
-    // minimisation, so one pass reaches the reduced form).
+    // Single-pass tail reduction (after minimisation no surviving LT
+    // divides another's, so one pass reaches the reduced form).
     let n = filtered.len();
     for i in 0..n {
         if cancel.is_some_and(|c| c.is_cancelled()) {
@@ -473,3 +427,7 @@ pub fn interreduce(
     filtered.retain(|p| !p.is_zero());
     filtered
 }
+
+#[cfg(test)]
+#[path = "sparse_gb_tests.rs"]
+mod tests;

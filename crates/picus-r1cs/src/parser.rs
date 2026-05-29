@@ -38,9 +38,11 @@ pub enum R1csParseError {
         claimed: u64,
         bound: u64,
     },
+    #[error("Field modulus {0} is invalid (must be > 1)")]
+    InvalidPrime(BigUint),
 }
 
-/// Hard upper bound on a header-claimed count before we'll allocate
+/// Hard upper bound on a header-claimed count before allocating
 /// proportional memory. An R1CS file's `m_constraints`, `nnz`, etc.
 /// can't legitimately exceed the on-disk payload size (each constraint
 /// is at least a few bytes), so this is "what could the file legally
@@ -58,8 +60,7 @@ fn capped_capacity(claimed: u64, data_len: usize) -> usize {
     by_data.min(by_claim).min(ABSOLUTE_COUNT_CAP)
 }
 
-/// Safe byte slice with explicit error. Replaces every `&data[a..b]`
-/// in the parser path that touched header-controlled lengths.
+/// Safe byte slice with explicit error for header-controlled lengths.
 fn slice<'a>(data: &'a [u8], start: usize, end: usize, ctx: &'static str) -> Result<&'a [u8], R1csParseError> {
     data.get(start..end).ok_or(R1csParseError::Truncated {
         ctx,
@@ -122,6 +123,30 @@ pub fn read_r1cs(data: &[u8]) -> Result<R1csFile, R1csParseError> {
         parse_constraint_section(&constraint_sec.data, field_size, m_constraints, &header.prime_number)?;
     let w2l = parse_w2l_section(&w2l_sec.data)?;
 
+    // Header-count plausibility. Two invariants hold for any well-formed
+    // iden3 R1CS: the wire-to-label map carries exactly one label per wire
+    // (so `n_wires == w2l.labels.len()`), and the I/O wires plus the
+    // constant wire are a subset of all wires. Reject violations here, so
+    // an adversarial header (e.g. `n_pub_in = u32::MAX`) cannot drive the
+    // unbounded input-list build below or the `2 * n_wires` ring
+    // allocation in `r1cs_to_poly_ir`. `io_sum` is computed in `u64` to
+    // avoid overflow when the three counts are near `u32::MAX`.
+    let io_sum = 1 + header.n_pub_out as u64 + header.n_pub_in as u64 + header.n_prv_in as u64;
+    if io_sum > header.n_wires as u64 {
+        return Err(R1csParseError::HeaderImplausible {
+            field: "1 + n_pub_out + n_pub_in + n_prv_in",
+            claimed: io_sum,
+            bound: header.n_wires as u64,
+        });
+    }
+    if header.n_wires as usize > w2l.labels.len() {
+        return Err(R1csParseError::HeaderImplausible {
+            field: "n_wires",
+            claimed: header.n_wires as u64,
+            bound: w2l.labels.len() as u64,
+        });
+    }
+
     // Compute input/output lists. Ecne convention (1-based):
     //   inputs = [1] ++ [istart..iend]
     //     istart = 2 + npubout
@@ -180,7 +205,13 @@ fn parse_sections(raw: &[u8]) -> Result<Vec<Section>, R1csParseError> {
         let section_type = cur.read_u32::<LittleEndian>()?;
         let section_size = cur.read_u64::<LittleEndian>()? as usize;
         let data_start = pos + 12;
-        let data_end = data_start + section_size;
+        // `section_size` is read straight from the (untrusted) file; guard the
+        // add so an adversarial size near usize::MAX can't wrap past the
+        // bounds check below into an out-of-range slice (panic / DoS).
+        let data_end = match data_start.checked_add(section_size) {
+            Some(e) => e,
+            None => break,
+        };
         if data_end > raw.len() {
             break;
         }
@@ -196,9 +227,11 @@ fn parse_sections(raw: &[u8]) -> Result<Vec<Section>, R1csParseError> {
 fn parse_header_section(data: &[u8]) -> Result<HeaderSection, R1csParseError> {
     let mut cur = Cursor::new(data);
     let field_size = cur.read_u32::<LittleEndian>()?;
-    if field_size % 8 != 0 {
-        return Err(R1csParseError::BadFieldSize(field_size));
-    }
+    // `field_size` is the field-element byte width (iden3 format); it is
+    // NOT required to be a multiple of 8 — a small prime (e.g. GF(7),
+    // 1 byte) is a legitimate width. The real constraints are checked
+    // below: the width must fit the header block, and the decoded prime
+    // must be > 1 (which also rejects `field_size == 0`).
     // Reject any prime byte width larger than the header data block
     // we just received. A header claiming a 4 GiB prime is malformed;
     // refuse rather than try to allocate.
@@ -214,6 +247,13 @@ fn parse_header_section(data: &[u8]) -> Result<HeaderSection, R1csParseError> {
     let mut prime_bytes = vec![0u8; fs];
     cur.read_exact(&mut prime_bytes)?;
     let prime_number = BigUint::from_bytes_le(&prime_bytes);
+    // A field modulus must be > 1 (`field_size = 0`, or all-zero/one prime
+    // bytes, decodes to 0/1). Reject here so a malformed file surfaces as a
+    // parse error rather than reaching `PrimeField::new`'s `assert!(prime > 1)`
+    // during lowering and aborting the process.
+    if prime_number <= BigUint::from(1u32) {
+        return Err(R1csParseError::InvalidPrime(prime_number));
+    }
 
     let n_wires = cur.read_u32::<LittleEndian>()?;
     let n_pub_out = cur.read_u32::<LittleEndian>()?;
@@ -325,107 +365,5 @@ fn parse_w2l_section(data: &[u8]) -> Result<W2lSection, R1csParseError> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_magic_check() {
-        let bad = vec![0x00; 12];
-        assert!(read_r1cs(&bad).is_err());
-    }
-
-    #[test]
-    fn truncated_block_returns_error_not_panic() {
-        // Valid magic + version + n_sections, then one section header
-        // claiming 100 bytes of content but the file ends right after
-        // the header. `parse_constraint_block` must return
-        // `R1csParseError::Truncated` rather than panic on
-        // out-of-bounds slice indexing.
-        let mut data: Vec<u8> = b"r1cs".to_vec();
-        data.extend_from_slice(&1u32.to_le_bytes()); // version
-        data.extend_from_slice(&3u32.to_le_bytes()); // n_sections
-        // one truncated section: type 2 (constraints), claiming 100B
-        data.extend_from_slice(&2u32.to_le_bytes());
-        data.extend_from_slice(&100u64.to_le_bytes());
-        // ... no payload ...
-        let r = read_r1cs(&data);
-        // Either "wrong section count" or "truncated" is acceptable;
-        // what must NOT happen is a panic.
-        assert!(r.is_err(), "expected error, got Ok");
-    }
-
-    #[test]
-    fn implausible_field_size_returns_error_not_oom() {
-        // Three valid section headers (types 1 / 2 / 3 so the count
-        // check passes), but the header section's payload claims
-        // `field_size = 1 << 30` (1 GiB). The parser must reject
-        // with `HeaderImplausible` before allocating the prime
-        // buffer.
-        let header_payload: Vec<u8> = (1u32 << 30).to_le_bytes().to_vec();
-        let constraint_payload: Vec<u8> = Vec::new();
-        let w2l_payload: Vec<u8> = Vec::new();
-
-        let mut data: Vec<u8> = b"r1cs".to_vec();
-        data.extend_from_slice(&1u32.to_le_bytes()); // version
-        data.extend_from_slice(&3u32.to_le_bytes()); // n_sections
-        for (ty, payload) in [
-            (1u32, &header_payload),
-            (2u32, &constraint_payload),
-            (3u32, &w2l_payload),
-        ] {
-            data.extend_from_slice(&ty.to_le_bytes());
-            data.extend_from_slice(&(payload.len() as u64).to_le_bytes());
-            data.extend_from_slice(payload);
-        }
-        let r = read_r1cs(&data);
-        assert!(
-            matches!(r, Err(R1csParseError::HeaderImplausible { .. })),
-            "expected HeaderImplausible, got {:?}",
-            r
-        );
-    }
-
-    #[test]
-    fn malformed_nnz_returns_error_not_panic() {
-        // Header is plausible but constraint block claims `nnz` larger
-        // than the block payload. The parser must return an error
-        // rather than panic on out-of-bounds slice indexing.
-        let p_bytes: Vec<u8> = vec![7u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8]; // prime = 7
-        let field_size: u32 = p_bytes.len() as u32; // 8 — multiple of 8 OK
-
-        // Header payload (40 bytes total layout):
-        let mut header_payload: Vec<u8> = Vec::new();
-        header_payload.extend_from_slice(&field_size.to_le_bytes());
-        header_payload.extend_from_slice(&p_bytes);
-        header_payload.extend_from_slice(&1u32.to_le_bytes()); // n_wires
-        header_payload.extend_from_slice(&0u32.to_le_bytes()); // n_pub_out
-        header_payload.extend_from_slice(&0u32.to_le_bytes()); // n_pub_in
-        header_payload.extend_from_slice(&0u32.to_le_bytes()); // n_prv_in
-        header_payload.extend_from_slice(&1u64.to_le_bytes()); // n_labels
-        header_payload.extend_from_slice(&1u32.to_le_bytes()); // m_constraints = 1
-
-        // Constraint section: one block with claimed nnz = u32::MAX,
-        // payload only 4 bytes for nnz itself.
-        let mut constraint_payload: Vec<u8> = Vec::new();
-        constraint_payload.extend_from_slice(&u32::MAX.to_le_bytes());
-
-        // w2l section: 8 bytes
-        let w2l_payload: Vec<u8> = vec![0u8; 8];
-
-        // Assemble file
-        let mut data: Vec<u8> = b"r1cs".to_vec();
-        data.extend_from_slice(&1u32.to_le_bytes()); // version
-        data.extend_from_slice(&3u32.to_le_bytes()); // n_sections
-        for (ty, payload) in [
-            (1u32, &header_payload),
-            (2u32, &constraint_payload),
-            (3u32, &w2l_payload),
-        ] {
-            data.extend_from_slice(&ty.to_le_bytes());
-            data.extend_from_slice(&(payload.len() as u64).to_le_bytes());
-            data.extend_from_slice(payload);
-        }
-        let r = read_r1cs(&data);
-        assert!(r.is_err());
-    }
-}
+#[path = "parser_tests.rs"]
+mod tests;

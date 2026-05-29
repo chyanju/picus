@@ -33,6 +33,14 @@ impl SolverBackend for Cvc5NiaBackend {
         if cancel.is_cancelled() {
             return Ok(SolverResult::Unknown(UnknownReason::Timeout));
         }
+        // This backend lowers only equalities + the target disequality.
+        // Disjunctions / assignments / bitsums would silently weaken the
+        // query (dropping constraints → spurious SAT), so refuse rather
+        // than solve a different problem. The R1CS uniqueness query never
+        // populates these, so this is inert on the supported path.
+        if !ir.disjunctions.is_empty() || !ir.assignments.is_empty() || !ir.bitsums.is_empty() {
+            return Ok(SolverResult::Unknown(UnknownReason::IncompleteTheory));
+        }
         let tm = cvc5_ff::TermManager::new();
         let mut solver = cvc5_ff::Solver::new(&tm);
         solver.set_logic("QF_NIA");
@@ -66,13 +74,23 @@ impl SolverBackend for Cvc5NiaBackend {
             );
         }
 
-        // Target disequality.
+        // Target disequality. A missing copy var would silently drop the
+        // `x_target != y_target` constraint → trivially SAT → spurious
+        // counter-example; error out (→ Unknown) instead of a false UNSAFE.
         let s = ir.target_signal;
         let target_x = vars.get(ir.x_name(s)).cloned();
         let target_y = vars.get(ir.y_name(s)).cloned();
-        if let (Some(x), Some(y)) = (target_x, target_y) {
-            let eq = tm.mk_term(cvc5_ff::Kind::Equal, &[x, y]);
-            solver.assert_formula(tm.mk_term(cvc5_ff::Kind::Not, &[eq]));
+        match (target_x, target_y) {
+            (Some(x), Some(y)) => {
+                let eq = tm.mk_term(cvc5_ff::Kind::Equal, &[x, y]);
+                solver.assert_formula(tm.mk_term(cvc5_ff::Kind::Not, &[eq]));
+            }
+            _ => {
+                return Err(SolverError::Internal(format!(
+                    "target wire {} missing a declared copy variable",
+                    s
+                )));
+            }
         }
 
         let result = solver.check_sat();

@@ -1,15 +1,17 @@
 //! Solver backend trait and common types.
 //!
-//! The cvc5 and z3 backends are behind Cargo features (default-on).
-//! Disabling them via `--no-default-features` drops the cvc5 / z3
-//! build chains entirely so a native-FF-only build skips the
-//! expensive vendored compiles.
+//! The cvc5 and z3 backends are opt-in Cargo features (default off): the
+//! default `native` build skips their expensive vendored compiles. Enable
+//! them with `--features cvc5` / `--features z3`.
 
 #[cfg(feature = "cvc5")]
 pub mod cvc5_ff;
 #[cfg(feature = "cvc5")]
 pub mod cvc5_nia;
 pub mod native_ff;
+/// Native-engine lowering methods on `PolyIR` (kept off the
+/// solver-agnostic IR so `poly_ir` depends only on picus-core).
+mod native_lower;
 #[cfg(feature = "z3")]
 pub mod z3_nia;
 
@@ -59,8 +61,9 @@ pub enum SolverError {
 ///
 /// Backends consume a [`PolyIR`] snapshot whose `target_signal` and
 /// `known_signals` reflect the current DPVL state. The PolyIR's
-/// `equalities` already encode `x_0 = 1`, the input wires' `x_i = y_i`
-/// equalities, and every learned equality from previous solves; the
+/// `equalities` already encode `x_0 = 1` and every learned equality from
+/// previous solves (input wires reuse `x_i` across copies, so no
+/// `x_i = y_i` equality appears); the
 /// backend additionally asserts `x_target ≠ y_target` and runs SMT
 /// `(check-sat)`. SAT models are returned as
 /// `HashMap<String, BigUint>` keyed by the ring's canonical variable
@@ -89,11 +92,15 @@ pub type BackendFactory = fn() -> Box<dyn SolverBackend>;
 ///
 /// Backends register themselves with `inventory::submit!` from their
 /// own module; [`create_backend_by_name`] walks the registry at
-/// dispatch time. Adding a new backend is therefore a single new file
-/// containing the impl plus a submit block — no edits to enums,
-/// match tables, or CLI parsers required. The built-in `SolverKind`
-/// enum provides ergonomic library use and matches the lowercase
-/// `name` values.
+/// *dispatch* time, and [`crate::SolverKind::from_str`] consults it to
+/// list the known backends in its error message. *Selection by name*,
+/// however, goes through the built-in [`crate::SolverKind`] enum (used
+/// by `--solver` and config files), so a new backend that should be
+/// reachable via `--solver` also needs a matching `SolverKind` variant
+/// and `from_str` arm. A backend registered only via `inventory::submit!`
+/// is dispatchable through `create_backend_by_name` directly but is not
+/// selectable by name. The built-in `SolverKind` `name` values are the
+/// lowercase strings here.
 pub struct SolverBackendDescriptor {
     /// Stable name used by `--solver`, `SolverKind::from_str`, and
     /// `dump_smt` log lines.
@@ -186,3 +193,6 @@ pub fn poly_to_smtlib_ff(ir: &PolyIR, poly: &picus_core::poly::IrPoly) -> String
         _ => format!("(ff.add {})", parts.join(" ")),
     }
 }
+
+#[cfg(test)]
+mod tests;

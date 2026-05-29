@@ -31,7 +31,7 @@ impl DivMask {
 /// Per-variable thresholds for the DivMask encoding.
 ///
 /// `thresholds.len() == actual_vars * bits_per_var` where
-/// `actual_vars = min(n_vars, 32 / bits_per_var)`. Variables beyond
+/// `actual_vars = min(n_vars * bits_per_var, 128) / bits_per_var`. Variables beyond
 /// `actual_vars` get no DivMask bits. Bit `(v * bits_per_var + k)` is
 /// set in a monomial's mask iff `monomial.exponent(v) > thresholds[v * bits_per_var + k]`.
 #[derive(Clone, Debug)]
@@ -58,8 +58,8 @@ impl DivMaskScheme {
         let max = max_deg_per_var.max(1);
         for _v in 0..actual_vars {
             for k in 0..bits_per_var {
-                // Linear spacing: 1, ceil(max/bits_per_var), 2*ceil, ...
-                // Threshold k means bit set iff exp > k+1 cumulative units.
+                // Threshold k = (k+1) * max / bits_per_var (floored); bit
+                // (v, k) is set iff exponent(v) exceeds it.
                 let t = ((k as u32 + 1) * max as u32 / bits_per_var as u32)
                     .min(u16::MAX as u32) as u16;
                 thresholds.push(t);
@@ -90,41 +90,5 @@ impl DivMaskScheme {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn divmask_consistency() {
-        let scheme = DivMaskScheme::build(4, 8);
-        // a = x0^2 x1
-        let a = Monomial::from_exponents(vec![2, 1, 0, 0]);
-        // b = x0^4 x1^3 x2
-        let b = Monomial::from_exponents(vec![4, 3, 1, 0]);
-        assert!(a.divides(&b));
-        let ma = scheme.compute(&a);
-        let mb = scheme.compute(&b);
-        assert!(ma.divides_consistent_with(mb));
-
-        // c does not divide a (c has x2 but a doesn't)
-        let c = Monomial::from_exponents(vec![1, 0, 1, 0]);
-        let mc = scheme.compute(&c);
-        assert!(!c.divides(&a));
-        // DivMask is a NECESSARY condition, not sufficient: it may sometimes
-        // return true even when divisibility fails; but if it returns false,
-        // divisibility certainly fails. So we just check that whenever
-        // monomial-divides is true, divmask is consistent.
-        let _ = mc; // no false-negative requirement
-    }
-
-    #[test]
-    fn divmask_rejects_some() {
-        // With a small max_deg threshold of 1, we have one bit per var.
-        let scheme = DivMaskScheme::build(2, 1);
-        let a = Monomial::from_exponents(vec![2, 0]);
-        let b = Monomial::from_exponents(vec![0, 2]);
-        // a does NOT divide b
-        let ma = scheme.compute(&a);
-        let mb = scheme.compute(&b);
-        assert!(!ma.divides_consistent_with(mb));
-    }
-}
+#[path = "divmask_tests.rs"]
+mod tests;
