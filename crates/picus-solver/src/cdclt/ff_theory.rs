@@ -61,91 +61,17 @@ impl<'a> FfTheory<'a> {
     /// Rabinowitsch / field polynomials and to dropped zero
     /// polynomials.
     fn check_full_with_mapping(&mut self) -> CheckOutcome {
-        let prime = self.atoms.prime().clone();
-
-        let mut builder = ConstraintSystemBuilder::new(prime.clone());
-        // Match the GB-direct path (`PolyIR::to_constraint_system`):
-        // request field polynomials `x^p - x = 0` for small primes.
-        // `encode` only materialises them when `prime <= 1000`, so this
-        // is a no-op for BN128 but essential for small-prime fields
-        // (GF(7)/GF(11)) — without it the per-branch GB can't model the
-        // field and returns Unknown instead of the real counter-example.
-        builder.set_add_field_polys(prime <= BigUint::from(1000u32));
-        let mut equality_atoms: Vec<Var> = Vec::new();
-        let mut disequality_atoms: Vec<Var> = Vec::new();
-        let mut diseq_counter: usize = 0;
-        let mut zero_idx: Option<u32> = None;
-        let mut had_any = false;
-
-        for &(atom_var, polarity) in &self.facts {
-            let key = match self.atoms.atom(atom_var) {
-                Some(k) => k,
-                None => continue,
-            };
-            had_any = true;
-            if polarity {
-                let terms = key.intern_into(&mut builder);
-                builder.add_equality(terms);
-                equality_atoms.push(atom_var);
-            } else {
-                let (d_idx, zero) =
-                    builder.fresh_disequality_vars(&mut diseq_counter, &mut zero_idx);
-
-                // Encode `(d - lhs) = 0`: starts with `+1 * d_var`
-                // then appends the atom's polynomial with each coeff
-                // negated mod prime.
-                let mut def: Vec<PolyTerm> = Vec::with_capacity(key.terms.len() + 1);
-                def.push(PolyTerm {
-                    coeff: BigUint::from(1u32),
-                    vars: vec![(d_idx, 1)],
-                });
-                def.extend(key.intern_negated_into(&mut builder, &prime));
-                builder.add_equality(def);
-                equality_atoms.push(atom_var);
-                builder.add_disequality(d_idx, zero);
-                disequality_atoms.push(atom_var);
-            }
-        }
-
-        if !had_any {
-            self.last_model = Some(HashMap::new());
-            self.has_model = true;
-            return CheckOutcome::Sat;
-        }
-
-        let indexed = builder.build();
-        let encoded = match encode(&indexed) {
-            Ok(e) => e,
-            Err(_) => return CheckOutcome::Unknown,
-        };
-
-        if self.cancel.is_cancelled() {
-            return CheckOutcome::Unknown;
-        }
-
-        match solve_encoded_with_cancel(&encoded, self.cancel) {
-            SolveOutcome::Sat(model) => {
-                self.last_model = Some(model);
+        let (out, model) = check_full_with_atoms(self.atoms, &self.facts, self.cancel);
+        match &out {
+            CheckOutcome::Sat => {
+                self.last_model = model;
                 self.has_model = true;
-                CheckOutcome::Sat
             }
-            SolveOutcome::Unsat(core_indices) => {
+            CheckOutcome::Unsat { .. } | CheckOutcome::Unknown => {
                 self.has_model = false;
-                match map_core_to_atoms(
-                    &core_indices,
-                    &encoded,
-                    &equality_atoms,
-                    &disequality_atoms,
-                ) {
-                    Some(core) => CheckOutcome::Unsat { core },
-                    None => CheckOutcome::Unknown,
-                }
-            }
-            SolveOutcome::Unknown => {
-                self.has_model = false;
-                CheckOutcome::Unknown
             }
         }
+        out
     }
 
     /// `var_name -> (value, source_atom)` from positive single-variable
@@ -462,6 +388,81 @@ impl<'a> Theory for FfTheory<'a> {
         } else {
             None
         }
+    }
+}
+
+/// Build a ConstraintSystem from a `(atom, polarity)` fact trail against
+/// `atoms`, encode, dispatch to the GB solver, and map any returned UNSAT
+/// core back to atom variables. Returns the outcome alongside the SAT
+/// model (if any) so callers can persist it. Pure function of its inputs;
+/// shared by [`FfTheory::post_check`] and the multi-prime router.
+pub(crate) fn check_full_with_atoms(
+    atoms: &AtomTable,
+    facts: &[(Var, bool)],
+    cancel: &CancelToken,
+) -> (CheckOutcome, Option<HashMap<String, BigUint>>) {
+    let prime = atoms.prime().clone();
+
+    let mut builder = ConstraintSystemBuilder::new(prime.clone());
+    // Match the GB-direct path (`PolyIR::to_constraint_system`): request
+    // field polynomials `x^p - x = 0` for small primes (encoder only
+    // materialises them when `prime <= 1000`).
+    builder.set_add_field_polys(prime <= BigUint::from(1000u32));
+    let mut equality_atoms: Vec<Var> = Vec::new();
+    let mut disequality_atoms: Vec<Var> = Vec::new();
+    let mut diseq_counter: usize = 0;
+    let mut zero_idx: Option<u32> = None;
+    let mut had_any = false;
+
+    for &(atom_var, polarity) in facts {
+        let key = match atoms.atom(atom_var) {
+            Some(k) => k,
+            None => continue,
+        };
+        had_any = true;
+        if polarity {
+            let terms = key.intern_into(&mut builder);
+            builder.add_equality(terms);
+            equality_atoms.push(atom_var);
+        } else {
+            let (d_idx, zero) =
+                builder.fresh_disequality_vars(&mut diseq_counter, &mut zero_idx);
+            let mut def: Vec<PolyTerm> = Vec::with_capacity(key.terms.len() + 1);
+            def.push(PolyTerm {
+                coeff: BigUint::from(1u32),
+                vars: vec![(d_idx, 1)],
+            });
+            def.extend(key.intern_negated_into(&mut builder, &prime));
+            builder.add_equality(def);
+            equality_atoms.push(atom_var);
+            builder.add_disequality(d_idx, zero);
+            disequality_atoms.push(atom_var);
+        }
+    }
+
+    if !had_any {
+        return (CheckOutcome::Sat, Some(HashMap::new()));
+    }
+
+    let indexed = builder.build();
+    let encoded = match encode(&indexed) {
+        Ok(e) => e,
+        Err(_) => return (CheckOutcome::Unknown, None),
+    };
+
+    if cancel.is_cancelled() {
+        return (CheckOutcome::Unknown, None);
+    }
+
+    match solve_encoded_with_cancel(&encoded, cancel) {
+        SolveOutcome::Sat(model) => (CheckOutcome::Sat, Some(model)),
+        SolveOutcome::Unsat(core_indices) => {
+            match map_core_to_atoms(&core_indices, &encoded, &equality_atoms, &disequality_atoms) {
+                Some(core) => (CheckOutcome::Unsat { core }, None),
+                None => (CheckOutcome::Unknown, None),
+            }
+        }
+        SolveOutcome::Unknown => (CheckOutcome::Unknown, None),
     }
 }
 
