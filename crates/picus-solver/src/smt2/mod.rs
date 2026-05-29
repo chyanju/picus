@@ -1292,3 +1292,9 @@ pub fn parse_boolean(src: &str) -> Result<BooleanQuery, ParseError> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+#[path = "tests_session.rs"]
+mod tests_session;
+#[cfg(test)]
+#[path = "tests_property.rs"]
+mod tests_property;

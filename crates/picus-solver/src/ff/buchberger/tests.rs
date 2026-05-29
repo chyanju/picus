@@ -1011,33 +1011,9 @@ fn prop_groebner_basis_is_deterministic() {
 }
 
 // ─── Class 9: per-pair engine and F4 engine compute equivalent ideals ────
-// Spec: the per-pair Buchberger path and the F4-lite path are two
-// implementations of Buchberger's algorithm on the same ideal — their
-// output bases must generate the same ideal (mutual reducibility to 0).
-
-#[test]
-fn prop_per_pair_and_f4_engines_compute_same_ideal_gf101() {
-    let r = ring_p(101, 3);
-    let g = || vec![
-        poly_in(&r, &[(vec![2, 0, 0], 1), (vec![0, 1, 0], -1)]),
-        poly_in(&r, &[(vec![1, 1, 0], 1), (vec![0, 0, 1], -1)]),
-        poly_in(&r, &[(vec![0, 2, 0], 1), (vec![1, 0, 0], -1)]),
-    ];
-    let pp = BuchbergerConfig { order: r.order, use_f4: false, ..Default::default() };
-    let f4 = BuchbergerConfig { order: r.order, use_f4: true, ..Default::default() };
-    let bp = groebner_basis(g(), &r, &pp).unwrap();
-    let bf = groebner_basis(g(), &r, &f4).unwrap();
-    let rp: Vec<&DensePoly> = bp.basis.iter().collect();
-    let rf: Vec<&DensePoly> = bf.basis.iter().collect();
-    for p in &bp.basis {
-        assert!(p.reduce_by_refs(&rf, &r).is_zero(),
-            "spec: per-pair element must lie in F4 ideal (same ideal)");
-    }
-    for p in &bf.basis {
-        assert!(p.reduce_by_refs(&rp, &r).is_zero(),
-            "spec: F4 element must lie in per-pair ideal (same ideal)");
-    }
-}
+// Covered by `f4/tests.rs::diff_f4_vs_buch_bank_small_primes_sweep` (sweeps
+// (7,2)/(7,3)/(7,4)/(101,3)/(101,4) over the full `diff_systems_dense` bank
+// — strictly stronger than a single 3-var GF(101) probe).
 
 // ─── Class 4: groebner_basis_incremental == groebner_basis on union ──────
 // Spec: groebner_basis_incremental(GB(G1), G2) generates the same ideal as
@@ -1254,27 +1230,11 @@ fn ideals_equal_dense(a: &[DensePoly], b: &[DensePoly], ring: &Arc<PolyRing>) ->
 /// Spec: input where every batch is < F4_MIN_BATCH so the size
 /// fallback fires (per-pair path inside run_f4). Cross-check F4
 /// vs use_f4=false via mutual ideal-membership.
-#[test]
-fn diff_run_f4_size_fallback_matches_pp_gf7() {
-    let r = ring_p(7, 3);
-    // Small system → small batches.
-    let x = DensePoly::variable(0, &r);
-    let y = DensePoly::variable(1, &r);
-    let z = DensePoly::variable(2, &r);
-    let one = DensePoly::constant(r.field.one(), &r);
-    let g1 = x.mul(&y, &r).sub(&z, &r);
-    let g2 = y.mul(&z, &r).sub(&one, &r);
-    let g3 = x.mul(&z, &r).add(&y, &r);
-    let gens = vec![g1, g2, g3];
-
-    let cfg_pp = BuchbergerConfig { order: r.order, use_f4: false, ..Default::default() };
-    let cfg_f4 = BuchbergerConfig { order: r.order, use_f4: true, ..Default::default() };
-    let gb_pp = interreduce(groebner_basis(gens.clone(), &r, &cfg_pp).unwrap().basis, &r);
-    let gb_f4 = interreduce(groebner_basis(gens.clone(), &r, &cfg_f4).unwrap().basis, &r);
-
-    assert!(ideals_equal_dense(&gb_pp, &gb_f4, &r),
-        "F4 size-fallback must agree with per-pair as ideals");
-}
+//
+// (`diff_run_f4_size_fallback_matches_pp_gf7` folded into
+// `f4/tests.rs::diff_f4_vs_buch_bank_small_primes_sweep` which runs the full
+// `diff_systems_dense` bank — including the small-system shapes that hit
+// the size fallback — over GF(7) at 2/3/4 vars.)
 
 /// BN254-prime variant: same coverage at a realistic ZK-circuit prime.
 #[test]

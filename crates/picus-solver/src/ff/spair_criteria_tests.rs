@@ -61,60 +61,13 @@ fn merge_descending_preserves_descending_order() {
 }
 
 // ────────── gm_insert ──────────
-
-#[test]
-fn gm_insert_into_empty_keeps_pair() {
-    let mut list: Vec<SPair> = Vec::new();
-    let p = make(vec![1, 1], 3, 1, false, (0, 1));
-    gm_insert(&mut list, p);
-    assert_eq!(list.len(), 1);
-}
-
-#[test]
-fn gm_insert_drops_dominated_pair() {
-    // existing lcm = (1, 0); new lcm = (2, 0) — existing divides new → drop new.
-    let mut list = vec![make(vec![1, 0], 3, 1, false, (0, 1))];
-    let new = make(vec![2, 0], 3, 2, false, (0, 2));
-    gm_insert(&mut list, new);
-    assert_eq!(list.len(), 1);
-    assert_eq!(list[0].lcm.exponents(), &[1u16, 0u16]);
-}
-
-#[test]
-fn gm_insert_erases_dominated_existing() {
-    // existing lcm = (2, 0); new lcm = (1, 0) — new divides existing → erase existing, keep new.
-    let mut list = vec![make(vec![2, 0], 3, 1, false, (0, 1))];
-    let new = make(vec![1, 0], 3, 2, false, (0, 2));
-    gm_insert(&mut list, new);
-    assert_eq!(list.len(), 1);
-    assert_eq!(list[0].lcm.exponents(), &[1u16, 0u16]);
-}
-
-#[test]
-fn gm_insert_f_criterion_replaces_with_coprime_at_equal_lcm() {
-    // existing and new share lcm (1, 1). existing is non-coprime, new is
-    // coprime ⇒ the Gebauer-Möller F-criterion replaces existing with the
-    // coprime pair (and drops the rest implicitly: list length stays 1).
-    let mut list = vec![make(vec![1, 1], 3, 1, false, (0, 1))];
-    let new = make(vec![1, 1], 3, 2, true, (3, 4));
-    gm_insert(&mut list, new);
-    assert_eq!(list.len(), 1);
-    // The surviving pair is the coprime newcomer (parents (3, 4)).
-    assert_eq!(list[0].parents(), (3, 4));
-    assert!(list[0].is_coprime());
-}
-
-#[test]
-fn gm_insert_keeps_existing_at_equal_lcm_when_new_not_coprime() {
-    // Same lcm, but the newcomer is NOT coprime: the F-criterion branch
-    // is inert, the existing dominates, and the newcomer is dropped.
-    let mut list = vec![make(vec![1, 1], 3, 1, false, (0, 1))];
-    let new = make(vec![1, 1], 3, 2, false, (3, 4));
-    gm_insert(&mut list, new);
-    assert_eq!(list.len(), 1);
-    // Existing kept unchanged.
-    assert_eq!(list[0].parents(), (0, 1));
-}
+//
+// gm_insert coverage lives in `buchberger/tests.rs::gm_insert_*` (5 cases:
+// smaller_lcm_dominates_larger, larger_lcm_evicted_by_smaller,
+// unrelated_lcms_both_kept, equal_lcm_prefers_coprime,
+// equal_lcm_keeps_existing_otherwise) which exercises the same public
+// `gm_insert` via the real `PolyRing` divmask path. The local-helper
+// duplicates that used to live here are deleted.
 
 // ────────── merge_sorted_descending: dst exhausts first ──────────
 
@@ -136,29 +89,10 @@ fn merge_descending_drains_dst_then_extends_incoming() {
 }
 
 // ────────── b_criterion_kill ──────────
-
-// The B-criterion needs a basis with leading terms. Build a minimal
-// wrapper.
-struct DummyBasis(Vec<Monomial>);
-impl LeadingTerms for DummyBasis {
-    type Mono = Monomial;
-    fn lt_at(&self, idx: usize) -> &Monomial {
-        &self.0[idx]
-    }
-}
-
-#[test]
-fn b_criterion_preserves_pairs_when_no_match() {
-    // Basis has LT (0, 0) (constant 1). The new element's LT (1, 0)
-    // doesn't divide any pair's lcm → nothing killed.
-    let mut open = vec![make(vec![1, 1], 3, 1, false, (0, 1))];
-    let basis = DummyBasis(vec![
-        Monomial::from_exponents(vec![1, 0]), // basis[0].lt = (1,0)
-        Monomial::from_exponents(vec![0, 1]), // basis[1].lt = (0,1)
-    ]);
-    let new_lt = Monomial::from_exponents(vec![5, 5]);
-    let scheme = DivMaskScheme::build(2, 4);
-    let new_lt_dm = scheme.compute(&new_lt);
-    b_criterion_kill(&mut open, &new_lt, new_lt_dm, &basis);
-    assert_eq!(open.len(), 1);
-}
+//
+// b_criterion coverage lives in `buchberger/tests.rs::b_criterion_*`
+// (5 cases: kills_when_all_three_conditions_hold, keeps_when_new_lt_does_not_divide_lcm,
+// keeps_when_lcm_lt_j_new_equals_lcm, keeps_when_lcm_lt_i_new_equals_lcm,
+// empty_queue_is_noop) which exercises the same public `b_criterion_kill`
+// via real basis elements + ring divmask. The local-helper duplicate that
+// used to live here is deleted.

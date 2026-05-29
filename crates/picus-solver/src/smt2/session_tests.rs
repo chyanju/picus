@@ -29,30 +29,13 @@ fn new_starts_at_level_zero_no_check() {
 }
 
 // ────────── Trivial scripts ──────────
-
-#[test]
-fn exit_terminates_script() {
-    // Commands after (exit) must not be evaluated.
-    let out = run("(set-logic QF_FF) (exit) (echo \"unreachable\")");
-    assert!(out.is_empty() || !matches!(out.last(), Some(SessionOutput::Echo(_))));
-}
-
-#[test]
-fn echo_emits_string() {
-    let out = run("(echo \"hello\")");
-    // The echo atom from the tokenizer keeps the surrounding quotes,
-    // so the payload contains `hello` as a substring rather than being
-    // exactly `hello`. Just assert the output kind + substring.
-    let echoed = match out.last() {
-        Some(SessionOutput::Echo(s)) => s.clone(),
-        other => panic!("expected Echo, got {:?}", other),
-    };
-    assert!(
-        echoed.contains("hello"),
-        "echo payload missing 'hello': {:?}",
-        echoed
-    );
-}
+//
+// `exit_terminates_script` deleted: `session_exit_stops_eval_script` in
+// tests.rs is strictly stronger (asserts exactly one verdict observed AND
+// the post-(exit) assert never reaches session state).
+//
+// `echo_emits_string` deleted: `session_echo_is_passed_through` in tests.rs
+// asserts exact equality `"\"hello\""` (this version only `contains("hello")`).
 
 #[test]
 fn set_info_set_logic_are_silent() {
@@ -77,26 +60,10 @@ fn ff_sat_via_finitefield_sort() {
 // `prop_contradictory_constants_unsat_across_edge_primes` (GF3,5,7,11,13).
 
 // ────────── push / pop levels ──────────
-
-#[test]
-fn push_pop_isolates_assertions() {
-    let mut s = SmtSession::new();
-    let _ = run_with(
-        &mut s,
-        r#"
-            (declare-fun x () (_ FiniteField 7))
-            (assert (= x #f1m7))
-            (push)
-            (assert (= x #f2m7))
-        "#,
-    );
-    // Inside push: x=1 ∧ x=2 → UNSAT.
-    let out = run_with(&mut s, "(check-sat)");
-    assert_eq!(last_verdict(&out), Some(SessionVerdict::Unsat));
-    // Pop and re-check: x=1 alone → SAT.
-    let out = run_with(&mut s, "(pop) (check-sat)");
-    assert_eq!(last_verdict(&out), Some(SessionVerdict::Sat));
-}
+//
+// `push_pop_isolates_assertions` deleted: `session_push_pop_isolates_asserts`
+// in tests.rs asserts the same isolation property via a more thorough
+// 3-verdict sequence (sat→unsat→sat) with explicit (push 1)/(pop 1).
 
 #[test]
 fn pop_past_zero_is_noop() {
@@ -135,29 +102,10 @@ fn reset_clears_everything() {
     assert_eq!(last_verdict(&out), Some(SessionVerdict::Sat));
 }
 
-#[test]
-fn reset_assertions_keeps_declarations() {
-    let mut s = SmtSession::new();
-    let _ = run_with(
-        &mut s,
-        r#"
-            (declare-fun x () (_ FiniteField 7))
-            (assert (= x #f1m7))
-            (assert (= x #f2m7))
-            (check-sat)
-            (reset-assertions)
-        "#,
-    );
-    // Declaration of x kept; reset-assertions only cleared asserts.
-    let out = run_with(
-        &mut s,
-        r#"
-            (assert (= x #f3m7))
-            (check-sat)
-        "#,
-    );
-    assert_eq!(last_verdict(&out), Some(SessionVerdict::Sat));
-}
+// `reset_assertions_keeps_declarations` deleted: the tests.rs version of
+// the same name is strictly stronger — it asserts that macros + tlimit
+// options also survive (not just declarations), and that internal
+// `formulas` and `levels` collections are empty afterwards.
 
 // ────────── get-value / get-unsat-core ──────────
 //
@@ -384,24 +332,10 @@ fn get_value_malformed_query_is_empty() {
     }
 }
 
-#[test]
-fn get_value_unknown_variable_is_skipped() {
-    let mut s = SmtSession::new();
-    let _ = run_with(
-        &mut s,
-        r#"
-            (declare-fun x () (_ FiniteField 7))
-            (assert (= x #f1m7))
-            (check-sat)
-        "#,
-    );
-    // `undefined` is not a declared var → skipped, yielding an empty list.
-    let out = run_with(&mut s, "(get-value (undefined))");
-    match out.last() {
-        Some(SessionOutput::Values(v)) => assert!(v.is_empty()),
-        other => panic!("expected empty Values, got {:?}", other),
-    }
-}
+// `get_value_unknown_variable_is_skipped` deleted: tests.rs
+// `session_get_value_skips_undeclared_name` covers the same skip semantics
+// with a strictly stronger mixed query `(get-value (x undeclared))` —
+// asserts the declared name is kept while the unknown one is dropped.
 
 #[test]
 fn get_value_returns_model_value() {

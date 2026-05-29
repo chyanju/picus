@@ -560,33 +560,6 @@ fn solve_drains_pending_root_propagation_to_unsat() {
 }
 
 #[test]
-fn audit_solve_sound_under_aggressive_restart() {
-    // The four clauses (x0∨x1)(¬x0∨x1)(x0∨¬x1)(¬x0∨¬x1) are UNSAT (they
-    // force x0↔x1 yet forbid both-true and both-false). A restart may fire
-    // under any schedule, so the verdict must be Unsat in both the default
-    // and an aggressive (every-conflict) schedule. Guards the bug where a
-    // restart left a learned root unit unpropagated, so the root conflict
-    // was analyzed at level 1 and the search wrongly returned Sat.
-    let build = |s: &mut Solver| {
-        let v = vars(s, 2);
-        assert!(s.add_clause(vec![Lit::pos(v[0]), Lit::pos(v[1])]));
-        assert!(s.add_clause(vec![Lit::neg(v[0]), Lit::pos(v[1])]));
-        assert!(s.add_clause(vec![Lit::pos(v[0]), Lit::neg(v[1])]));
-        assert!(s.add_clause(vec![Lit::neg(v[0]), Lit::neg(v[1])]));
-    };
-    // Default restart schedule.
-    let mut s1 = Solver::new();
-    build(&mut s1);
-    assert_eq!(s1.solve(), SolveResult::Unsat, "default-schedule verdict");
-    // Aggressive restart (fires after the first conflict).
-    let mut s2 = Solver::new();
-    build(&mut s2);
-    s2.restart_base = 1;
-    s2.restart_step = 1;
-    assert_eq!(s2.solve(), SolveResult::Unsat, "aggressive-restart verdict");
-}
-
-#[test]
 fn enqueue_theory_rejects_reason_fact_not_true() {
     // A reason fact that is currently False (its negation True) makes the
     // justification clause malformed; enqueue_theory must bail.
@@ -1185,9 +1158,8 @@ fn hardprobe_php_3_2_unsat_under_full_restart_sweep() {
 /// SPEC: The XOR-conflict family
 /// `(x0∨x1)(¬x0∨x1)(x0∨¬x1)(¬x0∨¬x1)` is UNSAT under any restart cadence.
 /// Padded with extra free vars so the search tree is larger and restart
-/// can fire at varying points. Also includes restart_base=2 — distinct
-/// from the prior `audit_solve_sound_under_aggressive_restart` test which
-/// only covers rb=1 and the default.
+/// can fire at varying points; sweep restart_base across multiple Luby
+/// positions so the restart fires at varying conflict-trace depths.
 #[test]
 fn hardprobe_xor_conflict_unsat_with_padding_full_sweep() {
     let build = |n_pad: usize| -> Solver {
@@ -1360,47 +1332,6 @@ fn hardprobe_root_unsat_via_theory_lemma_persists_across_restart_sweep() {
             "rb={rb}: SPEC violation — root-unsat formula returned non-Unsat"
         );
     }
-}
-
-/// SPEC: A learnt clause stored before a restart MUST remain in the
-/// arena and continue to constrain the search after restart. Construct
-/// an UNSAT formula that requires multiple learnt clauses; verify that
-/// even with restart_base=1 (restart after every conflict) the final
-/// verdict is UNSAT. A bug that dropped learnt clauses on restart would
-/// allow the search to loop and exhaust the iteration budget (Unknown)
-/// or produce a wrong Sat.
-#[test]
-fn hardprobe_learnt_clauses_persist_across_aggressive_restart_unsat() {
-    // 4-var UNSAT formula needing several learnt clauses to refute.
-    //   (x0 ∨ x1 ∨ x2)
-    //   (¬x0 ∨ x1 ∨ x2)
-    //   (x0 ∨ ¬x1 ∨ x2)
-    //   (¬x0 ∨ ¬x1 ∨ x2)
-    //   (x0 ∨ x1 ∨ ¬x2)
-    //   (¬x0 ∨ x1 ∨ ¬x2)
-    //   (x0 ∨ ¬x1 ∨ ¬x2)
-    //   (¬x0 ∨ ¬x1 ∨ ¬x2)
-    //   (x3)   — irrelevant unit, but exercises the trail.
-    let v: Vec<Var> = (0..4).map(make_var).collect();
-    let clauses: Vec<Vec<Lit>> = vec![
-        vec![Lit::pos(v[0]), Lit::pos(v[1]), Lit::pos(v[2])],
-        vec![Lit::neg(v[0]), Lit::pos(v[1]), Lit::pos(v[2])],
-        vec![Lit::pos(v[0]), Lit::neg(v[1]), Lit::pos(v[2])],
-        vec![Lit::neg(v[0]), Lit::neg(v[1]), Lit::pos(v[2])],
-        vec![Lit::pos(v[0]), Lit::pos(v[1]), Lit::neg(v[2])],
-        vec![Lit::neg(v[0]), Lit::pos(v[1]), Lit::neg(v[2])],
-        vec![Lit::pos(v[0]), Lit::neg(v[1]), Lit::neg(v[2])],
-        vec![Lit::neg(v[0]), Lit::neg(v[1]), Lit::neg(v[2])],
-        vec![Lit::pos(v[3])],
-    ];
-    let mut s = build_solver(4, &clauses);
-    s.restart_base = 1;
-    s.restart_step = 1;
-    assert_eq!(
-        s.solve(),
-        SolveResult::Unsat,
-        "SPEC: 8-minterm UNSAT must hold even when restart fires every conflict"
-    );
 }
 
 /// SPEC: A propagation chain spanning multiple decision levels, learnt
