@@ -194,7 +194,7 @@ fn rand_poly_with_root(
 }
 
 // =============================================================================
-// RandSat
+// Random SAT systems with a planted root
 // =============================================================================
 //
 // Generate 50 systems of ~9 polys each (6 vars, degree ≤ 2, 2 terms per poly)
@@ -251,7 +251,7 @@ fn test_rand_sat() {
 }
 
 // =============================================================================
-// RandUnsat
+// Random (frequently UNSAT) systems with no planted root
 // =============================================================================
 //
 // Generate 40 systems of ~9 polys (degree ≤ 2, 1 term per poly — i.e.
@@ -297,7 +297,7 @@ fn test_rand_unsat() {
 }
 
 // =============================================================================
-// GbEmpty
+// Empty Groebner basis
 // =============================================================================
 //
 // An empty GB should:
@@ -321,7 +321,7 @@ fn test_gb_empty() {
 }
 
 // =============================================================================
-// GbRand
+// Random Groebner basis self-consistency
 // =============================================================================
 //
 // For 50 random 4-generator systems (6 vars, GF(11), degree ≤ 2, 2 terms
@@ -330,8 +330,6 @@ fn test_gb_empty() {
 //     1 ∈ <gens>.
 //   * Every basis element is a member of the original ideal (modulo
 //     symmetry: `ideal.contains(g)` for all GB elements).
-//
-// Iteration count is 50; cvc5's analogous test uses 200.
 #[test]
 fn test_gb_rand() {
     let n_iters = 50usize;
