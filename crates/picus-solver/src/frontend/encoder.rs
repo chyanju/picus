@@ -431,4 +431,5 @@ fn encode_impl(
 }
 
 #[cfg(test)]
+#[path = "encoder_tests.rs"]
 mod tests;
