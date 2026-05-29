@@ -1584,3 +1584,216 @@ fn prop_gb_characterisation_across_primes() {
     assert_gb_characterisation("GF(101)", 101, &mk);
     assert_gb_characterisation("GF(257)", 257, &mk);
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Hard-probe: F4 vs per-pair equivalence at the F4_MIN_BATCH boundary
+// driven through the public `groebner_basis` API (run_f4 is private).
+// Spec: regardless of routing decision (batch ≥ 12 → matrix; batch <
+// 12 → per-pair fallback), the resulting reduced GB is the same as
+// the use_f4=false path (uniqueness of reduced GB).
+// ─────────────────────────────────────────────────────────────────────
+
+fn ring_p_test_bn254(n_vars: usize) -> Arc<PolyRing> {
+    let p = "21888242871839275222246405745257275088548364400416034343698204186575808495617"
+        .parse::<BigUint>()
+        .unwrap();
+    PolyRing::new(
+        PrimeField::new(p),
+        (0..n_vars).map(|i| format!("x{i}")).collect(),
+        MonomialOrder::DegRevLex,
+    )
+}
+
+/// Ideal-equality via mutual reduce-to-zero.
+fn ideals_equal_dense(a: &[DensePoly], b: &[DensePoly], ring: &Arc<PolyRing>) -> bool {
+    let a_refs: Vec<&DensePoly> = a.iter().collect();
+    let b_refs: Vec<&DensePoly> = b.iter().collect();
+    for p in a {
+        if p.is_zero() { continue; }
+        if !p.reduce_by_refs(&b_refs, ring).is_zero() { return false; }
+    }
+    for p in b {
+        if p.is_zero() { continue; }
+        if !p.reduce_by_refs(&a_refs, ring).is_zero() { return false; }
+    }
+    true
+}
+
+/// Spec: input where the first homogeneous batch by sugar is ≥
+/// F4_MIN_BATCH so the matrix path is exercised. Cross-check F4
+/// against per-pair via mutual ideal-membership.
+#[test]
+fn diff_run_f4_vs_pp_above_min_batch_gf101() {
+    // 8-var system with many shared-LT pairs at sugar 2.
+    let r = ring_p(101, 6);
+    let v: Vec<DensePoly> = (0..6).map(|i| DensePoly::variable(i, &r)).collect();
+    let mut gens: Vec<DensePoly> = Vec::new();
+    // 15 polys of the form x_i x_j - c_{ij} for distinct constants — all sugar 2.
+    let mut c: u64 = 1;
+    for i in 0..6 {
+        for j in (i + 1)..6 {
+            let ci = DensePoly::constant(r.field.from_u64(c), &r);
+            gens.push(v[i].mul(&v[j], &r).sub(&ci, &r));
+            c += 1;
+        }
+    }
+    let cfg_pp = BuchbergerConfig { order: r.order, use_f4: false, ..Default::default() };
+    let cfg_f4 = BuchbergerConfig { order: r.order, use_f4: true, ..Default::default() };
+    let gb_pp = interreduce(groebner_basis(gens.clone(), &r, &cfg_pp).unwrap().basis, &r);
+    let gb_f4 = interreduce(groebner_basis(gens.clone(), &r, &cfg_f4).unwrap().basis, &r);
+    assert!(ideals_equal_dense(&gb_pp, &gb_f4, &r),
+        "F4 (matrix path) and per-pair must agree as ideals");
+}
+
+/// Spec: input where every batch is < F4_MIN_BATCH so the size
+/// fallback fires (per-pair path inside run_f4). Cross-check F4
+/// vs use_f4=false via mutual ideal-membership.
+#[test]
+fn diff_run_f4_size_fallback_matches_pp_gf7() {
+    let r = ring_p(7, 3);
+    // Small system → small batches.
+    let x = DensePoly::variable(0, &r);
+    let y = DensePoly::variable(1, &r);
+    let z = DensePoly::variable(2, &r);
+    let one = DensePoly::constant(r.field.one(), &r);
+    let g1 = x.mul(&y, &r).sub(&z, &r);
+    let g2 = y.mul(&z, &r).sub(&one, &r);
+    let g3 = x.mul(&z, &r).add(&y, &r);
+    let gens = vec![g1, g2, g3];
+
+    let cfg_pp = BuchbergerConfig { order: r.order, use_f4: false, ..Default::default() };
+    let cfg_f4 = BuchbergerConfig { order: r.order, use_f4: true, ..Default::default() };
+    let gb_pp = interreduce(groebner_basis(gens.clone(), &r, &cfg_pp).unwrap().basis, &r);
+    let gb_f4 = interreduce(groebner_basis(gens.clone(), &r, &cfg_f4).unwrap().basis, &r);
+
+    assert!(ideals_equal_dense(&gb_pp, &gb_f4, &r),
+        "F4 size-fallback must agree with per-pair as ideals");
+}
+
+/// BN254-prime variant: same coverage at a realistic ZK-circuit prime.
+#[test]
+fn diff_run_f4_vs_pp_above_min_batch_bn254() {
+    let r = ring_p_test_bn254(4);
+    let v: Vec<DensePoly> = (0..4).map(|i| DensePoly::variable(i, &r)).collect();
+    let mut gens: Vec<DensePoly> = Vec::new();
+    let mut c: u64 = 1;
+    for i in 0..4 {
+        for j in (i + 1)..4 {
+            let ci = DensePoly::constant(r.field.from_u64(c), &r);
+            gens.push(v[i].mul(&v[j], &r).sub(&ci, &r));
+            c += 1;
+        }
+    }
+    let cfg_pp = BuchbergerConfig { order: r.order, use_f4: false, ..Default::default() };
+    let cfg_f4 = BuchbergerConfig { order: r.order, use_f4: true, ..Default::default() };
+    let gb_pp = interreduce(groebner_basis(gens.clone(), &r, &cfg_pp).unwrap().basis, &r);
+    let gb_f4 = interreduce(groebner_basis(gens.clone(), &r, &cfg_f4).unwrap().basis, &r);
+    assert!(ideals_equal_dense(&gb_pp, &gb_f4, &r),
+        "F4 vs per-pair over BN254 must agree as ideals");
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Cancel boundary: pre-cancelled token at `groebner_basis` entry.
+// Spec: returns either Ok with a valid sub-ideal OR Err(Timeout). It
+// must NEVER return a basis that misrepresents the input ideal.
+// ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn diff_groebner_basis_precancelled_token_both_paths() {
+    let r = ring_p(7, 3);
+    let gens = vec![
+        poly_in(&r, &[(vec![1, 1, 0], 1), (vec![0, 0, 1], -1)]),  // x*y - z
+        poly_in(&r, &[(vec![0, 1, 1], 1), (vec![1, 0, 0], -1)]),  // y*z - x
+        poly_in(&r, &[(vec![1, 0, 1], 1), (vec![0, 1, 0], -1)]),  // x*z - y
+    ];
+    for &use_f4 in &[false, true] {
+        let token = crate::timeout::CancelToken::cancelled();
+        let cfg = BuchbergerConfig {
+            order: r.order,
+            use_f4,
+            cancel_token: Some(token),
+            ..Default::default()
+        };
+        let res = groebner_basis(gens.clone(), &r, &cfg);
+        match res {
+            Ok(gb) => {
+                // Spec: every output element must lie in the input ideal,
+                // checked against the uncancelled reference GB.
+                let cfg_ref = BuchbergerConfig {
+                    order: r.order, use_f4: false, ..Default::default()
+                };
+                let ref_gb = interreduce(
+                    groebner_basis(gens.clone(), &r, &cfg_ref).unwrap().basis,
+                    &r,
+                );
+                let ref_refs: Vec<&DensePoly> = ref_gb.iter().collect();
+                for p in &gb.basis {
+                    if p.is_zero() { continue; }
+                    let nf = p.reduce_by_refs(&ref_refs, &r);
+                    assert!(nf.is_zero(),
+                        "precancelled (use_f4={use_f4}) returned out-of-ideal element");
+                }
+            }
+            Err(crate::EngineError::Timeout) => { /* expected */ }
+            Err(other) => panic!(
+                "precancelled groebner_basis (use_f4={use_f4}): unexpected error {:?}",
+                other
+            ),
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Pathological shapes: 1-variable ring, 0-variable ring (empty
+// names vector). The engine must not panic and must produce sound
+// reduced GBs.
+// ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn diff_one_variable_ring_univariate_relation() {
+    // 1-var ring over GF(101). GB({x^2 - 1}) = {x^2 - 1}.
+    let r = ring_p(101, 1);
+    let p = poly_in(&r, &[(vec![2], 1), (vec![0], -1)]);
+    let cfg_pp = BuchbergerConfig { order: r.order, use_f4: false, ..Default::default() };
+    let cfg_f4 = BuchbergerConfig { order: r.order, use_f4: true, ..Default::default() };
+    let gb_pp = interreduce(groebner_basis(vec![p.clone()], &r, &cfg_pp).unwrap().basis, &r);
+    let gb_f4 = interreduce(groebner_basis(vec![p.clone()], &r, &cfg_f4).unwrap().basis, &r);
+    assert!(ideals_equal_dense(&gb_pp, &gb_f4, &r),
+        "1-var: F4 ≡ per-pair");
+    // Input gen in the ideal.
+    let pp_refs: Vec<&DensePoly> = gb_pp.iter().collect();
+    assert!(p.reduce_by_refs(&pp_refs, &r).is_zero());
+}
+
+#[test]
+fn diff_zero_variable_ring_constant_input() {
+    // 0-var ring. Only constants are polynomials.
+    let r = PolyRing::new(
+        PrimeField::new(BigUint::from(7u32)),
+        Vec::<String>::new(),
+        MonomialOrder::DegRevLex,
+    );
+    let one = DensePoly::constant(r.field.one(), &r);
+    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
+    let gb = interreduce(groebner_basis(vec![one], &r, &cfg).unwrap().basis, &r);
+    assert!(gb.iter().any(|p| p.is_constant() && !p.is_zero()),
+        "0-var ring with unit: GB = {{1}}");
+}
+
+#[test]
+fn diff_basis_containing_1_is_trivial_both_paths() {
+    // Spec: 1 ∈ I ⇒ reduced GB = {1}. Test both paths.
+    let r = ring_p(7, 3);
+    let one = DensePoly::constant(r.field.one(), &r);
+    let x = DensePoly::variable(0, &r);
+    let y = DensePoly::variable(1, &r);
+    let f = x.mul(&y, &r).sub(&one, &r);
+    let gens = vec![f, one];
+    for &use_f4 in &[false, true] {
+        let cfg = BuchbergerConfig { order: r.order, use_f4, ..Default::default() };
+        let gb = interreduce(groebner_basis(gens.clone(), &r, &cfg).unwrap().basis, &r);
+        assert_eq!(gb.len(), 1, "GB of (f, 1) must be {{1}} (use_f4={use_f4})");
+        assert!(gb[0].is_constant() && !gb[0].is_zero(),
+            "GB of (f, 1) must be nonzero constant (use_f4={use_f4})");
+    }
+}
