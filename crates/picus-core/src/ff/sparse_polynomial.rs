@@ -423,3 +423,7 @@ impl super::repr::PolyRepr for SparsePolynomial {
             .collect()
     }
 }
+
+#[cfg(test)]
+#[path = "sparse_polynomial_tests.rs"]
+mod tests;

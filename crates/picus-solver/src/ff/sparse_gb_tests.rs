@@ -377,12 +377,10 @@ fn sparse_vs_dense_reduced_gb_equal_gf7_nonmonomial() {
     let x_d = DensePoly::variable(0, &ring);
     let y_d = DensePoly::variable(1, &ring);
     let z_d = DensePoly::variable(2, &ring);
-    let one_d = DensePoly::constant(ring.field.one(), &ring);
     // x*y - z, y*z - x, z*x - y
     let g1_d = x_d.mul(&y_d, &ring).sub(&z_d, &ring);
     let g2_d = y_d.mul(&z_d, &ring).sub(&x_d, &ring);
     let g3_d = z_d.mul(&x_d, &ring).sub(&y_d, &ring);
-    let _ = one_d; // (unused)
 
     let gens_d = vec![g1_d.clone(), g2_d.clone(), g3_d.clone()];
     let gens_s: Vec<SparsePolynomial> =

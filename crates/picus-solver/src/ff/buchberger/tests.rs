@@ -1546,7 +1546,7 @@ fn prop_interreduce_deduplicates_equal_lts_gf101() {
 fn assert_gb_characterisation(
     label: &str,
     prime: u64,
-    gens_fn: impl Fn(&Arc<PolyRing>) -> Vec<DensePoly>,
+    gens_fn: &dyn Fn(&Arc<PolyRing>) -> Vec<DensePoly>,
 ) {
     let r = ring_p(prime, 3);
     let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
