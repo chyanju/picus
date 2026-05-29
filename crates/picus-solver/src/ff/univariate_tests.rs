@@ -245,3 +245,182 @@ fn find_roots_constant_poly() {
     let p = poly_from_ints(&[7], &f);
     assert!(find_roots(&p, &f).is_empty());
 }
+
+fn gf2() -> PrimeField {
+    PrimeField::new(BigUint::from(2u32))
+}
+
+#[test]
+fn add_with_shorter_operand() {
+    let f = small_field();
+    // (3x^2 + 2x + 1) + 5 = 3x^2 + 2x + 6
+    let a = poly_from_ints(&[1, 2, 3], &f);
+    let b = poly_from_ints(&[5], &f);
+    let s = a.add(&b, &f);
+    assert_eq!(s.degree(), Some(2));
+    assert_eq!(s.coeffs()[0].as_biguint(), BigUint::from(6u32));
+    assert_eq!(s.coeffs()[1].as_biguint(), BigUint::from(2u32));
+    assert_eq!(s.coeffs()[2].as_biguint(), BigUint::from(3u32));
+    // Commutes: shorter + longer hits the (None, Some) arm too.
+    let s2 = b.add(&a, &f);
+    assert_eq!(s2.coeffs()[0].as_biguint(), BigUint::from(6u32));
+    assert_eq!(s2.coeffs()[1].as_biguint(), BigUint::from(2u32));
+    assert_eq!(s2.coeffs()[2].as_biguint(), BigUint::from(3u32));
+}
+
+#[test]
+fn sub_with_shorter_operand() {
+    let f = small_field();
+    // (3x^2 + 2x + 1) - 1 = 3x^2 + 2x
+    let a = poly_from_ints(&[1, 2, 3], &f);
+    let b = poly_from_ints(&[1], &f);
+    let d = a.sub(&b, &f);
+    assert_eq!(d.degree(), Some(2));
+    assert_eq!(d.coeffs()[0].as_biguint(), BigUint::from(0u32));
+    assert_eq!(d.coeffs()[1].as_biguint(), BigUint::from(2u32));
+    assert_eq!(d.coeffs()[2].as_biguint(), BigUint::from(3u32));
+    // shorter - longer hits the (None, Some) negation arm.
+    let d2 = b.sub(&a, &f);
+    // 1 - (3x^2 + 2x + 1) = -3x^2 - 2x = 98x^2 + 99x mod 101
+    assert_eq!(d2.coeffs()[0].as_biguint(), BigUint::from(0u32));
+    assert_eq!(d2.coeffs()[1].as_biguint(), BigUint::from(99u32));
+    assert_eq!(d2.coeffs()[2].as_biguint(), BigUint::from(98u32));
+}
+
+#[test]
+fn neg_negates_each_coefficient() {
+    let f = small_field();
+    let p = poly_from_ints(&[1, 2, 3], &f);
+    let n = p.neg(&f);
+    // -1, -2, -3 mod 101 = 100, 99, 98
+    assert_eq!(n.coeffs()[0].as_biguint(), BigUint::from(100u32));
+    assert_eq!(n.coeffs()[1].as_biguint(), BigUint::from(99u32));
+    assert_eq!(n.coeffs()[2].as_biguint(), BigUint::from(98u32));
+    // neg of zero poly is zero poly (empty coeffs).
+    assert!(UnivariatePoly::zero().neg(&f).is_zero());
+}
+
+#[test]
+fn scale_by_zero_yields_zero_poly() {
+    let f = small_field();
+    let p = poly_from_ints(&[1, 2, 3], &f);
+    let z = p.scale(&f.zero(), &f);
+    assert!(z.is_zero());
+    assert!(z.coeffs().is_empty());
+    // scaling the zero poly by a nonzero scalar is also zero.
+    let z2 = UnivariatePoly::zero().scale(&f.from_u64(7), &f);
+    assert!(z2.is_zero());
+}
+
+#[test]
+fn make_monic_of_zero_is_zero() {
+    let f = small_field();
+    let m = UnivariatePoly::zero().make_monic(&f);
+    assert!(m.is_zero());
+    assert!(m.coeffs().is_empty());
+}
+
+#[test]
+fn derivative_of_constant_and_zero_is_zero() {
+    let f = small_field();
+    // d/dx (5) = 0
+    assert!(poly_from_ints(&[5], &f).derivative(&f).is_zero());
+    // d/dx (0) = 0
+    assert!(UnivariatePoly::zero().derivative(&f).is_zero());
+}
+
+#[test]
+fn pow_mod_zero_exponent_is_one_mod_modulus() {
+    let f = small_field();
+    // base^0 mod (x^2 - 1) = 1 (degree-0 poly with coeff 1).
+    let base = poly_from_ints(&[3, 1], &f); // x + 3
+    let modulus = poly_from_ints(&[-1, 0, 1], &f); // x^2 - 1
+    let r = base.pow_mod(&BigUint::from(0u32), &modulus, &f);
+    assert_eq!(r.degree(), Some(0));
+    assert_eq!(r.coeffs()[0].as_biguint(), BigUint::from(1u32));
+}
+
+#[test]
+fn squarefree_derivative_zero_gf2() {
+    // Over GF(2), d/dx(x^2) = 2x = 0, so `squarefree` takes the
+    // derivative-is-zero branch and returns make_monic(x^2).
+    let f = gf2();
+    let x2 = poly_from_ints(&[0, 0, 1], &f); // x^2
+    let sf = squarefree(&x2, &f);
+    // make_monic(x^2) over GF(2) is x^2 itself (leading coeff already 1).
+    assert_eq!(sf.degree(), Some(2));
+    assert_eq!(sf.coeffs()[0].as_biguint(), BigUint::from(0u32));
+    assert_eq!(sf.coeffs()[1].as_biguint(), BigUint::from(0u32));
+    assert_eq!(sf.coeffs()[2].as_biguint(), BigUint::from(1u32));
+}
+
+#[test]
+fn find_roots_gf2_brute_force_split() {
+    // x^2 + x = x(x+1) over GF(2): roots {0, 1}. Exercises the GF(2)
+    // brute-force root enumeration branch in split_linear_factors.
+    let f = gf2();
+    let p = poly_from_ints(&[0, 1, 1], &f); // x^2 + x
+    let mut roots: Vec<BigUint> = find_roots(&p, &f)
+        .iter()
+        .map(|r| r.as_biguint())
+        .collect();
+    roots.sort();
+    assert_eq!(roots, vec![BigUint::from(0u32), BigUint::from(1u32)]);
+}
+
+#[test]
+fn squarefree_of_zero_poly_is_zero() {
+    // The `poly.is_zero()` early-return arm of `squarefree`: the zero
+    // polynomial has no squarefree part, so the result is zero.
+    let f = small_field();
+    let sf = squarefree(&UnivariatePoly::zero(), &f);
+    assert!(sf.is_zero());
+}
+
+#[test]
+fn rand_below_zero_bound_returns_zero() {
+    // `rand_below` with bound 0 has `bits == 0` and returns 0 without
+    // sampling (the degenerate-bound guard). Deterministic regardless of
+    // the RNG seed.
+    let mut rng = oorandom::Rand64::new(0xDEADBEEF);
+    let v = rand_below(&mut rng, &BigUint::from(0u32));
+    assert_eq!(v, BigUint::from(0u32));
+}
+
+#[test]
+fn cantor_zassenhaus_no_linear_part_returns_empty() {
+    // x^2 + 2 has no roots in GF(101) (chosen non-residue setup), so its
+    // distinct-linear part is degree 0 and cantor_zassenhaus returns [].
+    let f = small_field();
+    // Find a poly with no GF(101) roots: x^2 - nq for a non-QR nq.
+    let mut nonqr = None;
+    for cand in 2u64..50 {
+        let v = f.from_u64(cand);
+        let exp = (BigUint::from(101u32) - BigUint::one()) / BigUint::from(2u32);
+        if f.pow(&v, &exp).as_biguint() == BigUint::from(100u32) {
+            nonqr = Some(cand);
+            break;
+        }
+    }
+    let nq = nonqr.unwrap();
+    let p = poly_from_ints(&[nq as i64, 0, 1], &f); // x^2 + nq, no roots
+    let factors = cantor_zassenhaus(&p, &f);
+    assert!(factors.is_empty());
+}
+
+#[test]
+fn split_linear_factors_degree_zero_input_yields_no_factors() {
+    // `split_linear_factors`' top-of-loop `deg == 0` arm: pop a constant
+    // off the stack, `continue` without contributing a linear factor.
+    // Calling it on `UnivariatePoly::one(...)` seeds the stack with a
+    // single degree-0 element; the loop pops it, hits the deg==0 guard,
+    // and the stack drains empty without ever pushing into `out`.
+    //
+    // `cantor_zassenhaus` itself guards against degree-0 input at its
+    // entry (line 384 of univariate.rs), so this branch is exercised by
+    // a direct call into the private helper from the sibling test mod.
+    let f = small_field();
+    let mut rng = oorandom::Rand64::new(0xDEADBEEF);
+    let factors = split_linear_factors(&UnivariatePoly::one(&f), &f, &mut rng);
+    assert!(factors.is_empty(), "constant seed must produce no linear factors");
+}

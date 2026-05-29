@@ -159,6 +159,197 @@ fn auto_extract_respects_bitsum_fits_cap() {
     }
 }
 
+// ────────── detect_bit_constraint rejection paths ──────────
+
+#[test]
+fn detect_bit_constraint_rejects_mismatched_vars() {
+    // b^2 - c = 0: quad on var 0, lin on var 1 — different vars, so it is
+    // NOT a `b·(b-1)` constraint. Exercises the `quad.var != lin.var` reject.
+    let p = BigUint::from(7u32);
+    let eq = vec![
+        PolyTerm {
+            coeff: BigUint::from(1u32),
+            vars: vec![(0u32, 2)],
+        },
+        PolyTerm {
+            coeff: BigUint::from(6u32), // -1 mod 7
+            vars: vec![(1u32, 1)],
+        },
+    ];
+    assert_eq!(detect_bit_constraint(&eq, &p), None);
+}
+
+#[test]
+fn detect_bit_constraint_rejects_nonzero_coeff_sum() {
+    // x^2 + x = 0: quad coeff 1, lin coeff 1, sum = 2 ≠ 0 mod 7. This is
+    // x·(x+1), not a bit constraint. Exercises the `sum != 0` reject.
+    let p = BigUint::from(7u32);
+    let eq = vec![
+        PolyTerm {
+            coeff: BigUint::from(1u32),
+            vars: vec![(0u32, 2)],
+        },
+        PolyTerm {
+            coeff: BigUint::from(1u32),
+            vars: vec![(0u32, 1)],
+        },
+    ];
+    assert_eq!(detect_bit_constraint(&eq, &p), None);
+}
+
+#[test]
+fn detect_bit_constraint_accepts_canonical() {
+    // x^2 - x = 0 over GF(7): canonical bit constraint, var 0.
+    let p = BigUint::from(7u32);
+    let eq = vec![
+        PolyTerm {
+            coeff: BigUint::from(1u32),
+            vars: vec![(0u32, 2)],
+        },
+        PolyTerm {
+            coeff: BigUint::from(6u32),
+            vars: vec![(0u32, 1)],
+        },
+    ];
+    assert_eq!(detect_bit_constraint(&eq, &p), Some(0));
+}
+
+#[test]
+fn auto_extract_mismatched_bit_constraint_is_passthrough() {
+    // Two bogus "bit constraints" with mismatched vars / nonzero sum mean
+    // no bit is registered, so auto_extract returns the system unchanged.
+    let cs = cs_with(7, |b| {
+        let b0 = b.var("b0");
+        let c0 = b.var("c0");
+        // b0^2 - c0 (mismatched vars): not a bit constraint.
+        b.add_equality(vec![
+            PolyTerm {
+                coeff: BigUint::from(1u32),
+                vars: vec![(b0, 2)],
+            },
+            PolyTerm {
+                coeff: BigUint::from(6u32),
+                vars: vec![(c0, 1)],
+            },
+        ]);
+        // c0^2 + c0 (nonzero sum): not a bit constraint.
+        b.add_equality(vec![
+            PolyTerm {
+                coeff: BigUint::from(1u32),
+                vars: vec![(c0, 2)],
+            },
+            PolyTerm {
+                coeff: BigUint::from(1u32),
+                vars: vec![(c0, 1)],
+            },
+        ]);
+    });
+    let out = auto_extract_bitsums(&cs);
+    assert!(out.bitsums.is_empty());
+    assert_eq!(out.equalities.len(), cs.equalities.len());
+}
+
+// ────────── find_bitsum_chain term handling ──────────
+
+#[test]
+fn find_bitsum_chain_skips_zero_coeff_terms() {
+    // GF(13): chain b0 + 2·b1 with a stray 0·b2 term interleaved. The
+    // zero-coeff term must be skipped, leaving the chain [b0, b1] intact.
+    let p = BigUint::from(13u32);
+    let bits: HashSet<VarIdx> = [0u32, 1u32, 2u32].into_iter().collect();
+    let eq = vec![
+        PolyTerm {
+            coeff: BigUint::from(1u32),
+            vars: vec![(0u32, 1)],
+        },
+        PolyTerm {
+            coeff: BigUint::from(0u32), // skipped
+            vars: vec![(2u32, 1)],
+        },
+        PolyTerm {
+            coeff: BigUint::from(2u32),
+            vars: vec![(1u32, 1)],
+        },
+    ];
+    let (chain, base, consumed) =
+        find_bitsum_chain(&eq, &bits, &p, 2).expect("chain of length 2");
+    assert_eq!(chain, vec![0u32, 1u32]);
+    assert_eq!(base, BigUint::from(1u32));
+    // The two non-zero chain terms (indices 0 and 2) are consumed; the
+    // skipped zero term (index 1) is not.
+    assert!(consumed.contains(&0));
+    assert!(consumed.contains(&2));
+    assert!(!consumed.contains(&1));
+}
+
+#[test]
+fn find_bitsum_chain_breaks_on_gap() {
+    // GF(13): c·b0 + 2c·b1 present but 4c·b2 missing (gap). The chain
+    // stops at length 2; b2 (coeff 8) does not extend it.
+    let p = BigUint::from(13u32);
+    let bits: HashSet<VarIdx> = [0u32, 1u32, 2u32].into_iter().collect();
+    let eq = vec![
+        PolyTerm {
+            coeff: BigUint::from(1u32),
+            vars: vec![(0u32, 1)],
+        },
+        PolyTerm {
+            coeff: BigUint::from(2u32),
+            vars: vec![(1u32, 1)],
+        },
+        // coeff 8 = 8·c would be the 4th bit's slot (8c, not 4c) — there is
+        // no 4·b term, so the chain breaks after b1.
+        PolyTerm {
+            coeff: BigUint::from(8u32),
+            vars: vec![(2u32, 1)],
+        },
+    ];
+    let (chain, _base, _consumed) =
+        find_bitsum_chain(&eq, &bits, &p, 2).expect("chain of length 2");
+    assert_eq!(chain.len(), 2);
+    assert_eq!(chain, vec![0u32, 1u32]);
+}
+
+#[test]
+fn auto_extract_gap_caps_chain_length_gf13() {
+    // End-to-end: c·b0 + 2c·b1 with 4c·b2 missing yields a length-2 bitsum.
+    let cs = cs_with(13, |b| {
+        let b0 = b.var("b0");
+        let b1 = b.var("b1");
+        let b2 = b.var("b2");
+        for bv in [b0, b1, b2] {
+            b.add_equality(vec![
+                PolyTerm {
+                    coeff: BigUint::from(1u32),
+                    vars: vec![(bv, 2)],
+                },
+                PolyTerm {
+                    coeff: BigUint::from(12u32), // -1 mod 13
+                    vars: vec![(bv, 1)],
+                },
+            ]);
+        }
+        // b0 + 2·b1 + 8·b2 — gap at 4, so b2 is not part of the chain.
+        b.add_equality(vec![
+            PolyTerm {
+                coeff: BigUint::from(1u32),
+                vars: vec![(b0, 1)],
+            },
+            PolyTerm {
+                coeff: BigUint::from(2u32),
+                vars: vec![(b1, 1)],
+            },
+            PolyTerm {
+                coeff: BigUint::from(8u32),
+                vars: vec![(b2, 1)],
+            },
+        ]);
+    });
+    let out = auto_extract_bitsums(&cs);
+    assert_eq!(out.bitsums.len(), 1);
+    assert_eq!(out.bitsums[0].len(), 2, "gap caps the chain at b0, b1");
+}
+
 #[test]
 fn auto_extract_preserves_existing_bitsums() {
     // Pre-existing bitsum entries must still appear in the output.
@@ -170,4 +361,42 @@ fn auto_extract_preserves_existing_bitsums() {
     let out = auto_extract_bitsums(&cs);
     assert!(out.bitsums.len() >= 1);
     assert_eq!(out.bitsums[0], vec![0, 1]);
+}
+
+// ────────── find_bitsum_chain: by_coeff.get(&cur) None path ──────────
+
+#[test]
+fn find_bitsum_chain_break_when_next_coeff_missing() {
+    // GF(13): max_chain_bits = 3 (since 2^3=8 <= 13 < 16). Eq holds only
+    // the (coeff=1, b0) and (coeff=2, b1) bit terms plus a stray non-bit
+    // var term that is filtered out of `by_coeff` (vars not in `bits`).
+    // Chain: base=1 → consume b0, cur=2 → consume b1, cur=4 →
+    // `by_coeff.get(&4)` returns None → break. chain_vars.len() = 2 is
+    // strictly below the length cap of 3, so the cap branch is not what
+    // ended the loop; the missing-coefficient None branch did.
+    let p = BigUint::from(13u32);
+    // Only b0 and b1 are declared as bit-constrained; var index 2 is a
+    // generic FF var, so its term is dropped from `by_coeff` during
+    // bucket construction.
+    let bits: HashSet<VarIdx> = [0u32, 1u32].into_iter().collect();
+    let eq = vec![
+        PolyTerm {
+            coeff: BigUint::from(1u32),
+            vars: vec![(0u32, 1)],
+        },
+        PolyTerm {
+            coeff: BigUint::from(2u32),
+            vars: vec![(1u32, 1)],
+        },
+        // 5·v2 — v2 is not a declared bit, so this term is ignored when
+        // building the by_coeff buckets and cannot extend the chain.
+        PolyTerm {
+            coeff: BigUint::from(5u32),
+            vars: vec![(2u32, 1)],
+        },
+    ];
+    let (chain, base, _consumed) =
+        find_bitsum_chain(&eq, &bits, &p, 2).expect("chain of length 2");
+    assert_eq!(chain, vec![0u32, 1u32]);
+    assert_eq!(base, BigUint::from(1u32));
 }

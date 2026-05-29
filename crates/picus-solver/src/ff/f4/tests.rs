@@ -2,6 +2,7 @@ use super::*;
 use crate::ff::field::PrimeField;
 use crate::ff::monomial::MonomialOrder;
 use crate::ff::polynomial::PolyRing;
+use crate::timeout::CancelToken;
 use num_bigint::BigUint;
 
 fn ring_mod7(n_vars: usize) -> Arc<PolyRing> {
@@ -262,6 +263,63 @@ fn f4_multipair_3vars_overlapping_lts() {
     let f2 = x0.mul(&x1, &ring).sub(&x2, &ring);
     let f3 = x1.mul(&x1, &ring).sub(&x0, &ring);
     cross_check_all_pairs(vec![f1, f2, f3], &ring);
+}
+
+#[test]
+fn f4_precancelled_token_returns_empty() {
+    // A token that is already cancelled when `process_batch_with_workspace`
+    // is entered must short-circuit at the very first cancellation check
+    // and return no generators, even though the batch is non-empty and the
+    // S-poly would otherwise yield a new generator.
+    let ring = ring_mod7(2);
+    let x0 = x(0, &ring);
+    let x1 = x(1, &ring);
+    let xy = x0.mul(&x1, &ring);
+    let f1 = xy.sub(&DensePoly::constant(ring.field.one(), &ring), &ring); // x*y - 1
+    let y2 = x1.mul(&x1, &ring);
+    let f2 = y2.sub(&x0, &ring); // y^2 - x
+    let basis_polys = vec![f1.clone(), f2.clone()];
+    let basis_lts: Vec<Monomial> = basis_polys.iter().map(|p| lt(p, &ring)).collect();
+    let basis: Vec<F4BasisRef> = basis_polys
+        .iter()
+        .zip(basis_lts.iter())
+        .map(|(p, l)| F4BasisRef { poly: p, lt: l, lt_divmask: ring.divmask.compute(l), active: true })
+        .collect();
+    let lcm = lt(&f1, &ring).lcm(&lt(&f2, &ring));
+    let lcm_dm = ring.divmask.compute(&lcm);
+    let lcm_deg = lcm.total_degree();
+    let pair = SPair {
+        i: 0,
+        j: 1,
+        sugar: lcm_deg,
+        lcm,
+        lcm_divmask: lcm_dm,
+        lcm_deg,
+        age: 0,
+        generation: 0,
+        is_coprime: false,
+    };
+
+    // Sanity: with no cancellation the batch yields a generator.
+    let uncancelled = process_batch(&[&pair], &basis, &ring, None);
+    assert!(!uncancelled.is_empty(), "control: batch must produce a generator");
+
+    let token = CancelToken::cancelled();
+    let mut ws = F4Workspace::new();
+    let out = process_batch_with_workspace(&[&pair], &basis, &ring, Some(&token), &mut ws);
+    assert!(out.is_empty(), "pre-cancelled token must yield no generators");
+}
+
+#[test]
+fn f4_empty_batch_returns_empty() {
+    // An empty batch returns no generators regardless of cancellation state.
+    let ring = ring_mod7(2);
+    let basis: Vec<F4BasisRef> = Vec::new();
+    let out = process_batch(&[], &basis, &ring, None);
+    assert!(out.is_empty());
+    let token = CancelToken::cancelled();
+    let out_cancelled = process_batch(&[], &basis, &ring, Some(&token));
+    assert!(out_cancelled.is_empty());
 }
 
 #[test]
@@ -1235,4 +1293,264 @@ fn f4_large_batch_homog_5vars_deg2() {
         "F4 and per-pair LT sets must agree on homog-5vars; F4 stats={:?}",
         stats,
     );
+}
+
+// ─── S-poly loop: pair referencing a missing basis index ──────
+
+#[test]
+fn process_batch_skips_pair_with_out_of_range_basis_index() {
+    // A pair whose `i`/`j` exceeds the basis length (a stale index left
+    // by deactivation) is skipped in the S-poly construction loop. With
+    // the only pair skipped no S-poly is built, so the batch yields no
+    // generators.
+    let ring = ring_mod7(2);
+    let x0 = x(0, &ring);
+    let basis_polys = vec![x0.clone()];
+    let basis_lts: Vec<Monomial> = basis_polys.iter().map(|p| lt(p, &ring)).collect();
+    let basis: Vec<F4BasisRef> = basis_polys
+        .iter()
+        .zip(basis_lts.iter())
+        .map(|(p, l)| F4BasisRef { poly: p, lt: l, lt_divmask: ring.divmask.compute(l), active: true })
+        .collect();
+    // i = 0 is valid, j = 99 is out of range ⇒ the pair is skipped.
+    let lcm = lt(&x0, &ring);
+    let lcm_dm = ring.divmask.compute(&lcm);
+    let lcm_deg = lcm.total_degree();
+    let bad_pair = SPair {
+        i: 0,
+        j: 99,
+        sugar: lcm_deg,
+        lcm,
+        lcm_divmask: lcm_dm,
+        lcm_deg,
+        age: 0,
+        generation: 0,
+        is_coprime: false,
+    };
+    let out = process_batch(&[&bad_pair], &basis, &ring, None);
+    assert!(out.is_empty(), "out-of-range pair must be skipped, yielding no S-poly");
+}
+
+// ─── symbolic_preprocess: reducer found / not-found / cancel ──
+
+#[test]
+fn symbolic_preprocess_finds_and_misses_reducers() {
+    // Basis = {x0} (LT x0). S-poly = x0·x1 + x2.
+    //  * monomial x0·x1 is divisible by x0 ⇒ a reducer row is built
+    //    (the `b.lt.divides(m)` break), and its basis index 0 is
+    //    recorded.
+    //  * monomial x2 is not divisible by x0 ⇒ no reducer (the
+    //    `found == None` continue).
+    let ring = ring_mod7(3);
+    let x0 = x(0, &ring);
+    let x1 = x(1, &ring);
+    let x2 = x(2, &ring);
+    let basis_polys = vec![x0.clone()];
+    let basis_lts: Vec<Monomial> = basis_polys.iter().map(|p| lt(p, &ring)).collect();
+    let basis: Vec<F4BasisRef> = basis_polys
+        .iter()
+        .zip(basis_lts.iter())
+        .map(|(p, l)| F4BasisRef { poly: p, lt: l, lt_divmask: ring.divmask.compute(l), active: true })
+        .collect();
+    let spoly = x0.mul(&x1, &ring).add(&x2, &ring); // x0·x1 + x2
+    let mut ws = F4Workspace::new();
+    let (all_polys, n_spolys, reducer_lts, reducer_basis_idx) =
+        symbolic_preprocess(vec![spoly], &basis, &ring, None, &mut ws);
+    assert_eq!(n_spolys, 1);
+    // x0·x1 produced exactly one reducer row, built from basis element 0.
+    assert_eq!(reducer_basis_idx, vec![0], "x0 must reduce x0·x1");
+    assert_eq!(reducer_lts.len(), 1);
+    // all_polys = [spoly, reducer]: the reducer was appended.
+    assert_eq!(all_polys.len(), n_spolys + reducer_basis_idx.len());
+}
+
+#[test]
+fn symbolic_preprocess_returns_early_on_pre_cancelled_token() {
+    // A pre-cancelled token makes the worklist loop bail on the first
+    // monomial (the in-loop cancel check), returning the S-polys with no
+    // reducer rows discovered yet.
+    let ring = ring_mod7(2);
+    let x0 = x(0, &ring);
+    let x1 = x(1, &ring);
+    let basis_polys = vec![x0.clone()];
+    let basis_lts: Vec<Monomial> = basis_polys.iter().map(|p| lt(p, &ring)).collect();
+    let basis: Vec<F4BasisRef> = basis_polys
+        .iter()
+        .zip(basis_lts.iter())
+        .map(|(p, l)| F4BasisRef { poly: p, lt: l, lt_divmask: ring.divmask.compute(l), active: true })
+        .collect();
+    let spoly = x0.mul(&x1, &ring); // x0·x1 — worklist seeds non-empty
+    let token = CancelToken::cancelled();
+    let mut ws = F4Workspace::new();
+    let (all_polys, n_spolys, _reducer_lts, reducer_basis_idx) =
+        symbolic_preprocess(vec![spoly], &basis, &ring, Some(&token), &mut ws);
+    assert_eq!(n_spolys, 1);
+    // Loop bailed before adding any reducer row.
+    assert!(reducer_basis_idx.is_empty(), "cancelled worklist adds no reducers");
+    assert_eq!(all_polys.len(), 1, "only the S-poly is present");
+}
+
+// ─── S-poly loop: scale_j division-by-zero arm ─────────────────
+
+#[test]
+fn process_batch_skips_pair_when_lc_j_is_zero() {
+    // The `field.div(lc_i, lc_j)` call returns `None` iff `lc_j == 0`. Build
+    // a malformed basis element whose stored coefficient vector starts with
+    // a zero — `is_zero()` is `coeffs.is_empty()`, so a single-zero-coeff
+    // poly is non-zero by that check, but `leading_coefficient()` returns
+    // `Some(&zero)`. The S-poly construction loop's scale_j division then
+    // produces `None` and the pair is skipped; no S-poly is built, so the
+    // batch yields no outputs.
+    let ring = ring_mod7(2);
+    let real = x(0, &ring); // x0, leading coefficient 1
+    let real_lt = lt(&real, &ring);
+    // Build a non-zero-by-emptiness poly whose stored leading coefficient
+    // is the zero field element. `from_raw_sorted` performs no zero-strip.
+    let zero_lc_poly = DensePoly::from_raw_sorted(
+        vec![1u16, 0],                // monomial exponents = x0
+        vec![ring.field.zero()],     // single coefficient slot, value 0
+        vec![1u32],
+    );
+    let zero_lc_lt = Monomial::from_exponents(vec![1, 0]);
+    let basis = vec![
+        F4BasisRef {
+            poly: &real,
+            lt: &real_lt,
+            lt_divmask: ring.divmask.compute(&real_lt),
+            active: true,
+        },
+        F4BasisRef {
+            poly: &zero_lc_poly,
+            lt: &zero_lc_lt,
+            lt_divmask: ring.divmask.compute(&zero_lc_lt),
+            active: true,
+        },
+    ];
+    let lcm = real_lt.lcm(&zero_lc_lt);
+    let lcm_dm = ring.divmask.compute(&lcm);
+    let lcm_deg = lcm.total_degree();
+    let pair = SPair {
+        i: 0,
+        j: 1,
+        sugar: lcm_deg,
+        lcm,
+        lcm_divmask: lcm_dm,
+        lcm_deg,
+        age: 0,
+        generation: 0,
+        is_coprime: false,
+    };
+    let out = process_batch(&[&pair], &basis, &ring, None);
+    assert!(out.is_empty(), "lc_j=0 must skip the pair, yielding no F4 output");
+}
+
+// ─── symbolic_preprocess: mul_term-produces-zero and no-divisor arms ────────
+
+#[test]
+fn symbolic_preprocess_skips_ghost_reducer_with_zero_poly() {
+    // A ghost `F4BasisRef` whose `poly` is the zero polynomial but whose
+    // `lt` divides an S-poly monomial: `basis[bi].poly.mul_term(...)` yields
+    // zero (mul_term short-circuits on `self.is_zero()`), exercising the
+    // `if reducer.is_zero() { continue; }` arm.
+    //
+    // Real basis: f0 = x0·x1 − 1 (lt = x0·x1), f1 = x1^2 − x0 (lt = x1^2).
+    // S(f0, f1) (lcm = x0·x1^2) = x0^2 − x1, contributing monomials
+    // {x0·x1^2, x0^2, x1}. The ghost has lt = x0 and divides x0^2 (and
+    // x0·x1^2). The real reducers (lt x0·x1 / x1^2) do not divide x0^2,
+    // so the ghost is the FIRST divisor reached for that monomial — its
+    // mul_term(zero) returns zero, triggering the zero-reducer continue.
+    //
+    // The monomial x1 has no active basis divisor (no `lt` divides x1),
+    // hitting the `None => continue` arm for that worklist entry.
+    let ring = ring_mod7(2);
+    let x0 = x(0, &ring);
+    let x1 = x(1, &ring);
+    let f0 = x0.mul(&x1, &ring).sub(&DensePoly::constant(ring.field.one(), &ring), &ring);
+    let f1 = x1.mul(&x1, &ring).sub(&x0, &ring);
+    let f0_lt = lt(&f0, &ring);
+    let f1_lt = lt(&f1, &ring);
+    let zero_poly = DensePoly::zero();
+    let ghost_lt = Monomial::from_exponents(vec![1, 0]); // x0
+    let basis = vec![
+        F4BasisRef {
+            poly: &f0,
+            lt: &f0_lt,
+            lt_divmask: ring.divmask.compute(&f0_lt),
+            active: true,
+        },
+        F4BasisRef {
+            poly: &f1,
+            lt: &f1_lt,
+            lt_divmask: ring.divmask.compute(&f1_lt),
+            active: true,
+        },
+        F4BasisRef {
+            poly: &zero_poly,
+            lt: &ghost_lt,
+            lt_divmask: ring.divmask.compute(&ghost_lt),
+            active: true,
+        },
+    ];
+    // S(f0, f1): m_f0 = x1, m_f1 = x0; lc_f0=lc_f1=1 ⇒ scale_j=1.
+    // = x1·(x0·x1 − 1) − x0·(x1^2 − x0) = x0·x1^2 − x1 − x0·x1^2 + x0^2
+    // = x0^2 − x1.
+    let s_poly = DensePoly::from_terms(
+        vec![
+            (Monomial::from_exponents(vec![2, 0]), ring.field.from_u64(1)),
+            (Monomial::from_exponents(vec![0, 1]), ring.field.from_i64(-1)),
+        ],
+        &ring,
+    );
+    let mut ws = F4Workspace::new();
+    let (all_polys, n_spolys, reducer_lts, reducer_basis_idx) =
+        symbolic_preprocess(vec![s_poly], &basis, &ring, None, &mut ws);
+    assert_eq!(n_spolys, 1);
+    // The ghost contributed no reducer row (its mul_term produced zero, so
+    // the `continue` at the `reducer.is_zero()` guard fired). The non-ghost
+    // basis elements do not divide x0^2 or x1, so `reducer_basis_idx` is
+    // entirely free of the ghost index 2 — and in fact empty.
+    assert!(
+        !reducer_basis_idx.contains(&2),
+        "ghost (basis index 2) must NOT appear among reducer indices: {:?}",
+        reducer_basis_idx,
+    );
+    // No reducer row materialised at all: only the S-poly remains.
+    assert_eq!(all_polys.len(), n_spolys, "no reducer rows added");
+    assert!(reducer_lts.is_empty(), "no reducer LTs recorded");
+}
+
+#[test]
+fn symbolic_preprocess_break_exits_inner_loop_on_first_divisor() {
+    // The `break` at the end of the divisor-search loop in
+    // symbolic_preprocess exits on the FIRST basis element whose `lt`
+    // divides the monomial. Place the matching divisor at index 1 with
+    // an unrelated active element at index 0: the search must skip
+    // index 0 (no divides) and break at index 1 (found), recording a
+    // single reducer-row contribution.
+    let ring = ring_mod7(3);
+    let f_extra = x(2, &ring); // lt = x2, divmask carries x2
+    let f_div   = x(0, &ring); // lt = x0, will divide the spoly monomial
+    let extra_lt = lt(&f_extra, &ring);
+    let div_lt   = lt(&f_div, &ring);
+    let basis = vec![
+        F4BasisRef { poly: &f_extra, lt: &extra_lt, lt_divmask: ring.divmask.compute(&extra_lt), active: true },
+        F4BasisRef { poly: &f_div,   lt: &div_lt,   lt_divmask: ring.divmask.compute(&div_lt),   active: true },
+    ];
+    // S-poly carrying a single monomial x0·x1: divisible by x0 (index 1),
+    // NOT divisible by x2 (index 0). The search visits index 0 (divmask
+    // reject), then index 1 (found, break).
+    let s_poly = DensePoly::from_terms(
+        vec![(Monomial::from_exponents(vec![1, 1, 0]), ring.field.from_u64(1))],
+        &ring,
+    );
+    let mut ws = F4Workspace::new();
+    let (_all_polys, n_spolys, reducer_lts, reducer_basis_idx) =
+        symbolic_preprocess(vec![s_poly], &basis, &ring, None, &mut ws);
+    assert_eq!(n_spolys, 1);
+    // Exactly one reducer was added, contributed by basis index 1.
+    assert_eq!(reducer_basis_idx, vec![1],
+        "the break must select the first-found divisor (index 1)");
+    assert_eq!(reducer_lts.len(), 1);
+    // The reducer LT records the worklist monomial x0·x1.
+    assert_eq!(reducer_lts[0].exponents(), &[1, 1, 0]);
 }

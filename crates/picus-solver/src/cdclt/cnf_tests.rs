@@ -131,6 +131,164 @@ fn double_negation_flat() {
 }
 
 #[test]
+fn false_folds_to_constant_false() {
+    let mut atoms = AtomTable::new(BigUint::from(101u32));
+    let mut sat = Solver::new();
+    let vn: Vec<String> = vec![];
+    let r = tseitin(&Formula::False, &vn, &mut atoms, &mut sat);
+    match r {
+        TseitinResult::Constant(false) => {}
+        _ => panic!("expected Constant(false)"),
+    }
+    assert_eq!(sat.n_vars(), 0);
+    assert_eq!(sat.n_clauses(), 0);
+}
+
+#[test]
+fn not_constant_flips_truth_value() {
+    let mut atoms = AtomTable::new(BigUint::from(101u32));
+    let mut sat = Solver::new();
+    let vn: Vec<String> = vec![];
+    let r_true = tseitin(
+        &Formula::Not(Box::new(Formula::True)),
+        &vn,
+        &mut atoms,
+        &mut sat,
+    );
+    assert!(matches!(r_true, TseitinResult::Constant(false)));
+    let r_false = tseitin(
+        &Formula::Not(Box::new(Formula::False)),
+        &vn,
+        &mut atoms,
+        &mut sat,
+    );
+    assert!(matches!(r_false, TseitinResult::Constant(true)));
+    assert_eq!(sat.n_vars(), 0);
+    assert_eq!(sat.n_clauses(), 0);
+}
+
+#[test]
+fn trivially_true_atom_folds_to_constant() {
+    // `(= 0 0)` interns to a trivially-true atom; positive polarity
+    // folds to Constant(true), negation to Constant(false).
+    let mut atoms = AtomTable::new(BigUint::from(101u32));
+    let mut sat = Solver::new();
+    let vn: Vec<String> = vec![];
+    let triv = Formula::Lit(Literal::Eq(vec![], vec![]));
+    let r = tseitin(&triv, &vn, &mut atoms, &mut sat);
+    assert!(matches!(r, TseitinResult::Constant(true)));
+    let r_neg = tseitin(
+        &Formula::Not(Box::new(Formula::Lit(Literal::Eq(vec![], vec![])))),
+        &vn,
+        &mut atoms,
+        &mut sat,
+    );
+    assert!(matches!(r_neg, TseitinResult::Constant(false)));
+    assert_eq!(sat.n_vars(), 0);
+    assert_eq!(sat.n_clauses(), 0);
+}
+
+#[test]
+fn and_all_true_children_folds_to_true() {
+    let mut atoms = AtomTable::new(BigUint::from(101u32));
+    let mut sat = Solver::new();
+    let vn: Vec<String> = vec![];
+    let f = Formula::And(vec![Formula::True, Formula::True]);
+    let r = tseitin(&f, &vn, &mut atoms, &mut sat);
+    assert!(matches!(r, TseitinResult::Constant(true)));
+    assert_eq!(sat.n_vars(), 0);
+    assert_eq!(sat.n_clauses(), 0);
+}
+
+#[test]
+fn and_drops_true_and_returns_single_remaining_lit() {
+    // `And([True, x=0])` reduces to the single literal x=0 with no
+    // auxiliary Tseitin variable allocated.
+    let mut atoms = AtomTable::new(BigUint::from(101u32));
+    let mut sat = Solver::new();
+    let vn = names(&["x"]);
+    let f = Formula::And(vec![Formula::True, lit_eq(1, 0, 5)]);
+    let r = tseitin(&f, &vn, &mut atoms, &mut sat);
+    match r {
+        TseitinResult::Lit(l) => {
+            assert!(l.is_positive());
+            // Exactly the atom var; no aux var created.
+            assert_eq!(sat.n_vars(), 1);
+            assert!(!atoms.is_auxiliary(l.var()));
+        }
+        _ => panic!("expected Lit"),
+    }
+}
+
+#[test]
+fn and_single_child_returns_lit_directly() {
+    let mut atoms = AtomTable::new(BigUint::from(101u32));
+    let mut sat = Solver::new();
+    let vn = names(&["x"]);
+    let f = Formula::And(vec![lit_eq(1, 0, 5)]);
+    let r = tseitin(&f, &vn, &mut atoms, &mut sat);
+    match r {
+        TseitinResult::Lit(l) => {
+            assert_eq!(sat.n_vars(), 1);
+            assert!(!atoms.is_auxiliary(l.var()));
+        }
+        _ => panic!("expected Lit"),
+    }
+    assert_eq!(sat.n_clauses(), 0);
+}
+
+#[test]
+fn and_false_child_short_circuits_to_false() {
+    let mut atoms = AtomTable::new(BigUint::from(101u32));
+    let mut sat = Solver::new();
+    let vn = names(&["x"]);
+    let f = Formula::And(vec![lit_eq(1, 0, 5), Formula::False]);
+    let r = tseitin(&f, &vn, &mut atoms, &mut sat);
+    assert!(matches!(r, TseitinResult::Constant(false)));
+}
+
+#[test]
+fn or_true_child_folds_to_true() {
+    let mut atoms = AtomTable::new(BigUint::from(101u32));
+    let mut sat = Solver::new();
+    let vn = names(&["x"]);
+    let f = Formula::Or(vec![Formula::True, lit_eq(1, 0, 5)]);
+    let r = tseitin(&f, &vn, &mut atoms, &mut sat);
+    assert!(matches!(r, TseitinResult::Constant(true)));
+}
+
+#[test]
+fn or_all_false_children_folds_to_false() {
+    let mut atoms = AtomTable::new(BigUint::from(101u32));
+    let mut sat = Solver::new();
+    let vn: Vec<String> = vec![];
+    let f = Formula::Or(vec![Formula::False, Formula::False]);
+    let r = tseitin(&f, &vn, &mut atoms, &mut sat);
+    assert!(matches!(r, TseitinResult::Constant(false)));
+    assert_eq!(sat.n_vars(), 0);
+    assert_eq!(sat.n_clauses(), 0);
+}
+
+#[test]
+fn or_drops_false_and_returns_single_remaining_lit() {
+    // `Or([False, x=0])` reduces to the literal x=0 with no aux var.
+    let mut atoms = AtomTable::new(BigUint::from(101u32));
+    let mut sat = Solver::new();
+    let vn = names(&["x"]);
+    let f = Formula::Or(vec![Formula::False, lit_eq(1, 0, 5)]);
+    let r = tseitin(&f, &vn, &mut atoms, &mut sat);
+    match r {
+        TseitinResult::Lit(l) => {
+            assert!(l.is_positive());
+            assert_eq!(sat.n_vars(), 1);
+            assert!(!atoms.is_auxiliary(l.var()));
+        }
+        _ => panic!("expected Lit"),
+    }
+    assert_eq!(sat.n_clauses(), 0);
+}
+
+#[test]
 fn lit_value_consistency_after_solve() {
     let mut atoms = AtomTable::new(BigUint::from(101u32));
     let mut sat = Solver::new();

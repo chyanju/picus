@@ -72,6 +72,19 @@ fn indexed_distinct_degrees_kept_separate() {
 }
 
 #[test]
+fn indexed_intra_term_merge_then_compact_swap() {
+    let p = BigUint::from(101u32);
+    // Within one term: [(0,1), (0,1), (1,1)] → the two var-0 entries merge
+    // to (0,2); the trailing distinct var-1 entry must be compacted forward
+    // (the `read != write` swap), giving [(0,2), (1,1)] = x^2 * y.
+    let mut t = vec![idx_term(1, &[(0, 1), (0, 1), (1, 1)])];
+    normalize_term_list(&mut t, &p);
+    assert_eq!(t.len(), 1);
+    assert_eq!(t[0].coeff, BigUint::from(1u32));
+    assert_eq!(t[0].vars, vec![(0, 2), (1, 1)]);
+}
+
+#[test]
 fn indexed_drop_zero_coeff() {
     let p = BigUint::from(101u32);
     let mut t = vec![

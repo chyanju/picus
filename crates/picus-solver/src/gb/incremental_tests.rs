@@ -122,6 +122,23 @@ fn equality_with_repeated_var_encodes_as_higher_exponent() {
 }
 
 #[test]
+fn encode_failure_surfaces_as_unknown() {
+    // `encode` rejects a ring with more than 5000 variables. Asserting one
+    // equality over 5001 distinct variable names drives the encoder past
+    // that bound, so `check` takes the `Err` arm and returns Unknown
+    // (never a SAT/UNSAT verdict from an unencodable system).
+    let mut solver = IncrementalSolver::new(BigUint::from(7u32), false);
+    let terms: Vec<NamedTerm> = (0..5001)
+        .map(|i| NamedTerm {
+            coeff: BigUint::from(1u32),
+            vars: vec![format!("v{i}")],
+        })
+        .collect();
+    solver.assert_equality(terms);
+    assert!(matches!(solver.check(), SolveOutcome::Unknown));
+}
+
+#[test]
 fn check_with_timeout_eventually_returns() {
     // Trivial instance; just exercise the timeout-wrapper code path.
     let mut solver = IncrementalSolver::new(BigUint::from(7u32), false);

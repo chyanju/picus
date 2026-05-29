@@ -151,6 +151,95 @@ fn bitprop_phase2_smallprime_modp_collision_is_sound() {
     }
 }
 
+/// Phase 2 with cancellation: two non-constant bitsums `A = b0+2·b1` and
+/// `B = c0+2·c1` proven equal by a basis containing `b0-c0`, `b1-c1` (and
+/// all four bit constraints). With `2^2 = 4 <= 17` the bitwise equalities
+/// `b0=c0`, `b1=c1` are sound and must be propagated. Passing
+/// `Some(&token)` exercises the cancel-aware `contains_with_cancel` arm.
+#[test]
+fn test_bitprop_phase2_equal_bitsums_with_cancel() {
+    use crate::timeout::CancelToken;
+    let pr = FfPolyRing::new(
+        ff(17),
+        vec![
+            "b0".into(),
+            "b1".into(),
+            "c0".into(),
+            "c1".into(),
+        ],
+    );
+    // basis: b0 - c0, b1 - c1, plus bit constraints for all four vars.
+    let mut polys = vec![
+        pr.sub(pr.var(0), pr.var(2)),
+        pr.sub(pr.var(1), pr.var(3)),
+    ];
+    for v in 0..4 {
+        let x = pr.var(v);
+        let x2 = pr.mul(pr.clone_poly(&x), pr.clone_poly(&x));
+        polys.push(pr.sub(x2, x));
+    }
+    let ideal = Ideal::new(&pr, polys);
+    assert!(!ideal.is_whole_ring(), "system is SAT (e.g. all zero)");
+
+    let mut bp = BitProp::new(&pr);
+    bp.add_bitsum(vec![0, 1]); // A = b0 + 2*b1
+    bp.add_bitsum(vec![2, 3]); // B = c0 + 2*c1
+    for v in 0..4 {
+        bp.add_bit(v);
+    }
+
+    let token = CancelToken::new();
+    let eqs =
+        bp.get_bit_equalities_with_cancel(std::slice::from_ref(&ideal), Some(&token));
+    // Two bitwise equalities b0=c0, b1=c1 (length-2 bitsums, min=max=2).
+    assert_eq!(eqs.len(), 2);
+    for e in &eqs {
+        assert!(
+            ideal.contains(e),
+            "Phase 2 propagated equality must already hold in I"
+        );
+    }
+}
+
+/// Phase 2 short-circuits when the cancel token is already cancelled:
+/// `get_bit_equalities_with_cancel` returns whatever was derived (here
+/// nothing, since the two non-constant bitsums never reach the pair
+/// loop). Partial output is still sound.
+#[test]
+fn test_bitprop_phase2_cancelled_returns_partial() {
+    use crate::timeout::CancelToken;
+    let pr = FfPolyRing::new(
+        ff(17),
+        vec!["b0".into(), "b1".into(), "c0".into(), "c1".into()],
+    );
+    let mut polys = vec![
+        pr.sub(pr.var(0), pr.var(2)),
+        pr.sub(pr.var(1), pr.var(3)),
+    ];
+    for v in 0..4 {
+        let x = pr.var(v);
+        let x2 = pr.mul(pr.clone_poly(&x), pr.clone_poly(&x));
+        polys.push(pr.sub(x2, x));
+    }
+    let ideal = Ideal::new(&pr, polys);
+
+    let mut bp = BitProp::new(&pr);
+    bp.add_bitsum(vec![0, 1]);
+    bp.add_bitsum(vec![2, 3]);
+    for v in 0..4 {
+        bp.add_bit(v);
+    }
+
+    let token = CancelToken::cancelled();
+    let eqs =
+        bp.get_bit_equalities_with_cancel(std::slice::from_ref(&ideal), Some(&token));
+    // Cancelled before any pair was processed: no equalities emitted, and
+    // every emitted poly (none here) is sound by construction.
+    for e in &eqs {
+        assert!(ideal.contains(e));
+    }
+}
+
 /// Soundness guard (Phase 1): a bitsum reducing to a constant
 /// `val` only forces `b_i = bit_i(val)` when the bitsum cannot
 /// overflow `p`. GF(7): `A = b0+2b1+4b2 = 0` admits both `(0,0,0)`

@@ -90,6 +90,51 @@ fn gm_insert_erases_dominated_existing() {
     assert_eq!(list[0].lcm.exponents(), &[1u16, 0u16]);
 }
 
+#[test]
+fn gm_insert_f_criterion_replaces_with_coprime_at_equal_lcm() {
+    // existing and new share lcm (1, 1). existing is non-coprime, new is
+    // coprime ⇒ the Gebauer-Möller F-criterion replaces existing with the
+    // coprime pair (and drops the rest implicitly: list length stays 1).
+    let mut list = vec![make(vec![1, 1], 3, 1, false, (0, 1))];
+    let new = make(vec![1, 1], 3, 2, true, (3, 4));
+    gm_insert(&mut list, new);
+    assert_eq!(list.len(), 1);
+    // The surviving pair is the coprime newcomer (parents (3, 4)).
+    assert_eq!(list[0].parents(), (3, 4));
+    assert!(list[0].is_coprime());
+}
+
+#[test]
+fn gm_insert_keeps_existing_at_equal_lcm_when_new_not_coprime() {
+    // Same lcm, but the newcomer is NOT coprime: the F-criterion branch
+    // is inert, the existing dominates, and the newcomer is dropped.
+    let mut list = vec![make(vec![1, 1], 3, 1, false, (0, 1))];
+    let new = make(vec![1, 1], 3, 2, false, (3, 4));
+    gm_insert(&mut list, new);
+    assert_eq!(list.len(), 1);
+    // Existing kept unchanged.
+    assert_eq!(list[0].parents(), (0, 1));
+}
+
+// ────────── merge_sorted_descending: dst exhausts first ──────────
+
+#[test]
+fn merge_descending_drains_dst_then_extends_incoming() {
+    // dst = [deg 3]; incoming = [deg 2, deg 1]. `dst` (the `a` iterator)
+    // empties after one step, so the `(None, Some)` arm extends the
+    // remaining incoming tail.
+    let mut dst = vec![make(vec![3, 0], 3, 1, false, (0, 1))];
+    let incoming = vec![
+        make(vec![2, 0], 3, 2, false, (0, 2)),
+        make(vec![1, 0], 3, 3, false, (1, 2)),
+    ];
+    merge_sorted_descending(&mut dst, incoming);
+    assert_eq!(dst.len(), 3);
+    assert_eq!(dst[0].lcm_deg, 3);
+    assert_eq!(dst[1].lcm_deg, 2);
+    assert_eq!(dst[2].lcm_deg, 1);
+}
+
 // ────────── b_criterion_kill ──────────
 
 // The B-criterion needs a basis with leading terms. Build a minimal

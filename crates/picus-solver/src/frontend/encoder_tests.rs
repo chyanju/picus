@@ -353,6 +353,279 @@ fn auto_extract_indexed_sound_chain() {
     );
 }
 
+/// `compact_used_vars` drops variables no constraint references and
+/// remaps every surviving index. Five user variables `v0..v4` are
+/// interned but only `v1` and `v3` appear (one equality `2*v1 + 3*v3`,
+/// one disequality `v1 != v3`). After encoding, the ring must hold only
+/// the two referenced user variables (plus the one Rabinowitsch
+/// witness), and the equality polynomial must reference exactly those
+/// two compacted indices.
+#[test]
+fn compact_used_vars_drops_unreferenced_and_remaps() {
+    let mut b = empty_builder(101);
+    let _v0 = b.var("v0");
+    let v1 = b.var("v1");
+    let _v2 = b.var("v2");
+    let v3 = b.var("v3");
+    let _v4 = b.var("v4");
+    b.add_equality(vec![idx_term(2, &[(v1, 1)]), idx_term(3, &[(v3, 1)])]);
+    b.add_disequality(v1, v3);
+    let sys = b.build();
+    assert_eq!(sys.var_names.len(), 5, "5 user vars interned");
+
+    let enc = encode(&sys).expect("encode");
+    // 2 surviving user vars (v1, v3) + 1 Rabinowitsch witness.
+    assert_eq!(enc.poly_ring.n_vars(), 3);
+    assert!(enc.var_map.contains_key("v1"));
+    assert!(enc.var_map.contains_key("v3"));
+    assert!(!enc.var_map.contains_key("v0"));
+    assert!(!enc.var_map.contains_key("v2"));
+    assert!(!enc.var_map.contains_key("v4"));
+    // v1, v3 remap to the first two compacted slots 0, 1 (sorted order).
+    assert_eq!(enc.var_map["v1"], 0);
+    assert_eq!(enc.var_map["v3"], 1);
+    assert!(enc.var_map.contains_key("__w_diseq_0"));
+    // One equality poly + one Rabinowitsch poly.
+    assert_eq!(enc.polynomials.len(), 2);
+    // The equality `2*v1 + 3*v3` references only the two compacted vars.
+    let eq_poly = enc
+        .polynomials
+        .iter()
+        .find(|p| p.num_terms() == 2)
+        .expect("equality poly with two terms");
+    let appearing = enc.poly_ring.ring.appearing_indeterminates(eq_poly);
+    let mut vs: Vec<usize> = appearing.into_iter().collect();
+    vs.sort_unstable();
+    assert_eq!(vs, vec![0, 1]);
+}
+
+/// `compact_used_vars` remaps bitsum and assignment indices too. A
+/// leading filler variable `pad` is unreferenced; an assignment pins
+/// `s`, and a user bitsum lists `b0, b1`. After compaction the bitsum
+/// chain and assignment must point at the renumbered slots, and the
+/// `__bitsum_0` aux must follow the three surviving user vars.
+#[test]
+fn compact_used_vars_remaps_bitsum_and_assignment() {
+    let mut b = empty_builder(13);
+    let _pad = b.var("pad"); // unreferenced
+    let s = b.var("s");
+    let b0 = b.var("b0");
+    let b1 = b.var("b1");
+    b.add_assignment(s, BigUint::from(0u32));
+    b.add_bitsum(vec![b0, b1]);
+    let sys = b.build();
+    assert_eq!(sys.var_names.len(), 4);
+
+    let enc = encode(&sys).expect("encode");
+    // 3 surviving user vars (s, b0, b1) + 1 bitsum aux; pad dropped.
+    assert_eq!(enc.poly_ring.n_vars(), 4);
+    assert!(!enc.var_map.contains_key("pad"));
+    assert_eq!(enc.var_map["s"], 0);
+    assert_eq!(enc.var_map["b0"], 1);
+    assert_eq!(enc.var_map["b1"], 2);
+    // bitsum aux follows the 3 user vars (no diseq witnesses here).
+    assert_eq!(enc.var_map["__bitsum_0"], 3);
+    assert_eq!(enc.bitsum_polys.len(), 1);
+}
+
+/// `compact_used_vars` is a no-op when every variable is referenced:
+/// `n_vars` stays put and the system round-trips through encoding.
+#[test]
+fn compact_used_vars_noop_when_all_referenced() {
+    let mut b = empty_builder(101);
+    let x = b.var("x");
+    let y = b.var("y");
+    b.add_equality(vec![idx_term(1, &[(x, 1)]), idx_term(1, &[(y, 1)])]);
+    let sys = b.build();
+    let enc = encode(&sys).expect("encode");
+    assert_eq!(enc.poly_ring.n_vars(), 2);
+    assert!(enc.var_map.contains_key("x"));
+    assert!(enc.var_map.contains_key("y"));
+}
+
+/// `add_field_polys = true` at prime 7 (`<= 1000`) appends `x^p - x` for
+/// every ring variable, each with `PolySource::Other` provenance. With
+/// two referenced variables the encoder emits the single equality poly
+/// plus two field polynomials.
+#[test]
+fn encode_field_polys_emitted_for_small_prime() {
+    let mut b = empty_builder(7);
+    let x = b.var("x");
+    let y = b.var("y");
+    b.add_equality(vec![idx_term(1, &[(x, 1)]), idx_term(6, &[(y, 1)])]);
+    b.set_add_field_polys(true);
+    let sys = b.build();
+    assert!(sys.add_field_polys);
+
+    let enc = encode(&sys).expect("encode");
+    assert_eq!(enc.poly_ring.n_vars(), 2);
+    // 1 equality + 2 field polys (one per ring variable).
+    assert_eq!(enc.polynomials.len(), 3);
+    let n_other = enc
+        .poly_provenance
+        .iter()
+        .filter(|s| matches!(s, PolySource::Other))
+        .count();
+    assert_eq!(n_other, 2, "two field polys carry PolySource::Other");
+    // Provenance stays parallel to polynomials.
+    assert_eq!(enc.poly_provenance.len(), enc.polynomials.len());
+    // A field poly x^7 - x is degree 7: some monomial carries a
+    // variable with exponent 7.
+    let max_exp = enc
+        .polynomials
+        .iter()
+        .flat_map(|p| {
+            enc.poly_ring
+                .ring
+                .terms(p)
+                .map(|(_, m)| {
+                    (0..enc.poly_ring.n_vars())
+                        .map(|v| enc.poly_ring.ring.exponent_at(&m, v))
+                        .max()
+                        .unwrap_or(0)
+                })
+                .collect::<Vec<_>>()
+        })
+        .max()
+        .unwrap();
+    assert_eq!(max_exp, 7, "field poly introduces a degree-7 monomial");
+}
+
+/// Field polynomials are suppressed when the prime exceeds the
+/// `<= 1000` dense-expansion bound, even with `add_field_polys = true`.
+#[test]
+fn encode_field_polys_suppressed_for_large_prime() {
+    let mut b = empty_builder(2003); // > 1000
+    let x = b.var("x");
+    let y = b.var("y");
+    b.add_equality(vec![idx_term(1, &[(x, 1)]), idx_term(2002, &[(y, 1)])]);
+    b.set_add_field_polys(true);
+    let sys = b.build();
+    let enc = encode(&sys).expect("encode");
+    // Only the equality poly survives; no field polys appended.
+    assert_eq!(enc.polynomials.len(), 1);
+    assert!(enc
+        .poly_provenance
+        .iter()
+        .all(|s| !matches!(s, PolySource::Other)));
+}
+
+// ── encode_impl bounds-check error paths ───────────────────────
+//
+// These reject malformed index-keyed systems. They call `encode_impl`
+// directly: `encode` runs `compact_used_vars` first, which dereferences
+// `var_names[idx]` for every referenced index and would panic before the
+// in-encode bounds checks ever fire. A producer that emits an index past
+// its own `var_names` frame is the failure mode being guarded.
+
+/// `n_vars > 5000` rejects ring construction. A system declaring 5001
+/// user variables (none referenced) trips the cap.
+#[test]
+fn encode_impl_rejects_too_many_vars() {
+    let var_names: Vec<String> = (0..5001).map(|i| format!("v{}", i)).collect();
+    let sys = ConstraintSystem {
+        prime: BigUint::from(101u32),
+        var_names,
+        equalities: vec![],
+        disequalities: vec![],
+        assignments: vec![],
+        bitsums: vec![],
+        add_field_polys: false,
+    };
+    match encode_impl(&sys, true) {
+        Err(msg) => assert!(msg.contains("too many variables")),
+        Ok(_) => panic!("expected too-many-variables rejection"),
+    }
+}
+
+/// An equality term referencing a var index beyond the ring is rejected.
+#[test]
+fn encode_impl_rejects_equality_var_out_of_range() {
+    // One declared user var (index 0); equality references index 5.
+    let sys = ConstraintSystem {
+        prime: BigUint::from(101u32),
+        var_names: vec!["x".into()],
+        equalities: vec![vec![idx_term(1, &[(5, 1)])]],
+        disequalities: vec![],
+        assignments: vec![],
+        bitsums: vec![],
+        add_field_polys: false,
+    };
+    match encode_impl(&sys, true) {
+        Err(msg) => {
+            assert!(msg.contains("equality term references var_idx 5"));
+            assert!(msg.contains("ring has only 1 vars"));
+        }
+        Ok(_) => panic!("expected out-of-range equality var rejection"),
+    }
+}
+
+/// An assignment referencing a non-user var index is rejected. Witness /
+/// bitsum aux slots are appended past `n_user`; an assignment must point
+/// at a real user variable.
+#[test]
+fn encode_impl_rejects_assignment_var_out_of_range() {
+    let sys = ConstraintSystem {
+        prime: BigUint::from(101u32),
+        var_names: vec!["x".into()],
+        equalities: vec![],
+        disequalities: vec![],
+        assignments: vec![(3, BigUint::from(0u32))],
+        bitsums: vec![],
+        add_field_polys: false,
+    };
+    match encode_impl(&sys, true) {
+        Err(msg) => {
+            assert!(msg.contains("assignment references var_idx 3"));
+            assert!(msg.contains("only 1 user vars"));
+        }
+        Ok(_) => panic!("expected out-of-range assignment var rejection"),
+    }
+}
+
+/// A disequality referencing a non-user var index is rejected (only when
+/// Rabinowitsch emission is on, since that is where the bound is checked).
+#[test]
+fn encode_impl_rejects_disequality_var_out_of_range() {
+    let sys = ConstraintSystem {
+        prime: BigUint::from(101u32),
+        var_names: vec!["x".into(), "y".into()],
+        equalities: vec![],
+        disequalities: vec![(0, 9)],
+        assignments: vec![],
+        bitsums: vec![],
+        add_field_polys: false,
+    };
+    match encode_impl(&sys, true) {
+        Err(msg) => {
+            assert!(msg.contains("disequality references var_idx"));
+            assert!(msg.contains("only 2 user vars"));
+        }
+        Ok(_) => panic!("expected out-of-range disequality var rejection"),
+    }
+}
+
+/// A bitsum referencing a non-user var index is rejected.
+#[test]
+fn encode_impl_rejects_bitsum_var_out_of_range() {
+    let sys = ConstraintSystem {
+        prime: BigUint::from(101u32),
+        var_names: vec!["b0".into(), "b1".into()],
+        equalities: vec![],
+        disequalities: vec![],
+        assignments: vec![],
+        bitsums: vec![vec![0, 7]],
+        add_field_polys: false,
+    };
+    match encode_impl(&sys, true) {
+        Err(msg) => {
+            assert!(msg.contains("bitsum references var_idx 7"));
+            assert!(msg.contains("only 2 user vars"));
+        }
+        Ok(_) => panic!("expected out-of-range bitsum var rejection"),
+    }
+}
+
 /// Soundness gate caps chain length: with 4 bits at p=11,
 /// `2^4 > 11` forbids the full chain. The shorter (length-3)
 /// prefix still extracts since `2^3 ≤ 11`.

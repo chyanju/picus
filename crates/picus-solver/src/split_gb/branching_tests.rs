@@ -71,6 +71,44 @@ fn apply_rule_skips_univariate_in_assigned_variable() {
     // Just exercise the path; outcome depends on zero-dim detection.
 }
 
+#[test]
+fn apply_rule_zero_dim_minpoly_yields_exhaustive_roots() {
+    // I = (x^2 - 2, x*y - 1) over GF(7) is zero-dimensional with two
+    // points: x^2 = 2 ⇒ x ∈ {3, 4}, y = 1/x. Its reduced DegRevLex GB
+    // eliminates x's univariate poly into the multivariate `x - 2y`,
+    // leaving the univariate elimination poly only in y. With y assigned
+    // (so the phase-1 univariate-in-y scan skips it) and x unassigned, the
+    // univariate-in-unassigned scan finds nothing genuinely univariate in
+    // x, so apply_rule falls into the zero-dim branch: it computes the
+    // minimal polynomial of x in R/I, whose complete root set over GF(7)
+    // is {3, 4}, and returns an exhaustive Roots brancher.
+    let pr = pr_two_vars();
+    let f = pr.field();
+    let x2 = pr.mul(pr.var(0), pr.var(0));
+    let p_x = pr.sub(x2, pr.constant(f.from_int(2))); // x^2 - 2
+    let xy = pr.mul(pr.var(0), pr.var(1));
+    let p_xy = pr.sub(xy, pr.constant(f.one())); // x*y - 1
+    let gb = Ideal::new(&pr, vec![p_x, p_xy]);
+    assert!(gb.is_zero_dim(), "precondition: I is zero-dimensional");
+    let r: PartialPoint = vec![None, Some(f.from_int(2))]; // y assigned, x free
+    let b = apply_rule(&pr, &gb, &r);
+    match b {
+        Brancher::Roots(v) => {
+            assert!(!v.is_empty(), "zero-dim min-poly must yield roots");
+            assert!(v.iter().all(|(var, _)| *var == 0), "all roots are for x");
+            let vals: Vec<BigUint> =
+                v.iter().map(|(_, val)| pr.field().to_biguint(val)).collect();
+            assert!(vals.contains(&BigUint::from(3u32)), "x = 3 is a root");
+            assert!(vals.contains(&BigUint::from(4u32)), "x = 4 is a root");
+        }
+        _ => panic!("expected Roots from zero-dim min-poly"),
+    }
+    assert!(
+        apply_rule(&pr, &gb, &r).is_exhaustive(),
+        "complete root extraction over a small prime is exhaustive"
+    );
+}
+
 // ────────── apply_rule_multi ──────────
 
 #[test]
