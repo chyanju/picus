@@ -255,13 +255,68 @@ fn squarefree(poly: &UnivariatePoly, field: &PrimeField) -> UnivariatePoly {
 }
 
 /// Extract the product of all distinct linear factors of `poly` by computing
-/// `gcd(poly, x^p - x)`.
+/// `gcd(poly, x^p - x)`. The `x^p mod poly` step (Frobenius polynomial) is a
+/// pure function of `(prime, poly)`; when `config.frobenius_cache` is on it is
+/// memoized in a thread-local cache so repeated root-finding calls on the same
+/// `(ring, poly)` (e.g. across DFS branches in model construction) reuse a
+/// single square-and-multiply pass.
 fn distinct_linear_part(poly: &UnivariatePoly, field: &PrimeField) -> UnivariatePoly {
-    // Compute x^p mod poly, then subtract x, then gcd with poly.
     let x_poly = UnivariatePoly::x(field);
-    let xp = x_poly.pow_mod(field.prime(), poly, field);
+    let xp = if picus_core::config::with(|c| c.frobenius_cache) {
+        frobenius_cached(poly, field)
+    } else {
+        x_poly.pow_mod(field.prime(), poly, field)
+    };
     let xp_minus_x = xp.sub(&x_poly, field);
     poly.gcd(&xp_minus_x, field)
+}
+
+thread_local! {
+    static FROBENIUS_CACHE: std::cell::RefCell<std::collections::HashMap<FrobeniusKey, Vec<BigUint>>>
+        = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+const FROBENIUS_CACHE_CAP: usize = 1024;
+
+/// Cache key for `x^p mod poly`: the prime and the canonical (BigUint) form
+/// of `poly`'s coefficients. Equality of the key implies the Frobenius value
+/// is identical regardless of `PrimeField` instance.
+#[derive(Clone, Eq, PartialEq, Hash)]
+struct FrobeniusKey {
+    prime: BigUint,
+    coeffs: Vec<BigUint>,
+}
+
+fn frobenius_cached(poly: &UnivariatePoly, field: &PrimeField) -> UnivariatePoly {
+    let key = FrobeniusKey {
+        prime: field.prime().clone(),
+        coeffs: poly.coeffs().iter().map(|c| field.to_biguint(c)).collect(),
+    };
+    let cached: Option<Vec<BigUint>> = FROBENIUS_CACHE.with(|cell| {
+        let map = cell.borrow();
+        map.get(&key).cloned()
+    });
+    if let Some(big_coeffs) = cached {
+        let coeffs: Vec<FieldElem> = big_coeffs.iter().map(|b| field.from_biguint(b)).collect();
+        return UnivariatePoly::from_coeffs(coeffs, field);
+    }
+    let x_poly = UnivariatePoly::x(field);
+    let xp = x_poly.pow_mod(field.prime(), poly, field);
+    let big_xp: Vec<BigUint> = xp.coeffs().iter().map(|c| field.to_biguint(c)).collect();
+    FROBENIUS_CACHE.with(|cell| {
+        let mut map = cell.borrow_mut();
+        if map.len() >= FROBENIUS_CACHE_CAP {
+            map.clear();
+        }
+        map.insert(key, big_xp);
+    });
+    xp
+}
+
+/// Clears the thread-local Frobenius cache. Test-only.
+#[cfg(test)]
+pub(crate) fn clear_frobenius_cache_for_tests() {
+    FROBENIUS_CACHE.with(|cell| cell.borrow_mut().clear());
 }
 
 /// Generate a uniformly-random BigUint in [0, bound) using `Rand64`.

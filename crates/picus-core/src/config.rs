@@ -126,6 +126,13 @@ pub struct RuntimeConfig {
     /// so the rebuild on a cache miss offsets the saving; opt-in for long
     /// runs of reductions against a stable basis.
     pub reducer_index_cache: bool,
+    /// Memoize the Frobenius polynomial `x^p mod f` across calls to
+    /// `distinct_linear_part` keyed by `(prime, f.coeffs)`. The result is a
+    /// pure function of its key, so cached values are always correct. Helps
+    /// model-construction phases that call root-finding on the same `(ring,
+    /// f)` across multiple DFS branches. Off by default; flip on if PLDI
+    /// total wall-clock drops.
+    pub frobenius_cache: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -146,6 +153,7 @@ impl Default for RuntimeConfig {
             track_inter_reduce_deps: true,
             split_triangular: false,
             reducer_index_cache: false,
+            frobenius_cache: true,
         }
     }
 }
@@ -170,6 +178,7 @@ impl RuntimeConfig {
         if let Some(v) = o.track_inter_reduce_deps { self.track_inter_reduce_deps = v; }
         if let Some(v) = o.split_triangular { self.split_triangular = v; }
         if let Some(v) = o.reducer_index_cache { self.reducer_index_cache = v; }
+        if let Some(v) = o.frobenius_cache { self.frobenius_cache = v; }
     }
 }
 
@@ -200,6 +209,7 @@ pub struct EngineOverlay {
     pub track_inter_reduce_deps: Option<bool>,
     pub split_triangular: Option<bool>,
     pub reducer_index_cache: Option<bool>,
+    pub frobenius_cache: Option<bool>,
 }
 
 thread_local! {

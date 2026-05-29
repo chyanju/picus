@@ -26,6 +26,7 @@ fn apply_overlay_consumes_every_field() {
         track_inter_reduce_deps: Some(false),
         split_triangular: Some(true),
         reducer_index_cache: Some(true),
+        frobenius_cache: Some(true),
     };
     let expected = RuntimeConfig {
         gb_strategy: GbStrategy::ByHomog,
@@ -43,6 +44,7 @@ fn apply_overlay_consumes_every_field() {
         track_inter_reduce_deps: false,
         split_triangular: true,
         reducer_index_cache: true,
+        frobenius_cache: true,
     };
 
     // Every chosen value must differ from the compiled default, so a
