@@ -109,13 +109,11 @@ fn expected(p: &BigUint, vals: &[i64]) -> Vec<BigUint> {
 // Small modulus used for finite-set root enumeration: p = 7.
 // =============================================================================
 //
-// cvc5 polynomials and expected (squarefree) distinct-roots polynomial:
+// Distinct (squarefree) roots; multiplicity must collapse:
 //   x                         → roots {0}
 //   x^3                       → roots {0}      (multiplicity collapsed)
 //   x^3 * (x-1)               → roots {0, 1}
 //   x^3 * (x-1) * (x^2+1)     → roots {0, 1}   (x^2+1 has no roots over GF(7))
-//
-// These mirror the four DistinctRootsPoly cases in cvc5 (lines 58-80).
 #[test]
 fn test_distinct_roots_poly_small() {
     let p = BigUint::from(7u32);
@@ -152,7 +150,7 @@ fn test_distinct_roots_poly_small() {
 }
 
 // =============================================================================
-// RootsZero  (small modulus)
+// Roots {0} only  (small modulus)
 // =============================================================================
 //
 //   x            → {0}
@@ -177,7 +175,7 @@ fn test_roots_zero_small() {
 }
 
 // =============================================================================
-// RootsFull  (small modulus)
+// Mixed root sets, including empty  (small modulus)
 // =============================================================================
 //
 //   x*(x-1)                       → {0, 1}
@@ -234,12 +232,10 @@ fn test_roots_full_small() {
 }
 
 // =============================================================================
-// BIG_MODULUS = 2^255 - 19  (Curve25519 scalar field prime)
+// Large modulus: 2^255 - 19  (Curve25519 scalar field prime)
 // =============================================================================
 //
-//.  The interesting case is x^2 - x + 1 over the
-// 2^255-19 prime, with roots given as the literal decimal strings in the
-// cvc5 source.
+// The interesting case is x^2 - x + 1 over the 2^255-19 prime.
 #[test]
 fn test_distinct_roots_poly_big() {
     let p: BigUint =
@@ -281,10 +277,8 @@ fn test_roots_full_big() {
             .unwrap();
     let ff = PrimeField::new(p.clone());
 
-    // x^2 - x + 1  → roots from cvc5 source (lines 246-253):
-    //   r1 = -25380276437079137597092236364571181010632177832931468165172742469126098314552
-    //   r2 = +25380276437079137597092236364571181010632177832931468165172742469126098314553
-    // Note: r2 - r1 = 1, and r1 + r2 = 1 (sum of roots), r1*r2 = 1 (product).
+    // x^2 - x + 1  → two distinct roots r1, r2 over the Curve25519 prime.
+    // By Vieta: r1 + r2 = 1 (sum of roots) and r1 * r2 = 1 (product).
     let mut f = vec![ff.zero(); 3];
     f[0] = ff.one();
     f[1] = ff.from_biguint(&(&p - BigUint::from(1u32))); // -1

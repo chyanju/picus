@@ -1,4 +1,6 @@
-//! Integration test: complete solve pipeline.
+//! ZK-gadget semantics through `solve_encoded`: IsZero soundness vs.
+//! unsoundness, field-inverse uniqueness, and disequality-witness
+//! encoding (single and multiple `≠` constraints, SAT and UNSAT).
 
 mod common;
 use common::{NamedSystem, NamedTerm};

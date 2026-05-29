@@ -34,10 +34,10 @@ fn is_unsat(system: &NamedSystem) -> bool {
 }
 
 // =============================================================================
-// IsUnsat   , GF(3)
+// Ideal emptiness (UNSAT) over GF(3)
 // =============================================================================
 //
-// cvc5 cases (basis | expected isUnsat):
+// Basis | expected UNSAT:
 //   {a*(a-1)}                                  | false
 //   {a}                                        | false
 //   {a, b-1}                                   | false
@@ -132,15 +132,11 @@ fn test_is_unsat_a_no_field_poly() {
     //   a=0:  -1 = 2 ≠ 0
     //   a=1:   2 = 2 ≠ 0
     //   a=2:  11 = 2 ≠ 0  (8 + 4 - 1 = 11 ≡ 2)
-    // So over GF(3) it's already unsat for a ∈ {0,1,2}, but cvc5 reports
-    // SAT here because *without* the field polynomial the variable ranges
-    // over the algebraic closure where solutions exist.  Our solver mirrors
-    // this behavior when add_field_polys=false.
-    //
-    // Since our small-field solver may still discover unsat via search,
-    // accept either outcome — the *cvc5* expectation is that without field
-    // polys the answer reflects ring-theoretic SAT, not GF(3)-SAT.  We
-    // tolerate either by checking `add_field_polys=true` flips the answer.
+    // So over GF(3) it is UNSAT for a ∈ {0,1,2}; without the field
+    // polynomial the variable ranges over the algebraic closure, where a
+    // root exists, so the answer reflects ring-theoretic SAT rather than
+    // GF(3)-SAT.  Only the `add_field_polys=true` direction is asserted;
+    // the field-poly-free case is allowed either outcome.
     let mut system = NamedSystem {
         prime: BigUint::from(3u32),
         equalities: vec![
@@ -155,10 +151,10 @@ fn test_is_unsat_a_no_field_poly() {
     };
     assert!(is_unsat(&system));
 
-    // Without field polys, the cvc5 semantics is "SAT in the algebraic closure".
-    // Our solver may still terminate one way or the other; we don't assert.
+    // Without field polys the system is SAT in the algebraic closure;
+    // the outcome is not asserted, only termination.
     system.add_field_polys = false;
-    let _ = solve(&system);   // just check it terminates
+    let _ = solve(&system);
 }
 
 #[test]
@@ -182,12 +178,11 @@ fn test_is_unsat_a_b_c_inverse() {
 }
 
 // =============================================================================
-// CommonRoot   , GF(3)
+// Common root of an ideal over GF(3)
 // =============================================================================
 //
-// cvc5's `findZero(I, env)` returns a vector of values, one per variable in
-// declaration order.  For SAT cases we just check the model satisfies the
-// constraints; for UNSAT cases (empty result vector) we check we get Unsat.
+// For SAT cases the returned model is checked against the constraints;
+// for UNSAT cases (no common root) the verdict is checked to be Unsat.
 
 #[test]
 fn test_common_root_a_eq_b_eq_zero() {
@@ -318,7 +313,7 @@ fn test_common_root_a_b_inv_b_two() {
 }
 
 // =============================================================================
-// CommonRootBig   , GF(17)
+// Common root with an inverse pair over GF(17)
 // =============================================================================
 //
 // a^2 - a, b^2 - b, a - b, a, c*d - 1  →  a = b = 0, c*d = 1.
@@ -351,7 +346,7 @@ fn test_common_root_big() {
 }
 
 // =============================================================================
-// CommonRootCosntraints   , GF(17)
+// Common root: square plus inverse constraint over GF(17)
 // =============================================================================
 //
 // a^2 = b   ∧   b * c = 1

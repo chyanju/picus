@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/). Entries are telegraphic: one line per change — what changed plus the key term/API — with no narrative, mechanism explanations, or "no verdict change" boilerplate.
 
+## [1.8.16] - 2026-05-28
+- Test layout: unit tests move to sibling files (`mod.rs`→`tests.rs`, leaf→`<name>_tests.rs`); no inline `mod tests {}` blocks remain in `src/`.
+- Integration tests renamed by scenario; `cdclt_regression` split into `cdclt_vs_dnf_parity` + `cdclt_scenarios`; `cvc5_*` corpus/unit files renamed.
+- 3 semantically-unit `tests/*.rs` (parse, uni-roots, split-gb) reverse-migrated to `src/` siblings.
+- Regression tests gain `audit_`/`bug_` fn-name prefixes for `cargo test <prefix>` filtering.
+
 ## [1.8.15] - 2026-05-28
 - Profiling refactor: instrumentation moves to a `metric::` DSL (`incr!`/`add!`/`max!`/`timer!`/`timer_local!`/`gate!`/`stopwatch!`/`clock!`/`def!`/`bump!`/`scope!`/`trace!`/`next!` + `#[metric]` proc-macro in the new `picus-metric-macros` crate) replacing the hand-cached `if gb_stats_enabled() { ... }` / bare `Instant::now()` / `ScopedTimer::new` pattern across solver, `native_ff` backend, and `dense_reduce` / `geobucket` hot paths; `metric::gate!` caches the flag once for per-monomial timers.
 - Buchberger engine telemetry strictly separated from logic: new always-on logic field `BuchbergerState::useful_reductions` drives the interreduce schedule; `GbEngineStats` renamed to `GbProfileCounters`, field `stats` renamed to `profile`, all writes routed through gb-stats-gated `metric::scope!`; `engine_stats()` returns the pure-telemetry bundle (`&GbProfileCounters`).

@@ -7,7 +7,6 @@ use num_bigint::BigUint;
 /// over BN254 — plainly SAT (e.g. `_0=2, _1=0`) — was wrongly
 /// reported UNSAT. This drives cvc5 directly and asserts SAT, so it
 /// fails if the vendored cvc5 is ever downgraded below the fix.
-/// Ported from cvc5's `regress0/ff/bitsum_overflow.smt2`.
 #[test]
 fn bug_cvc5_ff_split_bitsum_overflow_is_sat() {
     let p = BigUint::parse_bytes(

@@ -101,13 +101,13 @@ fn test_bit_sums_simple() {
     assert!(pr.is_zero(&residual));
 }
 
-/// Equivalence with cvc5's AST-level `bitConstraint`. Each case asserts that picus's
-/// polynomial-level detector accepts (or correctly rejects) the
-/// canonical form produced by encoding the equivalent AST.
+/// Each case asserts that the polynomial-level bit-constraint detector
+/// accepts (or correctly rejects) the canonical form of a `x*(x-1)=0`
+/// equation expressed under various algebraically-equivalent rewrites.
 
 #[test]
 fn audit_bit_constraint_negated_form() {
-    // AST: (= 0 (- x (* x x)))  →  x - x²
+    // Equation form: 0 = x - x²
     // picus polynomial: -x² + x = (p-1)*x² + x
     // After `normalize_poly` divides by (p-1), the canonical form
     // is x² + (1/(p-1))*x = x² - x. Detector should accept.
@@ -122,7 +122,7 @@ fn audit_bit_constraint_negated_form() {
 
 #[test]
 fn audit_bit_constraint_nested_product() {
-    // AST: (= 0 (* x (- x 1)))  →  x*(x-1) → x² - x
+    // Equation form: 0 = x*(x-1)  →  x² - x
     // After polynomial multiplication picus produces x² - x directly.
     let pr = FfPolyRing::new(ff(17), vec!["x".into()]);
     let neg_one = pr.field().from_int(-1);
@@ -135,7 +135,7 @@ fn audit_bit_constraint_nested_product() {
 
 #[test]
 fn audit_bit_constraint_sum_form() {
-    // AST: (= 0 (+ (* x x) (- x)))  →  x² + (-x) = x² - x.
+    // Equation form: 0 = x² + (-x) = x² - x.
     // Algebraically same as standard form.
     let pr = FfPolyRing::new(ff(17), vec!["x".into()]);
     let x2 = pr.mul(pr.var(0), pr.var(0));
@@ -155,7 +155,7 @@ fn audit_bit_constraint_rejects_x_squared_plus_x() {
 
 #[test]
 fn audit_bit_sums_mixed_bases_rejected() {
-    // (+ b0 (* 3 b1)) — not a bitsum (3 ≠ 2). Detector should
+    // b0 + 3*b1 — not a bitsum (3 ≠ 2). Detector should
     // either reject or treat as a degenerate case.
     let pr = FfPolyRing::new(ff(17), vec!["b0".into(), "b1".into()]);
     let three = pr.field().from_int(3);
@@ -191,7 +191,7 @@ fn test_bit_sums_with_residual() {
 }
 
 // =============================================================================
-// bitConstraint  (GF(7))
+// bit_constraint  (GF(7))
 // =============================================================================
 //
 // `x*(x-1) = 0` must be detected under all sign / rewrite forms;
@@ -248,7 +248,7 @@ fn test_bit_constraint_negative_forms() {
 }
 
 // =============================================================================
-// linearMonomial  (GF(7))
+// linear_monomial  (GF(7))
 // =============================================================================
 #[test]
 fn test_linear_monomial_forms() {
@@ -282,19 +282,12 @@ fn test_linear_monomial_forms() {
 }
 
 // =============================================================================
-// extractLinearMonomials  (GF(5))
+// extract_linear_monomials  (GF(5))
 // =============================================================================
 #[test]
 fn test_extract_linear_none() {
-    // All non-linear: x*y, x*y, x+y  →  0 linear, 3 rest
-    // We can't directly create "x+y as a single opaque rest term" because
-    // polynomials are sums.  In our representation, x*y + x*y + (x+y) =
-    // 2*x*y + x + y.  The linears are x, y (each appear degree-1).
-    // So this is inherently different from the cvc5 Node-based test.
-    //
-    // Instead, test: x*y + z*z + 5  →  0 linear, 3 rest terms.
+    // x*y + z*z + 3  →  0 linear monomials, 3 rest terms (x*y, z², constant).
     let pr = FfPolyRing::new(ff(5), vec!["x".into(), "y".into(), "z".into()]);
-    let _five = pr.field().from_int(0); // 0 is zero, use constant 3
     let p = pr.add(
         pr.add(pr.mul(pr.var(0), pr.var(1)), pr.mul(pr.var(2), pr.var(2))),
         pr.constant(pr.field().from_int(3)),
@@ -320,10 +313,6 @@ fn test_extract_linear_with_neg() {
 
 #[test]
 fn test_extract_linear_mixed() {
-    // x*y + x*y + 3*y + (-1)*x + (x+y) + 4
-    // Polynomial collapses to: 2*x*y + 3*y - x + x + y + 4 = 2*x*y + 4*y + 4
-    // Wait, that's not what we want.  Let me build a more controlled example.
-    //
     // p = x*y + 3*y + (-1)*x + 4   →  linear: {y(coeff=3), x(coeff=-1)},  rest: {x*y, 4}
     let pr = FfPolyRing::new(ff(5), vec!["x".into(), "y".into()]);
     let three = pr.field().from_int(3);
@@ -342,7 +331,7 @@ fn test_extract_linear_mixed() {
 }
 
 // =============================================================================
-// bitSums  (GF(103))
+// bit_sums  (GF(103))
 // =============================================================================
 #[test]
 fn test_bitsums_implicit_one_coeff() {

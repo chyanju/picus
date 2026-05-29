@@ -34,19 +34,19 @@ fn solve(system: &NamedSystem) -> &'static str {
 }
 
 // =============================================================================
-// bigff_is_zero_sound.smt2  (large prime, expect UNSAT)
+// IsZero gadget soundness, large prime (expect UNSAT)
 // =============================================================================
 //
-// Original assertion (negated implication):
+// Negated implication:
 //   m*x - 1 + iz = 0  ∧  iz*x = 0  ∧  ¬(iz∈{0,1} ∧ (iz=1 ↔ x=0))
-// We discharge it by asserting the polynomial form of the constraints
+// Discharged by asserting the polynomial form of the constraints
 // together with the *negation* of the conclusion (encoded as a Rabinowitsch
 // witness on `iz^2 - iz`, which is the polynomial form of "iz ∉ {0,1}").
-// On UNSAT we conclude soundness.
+// UNSAT means the gadget is sound.
 #[test]
 fn test_bigff_is_zero_sound() {
-    // BN128 scalar field prime (close to the test's prime; the exact value
-    // does not affect the algebraic content for the soundness direction).
+    // BN128 scalar field prime; the exact value does not affect the
+    // algebraic content for the soundness direction.
     let p: BigUint = "21888242871839275222246405745257275088548364400416034343698204186575808495617"
         .parse().unwrap();
     let _system = NamedSystem {
@@ -89,13 +89,13 @@ fn test_bigff_is_zero_sound() {
 }
 
 // =============================================================================
-// bigff_is_zero_unsound.smt2  (large prime, expect SAT)
+// IsZero gadget unsoundness, large prime (expect SAT)
 // =============================================================================
 //
-// Same as bigff_is_zero_sound but the second constraint is iz*m=0 instead
-// of iz*x=0.  This breaks the implication.  We just confirm SAT by
-// asserting the input constraints alone (no negated conclusion needed).
-// To get a SAT witness for the bug, set up: iz=1, m=0, x=arbitrary.
+// Same as the sound case but the second constraint is iz*m=0 instead
+// of iz*x=0, which breaks the implication.  SAT is confirmed by
+// asserting the input constraints alone (no negated conclusion needed);
+// a witness for the bug is iz=1, m=0, x=arbitrary.
 #[test]
 fn test_bigff_is_zero_unsound() {
     let p: BigUint = "21888242871839275222246405745257275088548364400416034343698204186575808495617"
@@ -118,7 +118,7 @@ fn test_bigff_is_zero_unsound() {
 }
 
 // =============================================================================
-// multicheck.smt2  (incremental, two checks both SAT)
+// Incremental solve, two checks both SAT
 // =============================================================================
 //
 // 1st check:  a*a = b ∧ a = 1                → SAT (b = 1)
@@ -144,7 +144,7 @@ fn test_multicheck() {
 }
 
 // =============================================================================
-// ctx.smt2  (push/pop with intermediate UNSAT)
+// Incremental push/pop with intermediate UNSAT
 // =============================================================================
 //
 //   a*a = b, a = 1                       → SAT
@@ -178,7 +178,7 @@ fn test_ctx_incremental() {
 }
 
 // =============================================================================
-// bitsum_overflow.smt2  (BN128, expect SAT)
+// Linear constraint over BN128 (expect SAT)
 // =============================================================================
 //
 // (-2)*x0 + (-1)*x1 + 4 = 0   over BN128.   SAT (e.g., x0=1, x1=2: -2-2+4=0).
@@ -206,7 +206,7 @@ fn test_bitsum_overflow() {
 }
 
 // =============================================================================
-// issue11932.smt2  (GF(2), expect SAT)
+// Constant bitsum identity over GF(2) (expect SAT)
 // =============================================================================
 //
 // Over GF(2): -9 = bitsum(-9, -10) = -9 + 2*(-10) = -9 - 20 = -29.
@@ -231,7 +231,7 @@ fn test_issue11932() {
 }
 
 // =============================================================================
-// field_poly.smt2 over a different prime: a^7 = a over GF(7) → UNSAT for a^7≠a
+// Fermat field identity: a^7 = a over GF(7) → UNSAT for a^7≠a
 // =============================================================================
 #[test]
 fn test_field_poly_gf7() {
@@ -259,7 +259,7 @@ fn test_field_poly_gf7() {
 }
 
 // =============================================================================
-// negneg analogue at GF(BN128): x + (-x) = 0 trivially → SAT
+// Double negation over BN128: x + (-x) = 0 trivially → SAT
 // =============================================================================
 #[test]
 fn test_negneg_bn128() {
@@ -286,7 +286,7 @@ fn test_negneg_bn128() {
 }
 
 // =============================================================================
-// issue10937.smt2  (MAC scheme over GF(7), expect UNSAT)
+// MAC linearity over GF(7) (expect UNSAT)
 // =============================================================================
 //
 // mac1 = k1 + d*m1
@@ -325,7 +325,7 @@ fn test_issue10937_mac_linearity() {
 }
 
 // =============================================================================
-// issue11969.smt2  (GF(3), expect SAT, models are 1 and 2)
+// Quadratic root over GF(3) (expect SAT, root v = 2)
 // =============================================================================
 //
 // v = bitsum(v^2, -1) = v^2 + 2*(-1) = v^2 - 2
@@ -353,10 +353,10 @@ fn test_issue11969() {
 }
 
 // =============================================================================
-// as.smt2  (GF(17), expect SAT)
+// Constant identity over GF(17) (expect SAT)
 // =============================================================================
 //
-// Asserts: 0 = 1 + (-1)  over GF(17)
+// Asserts: 0 = 1 + (-1)  over GF(17).
 // Trivially SAT (constant identity).  No variables.
 #[test]
 fn test_as() {
@@ -372,7 +372,7 @@ fn test_as() {
 }
 
 // =============================================================================
-// bitsum_eval.smt2  (GF(3), expect SAT)
+// Constant bitsum identities over GF(3) (expect SAT)
 // =============================================================================
 //
 // Six bitsum equalities, all constant-only and trivially true:
@@ -393,10 +393,10 @@ fn test_bitsum_eval() {
 }
 
 // =============================================================================
-// proj-issue704.smt2  (GF(13), expect SAT)
+// Declaration-only system over GF(13) (expect SAT)
 // =============================================================================
 //
-// Just declares `x` over GF(13); no assertions.  Trivially SAT.
+// Declares `x` over GF(13) with no assertions.  Trivially SAT.
 #[test]
 fn test_proj_issue704() {
     let system = NamedSystem {
@@ -411,7 +411,7 @@ fn test_proj_issue704() {
 }
 
 // =============================================================================
-// issue11107.smt2 analogue  (GF(7), expect SAT)
+// Redundant equalities over GF(7) (expect SAT)
 // =============================================================================
 //
 // pre : c = a + 1

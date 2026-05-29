@@ -44,8 +44,8 @@ fn pterm(coeff: u64, vars: &[&str]) -> NamedTerm {
 
 // ===== Simple tests over GF(17) =====
 
-/// cvc5: negneg.smt2 — `neg(neg(x)) - x = 0` is a field tautology, so a
-/// query asserting its negation is UNSAT.
+/// `neg(neg(x)) - x = 0` is a field tautology; over GF(17) some x ≠ 0
+/// exists, so the disequality `x ≠ 0` is SAT.
 #[test]
 fn test_negneg_field_identity() {
     // Over GF(17): x exists s.t. x ≠ 0 → sat
@@ -60,7 +60,7 @@ fn test_negneg_field_identity() {
     assert_eq!(solve_system(&system), "sat");
 }
 
-/// univar_conjunction_sat.smt2: x^2 = x AND x ≠ 1 AND x ≠ 2 over GF(17) → sat (x=0)
+/// x^2 = x AND x ≠ 1 AND x ≠ 2 over GF(17) → sat (x=0)
 #[test]
 fn test_univar_conjunction_sat() {
     let p = BigUint::from(17u32);
@@ -82,7 +82,7 @@ fn test_univar_conjunction_sat() {
     assert_eq!(solve_system(&system), "sat");
 }
 
-/// univar_conjunction_unsat.smt2: x^2 = x AND x ≠ 1 AND x ≠ 0 over GF(17) → unsat
+/// x^2 = x AND x ≠ 1 AND x ≠ 0 over GF(17) → unsat
 #[test]
 fn test_univar_conjunction_unsat() {
     let p = BigUint::from(17u32);
@@ -104,19 +104,14 @@ fn test_univar_conjunction_unsat() {
     assert_eq!(solve_system(&system), "unsat");
 }
 
-/// ff_is_zero_sound.smt2: IsZero gadget is sound over GF(17)
-/// m*x + is_zero - 1 = 0, is_zero*x = 0
-/// Proves: is_zero ∈ {0,1} and is_zero=1 ⟺ x=0
-/// Encoding: check if we can find a witness where these hold but is_zero ∉ {0,1}
+/// IsZero gadget soundness over GF(17): the constraints
+/// `m*x + is_zero - 1 = 0` and `is_zero*x = 0` imply
+/// `is_zero ∈ {0,1}` and `is_zero=1 ⟺ x=0`. Asserting the negation
+/// of the conclusion (a Rabinowitsch witness on `iz^2 - iz`) is UNSAT.
 #[test]
 fn test_is_zero_sound_bit_constraint() {
     let p = BigUint::from(17u32);
-    // is_zero^2 - is_zero = 0 given the two IsZero constraints?
-    // Actually the cvc5 test checks (not (=> constraints conclusion))
-    // = constraints AND NOT conclusion
-    // = m*x + iz - 1 = 0 AND iz*x = 0 AND NOT(iz ∈ {0,1} AND iz=1⟺x=0)
-    //
-    // Simplify: constraints force iz*(iz-1)=0, so iz ∈ {0,1}.
+    // The constraints force iz*(iz-1)=0, so iz ∈ {0,1}.
     // AND iz=1→x=0 (from iz*x=0), and x=0→iz=1 (from m*x+iz-1=0 with x=0→iz=1)
     //
     // For our test: check that iz^2 - iz = 0 is implied.
@@ -143,8 +138,8 @@ fn test_is_zero_sound_bit_constraint() {
     assert_eq!(solve_system(&system), "unsat");
 }
 
-/// field_poly.smt2: by Fermat's little theorem `a^3 = a` over GF(3), so
-/// the query asserting `a^3 - a ≠ 0` is UNSAT.
+/// By Fermat's little theorem `a^3 = a` over GF(3), so asserting
+/// `a^3 - a ≠ 0` is UNSAT.
 #[test]
 fn test_field_poly_gf3() {
     let p = BigUint::from(3u32);
@@ -167,7 +162,7 @@ fn test_field_poly_gf3() {
     assert_eq!(solve_system(&system), "unsat");
 }
 
-/// simple.smt2 equivalent: a*b = 1, a = 2 over GF(5) → sat (b = 3 since 2*3=6=1)
+/// a*b = 1, a = 2 over GF(5) → sat (b = 3 since 2*3=6=1)
 #[test]
 fn test_simple_sat_gf5() {
     let system = NamedSystem {
