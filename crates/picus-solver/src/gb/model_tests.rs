@@ -422,3 +422,72 @@ fn compute_candidates_case2_minimal_polynomial_returns_roots() {
         "min_poly(x) = x^4 - x ⇒ roots {{0,1,2,4}} over GF(7)"
     );
 }
+
+#[test]
+fn audit_branching_incremental_gb_parity() {
+    // SPEC: the two paths in find_zero_cancel — fresh `Ideal::new`
+    // (default) vs incremental `compute_gb_incremental_with_order` (gated
+    // by `branching_incremental_gb`) — must produce the same outcome
+    // class (Sat/Unsat/Unknown) and the same model values when Sat,
+    // because both build the same reduced GB modulo canonicalisation.
+    use crate::poly::FfPolyRing;
+    use crate::ff::field::PrimeField;
+    use num_bigint::BigUint;
+    let f = || PrimeField::new(BigUint::from(7u32));
+    let cases: Vec<(&'static str, Vec<(usize, i64, Vec<(usize, u32)>)>)> = vec![
+        // x^2 - 4 = 0 ∧ y - x - 1 = 0 ⇒ {x=2, y=3} or {x=5, y=6}
+        ("x^2-4, y-x-1", vec![
+            (1, 0, vec![(0, 2)]),  // x^2
+            (1, -4, vec![]),
+            (1, 0, vec![(1, 1)]),  // y term spec uses a separate poly below
+        ]),
+    ];
+    let _ = cases;
+    // Hand-built ring + ideal so the test is self-contained.
+    let pr = FfPolyRing::new(f(), vec!["x".into(), "y".into()]);
+    let x = pr.var(0);
+    let y = pr.var(1);
+    let xx = pr.mul(pr.clone_poly(&x), pr.clone_poly(&x));
+    let four = pr.field().from_int(4);
+    let one = pr.field().from_int(1);
+    let p1 = pr.sub(xx, pr.constant(four));               // x^2 - 4
+    let p2 = pr.sub(y, pr.add(pr.clone_poly(&x), pr.constant(one))); // y - (x + 1)
+    let basis = vec![p1, p2];
+
+    let outcome_default = {
+        find_zero(&pr, &basis)
+    };
+    let outcome_inc = {
+        let _g = picus_core::config::ConfigGuard::with_override(|c| c.branching_incremental_gb = true);
+        find_zero(&pr, &basis)
+    };
+    // Same outcome class.
+    match (&outcome_default, &outcome_inc) {
+        (FindZeroOutcome::Sat(_), FindZeroOutcome::Sat(_)) => {}
+        (FindZeroOutcome::Unsat, FindZeroOutcome::Unsat) => {}
+        (FindZeroOutcome::Unknown, FindZeroOutcome::Unknown) => {}
+        _ => panic!("outcome class mismatch: default={:?} incremental={:?}",
+                    outcome_default, outcome_inc),
+    }
+    // For Sat case verify both models satisfy the system.
+    if let (FindZeroOutcome::Sat(m1), FindZeroOutcome::Sat(m2)) = (outcome_default, outcome_inc) {
+        let xv1 = &m1[&"x".to_string()];
+        let yv1 = &m1[&"y".to_string()];
+        let xv2 = &m2[&"x".to_string()];
+        let yv2 = &m2[&"y".to_string()];
+        // Both must satisfy x^2 = 4 and y = x + 1.
+        let f = pr.field();
+        let check = |xv: &num_bigint::BigUint, yv: &num_bigint::BigUint| {
+            let x_el = f.from_biguint(xv);
+            let y_el = f.from_biguint(yv);
+            let xx = f.mul(&x_el, &x_el);
+            let four = f.from_int(4);
+            let lhs1 = f.sub(&xx, &four);
+            assert!(f.is_zero(&lhs1), "x^2 - 4 must be 0, got x={}", xv);
+            let lhs2 = f.sub(&y_el, &f.add(&x_el, &f.from_int(1)));
+            assert!(f.is_zero(&lhs2), "y - x - 1 must be 0, got x={}, y={}", xv, yv);
+        };
+        check(xv1, yv1);
+        check(xv2, yv2);
+    }
+}

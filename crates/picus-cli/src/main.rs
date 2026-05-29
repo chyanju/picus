@@ -168,6 +168,12 @@ enum Commands {
         /// built-in default.
         #[arg(long, value_parser = ["on", "off"])]
         frobenius_cache: Option<String>,
+
+        /// In multivariate model construction, extend the GB incrementally
+        /// when a DFS branch adds `(var − val)` instead of recomputing it
+        /// from scratch: on | off. Omit to use the built-in default.
+        #[arg(long, value_parser = ["on", "off"])]
+        branching_incremental_gb: Option<String>,
     },
 
     /// Print R1CS circuit information
@@ -218,6 +224,7 @@ fn main() {
             split_triangular,
             reducer_index_cache,
             frobenius_cache,
+            branching_incremental_gb,
         } => {
             // CLI overlay — the highest-precedence config layer. Only the
             // flags the user actually passed become `Some`; everything
@@ -271,6 +278,7 @@ fn main() {
                     split_triangular: split_triangular.as_deref().map(|s| s == "on"),
                     reducer_index_cache: reducer_index_cache.as_deref().map(|s| s == "on"),
                     frobenius_cache: frobenius_cache.as_deref().map(|s| s == "on"),
+                    branching_incremental_gb: branching_incremental_gb.as_deref().map(|s| s == "on"),
                 },
             };
             let resolved = resolve_config(config.as_deref(), &overlay)

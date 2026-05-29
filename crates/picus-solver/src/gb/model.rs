@@ -14,7 +14,8 @@ use num_bigint::BigUint;
 
 use crate::gb::brancher::{univariate_coeffs, Brancher};
 use crate::ff::field::{PrimeField, FieldElem};
-use crate::gb::ideal::Ideal;
+use crate::ff::monomial::MonomialOrder as FfOrder;
+use crate::gb::ideal::{compute_gb_incremental_with_order, Ideal};
 use crate::poly::{FfPolyRing, Poly};
 use crate::gb::roots::{find_roots, find_roots_checked};
 use crate::timeout::CancelToken;
@@ -105,11 +106,27 @@ pub fn find_zero_cancel(
             let c = poly_ring.constant(poly_ring.field().clone_el(&val));
             let assign_poly = poly_ring.sub(v, c);
 
-            let mut new_gens: Vec<Poly> = ideals.last().unwrap().basis.iter()
+            let prev_basis: Vec<Poly> = ideals.last().unwrap().basis.iter()
                 .map(|p| poly_ring.ring.clone_el(p))
                 .collect();
-            new_gens.push(assign_poly);
-            let new_ideal = Ideal::new(poly_ring, new_gens);
+            let new_basis = if picus_core::config::with(|c| c.branching_incremental_gb) {
+                // Extend the (already-reduced) previous GB with the single
+                // `(x_var − val)` constraint; only cross-pairs (prev × new)
+                // and intra-new pairs are processed, instead of a fresh
+                // Buchberger run over the merged generator list.
+                compute_gb_incremental_with_order(
+                    poly_ring,
+                    prev_basis,
+                    vec![assign_poly],
+                    cancel,
+                    FfOrder::DegRevLex,
+                )
+            } else {
+                let mut merged = prev_basis;
+                merged.push(assign_poly);
+                Ideal::new(poly_ring, merged).basis
+            };
+            let new_ideal = Ideal::from_gb(poly_ring, new_basis);
             ideals.push(new_ideal);
         } else {
             // Brancher exhausted → backtrack.  If it was a non-exhaustive

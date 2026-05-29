@@ -27,6 +27,7 @@ fn apply_overlay_consumes_every_field() {
         split_triangular: Some(true),
         reducer_index_cache: Some(true),
         frobenius_cache: Some(true),
+        branching_incremental_gb: Some(true),
     };
     let expected = RuntimeConfig {
         gb_strategy: GbStrategy::ByHomog,
@@ -45,6 +46,7 @@ fn apply_overlay_consumes_every_field() {
         split_triangular: true,
         reducer_index_cache: true,
         frobenius_cache: true,
+        branching_incremental_gb: true,
     };
 
     // Every chosen value must differ from the compiled default, so a
