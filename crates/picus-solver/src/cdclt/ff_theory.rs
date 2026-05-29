@@ -466,4 +466,5 @@ impl<'a> Theory for FfTheory<'a> {
 }
 
 #[cfg(test)]
+#[path = "ff_theory_tests.rs"]
 mod tests;

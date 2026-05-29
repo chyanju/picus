@@ -428,4 +428,5 @@ pub(crate) fn interreduce_basis(
 
 
 #[cfg(test)]
+#[path = "ideal_tests.rs"]
 mod tests;

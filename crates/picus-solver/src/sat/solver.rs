@@ -877,4 +877,5 @@ impl Default for Solver {
 }
 
 #[cfg(test)]
+#[path = "solver_tests.rs"]
 mod tests;
