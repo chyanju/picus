@@ -421,3 +421,66 @@ fn prop_basis2_lemma_set_includes_basis2() {
     use crate::propagation::all_names;
     assert!(all_names().iter().any(|n| *n == "basis2"));
 }
+
+// ── extra coverage: candidate-loop exhaustion paths ────────────────
+
+/// Coverage: when NO term has the ±1 target coefficient, `match_decomp`
+/// must exhaust every candidate and return None.
+/// Example: `2 b_0 + 4 b_1 + 2 t = 0` over GF(11). Coefficients
+/// {2, 4, 2}. Neither `+1` (1) nor `-1` (10) is in the set ⇒ every
+/// candidate `continue`s. With every candidate rejected, the function
+/// falls through to the final `None`.
+#[test]
+fn test_basis2_match_decomp_rejects_when_no_pm1_target_coeff() {
+    let p = 11u64;
+    let constraints = vec![Constraint {
+        // (2 b_0 + 4 b_1) * 1 = -2 t  ⇒  2 b_0 + 4 b_1 + 2 t = 0
+        a: block(&[(1, 2), (2, 4)]),
+        b: block(&[(0, 1)]),
+        // c block becomes the C side: 2 * t means in equation form it
+        // appears as `c.target_var` minus c. We use t (wire 3) with
+        // coefficient (p - 2) so the LHS - C side = 2 b_0 + 4 b_1 + 2 t.
+        c: block(&[(3, (p - 2) as u32)]),
+    }];
+    let r = r1cs(p, 4, constraints, vec![0, 3], vec![1, 2]);
+    let ir = r1cs_to_poly_ir(&r, &HashSet::new(), 1).expect("lowering");
+    assert!(first_decomp(&ir).is_none(), "no ±1 coefficient ⇒ no match");
+}
+
+/// Coverage: `match_decomp` rejects polys with a non-linear monomial.
+/// `(x1 * x2) * 1 = 0` lowers to a single bilinear term ⇒ inner check
+/// `vars.len() != 1 || vars[0].1 != 1` returns None.
+#[test]
+fn test_basis2_match_decomp_rejects_nonlinear_term() {
+    let p = 7u64;
+    let constraints = vec![Constraint {
+        a: block(&[(1, 1)]),
+        b: block(&[(2, 1)]),
+        c: empty_block(),
+    }];
+    let r = r1cs(p, 3, constraints, vec![0, 1, 2], vec![]);
+    let ir = r1cs_to_poly_ir(&r, &HashSet::new(), 1).expect("lowering");
+    assert!(first_decomp(&ir).is_none(), "bilinear poly cannot be a basis2 decomp");
+}
+
+/// Coverage: `match_decomp` rejects polys with a non-zero CONSTANT
+/// term. Constants are tolerated only when exactly zero
+/// (see `if !coeff.is_zero() { return None; }`).
+/// We construct `(weights) * 1 = 1`: the equality becomes
+/// `b_0 + 2 b_1 - 1 = 0` (non-zero constant `-1` remains after C=1).
+#[test]
+fn test_basis2_match_decomp_rejects_nonzero_constant() {
+    let p = 101u64;
+    let constraints = vec![Constraint {
+        // (1*b_0 + 2*b_1) * 1 = 1
+        a: block(&[(1, 1), (2, 2)]),
+        b: block(&[(0, 1)]),
+        c: block(&[(0, 1)]),
+    }];
+    let r = r1cs(p, 3, constraints, vec![0], vec![1, 2]);
+    let ir = r1cs_to_poly_ir(&r, &HashSet::new(), 1).expect("lowering");
+    assert!(
+        first_decomp(&ir).is_none(),
+        "non-zero constant in poly must disqualify match_decomp"
+    );
+}

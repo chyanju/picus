@@ -311,3 +311,73 @@ fn prop_binary01_lemma_name_is_stable() {
     let lemma = Binary01Lemma::default();
     assert_eq!(lemma.name(), "binary01");
 }
+
+// ── extra coverage: structural matcher near-misses ─────────────────
+
+/// Coverage: x_1^2 - x_2 = 0 has both a quadratic term (in x_1) and a
+/// linear term (in x_2). Pattern requires sq_exps[0].0 == lin_exps[0].0
+/// (same variable). Different variables ⇒ `match_x_squared_minus_x`
+/// returns None at the variable-mismatch guard.
+#[test]
+fn test_binary01_rejects_quadratic_in_one_var_linear_in_another() {
+    let ir = make_ir(3, |ring| {
+        let x1 = ring.var(1);
+        let x2 = ring.var(2);
+        let x1_sq = ring.mul(ring.clone_poly(&x1), x1);
+        let neg_x2 = ring.neg(x2);
+        vec![ring.add(x1_sq, neg_x2)]
+    });
+    let mut owned = CtxOwned::new(&[1, 2]);
+    let mut lemma = Binary01Lemma::default();
+    {
+        let mut ctx = owned.ctx();
+        let _ = lemma.run(&ir, &mut ctx);
+    }
+    assert!(
+        owned.ranges.is_empty(),
+        "x_1^2 - x_2 = 0 ties two different variables ⇒ NOT binary01"
+    );
+}
+
+/// Coverage: two-term polynomial where BOTH terms are linear (no
+/// quadratic). `sq_idx` stays None ⇒ pattern returns None.
+#[test]
+fn test_binary01_rejects_two_linear_terms() {
+    // x_1 + x_2 = 0: two linear terms; no quadratic term.
+    let ir = make_ir(3, |ring| {
+        let p = ring.add(ring.var(1), ring.var(2));
+        vec![p]
+    });
+    let mut owned = CtxOwned::new(&[1, 2]);
+    let mut lemma = Binary01Lemma::default();
+    {
+        let mut ctx = owned.ctx();
+        let _ = lemma.run(&ir, &mut ctx);
+    }
+    assert!(owned.ranges.is_empty(), "two linear terms cannot match x^2-x");
+}
+
+/// Coverage: range singleton-promotion path when the range was tightened
+/// to `{1}` (the other binary singleton). Mirror of the existing `{0}`
+/// test — sweeps the second singleton.
+#[test]
+fn test_binary01_promotes_when_pre_range_pins_to_one() {
+    let ir = make_ir(3, |ring| {
+        let x1 = ring.var(1);
+        let x1_sq = ring.mul(ring.clone_poly(&x1), ring.clone_poly(&x1));
+        let neg_x1 = ring.neg(x1);
+        vec![ring.add(x1_sq, neg_x1)]
+    });
+    let mut owned = CtxOwned::new(&[1]);
+    owned
+        .ranges
+        .insert(1, RangeValue::Values([BigUint::one()].into_iter().collect()));
+    let mut lemma = Binary01Lemma::default();
+    let progress = {
+        let mut ctx = owned.ctx();
+        lemma.run(&ir, &mut ctx)
+    };
+    assert!(progress);
+    assert!(owned.known.contains(&1));
+    assert!(!owned.unknown.contains(&1));
+}
