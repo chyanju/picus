@@ -162,7 +162,7 @@ impl Default for RuntimeConfig {
             split_triangular: false,
             reducer_index_cache: false,
             frobenius_cache: true,
-            branching_incremental_gb: false,
+            branching_incremental_gb: true,
         }
     }
 }
