@@ -324,3 +324,31 @@ fn split_linear_factors_degree_zero_input_yields_no_factors() {
     let factors = split_linear_factors(&UnivariatePoly::one(&f), &f, &mut rng);
     assert!(factors.is_empty(), "constant seed must produce no linear factors");
 }
+
+#[test]
+fn audit_frobenius_cache_preserves_root_set() {
+    // SPEC: enabling the Frobenius cache must not change the result of
+    // root finding. Build a degree-3 polynomial over GF(7) with known
+    // roots {1, 2, 4}, find roots with cache off, then with cache on, then
+    // again with cache on (hitting the cache). All three runs must return
+    // the same root set.
+    use std::collections::HashSet;
+    let f = PrimeField::new(BigUint::from(7u32));
+    let one = f.one();
+    let neg = |v: i64| f.from_int(v);
+    // (x-1)(x-2)(x-4) = x^3 - 7x^2 + 14x - 8 ≡ x^3 + 0x^2 + 0x - 1  mod 7
+    //   coefficients low→high: [-1, 0, 0, 1]
+    let coeffs = vec![neg(-1), neg(0), neg(0), one];
+    let p = UnivariatePoly::from_coeffs(coeffs, &f);
+    let expected: HashSet<BigUint> = [1u32, 2, 4].iter().map(|&v| BigUint::from(v)).collect();
+    let set = |xs: Vec<FieldElem>| -> HashSet<BigUint> { xs.iter().map(|e| f.to_biguint(e)).collect() };
+    clear_frobenius_cache_for_tests();
+    let cache_off = set(find_roots(&p, &f));
+    assert_eq!(cache_off, expected, "cache off");
+    let _g = picus_core::config::ConfigGuard::with_override(|c| c.frobenius_cache = true);
+    clear_frobenius_cache_for_tests();
+    let cache_on_cold = set(find_roots(&p, &f));
+    assert_eq!(cache_on_cold, expected, "cache on, cold");
+    let cache_on_hot = set(find_roots(&p, &f));
+    assert_eq!(cache_on_hot, expected, "cache on, hot (cache hit)");
+}

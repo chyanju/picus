@@ -162,6 +162,12 @@ enum Commands {
         /// to use the built-in default.
         #[arg(long, value_parser = ["on", "off"])]
         reducer_index_cache: Option<String>,
+
+        /// Memoize `x^p mod f` (Frobenius polynomial) across univariate root
+        /// finding calls on the same `(ring, f)`: on | off. Omit to use the
+        /// built-in default.
+        #[arg(long, value_parser = ["on", "off"])]
+        frobenius_cache: Option<String>,
     },
 
     /// Print R1CS circuit information
@@ -211,6 +217,7 @@ fn main() {
             linear_elim,
             split_triangular,
             reducer_index_cache,
+            frobenius_cache,
         } => {
             // CLI overlay — the highest-precedence config layer. Only the
             // flags the user actually passed become `Some`; everything
@@ -263,6 +270,7 @@ fn main() {
                     track_inter_reduce_deps: None,
                     split_triangular: split_triangular.as_deref().map(|s| s == "on"),
                     reducer_index_cache: reducer_index_cache.as_deref().map(|s| s == "on"),
+                    frobenius_cache: frobenius_cache.as_deref().map(|s| s == "on"),
                 },
             };
             let resolved = resolve_config(config.as_deref(), &overlay)
