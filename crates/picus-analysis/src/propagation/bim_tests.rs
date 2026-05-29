@@ -706,3 +706,272 @@ fn prop_bim_invertible_singleton_sweeps_small_primes() {
         assert!(known_set.contains(&1), "wire 1 promoted over GF({})", p);
     }
 }
+
+// ── extra coverage: matrix_det_mod internals ───────────────────────
+
+/// Coverage: pivot-swap sign-flip path in `matrix_det_mod`.
+/// System:
+///   x_1·0 + x_2·1 = 0   (row 0: leading column is zero)
+///   x_1·1 + x_2·0 = 0   (row 1: leading column nonzero)
+/// First column's pivot must be found at row 1 (not row 0) → swap →
+/// `sign_flip = true`. Det = 1·1 = 1; after negation det = p-1 ≠ 0 ⇒
+/// the system is invertible and both wires are promoted.
+#[test]
+fn test_bim_promotes_with_pivot_swap_sign_flip() {
+    let header = HeaderSection {
+        field_size: 32,
+        prime_number: BigUint::from(7u32),
+        n_wires: 3,
+        n_pub_out: 0,
+        n_pub_in: 0,
+        n_prv_in: 0,
+        n_labels: 3,
+        m_constraints: 1,
+    };
+    let constraints = vec![Constraint {
+        a: block(&[(1, 1)]),
+        b: block(&[(0, 1)]),
+        c: empty_block(),
+    }];
+    let r1cs = R1csFile {
+        magic: *b"r1cs",
+        version: 1,
+        n_sections: 3,
+        header,
+        constraints: ConstraintSection { constraints },
+        w2l: W2lSection { labels: vec![0, 1, 2] },
+        inputs: vec![0],
+        outputs: vec![],
+    };
+    let known: HashSet<usize> = r1cs.inputs.iter().copied().collect();
+    let mut ir = r1cs_to_poly_ir(&r1cs, &known, 1).expect("lowering should succeed");
+
+    // The matrix-row order depends on hash iteration of `all_sigs`, so
+    // build a system where the relative ordering forces a non-trivial
+    // pivot search: x_2 = 0 (row references only x_2) and x_1 = 0 (row
+    // references only x_1). For whichever ordering of (wire 1, wire 2)
+    // ends up as columns 0/1, ONE of the two rows has a zero in col 0
+    // and the matrix algorithm must scan for the nonzero pivot.
+    ir.equalities.clear();
+    let x1 = ir.ring.var(1);
+    let x2 = ir.ring.var(2);
+    ir.equalities.push(x2); // x_2 = 0
+    ir.equalities.push(x1); // x_1 = 0
+
+    let mut known_set: HashSet<usize> = HashSet::new();
+    known_set.insert(0);
+    let mut unknown: HashSet<usize> = HashSet::new();
+    unknown.insert(1);
+    unknown.insert(2);
+    let mut ranges: HashMap<usize, RangeValue> = HashMap::new();
+    let mut learned: Vec<picus_core::poly::IrPoly> = Vec::new();
+    let mut learned_disj: Vec<Vec<picus_core::poly::IrPoly>> = Vec::new();
+    let mut lemma = BimLemma::default();
+    let progress = {
+        let mut ctx = PropagationCtx {
+            known: &mut known_set,
+            unknown: &mut unknown,
+            ranges: &mut ranges,
+            learned: &mut learned,
+            learned_disjunctions: &mut learned_disj,
+        };
+        lemma.run(&ir, &mut ctx)
+    };
+    assert!(progress, "diagonal/anti-diagonal system must still be invertible");
+    assert!(known_set.contains(&1));
+    assert!(known_set.contains(&2));
+}
+
+/// Coverage: subtractive wrap-around branch in `matrix_det_mod`'s
+/// Gauss step. System over GF(7):
+///   x_1 + x_2 = 0
+///   3 x_1 + x_2 = 0
+/// Det = 1·1 - 3·1 = -2 ≡ 5 (mod 7) ≠ 0 ⇒ invertible.
+/// During elimination on row 1: factor = 3, sub = 3·1 = 3 > m[1][1] = 1
+/// for col 1 → the `m[row][j] >= sub` else-branch is taken (the
+/// "subtract from p" wrap path).
+#[test]
+fn test_bim_promotes_via_wrap_subtraction_branch() {
+    let header = HeaderSection {
+        field_size: 32,
+        prime_number: BigUint::from(7u32),
+        n_wires: 3,
+        n_pub_out: 0,
+        n_pub_in: 0,
+        n_prv_in: 0,
+        n_labels: 3,
+        m_constraints: 1,
+    };
+    let constraints = vec![Constraint {
+        a: block(&[(1, 1)]),
+        b: block(&[(0, 1)]),
+        c: empty_block(),
+    }];
+    let r1cs = R1csFile {
+        magic: *b"r1cs",
+        version: 1,
+        n_sections: 3,
+        header,
+        constraints: ConstraintSection { constraints },
+        w2l: W2lSection { labels: vec![0, 1, 2] },
+        inputs: vec![0],
+        outputs: vec![],
+    };
+    let known: HashSet<usize> = r1cs.inputs.iter().copied().collect();
+    let mut ir = r1cs_to_poly_ir(&r1cs, &known, 1).expect("lowering should succeed");
+
+    ir.equalities.clear();
+    let three = ir.constant(&BigUint::from(3u32));
+    let eq1 = ir.ring.add(ir.ring.var(1), ir.ring.var(2));
+    let eq2 = ir.ring.add(ir.ring.mul(three, ir.ring.var(1)), ir.ring.var(2));
+    ir.equalities.push(eq1);
+    ir.equalities.push(eq2);
+
+    let mut known_set: HashSet<usize> = HashSet::new();
+    known_set.insert(0);
+    let mut unknown: HashSet<usize> = HashSet::new();
+    unknown.insert(1);
+    unknown.insert(2);
+    let mut ranges: HashMap<usize, RangeValue> = HashMap::new();
+    let mut learned: Vec<picus_core::poly::IrPoly> = Vec::new();
+    let mut learned_disj: Vec<Vec<picus_core::poly::IrPoly>> = Vec::new();
+    let mut lemma = BimLemma::default();
+    let progress = {
+        let mut ctx = PropagationCtx {
+            known: &mut known_set,
+            unknown: &mut unknown,
+            ranges: &mut ranges,
+            learned: &mut learned,
+            learned_disjunctions: &mut learned_disj,
+        };
+        lemma.run(&ir, &mut ctx)
+    };
+    assert!(progress, "wrap-subtraction case must still report invertible");
+    assert!(known_set.contains(&1));
+    assert!(known_set.contains(&2));
+}
+
+/// Coverage: the m[row][col].is_zero() `continue` branch inside the
+/// elimination loop. System with a leading 0 in row 2's column 0 of a
+/// 3x3 system:
+///   x_1 + x_2          = 0   (deps: 1, 2)
+///   x_1 +       x_3    = 0   (deps: 1, 3)
+///         x_2 +  x_3   = 0   (deps: 2, 3)
+/// Det of [[1,1,0],[1,0,1],[0,1,1]] = -2 ≡ 5 mod 7 ≠ 0.
+#[test]
+fn test_bim_promotes_3x3_skips_zero_pivot_rows() {
+    let header = HeaderSection {
+        field_size: 32,
+        prime_number: BigUint::from(7u32),
+        n_wires: 4,
+        n_pub_out: 0,
+        n_pub_in: 0,
+        n_prv_in: 0,
+        n_labels: 4,
+        m_constraints: 1,
+    };
+    let constraints = vec![Constraint {
+        a: block(&[(1, 1)]),
+        b: block(&[(0, 1)]),
+        c: empty_block(),
+    }];
+    let r1cs = R1csFile {
+        magic: *b"r1cs",
+        version: 1,
+        n_sections: 3,
+        header,
+        constraints: ConstraintSection { constraints },
+        w2l: W2lSection { labels: vec![0, 1, 2, 3] },
+        inputs: vec![0],
+        outputs: vec![],
+    };
+    let known: HashSet<usize> = r1cs.inputs.iter().copied().collect();
+    let mut ir = r1cs_to_poly_ir(&r1cs, &known, 1).expect("lowering should succeed");
+
+    ir.equalities.clear();
+    let e1 = ir.ring.add(ir.ring.var(1), ir.ring.var(2));
+    let e2 = ir.ring.add(ir.ring.var(1), ir.ring.var(3));
+    let e3 = ir.ring.add(ir.ring.var(2), ir.ring.var(3));
+    ir.equalities.push(e1);
+    ir.equalities.push(e2);
+    ir.equalities.push(e3);
+
+    let mut known_set: HashSet<usize> = HashSet::new();
+    known_set.insert(0);
+    let mut unknown: HashSet<usize> = HashSet::new();
+    unknown.insert(1);
+    unknown.insert(2);
+    unknown.insert(3);
+    let mut ranges: HashMap<usize, RangeValue> = HashMap::new();
+    let mut learned: Vec<picus_core::poly::IrPoly> = Vec::new();
+    let mut learned_disj: Vec<Vec<picus_core::poly::IrPoly>> = Vec::new();
+    let mut lemma = BimLemma::default();
+    let progress = {
+        let mut ctx = PropagationCtx {
+            known: &mut known_set,
+            unknown: &mut unknown,
+            ranges: &mut ranges,
+            learned: &mut learned,
+            learned_disjunctions: &mut learned_disj,
+        };
+        lemma.run(&ir, &mut ctx)
+    };
+    assert!(progress, "3x3 sparse invertible system must fire");
+    assert!(known_set.contains(&1));
+    assert!(known_set.contains(&2));
+    assert!(known_set.contains(&3));
+}
+
+/// Coverage: `matrix_det_mod` lines 128-129 — `if n == 0 || matrix[0].len() != n { return None; }`.
+/// `Basis2Lemma::run` always feeds a square nxn matrix, so the only way
+/// to exercise the non-square guard is to call `matrix_det_mod`
+/// directly. Pass a 2×3 matrix and expect `None`.
+#[test]
+fn test_bim_matrix_det_mod_rejects_non_square() {
+    use num_traits::Zero;
+    let p = BigUint::from(7u32);
+    // 2 rows × 3 cols — non-square.
+    let m: Vec<Vec<BigUint>> = vec![
+        vec![BigUint::from(1u32), BigUint::from(2u32), BigUint::from(3u32)],
+        vec![BigUint::from(4u32), BigUint::from(5u32), BigUint::from(6u32)],
+    ];
+    assert!(matrix_det_mod(&m, &p).is_none(), "non-square matrix ⇒ None");
+
+    // Empty matrix `n == 0` also hits the same guard via the `n == 0`
+    // disjunct.
+    let empty: Vec<Vec<BigUint>> = Vec::new();
+    assert!(matrix_det_mod(&empty, &p).is_none(), "n==0 ⇒ None");
+
+    // Sanity: a square invertible matrix is accepted (positive baseline).
+    let square: Vec<Vec<BigUint>> = vec![
+        vec![BigUint::from(1u32), BigUint::from(0u32)],
+        vec![BigUint::from(0u32), BigUint::from(1u32)],
+    ];
+    let det = matrix_det_mod(&square, &p).expect("identity is invertible");
+    assert!(!det.is_zero(), "det of identity must be nonzero");
+}
+
+/// Coverage: `matrix_det_mod` lines 137-138 (pivot row swap + sign
+/// flip) and line 158 (`det = (p - &det) % p` when `sign_flip` is true,
+/// then `Some(det)`). Matrix `[[0, 1], [1, 0]]` over GF(7):
+///   col 0: pivot at row 1 (m[0][0] = 0), swap rows 0 and 1, sign_flip = true.
+///   After swap: [[1, 0], [0, 1]]. det = 1; pivot_inv = 1. Inner row
+///   has 0 at col 0 ⇒ inner-loop `continue` branch (line 143-145).
+///   col 1: pivot at row 1, no swap. det = 1·1 = 1.
+///   sign_flip is true ⇒ det = (7 - 1) % 7 = 6 ≠ 0.
+#[test]
+fn test_bim_matrix_det_mod_pivot_swap_sign_flip() {
+    use num_traits::Zero;
+    let p = BigUint::from(7u32);
+    let m: Vec<Vec<BigUint>> = vec![
+        vec![BigUint::zero(), BigUint::from(1u32)],
+        vec![BigUint::from(1u32), BigUint::zero()],
+    ];
+    let det = matrix_det_mod(&m, &p).expect("anti-diagonal is invertible");
+    // det of [[0,1],[1,0]] is -1, which mod 7 = 6.
+    assert_eq!(
+        det,
+        BigUint::from(6u32),
+        "sign-flip path must produce det = p - 1 = 6 mod 7"
+    );
+}

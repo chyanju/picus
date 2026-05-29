@@ -272,3 +272,62 @@ fn prop_linear_lemma_name_is_stable() {
     let lemma = LinearLemma::default();
     assert_eq!(lemma.name(), "linear");
 }
+
+// ── extra coverage ─────────────────────────────────────────────────
+
+/// Coverage: classify_poly_vars treats a degree-0 non-zero constant
+/// term as a no-op match arm. We build `x_1 + 1 = 0` (which is
+/// `x_1 - p_minus_1 = 0` in field form): the polynomial has one
+/// constant term and one linear term. The constant hits the `0 => {}`
+/// arm; the linear term registers wire 1 as linear-only. wire 1's
+/// dep set is empty (no other variables) ⇒ promotes unconditionally.
+#[test]
+fn test_linear_classify_handles_nonzero_constant_term() {
+    let ir = make_ir(3, |ring| {
+        let x1 = ring.var(1);
+        let one = ring.constant(ring.field().one());
+        vec![ring.add(x1, one)]
+    });
+    let mut owned = CtxOwned::new(&[], &[1]);
+    let mut lemma = LinearLemma::default();
+    let progress = {
+        let mut ctx = owned.ctx();
+        lemma.run(&ir, &mut ctx)
+    };
+    assert!(
+        progress,
+        "x_1 + 1 = 0 still promotes wire 1 unconditionally (deps=empty)"
+    );
+    assert!(owned.known.contains(&1));
+}
+
+/// Coverage: cache HIT path — when the equality vector length is
+/// unchanged between calls, `cdmap` is not rebuilt. The lemma must
+/// still respect known/unknown updates that happened externally.
+#[test]
+fn test_linear_cache_hit_on_unchanged_ir() {
+    // x_1 + x_2 = 0: starts with wire 2 known ⇒ wire 1 promotes.
+    // Reset known/unknown, re-run with the same IR: cache hits, wire 1
+    // promotes again (or not — depending on starting state).
+    let ir = make_ir(3, |ring| {
+        let p = ring.add(ring.var(1), ring.var(2));
+        vec![p]
+    });
+    let mut owned = CtxOwned::new(&[2], &[1]);
+    let mut lemma = LinearLemma::default();
+    {
+        let mut ctx = owned.ctx();
+        let _ = lemma.run(&ir, &mut ctx);
+    }
+    assert!(owned.known.contains(&1));
+
+    // Reset state, re-run on the SAME `ir` instance — cache hit branch.
+    owned.known = [2usize].into_iter().collect();
+    owned.unknown = [1usize].into_iter().collect();
+    let progress = {
+        let mut ctx = owned.ctx();
+        lemma.run(&ir, &mut ctx)
+    };
+    assert!(progress, "cache hit must not blunt promotion logic");
+    assert!(owned.known.contains(&1));
+}

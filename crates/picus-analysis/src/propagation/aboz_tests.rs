@@ -545,3 +545,417 @@ fn prop_aboz_bilinear_rejects_squared_term() {
     };
     assert!(!progress, "x^2 = 0 alone is not an ABOZ shape");
 }
+
+// ── extra coverage: shared-wire branches in `run` ──────────────────
+
+/// Coverage: the `a0 == a1` branch of the shared-wire match. Choose a
+/// wiring where `sel` is the smallest of {sel, y0, y1} so the
+/// canonicalised (min,max) products both have `sel` in position `a`.
+/// Wires: 0 = one, 1 = sel (input), 2 = y0 (output), 3 = c_extra (input),
+///        4 = y1 (output). bilinears canonicalise to (1,2) and (1,4).
+#[test]
+fn test_aboz_shared_arm_a0_eq_a1() {
+    let header = HeaderSection {
+        field_size: 32,
+        prime_number: BigUint::from(7u32),
+        n_wires: 5,
+        n_pub_out: 2,
+        n_pub_in: 2,
+        n_prv_in: 0,
+        n_labels: 5,
+        m_constraints: 3,
+    };
+    let constraints = vec![
+        // sel * y0 = 0
+        Constraint { a: block(&[(1, 1)]), b: block(&[(2, 1)]), c: empty_block() },
+        // sel * y1 = 0
+        Constraint { a: block(&[(1, 1)]), b: block(&[(4, 1)]), c: empty_block() },
+        // y0 + sel + c_extra + y1 = 0
+        Constraint {
+            a: block(&[(1, 1), (2, 1), (3, 1), (4, 1)]),
+            b: block(&[(0, 1)]),
+            c: empty_block(),
+        },
+    ];
+    let r1cs = R1csFile {
+        magic: *b"r1cs",
+        version: 1,
+        n_sections: 3,
+        header,
+        constraints: ConstraintSection { constraints },
+        w2l: W2lSection { labels: vec![0, 1, 2, 3, 4] },
+        inputs: vec![0, 1, 3],
+        outputs: vec![2, 4],
+    };
+    let ir = r1cs_to_poly_ir(&r1cs, &HashSet::new(), 1).expect("lowering should succeed");
+    let mut known_set: HashSet<usize> = HashSet::new();
+    known_set.insert(0);
+    known_set.insert(1); // sel
+    known_set.insert(3); // c_extra
+    let mut unknown: HashSet<usize> = HashSet::new();
+    unknown.insert(2);
+    unknown.insert(4);
+    let mut ranges: HashMap<usize, RangeValue> = HashMap::new();
+    ranges.insert(1, vals(&[1, 2, 3])); // sel ≠ 0
+    let mut learned: Vec<picus_core::poly::IrPoly> = Vec::new();
+    let mut learned_disj: Vec<Vec<picus_core::poly::IrPoly>> = Vec::new();
+    let mut lemma = AbozLemma::default();
+    let progress = {
+        let mut ctx = PropagationCtx {
+            known: &mut known_set,
+            unknown: &mut unknown,
+            ranges: &mut ranges,
+            learned: &mut learned,
+            learned_disjunctions: &mut learned_disj,
+        };
+        lemma.run(&ir, &mut ctx)
+    };
+    assert!(progress, "aboz should fire on a0==a1 shape");
+    assert!(known_set.contains(&2));
+    assert!(known_set.contains(&4));
+}
+
+/// Coverage: when neither product shares a wire (no shared selector),
+/// the inner `let Some((x, y0, y1)) = shared else { continue }` fires
+/// the `None` branch. Two disjoint bilinear-zero constraints + a
+/// linear sum that mentions everything.
+/// Wires: 0=one, 1=a, 2=b, 3=c, 4=d (a*b=0, c*d=0 — no shared wire).
+#[test]
+fn test_aboz_shared_arm_none_no_overlap() {
+    let _guard = ConfigGuard::with_override(|c| {
+        c.aboz_emit_disjunctions = false;
+    });
+    let header = HeaderSection {
+        field_size: 32,
+        prime_number: BigUint::from(7u32),
+        n_wires: 5,
+        n_pub_out: 0,
+        n_pub_in: 4,
+        n_prv_in: 0,
+        n_labels: 5,
+        m_constraints: 3,
+    };
+    let constraints = vec![
+        Constraint { a: block(&[(1, 1)]), b: block(&[(2, 1)]), c: empty_block() },
+        Constraint { a: block(&[(3, 1)]), b: block(&[(4, 1)]), c: empty_block() },
+        // a+b+c+d = 0 (linear sum mentioning every wire)
+        Constraint {
+            a: block(&[(1, 1), (2, 1), (3, 1), (4, 1)]),
+            b: block(&[(0, 1)]),
+            c: empty_block(),
+        },
+    ];
+    let r1cs = R1csFile {
+        magic: *b"r1cs",
+        version: 1,
+        n_sections: 3,
+        header,
+        constraints: ConstraintSection { constraints },
+        w2l: W2lSection { labels: vec![0, 1, 2, 3, 4] },
+        inputs: vec![0, 1, 2, 3, 4],
+        outputs: vec![],
+    };
+    let ir = r1cs_to_poly_ir(&r1cs, &HashSet::new(), 1).expect("lowering should succeed");
+    let mut known_set: HashSet<usize> = HashSet::new();
+    for w in [0usize, 1, 2, 3, 4] {
+        known_set.insert(w);
+    }
+    let mut unknown: HashSet<usize> = HashSet::new();
+    let mut ranges: HashMap<usize, RangeValue> = HashMap::new();
+    let mut learned: Vec<picus_core::poly::IrPoly> = Vec::new();
+    let mut learned_disj: Vec<Vec<picus_core::poly::IrPoly>> = Vec::new();
+    let mut lemma = AbozLemma::default();
+    let progress = {
+        let mut ctx = PropagationCtx {
+            known: &mut known_set,
+            unknown: &mut unknown,
+            ranges: &mut ranges,
+            learned: &mut learned,
+            learned_disjunctions: &mut learned_disj,
+        };
+        lemma.run(&ir, &mut ctx)
+    };
+    // No two products share a wire — shared = None — every pair `continue`s.
+    assert!(!progress, "disjoint bilinears must not trigger aboz");
+}
+
+/// Coverage: gate at line 84 — `x` (the shared/selector) is NOT in
+/// `ctx.known`. The lemma must `continue`, NOT promote `y0`/`y1`. We
+/// also disable disjunctions so the only observed action is the
+/// "x-not-known" continue.
+#[test]
+fn test_aboz_skips_when_selector_not_known() {
+    let _guard = ConfigGuard::with_override(|c| {
+        c.aboz_emit_disjunctions = false;
+    });
+    let r1cs = aboz_shape_r1cs();
+    let ir = r1cs_to_poly_ir(&r1cs, &HashSet::new(), 1).expect("lowering should succeed");
+
+    // sel (wire 2) intentionally NOT known.
+    let mut known_set: HashSet<usize> = HashSet::new();
+    known_set.insert(0);
+    known_set.insert(3); // c_extra
+    let mut unknown: HashSet<usize> = HashSet::new();
+    unknown.insert(1);
+    unknown.insert(2);
+    unknown.insert(4);
+    let mut ranges: HashMap<usize, RangeValue> = HashMap::new();
+    ranges.insert(2, vals(&[1, 2, 3])); // sel range excludes zero
+    let mut learned: Vec<picus_core::poly::IrPoly> = Vec::new();
+    let mut learned_disj: Vec<Vec<picus_core::poly::IrPoly>> = Vec::new();
+    let mut lemma = AbozLemma::default();
+    let progress = {
+        let mut ctx = PropagationCtx {
+            known: &mut known_set,
+            unknown: &mut unknown,
+            ranges: &mut ranges,
+            learned: &mut learned,
+            learned_disjunctions: &mut learned_disj,
+        };
+        lemma.run(&ir, &mut ctx)
+    };
+    assert!(!progress, "selector not known ⇒ no promotion");
+    assert!(unknown.contains(&1));
+    assert!(unknown.contains(&4));
+}
+
+/// Coverage: `match_bilinear` reject when a poly has TWO bilinear
+/// terms. `(x_1 + x_2) * x_3 = 0` lowers to `x_1*x_3 + x_2*x_3 = 0` —
+/// two bilinear monomials. `match_bilinear` returns None on second
+/// bilinear (line 201-203). Combined with another constraint we ensure
+/// `collect_bilinear_zero` rejects this poly.
+#[test]
+fn test_aboz_match_bilinear_rejects_two_bilinear_terms() {
+    let header = HeaderSection {
+        field_size: 32,
+        prime_number: BigUint::from(7u32),
+        n_wires: 4,
+        n_pub_out: 0,
+        n_pub_in: 3,
+        n_prv_in: 0,
+        n_labels: 4,
+        m_constraints: 1,
+    };
+    let constraints = vec![Constraint {
+        // (x_1 + x_2) * x_3 = 0
+        a: block(&[(1, 1), (2, 1)]),
+        b: block(&[(3, 1)]),
+        c: empty_block(),
+    }];
+    let r1cs = R1csFile {
+        magic: *b"r1cs",
+        version: 1,
+        n_sections: 3,
+        header,
+        constraints: ConstraintSection { constraints },
+        w2l: W2lSection { labels: vec![0, 1, 2, 3] },
+        inputs: vec![0, 1, 2, 3],
+        outputs: vec![],
+    };
+    let ir = r1cs_to_poly_ir(&r1cs, &HashSet::new(), 1).expect("lowering should succeed");
+    let mut known_set: HashSet<usize> = HashSet::new();
+    for w in [0usize, 1, 2, 3] {
+        known_set.insert(w);
+    }
+    let mut unknown: HashSet<usize> = HashSet::new();
+    let mut ranges: HashMap<usize, RangeValue> = HashMap::new();
+    let mut learned: Vec<picus_core::poly::IrPoly> = Vec::new();
+    let mut learned_disj: Vec<Vec<picus_core::poly::IrPoly>> = Vec::new();
+    let mut lemma = AbozLemma::default();
+    let progress = {
+        let mut ctx = PropagationCtx {
+            known: &mut known_set,
+            unknown: &mut unknown,
+            ranges: &mut ranges,
+            learned: &mut learned,
+            learned_disjunctions: &mut learned_disj,
+        };
+        lemma.run(&ir, &mut ctx)
+    };
+    // Even with that constraint there are no clean bilinear-zeros to
+    // pair up — products.len() < 2 ⇒ no progress.
+    assert!(!progress);
+}
+
+/// Coverage: line 44 `if linear_sums.is_empty() { return false; }`.
+/// Two bilinear products exist (so we pass the first products.len()<2
+/// gate) but EVERY equality is purely bilinear — no linear-only sum
+/// anywhere. Build a fresh IR with two bare bilinear monomials and no
+/// wire-0 self-pin or linear sum.
+#[test]
+fn test_aboz_no_progress_when_linear_sums_empty() {
+    let r1cs = aboz_shape_r1cs();
+    let ir_template = r1cs_to_poly_ir(&r1cs, &HashSet::new(), 1)
+        .expect("lowering should succeed");
+    // Take the lowered IR but replace equalities with two bilinear-only
+    // polys: x_1 * x_2 = 0 and x_3 * x_4 = 0. No linear sum, no constants.
+    let mut ir = ir_template;
+    ir.equalities.clear();
+    let bilinear_12 = ir.ring.mul(ir.ring.var(1), ir.ring.var(2));
+    let bilinear_34 = ir.ring.mul(ir.ring.var(3), ir.ring.var(4));
+    ir.equalities.push(bilinear_12);
+    ir.equalities.push(bilinear_34);
+
+    let mut known_set: HashSet<usize> = HashSet::new();
+    for w in [0usize, 1, 2, 3, 4] {
+        known_set.insert(w);
+    }
+    let mut unknown: HashSet<usize> = HashSet::new();
+    let mut ranges: HashMap<usize, RangeValue> = HashMap::new();
+    let mut learned: Vec<picus_core::poly::IrPoly> = Vec::new();
+    let mut learned_disj: Vec<Vec<picus_core::poly::IrPoly>> = Vec::new();
+    let mut lemma = AbozLemma::default();
+    let progress = {
+        let mut ctx = PropagationCtx {
+            known: &mut known_set,
+            unknown: &mut unknown,
+            ranges: &mut ranges,
+            learned: &mut learned,
+            learned_disjunctions: &mut learned_disj,
+        };
+        lemma.run(&ir, &mut ctx)
+    };
+    assert!(!progress, "no linear sum at all ⇒ early return at line 44");
+}
+
+/// Coverage: line 60 `Some((*b0, *a0, *a1))` — the `b0 == b1` arm of
+/// the shared-wire match. Two products canonicalise to (a0, b) and
+/// (a1, b) where `b` is the larger wire index (the selector) shared in
+/// the `b` slot of both products. Pick wires so the selector is wire 4
+/// (the highest), and the other sides are wires 1 and 2.
+#[test]
+fn test_aboz_shared_arm_b0_eq_b1() {
+    // Wires: 0=one, 1=y0, 2=y1, 3=c_extra, 4=sel. Both bilinears
+    // canonicalise to (1, 4) and (2, 4): both share wire 4 in b-slot.
+    let header = HeaderSection {
+        field_size: 32,
+        prime_number: BigUint::from(7u32),
+        n_wires: 5,
+        n_pub_out: 0,
+        n_pub_in: 4,
+        n_prv_in: 0,
+        n_labels: 5,
+        m_constraints: 3,
+    };
+    let constraints = vec![
+        // y0 * sel = 0 (1 * 4 = 0)
+        Constraint { a: block(&[(1, 1)]), b: block(&[(4, 1)]), c: empty_block() },
+        // y1 * sel = 0 (2 * 4 = 0)
+        Constraint { a: block(&[(2, 1)]), b: block(&[(4, 1)]), c: empty_block() },
+        // y0 + y1 + sel + c_extra = 0
+        Constraint {
+            a: block(&[(1, 1), (2, 1), (3, 1), (4, 1)]),
+            b: block(&[(0, 1)]),
+            c: empty_block(),
+        },
+    ];
+    let r1cs = R1csFile {
+        magic: *b"r1cs",
+        version: 1,
+        n_sections: 3,
+        header,
+        constraints: ConstraintSection { constraints },
+        w2l: W2lSection { labels: vec![0, 1, 2, 3, 4] },
+        inputs: vec![0, 3, 4],
+        outputs: vec![1, 2],
+    };
+    let ir = r1cs_to_poly_ir(&r1cs, &HashSet::new(), 1).expect("lowering should succeed");
+
+    let mut known_set: HashSet<usize> = HashSet::new();
+    known_set.insert(0);
+    known_set.insert(3); // c_extra
+    known_set.insert(4); // sel
+    let mut unknown: HashSet<usize> = HashSet::new();
+    unknown.insert(1);
+    unknown.insert(2);
+    let mut ranges: HashMap<usize, RangeValue> = HashMap::new();
+    ranges.insert(4, vals(&[1, 2, 3])); // sel ≠ 0
+    let mut learned: Vec<picus_core::poly::IrPoly> = Vec::new();
+    let mut learned_disj: Vec<Vec<picus_core::poly::IrPoly>> = Vec::new();
+    let mut lemma = AbozLemma::default();
+    let progress = {
+        let mut ctx = PropagationCtx {
+            known: &mut known_set,
+            unknown: &mut unknown,
+            ranges: &mut ranges,
+            learned: &mut learned,
+            learned_disjunctions: &mut learned_disj,
+        };
+        lemma.run(&ir, &mut ctx)
+    };
+    assert!(progress, "aboz must fire on the b0==b1 (shared b-slot) shape");
+    assert!(known_set.contains(&1), "y0 promoted");
+    assert!(known_set.contains(&2), "y1 promoted");
+}
+
+/// Coverage: `match_bilinear` lines 196-198 — the `0 =>` arm with a
+/// nonzero constant term inside a poly that ALSO contains a single
+/// bilinear monomial. R1CS `(x_1) * (x_2) = 1` lowers to
+/// `x_1 * x_2 - 1 = 0`: a bilinear term plus a nonzero constant `-1`.
+/// `match_bilinear` walks the bilinear term first (vars.len()==2), then
+/// hits the constant term (vars.len()==0) and returns None at line 197
+/// because the constant coefficient is nonzero. Net effect on the
+/// lemma: the IR has no bilinear-zero products ⇒ no progress.
+#[test]
+fn test_aboz_match_bilinear_rejects_bilinear_plus_nonzero_constant() {
+    let header = HeaderSection {
+        field_size: 32,
+        prime_number: BigUint::from(7u32),
+        n_wires: 3,
+        n_pub_out: 0,
+        n_pub_in: 2,
+        n_prv_in: 0,
+        n_labels: 3,
+        m_constraints: 1,
+    };
+    let constraints = vec![
+        // (x_1) * (x_2) = 1  ⇒  x_1 * x_2 - 1 = 0
+        Constraint {
+            a: block(&[(1, 1)]),
+            b: block(&[(2, 1)]),
+            c: block(&[(0, 1)]),
+        },
+    ];
+    let r1cs = R1csFile {
+        magic: *b"r1cs",
+        version: 1,
+        n_sections: 3,
+        header,
+        constraints: ConstraintSection { constraints },
+        w2l: W2lSection { labels: vec![0, 1, 2] },
+        inputs: vec![0, 1, 2],
+        outputs: vec![],
+    };
+    let ir = r1cs_to_poly_ir(&r1cs, &HashSet::new(), 1).expect("lowering should succeed");
+
+    // Sanity: collect_bilinear_zero must return EMPTY because each
+    // bilinear-bearing poly also carries the rejected nonzero constant.
+    let products = super::collect_bilinear_zero(&ir);
+    assert!(
+        products.is_empty(),
+        "match_bilinear must reject bilinear poly with a nonzero constant; got {:?}",
+        products
+    );
+
+    // End-to-end: the lemma sees products.len()==0 < 2 ⇒ no progress.
+    let mut known_set: HashSet<usize> = HashSet::new();
+    known_set.insert(0);
+    known_set.insert(1);
+    known_set.insert(2);
+    let mut unknown: HashSet<usize> = HashSet::new();
+    let mut ranges: HashMap<usize, RangeValue> = HashMap::new();
+    let mut learned: Vec<picus_core::poly::IrPoly> = Vec::new();
+    let mut learned_disj: Vec<Vec<picus_core::poly::IrPoly>> = Vec::new();
+    let mut lemma = AbozLemma::default();
+    let progress = {
+        let mut ctx = PropagationCtx {
+            known: &mut known_set,
+            unknown: &mut unknown,
+            ranges: &mut ranges,
+            learned: &mut learned,
+            learned_disjunctions: &mut learned_disj,
+        };
+        lemma.run(&ir, &mut ctx)
+    };
+    assert!(!progress, "bilinear-plus-constant disqualifies ⇒ no progress");
+}
