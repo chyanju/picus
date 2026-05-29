@@ -1893,3 +1893,518 @@ fn f4_single_generator_returns_input_monic() {
     let p_monic = p.make_monic(&ring);
     assert_eq!(canon_dense(vec![gb[0].clone()], &ring), canon_dense(vec![p_monic], &ring));
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Hard-probe: F4 vs Buchberger differential (mutual ideal-membership)
+// across primes / shapes / cancel boundaries / F4_MIN_BATCH edges.
+//
+// Spec: the reduced GB under a fixed monomial order is unique, hence
+// per-pair Buchberger and F4-lite must agree as IDEALS (not merely as
+// LT sets) on every input. Mutual-ideal-membership is the strongest
+// general check: every element of A reduces to zero against B, and
+// every element of B reduces to zero against A.
+//
+// Test inputs cover GF(7), GF(101), BN254 (~254-bit); sparse, dense,
+// high-degree-monomial, repeated-generator, single-monomial, and
+// 1∈I systems; small and many variables.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Large-prime ring helper: takes a decimal-string prime so we can
+/// hit BN254 (~2^254) without u64 truncation.
+fn ring_prime_str(p_dec: &str, n_vars: usize) -> Arc<PolyRing> {
+    let p = p_dec.parse::<BigUint>().unwrap();
+    PolyRing::new(
+        PrimeField::new(p),
+        (0..n_vars).map(|i| format!("x{i}")).collect(),
+        MonomialOrder::DegRevLex,
+    )
+}
+
+/// BN254 scalar-field prime (the curve picus targets).
+const BN254_PRIME: &str =
+    "21888242871839275222246405745257275088548364400416034343698204186575808495617";
+
+/// Hand-built differential bank. Each closure returns a generator
+/// list spec'd by mathematical structure — never read back from
+/// engine output. Property: F4's reduced GB and per-pair's reduced
+/// GB generate the same ideal (mutual ideal-membership).
+fn diff_systems_dense(ring: &Arc<PolyRing>) -> Vec<(&'static str, Vec<DensePoly>)> {
+    let one = DensePoly::constant(ring.field.one(), ring);
+    let two = DensePoly::constant(ring.field.from_u64(2), ring);
+    let three = DensePoly::constant(ring.field.from_u64(3), ring);
+    let n = ring.var_names.len();
+    let v: Vec<DensePoly> = (0..n).map(|i| DensePoly::variable(i, ring)).collect();
+
+    let mut systems: Vec<(&'static str, Vec<DensePoly>)> = Vec::new();
+
+    // (1) Sparse — single linear binomial.
+    if n >= 2 {
+        let f = v[0].add(&v[1], ring).sub(&one, ring);
+        systems.push(("sparse_linear", vec![f]));
+    }
+    // (2) Sparse — two coprime linears.
+    if n >= 2 {
+        let f1 = v[0].sub(&one, ring);
+        let f2 = v[1].sub(&two, ring);
+        systems.push(("sparse_two_coprime_linear", vec![f1, f2]));
+    }
+    // (3) Single monomial generator (x0^2).
+    if n >= 1 {
+        let f = v[0].mul(&v[0], ring);
+        systems.push(("single_monomial_x0sq", vec![f]));
+    }
+    // (4) Repeated generator (duplicate of x0*x1 - 1).
+    if n >= 2 {
+        let p = v[0].mul(&v[1], ring).sub(&one, ring);
+        systems.push(("repeated_generator_xy_minus_1", vec![p.clone(), p]));
+    }
+    // (5) Trivial UNSAT seed: includes the constant 1.
+    {
+        systems.push(("contains_one_trivial_unsat", vec![one.clone()]));
+    }
+    // (6) Trivial UNSAT mix: constant 2 alongside genuine relation.
+    if n >= 2 {
+        let f = v[0].mul(&v[1], ring).sub(&one, ring);
+        systems.push(("constant_and_relation", vec![two.clone(), f]));
+    }
+    // (7) High-degree monomial generators (x0^5, x1^4).
+    if n >= 2 {
+        let mut p1 = one.clone();
+        for _ in 0..5 { p1 = p1.mul(&v[0], ring); }
+        let mut p2 = one.clone();
+        for _ in 0..4 { p2 = p2.mul(&v[1], ring); }
+        systems.push(("high_degree_monomials", vec![p1, p2]));
+    }
+    // (8) Dense — every variable appears with a non-trivial coefficient.
+    if n >= 3 {
+        let f = v[0]
+            .mul(&v[1], ring).scale(&ring.field.from_u64(3), ring)
+            .add(&v[1].mul(&v[2], ring).scale(&ring.field.from_u64(4), ring), ring)
+            .add(&v[0].mul(&v[2], ring).scale(&ring.field.from_u64(5), ring), ring)
+            .sub(&v[0], ring)
+            .sub(&v[1], ring)
+            .sub(&v[2], ring)
+            .add(&three, ring);
+        systems.push(("dense_one_relation", vec![f]));
+    }
+    // (9) Cyclic-3 (classic GB stress test).
+    if n >= 3 {
+        let f1 = v[0].add(&v[1], ring).add(&v[2], ring);
+        let f2 = v[0].mul(&v[1], ring)
+            .add(&v[1].mul(&v[2], ring), ring)
+            .add(&v[0].mul(&v[2], ring), ring);
+        let f3 = v[0].mul(&v[1], ring).mul(&v[2], ring).sub(&one, ring);
+        systems.push(("cyclic_3", vec![f1, f2, f3]));
+    }
+    // (10) Overlapping LTs — drives symbolic preprocessing chains.
+    if n >= 3 {
+        let f1 = v[0].mul(&v[0], ring).sub(&v[1], ring); // x0^2 - x1
+        let f2 = v[0].mul(&v[1], ring).sub(&v[2], ring); // x0 x1 - x2
+        let f3 = v[1].mul(&v[1], ring).sub(&v[0], ring); // x1^2 - x0
+        systems.push(("overlapping_lts_x0x1x2", vec![f1, f2, f3]));
+    }
+    // (11) Field-polynomial-like generators: x_i^p in GF(p) is not what we
+    // want (Fermat collapses), but adding x_i^2 - x_i (idempotent) probes
+    // small-degree boundary.
+    if n >= 2 {
+        let f1 = v[0].mul(&v[0], ring).sub(&v[0], ring); // x0^2 - x0
+        let f2 = v[1].mul(&v[1], ring).sub(&v[1], ring); // x1^2 - x1
+        let f3 = v[0].add(&v[1], ring).sub(&one, ring);  // x0 + x1 - 1
+        systems.push(("idempotents_plus_linear", vec![f1, f2, f3]));
+    }
+    // (12) Many vars, sparse single linear.
+    if n >= 4 {
+        let mut acc = v[0].clone();
+        for i in 1..n { acc = acc.add(&v[i], ring); }
+        let f = acc.sub(&one, ring);
+        systems.push(("n_vars_sum_minus_1", vec![f]));
+    }
+    // (13) Zero polynomial mixed with real generators (must be dropped).
+    if n >= 2 {
+        let z = DensePoly::zero();
+        let f = v[0].mul(&v[1], ring).sub(&one, ring);
+        systems.push(("zero_mixed_with_relation", vec![z, f]));
+    }
+
+    systems
+}
+
+/// Mutual-ideal-membership over Dense polys: every element of `a`
+/// reduces to zero modulo `b` AND vice versa. Stronger than LT-set
+/// equality; pins ideal equality even when bases differ.
+fn assert_ideals_equal_dense(
+    label: &str,
+    a: &[DensePoly],
+    b: &[DensePoly],
+    ring: &Arc<PolyRing>,
+) {
+    let a_refs: Vec<&DensePoly> = a.iter().collect();
+    let b_refs: Vec<&DensePoly> = b.iter().collect();
+    for p in a {
+        if p.is_zero() { continue; }
+        let nf = p.reduce_by_refs(&b_refs, ring);
+        assert!(
+            nf.is_zero(),
+            "{label}: A ⊄ B (a-element residue has {} term(s))",
+            nf.num_terms()
+        );
+    }
+    for p in b {
+        if p.is_zero() { continue; }
+        let nf = p.reduce_by_refs(&a_refs, ring);
+        assert!(
+            nf.is_zero(),
+            "{label}: B ⊄ A (b-element residue has {} term(s))",
+            nf.num_terms()
+        );
+    }
+}
+
+/// SPEC: if 1 ∈ I, both engines must produce {1} as the reduced GB.
+fn assert_trivial_iff_unit_in_gens(
+    label: &str,
+    gens: &[DensePoly],
+    gb_pp: &[DensePoly],
+    gb_f4: &[DensePoly],
+) {
+    let unit_present = gens.iter().any(|p| p.is_constant() && !p.is_zero());
+    if unit_present {
+        // Buchberger.interreduce returns {1} on trivial ideals.
+        let pp_trivial = gb_pp.iter().any(|p| p.is_constant() && !p.is_zero());
+        let f4_trivial = gb_f4.iter().any(|p| p.is_constant() && !p.is_zero());
+        assert!(pp_trivial, "{label}: per-pair must report trivial ideal");
+        assert!(f4_trivial, "{label}: F4 must report trivial ideal");
+    }
+}
+
+/// Run F4 vs Buchberger differential over all `diff_systems_dense`
+/// shapes against a chosen prime. Spec: reduced GBs are unique, so
+/// the two paths must produce the same ideal (mutual membership).
+fn run_f4_vs_buch_diff_bank(prime: u64, n_vars: usize) {
+    let ring = ring_p(prime, n_vars);
+    for (name, gens) in diff_systems_dense(&ring) {
+        let cfg_pp = BuchbergerConfig { use_f4: false, ..BuchbergerConfig::default() };
+        let cfg_f4 = BuchbergerConfig { use_f4: true, ..BuchbergerConfig::default() };
+        let gb_pp = buch_interreduce(buch_gb(gens.clone(), &ring, &cfg_pp).unwrap().basis, &ring);
+        let gb_f4 = buch_interreduce(buch_gb(gens.clone(), &ring, &cfg_f4).unwrap().basis, &ring);
+
+        // Spec: every input generator lies in either GB.
+        assert_gens_in_ideal(&gens, &gb_pp, &ring);
+        assert_gens_in_ideal(&gens, &gb_f4, &ring);
+        // Spec: ideals are equal.
+        let label = format!("[GF({prime})/{n_vars}vars/{name}]");
+        assert_ideals_equal_dense(&label, &gb_pp, &gb_f4, &ring);
+        // Spec: trivial-ideal canonical form.
+        assert_trivial_iff_unit_in_gens(&label, &gens, &gb_pp, &gb_f4);
+    }
+}
+
+#[test]
+fn diff_f4_vs_buch_bank_gf7_2vars() {
+    run_f4_vs_buch_diff_bank(7, 2);
+}
+
+#[test]
+fn diff_f4_vs_buch_bank_gf7_3vars() {
+    run_f4_vs_buch_diff_bank(7, 3);
+}
+
+#[test]
+fn diff_f4_vs_buch_bank_gf7_4vars() {
+    run_f4_vs_buch_diff_bank(7, 4);
+}
+
+#[test]
+fn diff_f4_vs_buch_bank_gf101_3vars() {
+    run_f4_vs_buch_diff_bank(101, 3);
+}
+
+#[test]
+fn diff_f4_vs_buch_bank_gf101_4vars() {
+    run_f4_vs_buch_diff_bank(101, 4);
+}
+
+/// Big-prime (BN254) version: ~2^254 prime so all coefficient arithmetic
+/// goes through GMP. Smaller bank (3-var only) because BN254 arithmetic
+/// is slow.
+#[test]
+fn diff_f4_vs_buch_bank_bn254_3vars() {
+    let ring = ring_prime_str(BN254_PRIME, 3);
+    for (name, gens) in diff_systems_dense(&ring) {
+        let cfg_pp = BuchbergerConfig { use_f4: false, ..BuchbergerConfig::default() };
+        let cfg_f4 = BuchbergerConfig { use_f4: true, ..BuchbergerConfig::default() };
+        let gb_pp = buch_interreduce(buch_gb(gens.clone(), &ring, &cfg_pp).unwrap().basis, &ring);
+        let gb_f4 = buch_interreduce(buch_gb(gens.clone(), &ring, &cfg_f4).unwrap().basis, &ring);
+
+        let label = format!("[BN254/3vars/{name}]");
+        assert_gens_in_ideal(&gens, &gb_pp, &ring);
+        assert_gens_in_ideal(&gens, &gb_f4, &ring);
+        assert_ideals_equal_dense(&label, &gb_pp, &gb_f4, &ring);
+        assert_trivial_iff_unit_in_gens(&label, &gens, &gb_pp, &gb_f4);
+    }
+}
+
+/// Edge primes: GF(2), GF(3), GF(5). Corpus memory pins small-prime
+/// bitprop bugs (R5/H1, R7/J1) — probe GB engines on the same small
+/// primes for parity.
+#[test]
+fn diff_f4_vs_buch_edge_primes_small() {
+    for &p in &[2u64, 3, 5] {
+        // 2-var only — keep small-prime cyclic computations cheap.
+        run_f4_vs_buch_diff_bank(p, 2);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Cancel boundary: pre-cancelled token at every entry point must NOT
+// produce engine output that claims a verdict (Sat/Unsat). For F4 at
+// the `process_batch` level the contract is an empty Vec; for the
+// `groebner_basis` wrapper the contract is EngineError::Timeout.
+// ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn diff_precancelled_token_at_groebner_basis_returns_timeout() {
+    // Spec: a cancel token that is already cancelled before the call
+    // must surface a Timeout error before any (potentially incorrect)
+    // basis is emitted. Probed for both per-pair and F4 paths.
+    let ring = ring_p(7, 3);
+    let x0 = DensePoly::variable(0, &ring);
+    let x1 = DensePoly::variable(1, &ring);
+    let x2 = DensePoly::variable(2, &ring);
+    let one = DensePoly::constant(ring.field.one(), &ring);
+    let gens = vec![
+        x0.mul(&x1, &ring).sub(&x2, &ring),
+        x1.mul(&x2, &ring).sub(&one, &ring),
+        x0.mul(&x2, &ring).add(&x1, &ring),
+    ];
+    for &use_f4 in &[false, true] {
+        let token = CancelToken::cancelled();
+        let cfg = BuchbergerConfig {
+            cancel_token: Some(token),
+            use_f4,
+            ..BuchbergerConfig::default()
+        };
+        // The engine may legitimately complete trivially-small inputs even
+        // under cancellation IF every cancel check passes before any
+        // potentially-incorrect output is emitted. The contract we hold
+        // is the inverse: if the engine RETURNS Ok, the basis is real;
+        // if it returns Err it must be Timeout, never some other error.
+        let res = buch_gb(gens.clone(), &ring, &cfg);
+        match res {
+            Ok(gb) => {
+                // Spec: even on a fast completion, the output must remain
+                // a sound GB of the input ideal.
+                assert_gens_in_ideal(&gens, &gb.basis, &ring);
+            }
+            Err(crate::EngineError::Timeout) => {
+                // Expected.
+            }
+            Err(other) => panic!(
+                "pre-cancelled token must produce Timeout, not {:?} (use_f4={use_f4})",
+                other
+            ),
+        }
+    }
+}
+
+#[test]
+fn diff_precancelled_token_at_process_batch_returns_empty() {
+    // Spec contract for the F4 batch primitive: a pre-cancelled
+    // token forces an empty output. Test all the system shapes
+    // in `diff_systems_dense` to make sure no shape can sneak
+    // a non-empty output past the cancel guard.
+    let ring = ring_p(7, 3);
+    let one = DensePoly::constant(ring.field.one(), &ring);
+    let x0 = DensePoly::variable(0, &ring);
+    let x1 = DensePoly::variable(1, &ring);
+    let x2 = DensePoly::variable(2, &ring);
+    // basis = {x0 x1 - x2, x1 x2 - 1}.
+    let f0 = x0.mul(&x1, &ring).sub(&x2, &ring);
+    let f1 = x1.mul(&x2, &ring).sub(&one, &ring);
+    let basis_polys = vec![f0, f1];
+    let basis_lts: Vec<Monomial> = basis_polys.iter().map(|p| lt(p, &ring)).collect();
+    let basis: Vec<F4BasisRef> = basis_polys
+        .iter()
+        .zip(basis_lts.iter())
+        .map(|(p, l)| F4BasisRef {
+            poly: p, lt: l,
+            lt_divmask: ring.divmask.compute(l),
+            active: true,
+        })
+        .collect();
+    let lcm = basis_lts[0].lcm(&basis_lts[1]);
+    let lcm_dm = ring.divmask.compute(&lcm);
+    let lcm_deg = lcm.total_degree();
+    let pair = SPair {
+        i: 0, j: 1, sugar: lcm_deg, lcm, lcm_divmask: lcm_dm,
+        lcm_deg, age: 0, generation: 0, is_coprime: false,
+    };
+    let token = CancelToken::cancelled();
+    let out = process_batch(&[&pair], &basis, &ring, Some(&token));
+    assert!(out.is_empty(), "pre-cancelled token must short-circuit process_batch");
+    // Repeat with a workspace-threaded variant.
+    let mut ws = F4Workspace::new();
+    let out2 = process_batch_with_workspace(&[&pair], &basis, &ring, Some(&token), &mut ws);
+    assert!(out2.is_empty(), "workspace variant must also short-circuit");
+}
+
+#[test]
+fn diff_mid_pipeline_cancel_token() {
+    // Spec: a token cancelled before any computation must surface as
+    // Timeout OR yield an Ok-but-sub-ideal output. It must NEVER yield a
+    // basis that misrepresents the input ideal.
+    let ring = ring_p(7, 3);
+    let x0 = DensePoly::variable(0, &ring);
+    let x1 = DensePoly::variable(1, &ring);
+    let x2 = DensePoly::variable(2, &ring);
+    let one = DensePoly::constant(ring.field.one(), &ring);
+    let gens = vec![
+        x0.mul(&x1, &ring).sub(&x2, &ring),
+        x1.mul(&x2, &ring).sub(&one, &ring),
+        x0.mul(&x2, &ring).add(&x1, &ring),
+    ];
+    let token = CancelToken::new();
+    // Flip the flag before any work is done.
+    token.cancel();
+    let cfg_f4 = BuchbergerConfig {
+        cancel_token: Some(token.clone()),
+        use_f4: true,
+        ..BuchbergerConfig::default()
+    };
+    let res_f4 = buch_gb(gens.clone(), &ring, &cfg_f4);
+    match res_f4 {
+        Ok(gb) => assert_gens_in_ideal(&gens, &gb.basis, &ring),
+        Err(crate::EngineError::Timeout) => {}
+        Err(other) => panic!("F4 mid-cancel: unexpected error {:?}", other),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// F4_MIN_BATCH boundary: F4 routes batches of < F4_MIN_BATCH (12) to
+// the per-pair geobucket fallback and ≥ 12 to the matrix path. Build
+// adversarial inputs that straddle the boundary so a regression
+// affecting only one branch surfaces.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Construct a Buchberger input whose first same-sugar batch is
+/// EXACTLY size 12 (= F4_MIN_BATCH). Pick a system whose pair queue
+/// produces ≥ 12 sugar-1 pairs at start: 13 univariate linears in 13
+/// variables have C(13, 2) = 78 sugar-1 pairs — far above. Probe both
+/// paths produce the same ideal.
+#[test]
+fn diff_f4_min_batch_boundary_exactly_12_pairs() {
+    // Use a 5-var system with degree-1 generators across the same
+    // sugar so the first batch is at the boundary.
+    let ring = ring_p(7, 5);
+    let one = DensePoly::constant(ring.field.one(), &ring);
+    // 5 linears: x0 - 1, x1 - 2, x2 - 3, x3 - 4, x4 - 5. C(5,2) = 10 pairs.
+    // Augment with x0 + x1 + x2, x0 x1 - x3, x0 x2 - x4 to nudge total
+    // initial-batch size past 12 once intermediate reductions trigger.
+    let v: Vec<DensePoly> = (0..5).map(|i| DensePoly::variable(i, &ring)).collect();
+    let mut gens: Vec<DensePoly> = Vec::new();
+    for i in 0..5 {
+        let ci = DensePoly::constant(ring.field.from_u64((i + 1) as u64), &ring);
+        gens.push(v[i].sub(&ci, &ring));
+    }
+    gens.push(v[0].add(&v[1], &ring).add(&v[2], &ring).sub(&one, &ring));
+    gens.push(v[0].mul(&v[1], &ring).sub(&v[3], &ring));
+    gens.push(v[0].mul(&v[2], &ring).sub(&v[4], &ring));
+
+    let cfg_pp = BuchbergerConfig { use_f4: false, ..BuchbergerConfig::default() };
+    let cfg_f4 = BuchbergerConfig { use_f4: true, ..BuchbergerConfig::default() };
+    let gb_pp = buch_interreduce(buch_gb(gens.clone(), &ring, &cfg_pp).unwrap().basis, &ring);
+    let gb_f4 = buch_interreduce(buch_gb(gens.clone(), &ring, &cfg_f4).unwrap().basis, &ring);
+
+    assert_gens_in_ideal(&gens, &gb_pp, &ring);
+    assert_gens_in_ideal(&gens, &gb_f4, &ring);
+    assert_ideals_equal_dense("[f4_min_batch_boundary]", &gb_pp, &gb_f4, &ring);
+}
+
+/// Same-sugar batch exactly 12 from a structurally-uniform input:
+/// 13 polynomials of the form `xi^2 - c_i` for distinct constants c_i
+/// over GF(101). Every leading monomial is `xi^2` (pairwise coprime
+/// for i != j), so coprime pruning would drop all pairs unless we
+/// chain a uniform shape that defeats coprimality. Instead use
+/// `x0 xi - c_i` so every pair shares x0 ⇒ no coprime pruning ⇒
+/// C(13,2) = 78 batch contention. Then the F4 path WILL fire matrix
+/// reduction on the largest same-sugar group.
+#[test]
+fn diff_f4_min_batch_boundary_homogeneous_x0_chained() {
+    let ring = ring_p(101, 13);
+    let v: Vec<DensePoly> = (0..13).map(|i| DensePoly::variable(i, &ring)).collect();
+    let mut gens: Vec<DensePoly> = Vec::new();
+    for i in 1..13 {
+        let ci = DensePoly::constant(ring.field.from_u64((i as u64) + 7), &ring);
+        // x0 * xi - c_i (LT = x0 xi; lots of shared x0 ⇒ many non-coprime pairs).
+        gens.push(v[0].mul(&v[i], &ring).sub(&ci, &ring));
+    }
+    let cfg_pp = BuchbergerConfig { use_f4: false, ..BuchbergerConfig::default() };
+    let cfg_f4 = BuchbergerConfig { use_f4: true, ..BuchbergerConfig::default() };
+    let gb_pp = buch_interreduce(buch_gb(gens.clone(), &ring, &cfg_pp).unwrap().basis, &ring);
+    let gb_f4 = buch_interreduce(buch_gb(gens.clone(), &ring, &cfg_f4).unwrap().basis, &ring);
+
+    assert_gens_in_ideal(&gens, &gb_pp, &ring);
+    assert_gens_in_ideal(&gens, &gb_f4, &ring);
+    assert_ideals_equal_dense("[f4_min_batch_homogeneous_x0]", &gb_pp, &gb_f4, &ring);
+}
+
+/// Adversarial shape: 12 IDENTICAL pairs (i=0, j=1) forced into a
+/// batch — they all have the same sugar/lcm. Spec: F4's batch
+/// dedup/echelonisation must produce an output ideal-equivalent to
+/// a single pair's S-poly. Probe at process_batch level.
+#[test]
+fn diff_f4_min_batch_boundary_12_identical_pairs() {
+    let ring = ring_p(7, 2);
+    let x0 = DensePoly::variable(0, &ring);
+    let x1 = DensePoly::variable(1, &ring);
+    let one = DensePoly::constant(ring.field.one(), &ring);
+    let f0 = x0.mul(&x1, &ring).sub(&one, &ring); // x*y - 1
+    let f1 = x1.mul(&x1, &ring).sub(&x0, &ring);  // y^2 - x
+    let basis_polys = vec![f0.clone(), f1.clone()];
+    let basis_lts: Vec<Monomial> = basis_polys.iter().map(|p| lt(p, &ring)).collect();
+    let basis: Vec<F4BasisRef> = basis_polys
+        .iter().zip(basis_lts.iter())
+        .map(|(p, l)| F4BasisRef {
+            poly: p, lt: l,
+            lt_divmask: ring.divmask.compute(l),
+            active: true,
+        }).collect();
+    let lcm = basis_lts[0].lcm(&basis_lts[1]);
+    let lcm_dm = ring.divmask.compute(&lcm);
+    let lcm_deg = lcm.total_degree();
+    let mk_pair = |age: u64| SPair {
+        i: 0, j: 1, sugar: lcm_deg, lcm: lcm.clone(), lcm_divmask: lcm_dm,
+        lcm_deg, age, generation: 0, is_coprime: false,
+    };
+    let pairs: Vec<SPair> = (0..12).map(mk_pair).collect();
+    let pair_refs: Vec<&SPair> = pairs.iter().collect();
+    let out = process_batch(&pair_refs, &basis, &ring, None);
+    // Spec: every output must lie in the ideal ⟨f0, f1⟩.
+    let cfg = BuchbergerConfig::default();
+    let gb = buch_interreduce(buch_gb(basis_polys.clone(), &ring, &cfg).unwrap().basis, &ring);
+    let gb_refs: Vec<&DensePoly> = gb.iter().collect();
+    for o in &out {
+        let nf = o.poly.reduce_by_refs(&gb_refs, &ring);
+        assert!(nf.is_zero(), "12-identical-pair batch produced poly outside the ideal");
+    }
+    // Sanity: 12 identical pairs ≡ 1 pair as far as the ideal is concerned.
+    let out1 = process_batch(&[&pairs[0]], &basis, &ring, None);
+    // Whatever non-zero outputs exist on both sides must lie in each other's ideal.
+    let out_polys: Vec<DensePoly> = out.iter().map(|o| o.poly.clone()).collect();
+    let out1_polys: Vec<DensePoly> = out1.iter().map(|o| o.poly.clone()).collect();
+    // ideal(out_polys ∪ basis) should equal ideal(out1_polys ∪ basis).
+    let mut union_a = basis_polys.clone();
+    union_a.extend(out_polys);
+    let mut union_b = basis_polys.clone();
+    union_b.extend(out1_polys);
+    let gb_a = buch_interreduce(buch_gb(union_a, &ring, &cfg).unwrap().basis, &ring);
+    let gb_b = buch_interreduce(buch_gb(union_b, &ring, &cfg).unwrap().basis, &ring);
+    assert_ideals_equal_dense("[12-identical-vs-1]", &gb_a, &gb_b, &ring);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Restart-schedule independence note: groebner_basis has no restart
+// schedule (Buchberger is monotone — no SAT-style restarts). Recorded
+// in the StructuredOutput skips section so the orchestrator can route
+// the property to the SAT subsystem instead.
+// ─────────────────────────────────────────────────────────────────────

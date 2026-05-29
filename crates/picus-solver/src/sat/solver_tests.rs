@@ -1755,3 +1755,594 @@ fn property_adding_resolvent_clause_preserves_verdict() {
         "SPEC violation: augmented model fails the resolvent clause"
     );
 }
+
+// ─────────── HARD-PROBE: SAT restart × theory propagation ───────────
+//
+// These tests target the restart/theory-propagation interaction risk
+// surface where the only real verdict-soundness bug was just found (the
+// restart-drain regression at solve()'s restart point). Expected values
+// derive ONLY from propositional-logic semantics — never from inspecting
+// the solver's current control flow.
+
+/// SPEC: PHP(3,2) is UNSAT regardless of restart cadence. Sweep
+/// `restart_base` ∈ {1, 2, 3, 7, 11, 100} so the restart fires at
+/// different depths into the conflict trace — verdict must be stable.
+/// Hypothesis: restart at any cadence cannot turn UNSAT → Sat / Unknown.
+#[test]
+fn hardprobe_php_3_2_unsat_under_full_restart_sweep() {
+    fn build() -> (Solver, Vec<Vec<Var>>) {
+        let mut s = Solver::new();
+        let mut x: Vec<Vec<Var>> = Vec::new();
+        for _ in 0..3 {
+            x.push((0..2).map(|_| s.new_var()).collect());
+        }
+        for i in 0..3 {
+            assert!(s.add_clause(vec![Lit::pos(x[i][0]), Lit::pos(x[i][1])]));
+        }
+        for j in 0..2 {
+            for i1 in 0..3 {
+                for i2 in (i1 + 1)..3 {
+                    assert!(s.add_clause(vec![Lit::neg(x[i1][j]), Lit::neg(x[i2][j])]));
+                }
+            }
+        }
+        (s, x)
+    }
+    for &rb in &[1u64, 2, 3, 7, 11, 100] {
+        let (mut s, _x) = build();
+        s.restart_base = rb;
+        s.restart_step = rb;
+        assert_eq!(
+            s.solve(),
+            SolveResult::Unsat,
+            "SPEC: PHP(3,2) UNSAT must be invariant under restart_base={rb}"
+        );
+        assert!(!s.gave_up(), "verdict must be sound UNSAT (no give-up) for rb={rb}");
+    }
+}
+
+/// SPEC: PHP(4,3) is UNSAT regardless of restart cadence (deeper search
+/// tree, exercises many learnt-clause / restart interactions).
+#[test]
+fn hardprobe_php_4_3_unsat_under_full_restart_sweep() {
+    fn build() -> Solver {
+        let mut s = Solver::new();
+        let mut x: Vec<Vec<Var>> = Vec::new();
+        for _ in 0..4 {
+            x.push((0..3).map(|_| s.new_var()).collect());
+        }
+        for i in 0..4 {
+            assert!(s.add_clause(vec![
+                Lit::pos(x[i][0]),
+                Lit::pos(x[i][1]),
+                Lit::pos(x[i][2]),
+            ]));
+        }
+        for j in 0..3 {
+            for i1 in 0..4 {
+                for i2 in (i1 + 1)..4 {
+                    assert!(s.add_clause(vec![Lit::neg(x[i1][j]), Lit::neg(x[i2][j])]));
+                }
+            }
+        }
+        s
+    }
+    for &rb in &[1u64, 2, 3, 7, 11, 100] {
+        let mut s = build();
+        s.restart_base = rb;
+        s.restart_step = rb;
+        assert_eq!(
+            s.solve(),
+            SolveResult::Unsat,
+            "SPEC: PHP(4,3) UNSAT must be invariant under restart_base={rb}"
+        );
+    }
+}
+
+/// SPEC: The XOR-conflict family
+/// `(x0∨x1)(¬x0∨x1)(x0∨¬x1)(¬x0∨¬x1)` is UNSAT under any restart cadence.
+/// Padded with extra free vars so the search tree is larger and restart
+/// can fire at varying points. Also includes restart_base=2 — distinct
+/// from the prior `audit_solve_sound_under_aggressive_restart` test which
+/// only covers rb=1 and the default.
+#[test]
+fn hardprobe_xor_conflict_unsat_with_padding_full_sweep() {
+    let build = |n_pad: usize| -> Solver {
+        let mut s = Solver::new();
+        let v: Vec<Var> = (0..2 + n_pad).map(|_| s.new_var()).collect();
+        assert!(s.add_clause(vec![Lit::pos(v[0]), Lit::pos(v[1])]));
+        assert!(s.add_clause(vec![Lit::neg(v[0]), Lit::pos(v[1])]));
+        assert!(s.add_clause(vec![Lit::pos(v[0]), Lit::neg(v[1])]));
+        assert!(s.add_clause(vec![Lit::neg(v[0]), Lit::neg(v[1])]));
+        s
+    };
+    for &rb in &[1u64, 2, 3, 7, 11, 100] {
+        for &pad in &[0usize, 1, 3, 5] {
+            let mut s = build(pad);
+            s.restart_base = rb;
+            s.restart_step = rb;
+            assert_eq!(
+                s.solve(),
+                SolveResult::Unsat,
+                "SPEC: XOR-conflict UNSAT must hold for restart_base={rb}, pad={pad}"
+            );
+        }
+    }
+}
+
+/// SPEC: Transitive implication chain `(a) → (b) → ... → (k)` rooted at
+/// a unit (a) forces every variable True. Restarting at any cadence
+/// must preserve the root-level units (a, b, c, ... already at level 0)
+/// and yield SAT with all-True model.
+/// Hypothesis: a restart that drops a learnt root unit would flip the
+/// verdict; sweep restart_base across the conflict count to expose it.
+#[test]
+fn hardprobe_implication_chain_sat_across_restart_sweep() {
+    let build = |n: usize| -> (Solver, Vec<Var>) {
+        let mut s = Solver::new();
+        let v: Vec<Var> = (0..n).map(|_| s.new_var()).collect();
+        // (v0) and (¬v_{i} ∨ v_{i+1}) for i = 0..n-1.
+        assert!(s.add_clause(vec![Lit::pos(v[0])]));
+        for i in 0..n - 1 {
+            assert!(s.add_clause(vec![Lit::neg(v[i]), Lit::pos(v[i + 1])]));
+        }
+        (s, v)
+    };
+    for &rb in &[1u64, 2, 3, 7, 11, 100] {
+        let (mut s, v) = build(8);
+        s.restart_base = rb;
+        s.restart_step = rb;
+        assert_eq!(s.solve(), SolveResult::Sat, "rb={rb}: SAT expected");
+        for var in &v {
+            assert_eq!(
+                s.value(*var),
+                LBool::True,
+                "rb={rb}: SPEC violation — implication chain forces v={:?} True",
+                var
+            );
+        }
+    }
+}
+
+/// SPEC: A formula whose only model is forbidden by a final clause is
+/// UNSAT, even when the restart cadence interferes with conflict-driven
+/// learning. The 3-var implication chain (x0)(¬x0∨x1)(¬x1∨x2) forces
+/// x0=x1=x2=True, then (¬x0∨¬x1∨¬x2) blocks the only model.
+#[test]
+fn hardprobe_blocked_unique_model_unsat_across_restart_sweep() {
+    let build = || -> Solver {
+        let mut s = Solver::new();
+        let v: Vec<Var> = (0..3).map(|_| s.new_var()).collect();
+        assert!(s.add_clause(vec![Lit::pos(v[0])]));
+        assert!(s.add_clause(vec![Lit::neg(v[0]), Lit::pos(v[1])]));
+        assert!(s.add_clause(vec![Lit::neg(v[1]), Lit::pos(v[2])]));
+        // The implication chain has already propagated x0=x1=x2=True at root,
+        // so this blocking clause is root-false on add and add_clause returns
+        // false (marks UNSAT). Either path (add_clause=false OR solve=Unsat
+        // afterwards) satisfies the spec under test; just record the call.
+        let _ = s.add_clause(vec![Lit::neg(v[0]), Lit::neg(v[1]), Lit::neg(v[2])]);
+        s
+    };
+    for &rb in &[1u64, 2, 3, 7, 11, 100] {
+        let mut s = build();
+        s.restart_base = rb;
+        s.restart_step = rb;
+        assert_eq!(
+            s.solve(),
+            SolveResult::Unsat,
+            "rb={rb}: blocking the only model must yield UNSAT"
+        );
+    }
+}
+
+/// SPEC: All-8-minterms over 3 vars is UNSAT. Sweep restart_base so the
+/// restart fires at several distinct points in the conflict trace.
+#[test]
+fn hardprobe_all_minterms_unsat_across_restart_sweep() {
+    let v: Vec<Var> = (0..3).map(make_var).collect();
+    let clauses: Vec<Vec<Lit>> = vec![
+        vec![Lit::pos(v[0]), Lit::pos(v[1]), Lit::pos(v[2])],
+        vec![Lit::neg(v[0]), Lit::pos(v[1]), Lit::pos(v[2])],
+        vec![Lit::pos(v[0]), Lit::neg(v[1]), Lit::pos(v[2])],
+        vec![Lit::neg(v[0]), Lit::neg(v[1]), Lit::pos(v[2])],
+        vec![Lit::pos(v[0]), Lit::pos(v[1]), Lit::neg(v[2])],
+        vec![Lit::neg(v[0]), Lit::pos(v[1]), Lit::neg(v[2])],
+        vec![Lit::pos(v[0]), Lit::neg(v[1]), Lit::neg(v[2])],
+        vec![Lit::neg(v[0]), Lit::neg(v[1]), Lit::neg(v[2])],
+    ];
+    for &rb in &[1u64, 2, 3, 7, 11, 100] {
+        let mut s = build_solver(3, &clauses);
+        s.restart_base = rb;
+        s.restart_step = rb;
+        assert_eq!(s.solve(), SolveResult::Unsat, "rb={rb}: all-minterms must be UNSAT");
+    }
+}
+
+/// SPEC: A theory-style enqueue at the root level (via `enqueue_theory`
+/// with a root-level reason fact) installs a permanent root assignment.
+/// A subsequent `perform_restart` MUST preserve that root assignment —
+/// since restart only backtracks to level 0 and root literals stay at
+/// level 0. Hypothesis: a malformed restart could drop a theory-derived
+/// root assignment, flipping a later UNSAT to SAT.
+#[test]
+fn hardprobe_root_enqueue_theory_persists_across_perform_restart() {
+    let mut s = Solver::new();
+    let v = vars(&mut s, 3);
+    // Make v[0] True at root via a unit clause; v[1] is then a theory-
+    // derived consequence at root with reason [v[0]].
+    assert!(s.add_clause(vec![Lit::pos(v[0])]));
+    assert_eq!(s.value(v[0]), LBool::True);
+    assert!(s.enqueue_theory(Lit::pos(v[1]), vec![Lit::pos(v[0])]));
+    assert_eq!(s.value(v[1]), LBool::True);
+    assert_eq!(s.level[v[1].index()], 0, "root reason ⇒ enqueue at level 0");
+    // perform_restart only re-arms the Luby cadence; root facts stay.
+    s.perform_restart();
+    assert_eq!(s.value(v[0]), LBool::True, "SPEC: root unit must survive restart");
+    assert_eq!(
+        s.value(v[1]),
+        LBool::True,
+        "SPEC: root theory-propagation must survive restart"
+    );
+    assert_eq!(s.decision_level(), 0);
+}
+
+/// SPEC: After a theory lemma forces the asserting literal at level 0
+/// (root unit learnt), an immediate restart must NOT lose that root
+/// assignment. Reproduces the family of the bug just fixed: a learnt
+/// root unit pre-restart still drives later propagation post-restart.
+/// Hypothesis: dropping the learnt-unit's root assignment would let a
+/// post-restart decision pick the opposite polarity and (after solve)
+/// produce a wrong verdict on a downstream UNSAT formula.
+#[test]
+fn hardprobe_theory_lemma_root_unit_survives_restart_and_drives_unsat() {
+    let mut s = Solver::new();
+    let v = vars(&mut s, 3);
+    // Force a 2-decision-level conflict so add_theory_lemma_with_trail
+    // takes the assertable-by-backjump branch with assertion_level=0.
+    // Decide v[0]=True at level 1, v[1]=True at level 2.
+    assert!(s.decide(Lit::pos(v[0])));
+    assert!(s.decide(Lit::pos(v[1])));
+    // Lemma `(¬v[0])`: a single literal at level 1 is assertable by
+    // backjumping to root ⇒ asserting unit v[0]=False at level 0.
+    let trail_pre = s
+        .add_theory_lemma_with_trail(vec![Lit::neg(v[0])])
+        .expect("single-literal lemma is assertable");
+    assert_eq!(trail_pre, 0, "backtrack to root before learning the unit");
+    assert_eq!(s.value(v[0]), LBool::False, "root unit v[0]=False");
+    assert_eq!(s.level[v[0].index()], 0);
+    // Now restart and verify the root assignment persists.
+    s.perform_restart();
+    assert_eq!(s.value(v[0]), LBool::False, "SPEC: post-lemma root unit must survive restart");
+    assert_eq!(s.decision_level(), 0);
+    // Add a clause `(v[0] ∨ v[2])` whose first literal is False at root;
+    // unit-propagating v[2]=True must still happen post-restart.
+    assert!(s.add_clause(vec![Lit::pos(v[0]), Lit::pos(v[2])]));
+    assert_eq!(
+        s.value(v[2]),
+        LBool::True,
+        "SPEC: post-restart root state must drive forward propagation"
+    );
+}
+
+/// SPEC: A theory lemma that ends in root-UNSAT (`max_level <= 0`)
+/// PERMANENTLY sets the solver's unsat flag. A subsequent `solve()` call
+/// — regardless of restart cadence — must return Unsat, NOT Unknown.
+/// Hypothesis: a faulty restart-aware reset could clear `unsat` on
+/// rewind, letting a later solve call return a spurious Sat or Unknown.
+#[test]
+fn hardprobe_root_unsat_via_theory_lemma_persists_across_restart_sweep() {
+    for &rb in &[1u64, 2, 3, 7, 11, 100] {
+        let mut s = Solver::new();
+        let v = vars(&mut s, 1);
+        // Force v[0]=True at root.
+        assert!(s.add_clause(vec![Lit::pos(v[0])]));
+        // Theory lemma `(¬v[0])`: only literal is at level 0 ⇒ root UNSAT.
+        assert_eq!(s.add_theory_lemma_with_trail(vec![Lit::neg(v[0])]), None);
+        assert!(s.is_unsat(), "rb={rb}: theory lemma at root must set unsat");
+        s.restart_base = rb;
+        s.restart_step = rb;
+        // Solve must return Unsat even with restart pressure.
+        assert_eq!(
+            s.solve(),
+            SolveResult::Unsat,
+            "rb={rb}: SPEC violation — root-unsat formula returned non-Unsat"
+        );
+    }
+}
+
+/// SPEC: A learnt clause stored before a restart MUST remain in the
+/// arena and continue to constrain the search after restart. Construct
+/// an UNSAT formula that requires multiple learnt clauses; verify that
+/// even with restart_base=1 (restart after every conflict) the final
+/// verdict is UNSAT. A bug that dropped learnt clauses on restart would
+/// allow the search to loop and exhaust the iteration budget (Unknown)
+/// or produce a wrong Sat.
+#[test]
+fn hardprobe_learnt_clauses_persist_across_aggressive_restart_unsat() {
+    // 4-var UNSAT formula needing several learnt clauses to refute.
+    //   (x0 ∨ x1 ∨ x2)
+    //   (¬x0 ∨ x1 ∨ x2)
+    //   (x0 ∨ ¬x1 ∨ x2)
+    //   (¬x0 ∨ ¬x1 ∨ x2)
+    //   (x0 ∨ x1 ∨ ¬x2)
+    //   (¬x0 ∨ x1 ∨ ¬x2)
+    //   (x0 ∨ ¬x1 ∨ ¬x2)
+    //   (¬x0 ∨ ¬x1 ∨ ¬x2)
+    //   (x3)   — irrelevant unit, but exercises the trail.
+    let v: Vec<Var> = (0..4).map(make_var).collect();
+    let clauses: Vec<Vec<Lit>> = vec![
+        vec![Lit::pos(v[0]), Lit::pos(v[1]), Lit::pos(v[2])],
+        vec![Lit::neg(v[0]), Lit::pos(v[1]), Lit::pos(v[2])],
+        vec![Lit::pos(v[0]), Lit::neg(v[1]), Lit::pos(v[2])],
+        vec![Lit::neg(v[0]), Lit::neg(v[1]), Lit::pos(v[2])],
+        vec![Lit::pos(v[0]), Lit::pos(v[1]), Lit::neg(v[2])],
+        vec![Lit::neg(v[0]), Lit::pos(v[1]), Lit::neg(v[2])],
+        vec![Lit::pos(v[0]), Lit::neg(v[1]), Lit::neg(v[2])],
+        vec![Lit::neg(v[0]), Lit::neg(v[1]), Lit::neg(v[2])],
+        vec![Lit::pos(v[3])],
+    ];
+    let mut s = build_solver(4, &clauses);
+    s.restart_base = 1;
+    s.restart_step = 1;
+    assert_eq!(
+        s.solve(),
+        SolveResult::Unsat,
+        "SPEC: 8-minterm UNSAT must hold even when restart fires every conflict"
+    );
+}
+
+/// SPEC: Two formulas with the same clause set must produce the same
+/// verdict under different restart cadences applied to the SAME instance
+/// at different points (mid-solve restart pressure vs end-of-solve).
+/// Concretely: solve one fresh solver with restart_base=1 and another
+/// with restart_base=100 on identical input. Verdicts must agree.
+#[test]
+fn hardprobe_verdict_invariant_extreme_restart_cadences() {
+    let v: Vec<Var> = (0..4).map(make_var).collect();
+    // A SAT formula with several decisions.
+    let sat_form: Vec<Vec<Lit>> = vec![
+        vec![Lit::pos(v[0]), Lit::pos(v[1]), Lit::pos(v[2])],
+        vec![Lit::neg(v[0]), Lit::pos(v[3])],
+        vec![Lit::pos(v[1]), Lit::neg(v[3])],
+        vec![Lit::neg(v[2]), Lit::pos(v[3])],
+    ];
+    for &(rb1, rb2) in &[(1u64, 100), (2, 11), (3, 7)] {
+        let mut s1 = build_solver(4, &sat_form);
+        s1.restart_base = rb1;
+        s1.restart_step = rb1;
+        let mut s2 = build_solver(4, &sat_form);
+        s2.restart_base = rb2;
+        s2.restart_step = rb2;
+        let r1 = s1.solve();
+        let r2 = s2.solve();
+        assert_eq!(
+            r1, r2,
+            "SPEC: verdict must be invariant across restart_base={rb1} vs {rb2} (got {r1:?} vs {r2:?})"
+        );
+        // Whichever the verdict is, both must give a model that
+        // satisfies every clause.
+        if let SolveResult::Sat = r1 {
+            for c in &sat_form {
+                assert!(clause_is_sat(&s1, c), "rb={rb1}: model failed clause {c:?}");
+                assert!(clause_is_sat(&s2, c), "rb={rb2}: model failed clause {c:?}");
+            }
+        }
+    }
+}
+
+/// SPEC: For a SAT instance whose only model is `x0=x1=x2=x3=True` (a
+/// pure implication chain rooted at the unit (x0)), every restart cadence
+/// must still arrive at the all-True model. Hypothesis: a restart-drain
+/// that fails to propagate a learnt unit could leave the chain
+/// incompletely satisfied (`Unknown`) or produce a model with a flipped
+/// variable.
+#[test]
+fn hardprobe_unique_model_chain_preserved_across_restart_sweep() {
+    let v: Vec<Var> = (0..6).map(make_var).collect();
+    let clauses: Vec<Vec<Lit>> = vec![
+        vec![Lit::pos(v[0])],
+        vec![Lit::neg(v[0]), Lit::pos(v[1])],
+        vec![Lit::neg(v[1]), Lit::pos(v[2])],
+        vec![Lit::neg(v[2]), Lit::pos(v[3])],
+        vec![Lit::neg(v[3]), Lit::pos(v[4])],
+        vec![Lit::neg(v[4]), Lit::pos(v[5])],
+    ];
+    for &rb in &[1u64, 2, 3, 7, 11, 100] {
+        let mut s = build_solver(6, &clauses);
+        s.restart_base = rb;
+        s.restart_step = rb;
+        assert_eq!(s.solve(), SolveResult::Sat, "rb={rb}: SAT expected");
+        for var in &v {
+            assert_eq!(
+                s.value(*var),
+                LBool::True,
+                "rb={rb}: SPEC violation — unique model requires {:?}=True",
+                var
+            );
+        }
+    }
+}
+
+/// SPEC: A propagation chain spanning multiple decision levels, learnt
+/// during search, must remain valid post-restart. Build a 4-var UNSAT
+/// formula whose 1-UIP analysis has two plausible resolution orders
+/// (depending on which variable hits the activity heap first). Sweep
+/// restart cadence so 1-UIP fires at different positions.
+#[test]
+fn hardprobe_multi_uip_unsat_across_restart_sweep() {
+    // 4-var UNSAT crafted so multiple variables are at the conflict
+    // level when analyze() walks the trail. The trail-walk ordering
+    // determines which UIP is selected; restart pressure varies the
+    // ordering by clearing/reinserting activities.
+    let v: Vec<Var> = (0..4).map(make_var).collect();
+    let clauses: Vec<Vec<Lit>> = vec![
+        vec![Lit::pos(v[0]), Lit::pos(v[1])],
+        vec![Lit::pos(v[0]), Lit::pos(v[2])],
+        vec![Lit::pos(v[0]), Lit::pos(v[3])],
+        vec![Lit::neg(v[1]), Lit::neg(v[2])],
+        vec![Lit::neg(v[1]), Lit::neg(v[3])],
+        vec![Lit::neg(v[2]), Lit::neg(v[3])],
+        vec![Lit::neg(v[0])],
+    ];
+    // Decide ¬x0 first ⇒ x1, x2, x3 all True ⇒ binary clauses conflict
+    // pairwise. The unit ¬x0 keeps a root-level conflict source alive.
+    for &rb in &[1u64, 2, 3, 7, 11, 100] {
+        let mut s = build_solver(4, &clauses);
+        s.restart_base = rb;
+        s.restart_step = rb;
+        assert_eq!(
+            s.solve(),
+            SolveResult::Unsat,
+            "rb={rb}: multi-UIP UNSAT must hold under any restart cadence"
+        );
+        assert!(s.is_unsat());
+        assert!(!s.gave_up());
+    }
+}
+
+/// SPEC: Restart firing IMMEDIATELY after a backjump (the "back-to-back"
+/// edge case): a conflict at level k learns a unit, backjumps to root,
+/// learns the unit, then `should_restart()` is true ⇒ restart. The
+/// restart's backtrack_to(0) is then a no-op (already at root) and the
+/// drain must propagate the just-learnt unit. Build a formula that
+/// (a) needs ≥ 1 conflict and (b) post-conflict has a root-level
+/// contradiction to detect via the drain.
+#[test]
+fn hardprobe_restart_after_backtrack_no_drop_root_unit() {
+    let mut s = Solver::new();
+    let v = vars(&mut s, 3);
+    // (¬x0 ∨ x1) (¬x0 ∨ ¬x1): deciding x0 forces x1 then ¬x1 ⇒ conflict.
+    // Learnt unit (¬x0); root drains to ¬x0.
+    // Then (x0 ∨ x2) (x0 ∨ ¬x2): with x0=False, both force x2 to both
+    // values ⇒ root conflict. SPEC verdict: Unsat.
+    assert!(s.add_clause(vec![Lit::neg(v[0]), Lit::pos(v[1])]));
+    assert!(s.add_clause(vec![Lit::neg(v[0]), Lit::neg(v[1])]));
+    assert!(s.add_clause(vec![Lit::pos(v[0]), Lit::pos(v[2])]));
+    assert!(s.add_clause(vec![Lit::pos(v[0]), Lit::neg(v[2])]));
+    // restart_base=1 ⇒ restart fires immediately after the first conflict.
+    s.restart_base = 1;
+    s.restart_step = 1;
+    assert_eq!(
+        s.solve(),
+        SolveResult::Unsat,
+        "SPEC: restart immediately after backjump must still detect root UNSAT"
+    );
+    assert!(s.is_unsat());
+    assert!(!s.gave_up(), "verdict must be sound UNSAT, not give-up");
+}
+
+/// SPEC: When restart fires but the drain reveals no root conflict, the
+/// search must resume and find a model (if one exists). Combine an UNSAT
+/// fragment that learns a root unit with a SAT fragment over disjoint
+/// variables.
+#[test]
+fn hardprobe_restart_drain_clean_then_sat_companion_unique_model() {
+    let mut s = Solver::new();
+    let v = vars(&mut s, 5);
+    // UNSAT-on-(x0,x1) sub-formula learns root unit ¬x0.
+    assert!(s.add_clause(vec![Lit::neg(v[0]), Lit::pos(v[1])]));
+    assert!(s.add_clause(vec![Lit::neg(v[0]), Lit::neg(v[1])]));
+    // SAT-on-(x2,x3,x4) sub-formula has a unique model (x2,x3,x4)=(T,T,T).
+    assert!(s.add_clause(vec![Lit::pos(v[2])]));
+    assert!(s.add_clause(vec![Lit::neg(v[2]), Lit::pos(v[3])]));
+    assert!(s.add_clause(vec![Lit::neg(v[3]), Lit::pos(v[4])]));
+    s.restart_base = 1;
+    s.restart_step = 1;
+    assert_eq!(s.solve(), SolveResult::Sat, "SPEC: restart + SAT sub-formula must reach SAT");
+    assert_eq!(s.value(v[0]), LBool::False, "SPEC: learnt root unit must force ¬x0");
+    assert_eq!(s.value(v[2]), LBool::True);
+    assert_eq!(s.value(v[3]), LBool::True);
+    assert_eq!(s.value(v[4]), LBool::True);
+}
+
+/// SPEC: Calling `perform_restart` multiple times in a row at root level
+/// is idempotent (every call is a no-op on the trail / value array).
+/// Hypothesis: a misuse that bumped state on each restart could corrupt
+/// the Luby index past safe bounds; we assert the trail state is stable
+/// across N back-to-back restarts at root.
+#[test]
+fn hardprobe_repeated_root_restart_is_idempotent_on_trail_state() {
+    let mut s = Solver::new();
+    let v = vars(&mut s, 3);
+    assert!(s.add_clause(vec![Lit::pos(v[0])]));
+    assert!(s.add_clause(vec![Lit::neg(v[1])]));
+    let trail_before: Vec<Lit> = s.trail().to_vec();
+    let unsat_before = s.is_unsat();
+    let dl_before = s.decision_level();
+    for _ in 0..32 {
+        s.perform_restart();
+    }
+    assert_eq!(s.decision_level(), dl_before, "SPEC: root restart preserves decision level");
+    assert_eq!(s.is_unsat(), unsat_before, "SPEC: root restart preserves UNSAT flag");
+    assert_eq!(s.trail(), trail_before.as_slice(), "SPEC: root restart preserves trail");
+    // The root units must still be in effect.
+    assert_eq!(s.value(v[0]), LBool::True);
+    assert_eq!(s.value(v[1]), LBool::False);
+    assert_eq!(s.value(v[2]), LBool::Undef);
+}
+
+/// SPEC: `should_restart()` returns false until `n_conflicts >=
+/// restart_step`. Therefore at zero conflicts and any restart_base, no
+/// restart is pending. Verify this invariant directly.
+#[test]
+fn hardprobe_should_restart_false_at_zero_conflicts() {
+    for &rb in &[1u64, 2, 3, 7, 11, 100] {
+        let mut s = Solver::new();
+        s.restart_base = rb;
+        s.restart_step = rb;
+        assert_eq!(s.n_conflicts(), 0);
+        assert!(
+            !s.should_restart(),
+            "SPEC: should_restart must be false at 0 conflicts (rb={rb}, restart_step={rb})"
+        );
+    }
+}
+
+/// SPEC: After a restart, the `restart_step` threshold must STRICTLY
+/// INCREASE (the next restart must be later than the current
+/// `n_conflicts`). Otherwise restart would re-fire immediately and the
+/// solver could loop. Sweep rb so we hit several Luby positions.
+#[test]
+fn hardprobe_restart_step_advances_after_perform_restart() {
+    for &rb in &[1u64, 2, 7, 11, 100] {
+        let mut s = Solver::new();
+        let _v = vars(&mut s, 2);
+        s.restart_base = rb;
+        s.restart_step = rb;
+        // Simulate having reached the restart threshold.
+        s.n_conflicts = rb;
+        let step_before = s.restart_step;
+        let n_before = s.n_conflicts();
+        s.perform_restart();
+        let step_after = s.restart_step;
+        assert!(
+            step_after > n_before,
+            "SPEC: restart_step must advance strictly past current n_conflicts (rb={rb}: before={step_before}, after={step_after}, n_conflicts={n_before})"
+        );
+    }
+}
+
+/// SPEC: `enqueue_theory` followed by a restart, then a SAT-level
+/// propagation that would conflict with the theory-derived root literal,
+/// must surface UNSAT — not Unknown or Sat. The theory-justification
+/// clause and the root literal must both survive the restart.
+#[test]
+fn hardprobe_enqueue_theory_root_then_restart_then_conflict_is_unsat() {
+    let mut s = Solver::new();
+    let v = vars(&mut s, 3);
+    // v[0] True at root via unit clause; v[1] enqueued by theory at root
+    // with reason [v[0]].
+    assert!(s.add_clause(vec![Lit::pos(v[0])]));
+    assert!(s.enqueue_theory(Lit::pos(v[1]), vec![Lit::pos(v[0])]));
+    assert_eq!(s.value(v[1]), LBool::True);
+    // Restart.
+    s.perform_restart();
+    assert_eq!(s.value(v[1]), LBool::True, "SPEC: root theory-derived literal must survive restart");
+    // Add a clause `(¬v[1])` — it conflicts with the root assignment
+    // ⇒ UNSAT.
+    assert!(!s.add_clause(vec![Lit::neg(v[1])]));
+    assert!(s.is_unsat(), "SPEC: post-restart contradiction with theory-derived root literal must be UNSAT");
+    // solve() must report Unsat.
+    assert_eq!(s.solve(), SolveResult::Unsat);
+}
+
