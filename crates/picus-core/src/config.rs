@@ -173,18 +173,30 @@ pub struct RuntimeConfig {
     /// systematic effect.
     pub cdclt_equality_engine: bool,
     /// Reorder F4 S-pair batches by predicted Hilbert-function drop
-    /// instead of pure sugar-degree FIFO. Stub today: the flag plumbs
-    /// through `apply_overlay` and is exercised by the drift-guard
-    /// test, but no F4 dispatch path consumes it yet. The full
-    /// integration is a multi-week effort (Hilbert numerator
-    /// incremental update + selection oracle + sugar-fallback under
-    /// drop-below-min-sugar) tracked separately.
+    /// (Bigatti–Caboara–Robbiano selection oracle with
+    /// `HilbertNum::add_generators_incremental` per candidate;
+    /// `HILBERT_SELECT_BASIS_CAP=250` ceiling). Off by default after
+    /// cyclic-N regression measurement: cyclic-{4,5,6} ratios match
+    /// the sugar-classical F4 path within noise (0.79→0.87, 1.27→1.35,
+    /// 1.83→1.86) — no improvement, no material regression. The
+    /// homogeneous cyclic structure provides only a single candidate
+    /// sugar per selection so the oracle has nothing to rank.
+    /// Heterogeneous workloads (multiple sugar levels coexisting in
+    /// `self.open`) are where the oracle's predicted-drop ranking can
+    /// pay off; corpus expansion toward such workloads should revisit
+    /// the default.
     pub f4_hilbert_select: bool,
-    /// Cross-batch sparse reducer-row cache inside `F4Workspace`. Stub
-    /// today: the existing `reducer_cache` field on `F4Workspace`
-    /// already amortises within a `run_f4` invocation; the
-    /// sparse-row + global-column rebinding upgrade described in
-    /// plan14 ships under this flag in a separate round.
+    /// Cross-batch sparse reducer-row cache inside `F4Workspace`:
+    /// stores only the basis index per cache entry and rematerialises
+    /// the reducer poly via `basis[bi].poly.mul_term(m / LT(basis[bi]),
+    /// 1)` at hit time. Off by default after the same cyclic-N
+    /// measurement: cyclic-N reducers are small so the per-entry
+    /// memory win doesn't translate to a CPU win; the materialisation
+    /// cost on each hit slightly exceeds the dense-clone cost on the
+    /// narrow rings cyclic uses. Heterogeneous wide-ring workloads
+    /// (many variables, many terms per reducer) are where the memory
+    /// density translates to fewer allocator stalls; corpus expansion
+    /// toward such workloads should revisit the default.
     pub f4_sparse_reducer_cache: bool,
     /// Route the FF theory through `cdclt::ff_theory_incremental::
     /// IncrementalFfTheoryState`, which carries an `IncrementalGB`
