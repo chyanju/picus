@@ -143,23 +143,15 @@ pub struct F4Output {
 /// reuse — output is unchanged, allocator traffic increases.
 #[derive(Default)]
 pub struct F4Workspace {
-    /// `m -> basis_idx`. The cache stores only the basis-element
-    /// index whose LT divides `m`; at use time the reducer
-    /// polynomial is materialised on the fly via
-    /// `basis[bi].poly.mul_term(m / LT(basis[bi]), 1)`. This is the
-    /// sparse-row variant of the plan14 P3 design — instead of
-    /// caching a fully-multiplied `DensePoly` per (m, bi) pair
-    /// (memory ~ n_terms × n_vars per entry), we cache only the
-    /// basis index (memory: one `usize` per entry) and re-multiply
-    /// against `basis[bi].poly` at hit time. The polynomial itself
-    /// is shared with the basis storage, so cross-batch reuse pays
-    /// no per-entry materialisation cost beyond the multiplier
-    /// monomial. Soundness invariant: the basis is append-only and
-    /// `m`'s divisor set is monotone non-decreasing, so the chosen
-    /// `bi` remains correct while `basis[bi].active` holds — a
-    /// deactivated `bi` falls through to recomputation against the
-    /// current active set, identical to the prior dense-cache
-    /// invalidation contract.
+    /// `m -> basis_idx`. Stores only the basis-element index whose
+    /// LT divides `m`; the reducer polynomial is materialised on the
+    /// fly via `basis[bi].poly.mul_term(m / LT(basis[bi]), 1)` at
+    /// hit time. Per-entry memory is one `usize` instead of a
+    /// fully-multiplied `DensePoly` (~n_terms × n_vars). Soundness
+    /// invariant: the basis is append-only and `m`'s divisor set is
+    /// monotone non-decreasing, so the chosen `bi` stays correct
+    /// while `basis[bi].active` holds; a deactivated `bi` falls
+    /// through to recomputation against the current active set.
     reducer_cache: std::collections::HashMap<MonoKey, usize>,
     /// Diagnostic counters; updated by `process_batch_with_workspace`.
     pub stats: F4WorkspaceStats,
