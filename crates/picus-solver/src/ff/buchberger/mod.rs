@@ -1185,13 +1185,28 @@ impl BuchbergerState {
                 .collect();
 
             let batch_refs: Vec<&SPair> = batch.iter().collect();
-            let new_polys = super::f4::process_batch_with_workspace(
-                &batch_refs,
-                &basis_refs,
-                &self.ring,
-                self.cfg.cancel_token.as_ref(),
-                &mut f4_workspace,
-            );
+            // When `f4_sparse_reducer_cache` is OFF, hand a fresh
+            // workspace per batch so cross-batch reducer reuse is
+            // disabled (the dense reducer cache still amortises within
+            // a single batch via the same scratch allocators); when
+            // ON, the workspace declared at `run_f4` entry carries the
+            // cache across batches.
+            let new_polys = if picus_core::config::with(|c| c.f4_sparse_reducer_cache) {
+                super::f4::process_batch_with_workspace(
+                    &batch_refs,
+                    &basis_refs,
+                    &self.ring,
+                    self.cfg.cancel_token.as_ref(),
+                    &mut f4_workspace,
+                )
+            } else {
+                super::f4::process_batch(
+                    &batch_refs,
+                    &basis_refs,
+                    &self.ring,
+                    self.cfg.cancel_token.as_ref(),
+                )
+            };
 
             self.check_cancel()?;
 
