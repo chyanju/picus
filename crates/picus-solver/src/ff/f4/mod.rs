@@ -143,10 +143,24 @@ pub struct F4Output {
 /// reuse — output is unchanged, allocator traffic increases.
 #[derive(Default)]
 pub struct F4Workspace {
-    /// `m -> (basis_idx, reducer_poly)`. The cache is keyed only by
-    /// the monomial because the basis-element choice is uniquely
-    /// determined by `m` and the current active set.
-    reducer_cache: std::collections::HashMap<MonoKey, (usize, DensePoly)>,
+    /// `m -> basis_idx`. The cache stores only the basis-element
+    /// index whose LT divides `m`; at use time the reducer
+    /// polynomial is materialised on the fly via
+    /// `basis[bi].poly.mul_term(m / LT(basis[bi]), 1)`. This is the
+    /// sparse-row variant of the plan14 P3 design — instead of
+    /// caching a fully-multiplied `DensePoly` per (m, bi) pair
+    /// (memory ~ n_terms × n_vars per entry), we cache only the
+    /// basis index (memory: one `usize` per entry) and re-multiply
+    /// against `basis[bi].poly` at hit time. The polynomial itself
+    /// is shared with the basis storage, so cross-batch reuse pays
+    /// no per-entry materialisation cost beyond the multiplier
+    /// monomial. Soundness invariant: the basis is append-only and
+    /// `m`'s divisor set is monotone non-decreasing, so the chosen
+    /// `bi` remains correct while `basis[bi].active` holds — a
+    /// deactivated `bi` falls through to recomputation against the
+    /// current active set, identical to the prior dense-cache
+    /// invalidation contract.
+    reducer_cache: std::collections::HashMap<MonoKey, usize>,
     /// Diagnostic counters; updated by `process_batch_with_workspace`.
     pub stats: F4WorkspaceStats,
     // Per-batch scratch collections. `process_batch_with_workspace`
@@ -460,33 +474,41 @@ fn symbolic_preprocess(
         idx += 1;
         let m_key = MonoKey::new(m.clone(), ring.order);
 
-        // Cache lookup. An entry maps `m` to `(bi, reducer_poly)`
-        // where `bi` was the lowest-index active basis member whose
-        // LT divided `m` at insertion time. Soundness invariant: the
-        // basis is append-only and `m`'s divisor set is monotone
-        // non-decreasing, so the chosen `bi` remains correct while
-        // `basis[bi].active` holds. A deactivated `bi` falls through
-        // to recomputation against the current active set.
-        let cached = reducer_cache.get(&m_key).and_then(|(bi, poly)| {
+        // Cache lookup. An entry maps `m` to the basis index `bi`
+        // whose LT divides `m`; the reducer is rematerialised on the
+        // fly as `basis[bi].poly * (m / LT(basis[bi]))`. Soundness
+        // invariant: the basis is append-only and `m`'s divisor set
+        // is monotone non-decreasing, so the chosen `bi` remains
+        // correct while `basis[bi].active` holds; a deactivated `bi`
+        // falls through to recomputation against the current active
+        // set.
+        let cached_bi = reducer_cache.get(&m_key).and_then(|bi| {
             if basis.get(*bi).map(|b| b.active).unwrap_or(false) {
-                Some((*bi, poly.clone()))
+                Some(*bi)
             } else {
                 None
             }
         });
-        if let Some((bi, reducer)) = cached {
-            stats.reducer_hits += 1;
-            reducer_lts.push(m.clone());
-            reducer_basis_idx.push(bi);
-            for k in 0..reducer.num_terms() {
-                let mono = reducer.term(k, ring).monomial();
-                let key = MonoKey::new(mono.clone(), ring.order);
-                if handled_scratch.insert(key) {
-                    worklist_scratch.push(mono);
+        if let Some(bi) = cached_bi {
+            let factor = m.div(basis[bi].lt);
+            let one = ring.field.one();
+            let reducer = basis[bi].poly.mul_term(factor.exponents(), &one, ring);
+            if !reducer.is_zero() {
+                stats.reducer_hits += 1;
+                reducer_lts.push(m.clone());
+                reducer_basis_idx.push(bi);
+                for k in 0..reducer.num_terms() {
+                    let mono = reducer.term(k, ring).monomial();
+                    let key = MonoKey::new(mono.clone(), ring.order);
+                    if handled_scratch.insert(key) {
+                        worklist_scratch.push(mono);
+                    }
                 }
+                all_polys.push(reducer);
+                continue;
             }
-            all_polys.push(reducer);
-            continue;
+            // The cached basis element rematerialises to zero — treat
+            // as stale and fall through to recomputation.
         }
         // A cache entry whose `basis_idx` is no longer active
         // increments `stats.reducer_stale`. `stats.reducer_misses`
@@ -524,7 +546,7 @@ fn symbolic_preprocess(
         if !was_stale {
             stats.reducer_misses += 1;
         }
-        reducer_cache.insert(m_key, (bi, reducer.clone()));
+        reducer_cache.insert(m_key, bi);
         reducer_lts.push(m.clone());
         reducer_basis_idx.push(bi);
         for k in 0..reducer.num_terms() {
