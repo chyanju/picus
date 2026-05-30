@@ -17,6 +17,8 @@ use picus_core::ff::monomial::{Monomial, MonomialOrder};
 use picus_core::ff::polynomial::{DensePoly, PolyRing};
 
 use crate::ff::buchberger::{BuchbergerConfig, IncrementalGB};
+use crate::gb::model::{find_zero_cancel, FindZeroOutcome};
+use crate::poly::{FfPolyRing, Poly};
 use crate::sat::Var;
 use crate::timeout::CancelToken;
 
@@ -60,6 +62,10 @@ pub struct IncrementalFfTheoryState<'a> {
     /// Cached last SAT model.
     last_model: Option<HashMap<String, BigUint>>,
     has_model: bool,
+    /// Reason cache populated by [`Theory::propagate`] so [`explain`]
+    /// can recover the per-atom reason set later (mirrors
+    /// `FfTheory::pending_reasons`).
+    pending_reasons: HashMap<Var, Vec<(Var, bool)>>,
     /// Sticky flag set whenever [`build_atom_polys`] cannot encode a
     /// fact (slot budget exhausted, or atom not registered). While set,
     /// [`post_check`] returns [`CheckOutcome::Unknown`] unconditionally:
@@ -75,6 +81,13 @@ struct LevelCheckpoint {
     next_slot: usize,
     diseq_counter: usize,
     degraded: bool,
+}
+
+/// Outcome of [`IncrementalFfTheoryState::extract_model_via_user_ring`].
+enum ModelExtraction {
+    Sat(HashMap<String, BigUint>),
+    Unsat,
+    Unknown,
 }
 
 impl<'a> IncrementalFfTheoryState<'a> {
@@ -101,6 +114,84 @@ impl<'a> IncrementalFfTheoryState<'a> {
             last_model: None,
             has_model: false,
             degraded: false,
+            pending_reasons: HashMap::new(),
+        }
+    }
+
+    /// Engine telemetry from the wrapped [`IncrementalGB`]. Surfaces
+    /// `pairs_generated` / `reductions_useful` for amortisation
+    /// regression tests; gated by the orchestrator's `gb_stats` flag
+    /// in production (a no-op when off, so this getter is safe to
+    /// call unconditionally — callers must enable `gb_stats` to read
+    /// non-zero counters).
+    pub fn engine_stats(&self) -> &crate::ff::buchberger::GbProfileCounters {
+        self.igb.engine_stats()
+    }
+
+    /// Bridge the live incremental basis to `gb::model::find_zero_cancel`
+    /// against a user-namespaced ring. Slot indices in the incremental
+    /// `DensePoly` exponent vectors index into a synthetic-name ring
+    /// (`__slot_N`); the bridge constructs an [`FfPolyRing`] whose
+    /// variable index order matches those slot positions, populated
+    /// with the user's actual variable name when known and a witness
+    /// placeholder otherwise. The conversion is a re-wrap (the dense
+    /// flat storage is reused via `Polynomial::Dense`) plus a single
+    /// `find_zero_cancel` call. Witness slots and synthetic placeholder
+    /// names are filtered out of the returned model.
+    fn extract_model_via_user_ring(&mut self) -> ModelExtraction {
+        let basis_dense = self.igb.basis();
+        if basis_dense.is_empty() {
+            return ModelExtraction::Sat(HashMap::new());
+        }
+
+        // Reverse `name_to_slot`. User names go into the new ring at
+        // their slot position; unclaimed positions and witness slots
+        // (`__w_diseq_N`) take placeholder names that the post-filter
+        // strips.
+        let mut user_names: Vec<String> = (0..self.max_slots)
+            .map(|i| format!("__slot_{}", i))
+            .collect();
+        for (name, &slot) in &self.name_to_slot {
+            if !name.starts_with("__w_diseq_") && slot < self.max_slots {
+                user_names[slot] = name.clone();
+            }
+        }
+
+        // Rebuild a user-namespaced `FfPolyRing` with the same field
+        // and slot count as the incremental ring. The default
+        // `FfPolyRing::new` honours `config::poly_repr`; we pin
+        // `ReprKind::Dense` because the basis polys ARE dense.
+        let prime = self.atoms.prime().clone();
+        let user_field = PrimeField::new(prime.clone());
+        let user_ring = FfPolyRing::new_with_repr(
+            user_field,
+            user_names.clone(),
+            picus_core::config::ReprKind::Dense,
+        );
+
+        // Re-wrap each DensePoly into `Polynomial::Dense`. Exponent
+        // vectors are positional and the slot count matches, so the
+        // re-wrap is structural and zero-copy at the storage layer.
+        let basis_user: Vec<Poly> = basis_dense
+            .into_iter()
+            .map(picus_core::ff::polynomial::Polynomial::Dense)
+            .collect();
+
+        let outcome = find_zero_cancel(&user_ring, &basis_user, self.cancel);
+        match outcome {
+            FindZeroOutcome::Sat(raw_model) => {
+                // Drop placeholder bindings before returning.
+                let mut filtered: HashMap<String, BigUint> = HashMap::new();
+                for (name, value) in raw_model {
+                    if name.starts_with("__slot_") || name.starts_with("__w_") {
+                        continue;
+                    }
+                    filtered.insert(name, value);
+                }
+                ModelExtraction::Sat(filtered)
+            }
+            FindZeroOutcome::Unsat => ModelExtraction::Unsat,
+            FindZeroOutcome::Unknown => ModelExtraction::Unknown,
         }
     }
 
@@ -221,20 +312,38 @@ impl<'a> Theory for IncrementalFfTheoryState<'a> {
                 core: self.facts.iter().map(|(v, _)| *v).collect(),
             };
         }
-        // Basis is non-trivial — the trail is satisfiable as a polynomial
-        // system over the algebraic closure. For QF_FF over GF(p), the
-        // caller must also verify a SAT model lies in GF(p); for small
-        // primes the field polynomials we injected ensure this. Returning
-        // SAT here is sound when the basis is non-trivial AND field polys
-        // are present (small prime); for large primes (BN254) the basis
-        // alone does not certify GF(p)-SAT, so the result is Unknown until
-        // model extraction confirms.
-        if self.add_field_polys {
-            self.has_model = false; // model extraction deferred
-            self.last_model = Some(HashMap::new());
-            CheckOutcome::Sat
-        } else {
-            CheckOutcome::Unknown
+        // Basis is non-trivial — extract a model via `gb::model::
+        // find_zero_cancel` on a user-namespaced facade ring built
+        // from the live `IncrementalGB::basis()`. The bridge maps each
+        // claimed slot back to its user variable name (synthetic
+        // `__w_*` names for Rabinowitsch witnesses are dropped from
+        // the returned model). For small primes the injected
+        // `x^p − x` polynomials guarantee any common zero lies in
+        // GF(p), so a Sat extraction is sound; for large primes the
+        // basis only certifies a zero over the algebraic closure and
+        // the model search still needs to land on a GF(p) point —
+        // `find_zero_cancel` returns Unknown rather than spurious Sat
+        // when its round-robin search exhausts a non-exhaustive cap,
+        // so the bridge inherits that soundness gate.
+        match self.extract_model_via_user_ring() {
+            ModelExtraction::Sat(model) => {
+                self.last_model = Some(model);
+                self.has_model = true;
+                CheckOutcome::Sat
+            }
+            ModelExtraction::Unsat => {
+                self.has_model = false;
+                CheckOutcome::Unsat {
+                    core: self.facts.iter().map(|(v, _)| *v).collect(),
+                }
+            }
+            ModelExtraction::Unknown => {
+                // Round-robin search exhausted its bounded cap; the
+                // formula could still have a model outside the searched
+                // range. Sound to report Unknown.
+                self.has_model = false;
+                CheckOutcome::Unknown
+            }
         }
     }
 
@@ -259,6 +368,26 @@ impl<'a> Theory for IncrementalFfTheoryState<'a> {
         }
         self.igb.pop();
         self.has_model = false;
+    }
+
+    fn propagate(&mut self) -> Vec<(Var, bool)> {
+        self.pending_reasons.clear();
+        let pinned = super::ff_theory::pinned_vars_for(self.atoms, &self.facts);
+        let tier1 = super::ff_theory::compute_tier1_for(self.atoms, &self.facts, &pinned);
+        let tier2 = super::ff_theory::compute_tier2_for(self.atoms, &self.facts, &pinned);
+        let mut props: Vec<(Var, bool)> = Vec::new();
+        let mut seen: std::collections::HashSet<Var> = std::collections::HashSet::new();
+        for (atom_v, polarity, reason) in tier1.into_iter().chain(tier2.into_iter()) {
+            if seen.insert(atom_v) {
+                props.push((atom_v, polarity));
+                self.pending_reasons.insert(atom_v, reason);
+            }
+        }
+        props
+    }
+
+    fn explain(&self, atom: Var, _polarity: bool) -> Vec<(Var, bool)> {
+        self.pending_reasons.get(&atom).cloned().unwrap_or_default()
     }
 
     fn collect_model(&self) -> Option<HashMap<String, BigUint>> {

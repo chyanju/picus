@@ -745,3 +745,28 @@ fn fglm_mono_cap_never_breaks_zero_dim_correctness() {
             a, b, dim);
     }
 }
+
+#[test]
+fn audit_p1_cancel_token_fires_before_bfs_walk_starts() {
+    // Pre-cancelled token must surface as None on the very first
+    // iteration of the BFS queue — no work is performed beyond the
+    // zero-dim gate. Probe with the same ⟨x^5, y^5⟩ ideal as the
+    // mono-cap regression so the soundness gate cannot mask the cancel
+    // check.
+    let pr = FfPolyRing::new(ff(7), vec!["x".into(), "y".into()]);
+    let mut x5 = pr.one();
+    for _ in 0..5 { x5 = pr.mul(x5, pr.var(0)); }
+    let mut y5 = pr.one();
+    for _ in 0..5 { y5 = pr.mul(y5, pr.var(1)); }
+    let drl = Ideal::new(&pr, vec![x5, y5]);
+    let cancel = CancelToken::cancelled();
+    assert!(
+        fglm_to_lex_cancel(&drl, &cancel).is_none(),
+        "pre-cancelled token must short-circuit fglm_to_lex_cancel"
+    );
+    // Sanity: same ideal under an uncancelled token still completes.
+    assert!(
+        fglm_to_lex_cancel(&drl, &CancelToken::none()).is_some(),
+        "uncancelled token on the same ideal must complete"
+    );
+}

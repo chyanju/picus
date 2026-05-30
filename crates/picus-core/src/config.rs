@@ -96,6 +96,14 @@ pub struct RuntimeConfig {
     /// nonlinear part and add per-`solve` overhead, so it is a net loss on
     /// the general workload. Exposed as a knob for linear-heavy
     /// conjunctive circuits where it may pay off.
+    /// Linear (Gaussian) pre-elimination before the GB solve. Off by
+    /// default: a PLDI corpus differential (`linelim_off.tsv` /
+    /// `linelim_on.tsv` under `chat/`) measured +3.3% total
+    /// wall-clock with 7 fixture-level regressions ≥200 ms (BinSum
+    /// and BinSub 80× slower; EdDSA family 1.3-1.6× slower; Pedersen
+    /// +2.9 s) and zero clean wins. Re-evaluate the default when the
+    /// corpus expands toward linear-heavy circuits the substitution
+    /// pre-pass would amortise.
     pub linear_elim: bool,
     /// Track inter-reduction reducer dependencies in the single-GB UNSAT-core
     /// tracer (`GbTracer`), so a trivial core reflects the basis elements that
@@ -141,6 +149,44 @@ pub struct RuntimeConfig {
     /// canonicalisation) — only the work to reach it is amortized across
     /// branches. Off by default; flip on if PLDI total wall-clock drops.
     pub branching_incremental_gb: bool,
+    /// Route the FF theory through `cdclt::multi_prime::FfTheoryRouter`
+    /// instead of the single-prime `FfTheory`. Capability flag for
+    /// future multi-prime SMT-LIB inputs; the parser today still
+    /// rejects multi-prime sessions, so the router runs in single-slot
+    /// mode (path-equivalent to `FfTheory` on the same input). Off by
+    /// default until corpus differential confirms equivalence and the
+    /// parser is widened to emit per-prime atom tables.
+    pub cdclt_multi_prime_router: bool,
+    /// Interpose `cdclt::equality_engine::EqualityEngine` before the FF
+    /// theory at fact-notification time. `Fresh` facts forward to the
+    /// inner theory, `Redundant` facts are dropped, `Contradiction`
+    /// facts still forward (the inner theory's GB layer detects the
+    /// conflict). Off by default; the marginal value is dropping
+    /// repeated equalities across nested let-bindings or canonical
+    /// duplicates that escape `AtomTable::intern_eq`.
+    pub cdclt_equality_engine: bool,
+    /// Reorder F4 S-pair batches by predicted Hilbert-function drop
+    /// instead of pure sugar-degree FIFO. Stub today: the flag plumbs
+    /// through `apply_overlay` and is exercised by the drift-guard
+    /// test, but no F4 dispatch path consumes it yet. The full
+    /// integration is a multi-week effort (Hilbert numerator
+    /// incremental update + selection oracle + sugar-fallback under
+    /// drop-below-min-sugar) tracked separately.
+    pub f4_hilbert_select: bool,
+    /// Cross-batch sparse reducer-row cache inside `F4Workspace`. Stub
+    /// today: the existing `reducer_cache` field on `F4Workspace`
+    /// already amortises within a `run_f4` invocation; the
+    /// sparse-row + global-column rebinding upgrade described in
+    /// plan14 ships under this flag in a separate round.
+    pub f4_sparse_reducer_cache: bool,
+    /// Route the FF theory through `cdclt::ff_theory_incremental::
+    /// IncrementalFfTheoryState`, which carries an `IncrementalGB`
+    /// across SAT decisions instead of rebuilding the basis per
+    /// `post_check`. Off by default; the wire-up ports the tier1+tier2
+    /// propagation from `FfTheory` and falls back to Unknown on
+    /// large-prime non-trivial bases (BN254/BabyJubJub) until model
+    /// extraction lands in a follow-up round.
+    pub cdclt_incremental_theory: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -163,6 +209,11 @@ impl Default for RuntimeConfig {
             reducer_index_cache: false,
             frobenius_cache: true,
             branching_incremental_gb: true,
+            cdclt_multi_prime_router: false,
+            cdclt_equality_engine: false,
+            f4_hilbert_select: false,
+            f4_sparse_reducer_cache: false,
+            cdclt_incremental_theory: false,
         }
     }
 }
@@ -189,6 +240,11 @@ impl RuntimeConfig {
         if let Some(v) = o.reducer_index_cache { self.reducer_index_cache = v; }
         if let Some(v) = o.frobenius_cache { self.frobenius_cache = v; }
         if let Some(v) = o.branching_incremental_gb { self.branching_incremental_gb = v; }
+        if let Some(v) = o.cdclt_multi_prime_router { self.cdclt_multi_prime_router = v; }
+        if let Some(v) = o.cdclt_equality_engine { self.cdclt_equality_engine = v; }
+        if let Some(v) = o.f4_hilbert_select { self.f4_hilbert_select = v; }
+        if let Some(v) = o.f4_sparse_reducer_cache { self.f4_sparse_reducer_cache = v; }
+        if let Some(v) = o.cdclt_incremental_theory { self.cdclt_incremental_theory = v; }
     }
 }
 
@@ -221,6 +277,11 @@ pub struct EngineOverlay {
     pub reducer_index_cache: Option<bool>,
     pub frobenius_cache: Option<bool>,
     pub branching_incremental_gb: Option<bool>,
+    pub cdclt_multi_prime_router: Option<bool>,
+    pub cdclt_equality_engine: Option<bool>,
+    pub f4_hilbert_select: Option<bool>,
+    pub f4_sparse_reducer_cache: Option<bool>,
+    pub cdclt_incremental_theory: Option<bool>,
 }
 
 thread_local! {

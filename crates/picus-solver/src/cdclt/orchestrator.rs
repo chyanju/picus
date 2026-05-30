@@ -16,7 +16,11 @@ use crate::timeout::CancelToken;
 
 use super::atoms::AtomTable;
 use super::cnf::{tseitin, TseitinResult};
+use super::ee_filtered::EeFilteredTheory;
+use super::equality_engine::{EqualityEngine, RegisterOutcome};
 use super::ff_theory::FfTheory;
+use super::ff_theory_incremental::IncrementalFfTheoryState;
+use super::multi_prime::FfTheoryRouter;
 use super::theory::{CheckOutcome, Theory};
 
 /// Solve a `Formula` over GF(`prime`) via CDCL(T) with the FF theory.
@@ -45,8 +49,141 @@ pub fn solve_formula(
         return SolveOutcome::Unsat(Vec::new());
     }
 
-    let mut theory = FfTheory::new(&atoms, cancel);
-    cdclt_loop(&mut sat, &mut theory, cancel)
+    let use_router = picus_core::config::with(|c| c.cdclt_multi_prime_router);
+    let use_ee = picus_core::config::with(|c| c.cdclt_equality_engine);
+    let use_incremental = picus_core::config::with(|c| c.cdclt_incremental_theory);
+
+    // Build the EE once if requested; it is generic over the inner
+    // theory choice (FfTheory or FfTheoryRouter).
+    let ee = if use_ee {
+        let mut e = EqualityEngine::new();
+        for i in 0..atoms.n_atom_slots() {
+            let v = Var(i as u32);
+            if atoms.is_auxiliary(v) {
+                continue;
+            }
+            if let Some(key) = atoms.atom(v) {
+                if let RegisterOutcome::Contradiction = e.register_atom(v, key) {
+                    // Two atoms whose canonical polynomials match and
+                    // whose polarities already disagree at registration
+                    // — impossible today (no notifies have fired yet),
+                    // but the path is sound: return root-level UNSAT.
+                    return SolveOutcome::Unsat(Vec::new());
+                }
+            }
+        }
+        Some(e)
+    } else {
+        None
+    };
+
+    if use_router {
+        let mut router = FfTheoryRouter::new(vec![atoms], cancel);
+        let n_slots = router.slot_atoms_mut(0).n_atom_slots();
+        for i in 0..n_slots {
+            let v = Var(i as u32);
+            if router.slot_atoms_mut(0).atom(v).is_some() {
+                router.assign_var(v, 0);
+            }
+        }
+        return match ee {
+            Some(e) => {
+                let mut wrapped = EeFilteredTheory::new(e, router);
+                cdclt_loop(&mut sat, &mut wrapped, cancel)
+            }
+            None => cdclt_loop(&mut sat, &mut router, cancel),
+        };
+    }
+    if use_incremental {
+        // Conservative max-vars budget: every named variable plus every
+        // atom slot can claim a ring slot (atoms are interned eagerly via
+        // user names; aux-only slots never reach `build_atom_polys`).
+        // Disequality witnesses claim additional slots; bound them by
+        // the same conservative cap so a `degraded` flip from
+        // slot-budget exhaustion is reachable only on pathological
+        // inputs.
+        let max_vars = var_names.len() + atoms.n_atom_slots() + 64;
+        let mut theory = IncrementalFfTheoryState::new(&atoms, cancel, max_vars);
+        return match ee {
+            Some(e) => {
+                let mut wrapped = EeFilteredTheory::new(e, theory);
+                cdclt_loop(&mut sat, &mut wrapped, cancel)
+            }
+            None => cdclt_loop(&mut sat, &mut theory, cancel),
+        };
+    }
+    let theory = FfTheory::new(&atoms, cancel);
+    match ee {
+        Some(e) => {
+            let mut wrapped = EeFilteredTheory::new(e, theory);
+            cdclt_loop(&mut sat, &mut wrapped, cancel)
+        }
+        None => {
+            let mut theory = theory;
+            cdclt_loop(&mut sat, &mut theory, cancel)
+        }
+    }
+}
+
+/// Multi-prime entry: solve a list of per-prime `(prime, var_names,
+/// formula)` triples against a single SAT solver and a
+/// [`FfTheoryRouter`]. Tseitin runs once per prime so each tseitin
+/// call's atoms intern into the matching prime's [`AtomTable`]; the
+/// resulting top-level literals are conjoined as unit clauses.
+///
+/// A length-1 input degrades to the single-prime path
+/// ([`solve_formula`]) verbatim so callers can route both shapes
+/// through the same multi-prime API.
+pub fn solve_formula_multi(
+    primes_subs: Vec<(BigUint, Vec<String>, crate::boolean::Formula)>,
+    cancel: &CancelToken,
+) -> SolveOutcome {
+    if primes_subs.len() == 1 {
+        let (prime, var_names, formula) = primes_subs.into_iter().next().unwrap();
+        return solve_formula(prime, &var_names, &formula, cancel);
+    }
+
+    let mut sat = Solver::new();
+    let mut atoms_by_prime: Vec<AtomTable> = Vec::with_capacity(primes_subs.len());
+    // Slot index in the router matches the order of `primes_subs`.
+    // `var_to_slot` maps every non-aux SAT Var produced by tseitin to
+    // its owning slot so the router routes facts to the correct
+    // sub-theory at notify time.
+    let mut var_to_slot: HashMap<Var, usize> = HashMap::new();
+
+    for (slot_idx, (prime, var_names, formula)) in primes_subs.into_iter().enumerate() {
+        let mut atoms = AtomTable::new(prime);
+        let top = match tseitin(&formula, &var_names, &mut atoms, &mut sat) {
+            TseitinResult::Constant(true) => {
+                atoms_by_prime.push(atoms);
+                continue;
+            }
+            TseitinResult::Constant(false) => return SolveOutcome::Unsat(Vec::new()),
+            TseitinResult::Lit(l) => l,
+        };
+        if !sat.add_clause(vec![top]) {
+            atoms_by_prime.push(atoms);
+            return SolveOutcome::Unsat(Vec::new());
+        }
+        if sat.is_unsat() {
+            atoms_by_prime.push(atoms);
+            return SolveOutcome::Unsat(Vec::new());
+        }
+        // Snapshot every non-aux Var atoms touched into the slot map.
+        for i in 0..atoms.n_atom_slots() {
+            let v = Var(i as u32);
+            if atoms.atom(v).is_some() {
+                var_to_slot.insert(v, slot_idx);
+            }
+        }
+        atoms_by_prime.push(atoms);
+    }
+
+    let mut router = FfTheoryRouter::new(atoms_by_prime, cancel);
+    for (v, slot) in var_to_slot {
+        router.assign_var(v, slot);
+    }
+    cdclt_loop(&mut sat, &mut router, cancel)
 }
 
 /// Max CDCL(T) main-loop iterations before [`cdclt_loop`] returns

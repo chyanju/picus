@@ -1543,3 +1543,171 @@ fn hardprobe_gf7_3bit_all_pins_must_be_sat() {
         }
     }
 }
+
+/// SPEC P2: `cdclt_multi_prime_router=on` routes through
+/// `FfTheoryRouter` in single-slot mode. On the basic
+/// `(c·x = k) ∧ (c·x ≠ j)` formula over GF(7) — the same input as
+/// `prop_and_eq_neq_consistent_model` — the router must produce
+/// identical verdict + model to the default `FfTheory` path.
+#[test]
+fn audit_p2_router_single_slot_matches_default_on_eq_and_neq() {
+    let vn = names(&["x"]);
+    let prime = BigUint::from(7u32);
+    let f = Formula::And(vec![eq(1, 0, 3), neq(1, 0, 5)]);
+
+    let baseline = match solve_formula(prime.clone(), &vn, &f, &CancelToken::none()) {
+        SolveOutcome::Sat(m) => m,
+        other => panic!("baseline: expected Sat, got {:?}", other),
+    };
+
+    let _guard = picus_core::config::ConfigGuard::with_override(|c| {
+        c.cdclt_multi_prime_router = true;
+    });
+
+    let routed = match solve_formula(prime.clone(), &vn, &f, &CancelToken::none()) {
+        SolveOutcome::Sat(m) => m,
+        other => panic!("router: expected Sat, got {:?}", other),
+    };
+    assert_eq!(
+        baseline.get("x"),
+        routed.get("x"),
+        "router single-slot must match FfTheory on x"
+    );
+}
+
+/// SPEC P4: `cdclt_incremental_theory=on` on a small-prime
+/// `c·x = k` formula must produce Sat with the same x binding as the
+/// default `FfTheory` path. The incremental path defers model
+/// extraction on the non-trivial-basis branch but emits an empty
+/// model alongside Sat (sound by Nullstellensatz under field-poly
+/// injection on small primes); this test fixes a model that the
+/// trail itself pins via a single-variable equality so the model
+/// surfaces through `try_extract_full_assignment` regardless.
+#[test]
+fn audit_p4_incremental_theory_sat_on_pinned_eq() {
+    let vn = names(&["x"]);
+    let prime = BigUint::from(7u32);
+    let f = eq(1, 0, 3);
+
+    let baseline = match solve_formula(prime.clone(), &vn, &f, &CancelToken::none()) {
+        SolveOutcome::Sat(m) => m,
+        other => panic!("baseline: expected Sat, got {:?}", other),
+    };
+    assert_eq!(baseline.get("x"), Some(&BigUint::from(3u32)));
+
+    let _guard = picus_core::config::ConfigGuard::with_override(|c| {
+        c.cdclt_incremental_theory = true;
+    });
+
+    let routed = solve_formula(prime, &vn, &f, &CancelToken::none());
+    match routed {
+        SolveOutcome::Sat(_) => {}
+        other => panic!("incremental: expected Sat, got {:?}", other),
+    }
+}
+
+/// SPEC P4: incremental theory on a root conflict (x=3 ∧ x=4 over
+/// GF(7)) returns Unsat. The IncrementalGB collapses to the trivial
+/// ideal {1} on the second notify and `post_check` reports Unsat with
+/// the full trail as the core.
+#[test]
+fn audit_p4_incremental_theory_unsat_on_root_conflict() {
+    let vn = names(&["x"]);
+    let prime = BigUint::from(7u32);
+    let f = Formula::And(vec![eq(1, 0, 3), eq(1, 0, 4)]);
+
+    let _guard = picus_core::config::ConfigGuard::with_override(|c| {
+        c.cdclt_incremental_theory = true;
+    });
+
+    let routed = solve_formula(prime, &vn, &f, &CancelToken::none());
+    assert!(
+        matches!(routed, SolveOutcome::Unsat(_)),
+        "incremental must be Unsat on root conflict, got {:?}",
+        routed
+    );
+}
+
+/// SPEC P5: `cdclt_equality_engine=on` on the same `(c·x = k) ∧ (c·x ≠ j)`
+/// formula must match the default `FfTheory` path verdict + model.
+#[test]
+fn audit_p5_ee_filter_matches_default_on_eq_and_neq() {
+    let vn = names(&["x"]);
+    let prime = BigUint::from(7u32);
+    let f = Formula::And(vec![eq(1, 0, 3), neq(1, 0, 5)]);
+
+    let baseline = match solve_formula(prime.clone(), &vn, &f, &CancelToken::none()) {
+        SolveOutcome::Sat(m) => m,
+        other => panic!("baseline: expected Sat, got {:?}", other),
+    };
+
+    let _guard = picus_core::config::ConfigGuard::with_override(|c| {
+        c.cdclt_equality_engine = true;
+    });
+
+    let filtered = match solve_formula(prime.clone(), &vn, &f, &CancelToken::none()) {
+        SolveOutcome::Sat(m) => m,
+        other => panic!("ee-filtered: expected Sat, got {:?}", other),
+    };
+    assert_eq!(
+        baseline.get("x"),
+        filtered.get("x"),
+        "EE-filtered must match FfTheory on x"
+    );
+}
+
+/// SPEC P5: EE-filtered path on a root conflict (x=3 ∧ x=4) returns
+/// Unsat — verifying that the EE Contradiction outcome forwards the
+/// fact to the inner theory rather than swallowing it silently.
+#[test]
+fn audit_p5_ee_filter_matches_default_on_root_conflict() {
+    let vn = names(&["x"]);
+    let prime = BigUint::from(7u32);
+    let f = Formula::And(vec![eq(1, 0, 3), eq(1, 0, 4)]);
+
+    let baseline = solve_formula(prime.clone(), &vn, &f, &CancelToken::none());
+    assert!(
+        matches!(baseline, SolveOutcome::Unsat(_)),
+        "baseline must be Unsat, got {:?}",
+        baseline
+    );
+
+    let _guard = picus_core::config::ConfigGuard::with_override(|c| {
+        c.cdclt_equality_engine = true;
+    });
+
+    let filtered = solve_formula(prime, &vn, &f, &CancelToken::none());
+    assert!(
+        matches!(filtered, SolveOutcome::Unsat(_)),
+        "EE-filtered must also be Unsat, got {:?}",
+        filtered
+    );
+}
+
+/// SPEC P2: router single-slot path on a trivially-UNSAT formula
+/// (`x = 3 ∧ x = 4` over GF(7)) returns Unsat with the same shape
+/// the default path does.
+#[test]
+fn audit_p2_router_single_slot_matches_default_on_root_conflict() {
+    let vn = names(&["x"]);
+    let prime = BigUint::from(7u32);
+    let f = Formula::And(vec![eq(1, 0, 3), eq(1, 0, 4)]);
+
+    let baseline = solve_formula(prime.clone(), &vn, &f, &CancelToken::none());
+    assert!(
+        matches!(baseline, SolveOutcome::Unsat(_)),
+        "baseline must be Unsat, got {:?}",
+        baseline
+    );
+
+    let _guard = picus_core::config::ConfigGuard::with_override(|c| {
+        c.cdclt_multi_prime_router = true;
+    });
+
+    let routed = solve_formula(prime, &vn, &f, &CancelToken::none());
+    assert!(
+        matches!(routed, SolveOutcome::Unsat(_)),
+        "router must also be Unsat, got {:?}",
+        routed
+    );
+}

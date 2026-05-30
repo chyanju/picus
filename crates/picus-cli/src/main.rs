@@ -174,6 +174,37 @@ enum Commands {
         /// from scratch: on | off. Omit to use the built-in default.
         #[arg(long, value_parser = ["on", "off"])]
         branching_incremental_gb: Option<String>,
+
+        /// Route CDCL(T) facts through `cdclt::multi_prime::FfTheoryRouter`
+        /// (single slot for the input prime; capability for future
+        /// multi-prime SMT-LIB inputs): on | off. Omit to use the
+        /// built-in default.
+        #[arg(long, value_parser = ["on", "off"])]
+        cdclt_multi_prime_router: Option<String>,
+
+        /// Interpose `cdclt::equality_engine::EqualityEngine` before the
+        /// FF theory at fact-notification time, dropping
+        /// canonical-polynomial duplicates: on | off. Omit to use the
+        /// built-in default.
+        #[arg(long, value_parser = ["on", "off"])]
+        cdclt_equality_engine: Option<String>,
+
+        /// F4 Hilbert-driven S-pair batch selection (stub; flag plumbs
+        /// through but no F4 dispatch path consumes it yet): on | off.
+        #[arg(long, value_parser = ["on", "off"])]
+        f4_hilbert_select: Option<String>,
+
+        /// F4 cross-batch sparse reducer-row cache (stub; flag plumbs
+        /// through but the upgrade is deferred): on | off.
+        #[arg(long, value_parser = ["on", "off"])]
+        f4_sparse_reducer_cache: Option<String>,
+
+        /// Route the FF theory through
+        /// `cdclt::ff_theory_incremental::IncrementalFfTheoryState`
+        /// (cross-decision IncrementalGB; large-prime non-trivial
+        /// bases return Unknown until model extraction lands): on | off.
+        #[arg(long, value_parser = ["on", "off"])]
+        cdclt_incremental_theory: Option<String>,
     },
 
     /// Print R1CS circuit information
@@ -225,6 +256,11 @@ fn main() {
             reducer_index_cache,
             frobenius_cache,
             branching_incremental_gb,
+            cdclt_multi_prime_router,
+            cdclt_equality_engine,
+            f4_hilbert_select,
+            f4_sparse_reducer_cache,
+            cdclt_incremental_theory,
         } => {
             // CLI overlay — the highest-precedence config layer. Only the
             // flags the user actually passed become `Some`; everything
@@ -279,6 +315,11 @@ fn main() {
                     reducer_index_cache: reducer_index_cache.as_deref().map(|s| s == "on"),
                     frobenius_cache: frobenius_cache.as_deref().map(|s| s == "on"),
                     branching_incremental_gb: branching_incremental_gb.as_deref().map(|s| s == "on"),
+                    cdclt_multi_prime_router: cdclt_multi_prime_router.as_deref().map(|s| s == "on"),
+                    cdclt_equality_engine: cdclt_equality_engine.as_deref().map(|s| s == "on"),
+                    f4_hilbert_select: f4_hilbert_select.as_deref().map(|s| s == "on"),
+                    f4_sparse_reducer_cache: f4_sparse_reducer_cache.as_deref().map(|s| s == "on"),
+                    cdclt_incremental_theory: cdclt_incremental_theory.as_deref().map(|s| s == "on"),
                 },
             };
             let resolved = resolve_config(config.as_deref(), &overlay)

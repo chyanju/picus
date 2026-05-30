@@ -53,8 +53,14 @@ pub struct EqualityEngine {
     canonical_to_rep: HashMap<Vec<u8>, Var>,
     /// Current polarity asserted on a representative, if any.
     rep_polarity: HashMap<Var, bool>,
-    /// Trail of (rep, prior_polarity_state) for push/pop.
-    trail: Vec<(Var, Option<bool>)>,
+    /// Var that originally asserted the polarity recorded in
+    /// `rep_polarity` for this rep. Used by callers (e.g. an
+    /// EE-filtered theory wrapper) to synthesize a precise 2-literal
+    /// contradiction lemma `{¬lit(new), ¬lit(witness)}` instead of
+    /// deferring the conflict to the inner theory's GB layer.
+    polarity_witness: HashMap<Var, Var>,
+    /// Trail of (rep, prior_polarity, prior_witness) for push/pop.
+    trail: Vec<(Var, Option<bool>, Option<Var>)>,
     /// `levels[k]` snapshots `trail.len()` at SAT push k+1.
     levels: Vec<usize>,
 }
@@ -71,9 +77,29 @@ impl EqualityEngine {
             parent: Vec::new(),
             canonical_to_rep: HashMap::new(),
             rep_polarity: HashMap::new(),
+            polarity_witness: HashMap::new(),
             trail: Vec::new(),
             levels: Vec::new(),
         }
+    }
+
+    /// Read-only union-find resolve. Does NOT path-compress; safe to
+    /// call on a `&EqualityEngine`.
+    pub fn rep_of(&self, var: Var) -> Var {
+        let mut x = var;
+        while (x.0 as usize) < self.parent.len() && self.parent[x.0 as usize] != x {
+            x = self.parent[x.0 as usize];
+        }
+        x
+    }
+
+    /// The Var that first asserted polarity for `rep` at the current
+    /// (or any ancestor) decision level. `None` if no polarity has been
+    /// asserted on this rep yet. Together with `rep_polarity` lookup
+    /// this lets a caller build a precise contradiction lemma when
+    /// `notify` returned `Contradiction`.
+    pub fn prior_witness(&self, rep: Var) -> Option<Var> {
+        self.polarity_witness.get(&rep).copied()
     }
 
     /// Ensure the union-find has a slot for `v`. Returns its initial rep
@@ -177,8 +203,10 @@ impl EqualityEngine {
             Some(p) if p == polarity => NotifyOutcome::Redundant,
             Some(_) => NotifyOutcome::Contradiction,
             None => {
-                self.trail.push((rep, None));
+                let prior_witness = self.polarity_witness.get(&rep).copied();
+                self.trail.push((rep, None, prior_witness));
                 self.rep_polarity.insert(rep, polarity);
+                self.polarity_witness.insert(rep, atom);
                 NotifyOutcome::Fresh
             }
         }
@@ -189,19 +217,27 @@ impl EqualityEngine {
         self.levels.push(self.trail.len());
     }
 
-    /// Roll back to the most recent push. Polarities asserted since are
-    /// reverted; union-find structure is not (atom registration is
-    /// monotonic across SAT decisions).
+    /// Roll back to the most recent push. Polarities and witnesses
+    /// asserted since are reverted; union-find structure is not (atom
+    /// registration is monotonic across SAT decisions).
     pub fn pop(&mut self) {
         if let Some(height) = self.levels.pop() {
             while self.trail.len() > height {
-                if let Some((rep, prior)) = self.trail.pop() {
+                if let Some((rep, prior, prior_witness)) = self.trail.pop() {
                     match prior {
                         Some(p) => {
                             self.rep_polarity.insert(rep, p);
                         }
                         None => {
                             self.rep_polarity.remove(&rep);
+                        }
+                    }
+                    match prior_witness {
+                        Some(w) => {
+                            self.polarity_witness.insert(rep, w);
+                        }
+                        None => {
+                            self.polarity_witness.remove(&rep);
                         }
                     }
                 }

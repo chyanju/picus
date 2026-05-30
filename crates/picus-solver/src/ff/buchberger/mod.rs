@@ -342,6 +342,15 @@ const USE_COUNT_SORT_THRESHOLD: usize = 32;
 /// 2–3×; higher values regress cyclic-5.
 const F4_MIN_BATCH: usize = 12;
 
+/// Basis-size cap above which `f4_hilbert_select` falls back to the
+/// sugar-classical selection. `hilbert_numerator` is O(s²) in the
+/// number of minimal generators (`s` ≈ active basis size); recomputing
+/// it for every candidate sugar across `s ≥ 50` would dominate
+/// runtime. An incremental BCR-recursion update would lift the cap;
+/// without it, gating on size keeps the oracle cheap on the workloads
+/// the cap was calibrated for.
+const HILBERT_SELECT_BASIS_CAP: usize = 50;
+
 impl BuchbergerState {
     pub(super) fn new(ring: Arc<PolyRing>, cfg: BuchbergerConfig) -> Self {
         BuchbergerState {
@@ -1105,6 +1114,65 @@ impl BuchbergerState {
     /// reduces them simultaneously via [`f4::process_batch`], then
     /// integrates each new generator (generating cross-pairs against
     /// the existing basis exactly as the per-pair path does).
+    /// Bigatti–Caboara–Robbiano-style selection oracle: among all
+    /// sugar levels present in `self.open`, choose the one whose
+    /// candidate-pair LCMs introduce the largest predicted drop in
+    /// the Hilbert function at that degree. Falls back to
+    /// `lowest_sugar` on tie or when every candidate's predicted drop
+    /// is zero. Recomputes `hilbert_numerator` from scratch each call
+    /// — gated by `HILBERT_SELECT_BASIS_CAP` at the caller so the
+    /// O(s²) recursion stays bounded.
+    fn select_sugar_hilbert(&self, lowest_sugar: u32) -> u32 {
+        use std::collections::BTreeSet;
+        let mut sugars: BTreeSet<u32> = BTreeSet::new();
+        for pair in &self.open {
+            if pair.generation >= self.generation {
+                sugars.insert(pair.sugar);
+            }
+        }
+        if sugars.len() <= 1 {
+            return lowest_sugar;
+        }
+        let current_lts: Vec<crate::ff::monomial::Monomial> = self
+            .basis
+            .iter()
+            .filter(|e| e.active)
+            .map(|e| e.lt.clone())
+            .collect();
+        if current_lts.is_empty() {
+            return lowest_sugar;
+        }
+        let current_hn = super::hilbert::hilbert_numerator(&current_lts);
+        let n_vars = self.ring.n_vars;
+
+        let mut best_sugar = lowest_sugar;
+        let mut best_drop: i128 = 0;
+        for &sugar in &sugars {
+            let lcms: Vec<crate::ff::monomial::Monomial> = self
+                .open
+                .iter()
+                .filter(|p| p.sugar == sugar && p.generation >= self.generation)
+                .map(|p| p.lcm.clone())
+                .collect();
+            if lcms.is_empty() {
+                continue;
+            }
+            let mut hyp_lts = current_lts.clone();
+            hyp_lts.extend(lcms);
+            let hyp_hn = super::hilbert::hilbert_numerator(&hyp_lts);
+
+            let degree = sugar;
+            let before = current_hn.hf_at(degree, n_vars);
+            let after = hyp_hn.hf_at(degree, n_vars);
+            let drop = before.saturating_sub(after);
+            if drop > best_drop {
+                best_drop = drop;
+                best_sugar = sugar;
+            }
+        }
+        best_sugar
+    }
+
     fn run_f4<O: BuchbergerObserver>(&mut self, observer: &mut O) -> Result<(), EngineError> {
         if self.trivial && self.cfg.abort_on_trivial {
             return Ok(());
@@ -1126,21 +1194,56 @@ impl BuchbergerState {
         loop {
             self.check_cancel()?;
             // self.open is sorted descending; pop returns smallest
-            // sugar first. Pop a batch with the SAME smallest sugar.
+            // sugar first. The chosen sugar level is the smallest one
+            // by default (Buchberger-classical normal-strategy); when
+            // `f4_hilbert_select` is on AND the basis is below
+            // `HILBERT_SELECT_BASIS_CAP` the next-batch sugar is
+            // picked by predicted Hilbert-function drop (Bigatti–
+            // Caboara–Robbiano selection oracle) instead, falling
+            // back to lowest-sugar on tie or when the predicted drop
+            // is zero. The size cap exists because
+            // `hilbert_numerator` recomputes from scratch — an
+            // incremental BCR update is deferred to a follow-up.
             let lowest_sugar = match self.open.last() {
                 Some(p) => p.sugar,
                 None => break,
             };
+            let chosen_sugar = if picus_core::config::with(|c| c.f4_hilbert_select)
+                && self.basis.iter().filter(|e| e.active).count() <= HILBERT_SELECT_BASIS_CAP
+            {
+                self.select_sugar_hilbert(lowest_sugar)
+            } else {
+                lowest_sugar
+            };
             let mut batch: Vec<SPair> = Vec::new();
-            while let Some(top) = self.open.last() {
-                if top.sugar > lowest_sugar {
-                    break;
+            // self.open is sorted descending by ordering_key; pairs with
+            // the chosen sugar are not necessarily contiguous at the
+            // tail when chosen_sugar != lowest_sugar. Walk the whole
+            // open list once, drain pairs at chosen_sugar into the
+            // batch, retain the rest.
+            if chosen_sugar == lowest_sugar {
+                while let Some(top) = self.open.last() {
+                    if top.sugar > lowest_sugar {
+                        break;
+                    }
+                    let pair = self.open.pop().unwrap();
+                    if pair.generation < self.generation {
+                        continue;
+                    }
+                    batch.push(pair);
                 }
-                let pair = self.open.pop().unwrap();
-                if pair.generation < self.generation {
-                    continue;
+            } else {
+                let mut keep: Vec<SPair> = Vec::with_capacity(self.open.len());
+                for pair in self.open.drain(..) {
+                    if pair.sugar == chosen_sugar && pair.generation >= self.generation {
+                        batch.push(pair);
+                    } else if pair.generation >= self.generation {
+                        keep.push(pair);
+                    }
                 }
-                batch.push(pair);
+                // `keep` preserves the same descending ordering_key
+                // order self.open had before the drain.
+                self.open = keep;
             }
             if batch.is_empty() {
                 continue;
@@ -1185,13 +1288,28 @@ impl BuchbergerState {
                 .collect();
 
             let batch_refs: Vec<&SPair> = batch.iter().collect();
-            let new_polys = super::f4::process_batch_with_workspace(
-                &batch_refs,
-                &basis_refs,
-                &self.ring,
-                self.cfg.cancel_token.as_ref(),
-                &mut f4_workspace,
-            );
+            // When `f4_sparse_reducer_cache` is OFF, hand a fresh
+            // workspace per batch so cross-batch reducer reuse is
+            // disabled (the dense reducer cache still amortises within
+            // a single batch via the same scratch allocators); when
+            // ON, the workspace declared at `run_f4` entry carries the
+            // cache across batches.
+            let new_polys = if picus_core::config::with(|c| c.f4_sparse_reducer_cache) {
+                super::f4::process_batch_with_workspace(
+                    &batch_refs,
+                    &basis_refs,
+                    &self.ring,
+                    self.cfg.cancel_token.as_ref(),
+                    &mut f4_workspace,
+                )
+            } else {
+                super::f4::process_batch(
+                    &batch_refs,
+                    &basis_refs,
+                    &self.ring,
+                    self.cfg.cancel_token.as_ref(),
+                )
+            };
 
             self.check_cancel()?;
 
