@@ -157,6 +157,20 @@ pub struct RuntimeConfig {
     /// repeated equalities across nested let-bindings or canonical
     /// duplicates that escape `AtomTable::intern_eq`.
     pub cdclt_equality_engine: bool,
+    /// Reorder F4 S-pair batches by predicted Hilbert-function drop
+    /// instead of pure sugar-degree FIFO. Stub today: the flag plumbs
+    /// through `apply_overlay` and is exercised by the drift-guard
+    /// test, but no F4 dispatch path consumes it yet. The full
+    /// integration is a multi-week effort (Hilbert numerator
+    /// incremental update + selection oracle + sugar-fallback under
+    /// drop-below-min-sugar) tracked separately.
+    pub f4_hilbert_select: bool,
+    /// Cross-batch sparse reducer-row cache inside `F4Workspace`. Stub
+    /// today: the existing `reducer_cache` field on `F4Workspace`
+    /// already amortises within a `run_f4` invocation; the
+    /// sparse-row + global-column rebinding upgrade described in
+    /// plan14 ships under this flag in a separate round.
+    pub f4_sparse_reducer_cache: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -181,6 +195,8 @@ impl Default for RuntimeConfig {
             branching_incremental_gb: true,
             cdclt_multi_prime_router: false,
             cdclt_equality_engine: false,
+            f4_hilbert_select: false,
+            f4_sparse_reducer_cache: false,
         }
     }
 }
@@ -209,6 +225,8 @@ impl RuntimeConfig {
         if let Some(v) = o.branching_incremental_gb { self.branching_incremental_gb = v; }
         if let Some(v) = o.cdclt_multi_prime_router { self.cdclt_multi_prime_router = v; }
         if let Some(v) = o.cdclt_equality_engine { self.cdclt_equality_engine = v; }
+        if let Some(v) = o.f4_hilbert_select { self.f4_hilbert_select = v; }
+        if let Some(v) = o.f4_sparse_reducer_cache { self.f4_sparse_reducer_cache = v; }
     }
 }
 
@@ -243,6 +261,8 @@ pub struct EngineOverlay {
     pub branching_incremental_gb: Option<bool>,
     pub cdclt_multi_prime_router: Option<bool>,
     pub cdclt_equality_engine: Option<bool>,
+    pub f4_hilbert_select: Option<bool>,
+    pub f4_sparse_reducer_cache: Option<bool>,
 }
 
 thread_local! {

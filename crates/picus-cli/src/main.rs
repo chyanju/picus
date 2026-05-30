@@ -188,6 +188,16 @@ enum Commands {
         /// built-in default.
         #[arg(long, value_parser = ["on", "off"])]
         cdclt_equality_engine: Option<String>,
+
+        /// F4 Hilbert-driven S-pair batch selection (stub; flag plumbs
+        /// through but no F4 dispatch path consumes it yet): on | off.
+        #[arg(long, value_parser = ["on", "off"])]
+        f4_hilbert_select: Option<String>,
+
+        /// F4 cross-batch sparse reducer-row cache (stub; flag plumbs
+        /// through but the upgrade is deferred): on | off.
+        #[arg(long, value_parser = ["on", "off"])]
+        f4_sparse_reducer_cache: Option<String>,
     },
 
     /// Print R1CS circuit information
@@ -241,6 +251,8 @@ fn main() {
             branching_incremental_gb,
             cdclt_multi_prime_router,
             cdclt_equality_engine,
+            f4_hilbert_select,
+            f4_sparse_reducer_cache,
         } => {
             // CLI overlay — the highest-precedence config layer. Only the
             // flags the user actually passed become `Some`; everything
@@ -297,6 +309,8 @@ fn main() {
                     branching_incremental_gb: branching_incremental_gb.as_deref().map(|s| s == "on"),
                     cdclt_multi_prime_router: cdclt_multi_prime_router.as_deref().map(|s| s == "on"),
                     cdclt_equality_engine: cdclt_equality_engine.as_deref().map(|s| s == "on"),
+                    f4_hilbert_select: f4_hilbert_select.as_deref().map(|s| s == "on"),
+                    f4_sparse_reducer_cache: f4_sparse_reducer_cache.as_deref().map(|s| s == "on"),
                 },
             };
             let resolved = resolve_config(config.as_deref(), &overlay)

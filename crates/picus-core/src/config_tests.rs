@@ -30,6 +30,8 @@ fn apply_overlay_consumes_every_field() {
         branching_incremental_gb: Some(true),
         cdclt_multi_prime_router: Some(true),
         cdclt_equality_engine: Some(true),
+        f4_hilbert_select: Some(true),
+        f4_sparse_reducer_cache: Some(true),
     };
     let expected = RuntimeConfig {
         gb_strategy: GbStrategy::ByHomog,
@@ -51,6 +53,8 @@ fn apply_overlay_consumes_every_field() {
         branching_incremental_gb: true,
         cdclt_multi_prime_router: true,
         cdclt_equality_engine: true,
+        f4_hilbert_select: true,
+        f4_sparse_reducer_cache: true,
     };
 
     // Every chosen value must differ from the compiled default, so a
