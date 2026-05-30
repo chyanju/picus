@@ -161,6 +161,20 @@ pub struct RuntimeConfig {
     /// wrong verdict). Kept as a research knob; re-evaluate if the model
     /// search gains an elimination-aware branching strategy.
     pub matrix_elim_order: bool,
+    /// Size-adaptive term-order selection for the native split-GB. When
+    /// set, the encoder builds the solve ring under the alt-copy
+    /// elimination order only for rings of at least
+    /// `frontend::encoder::DYNAMIC_ORDER_MIN_VARS` variables, and DegRevLex
+    /// below that — a PLDI A/B found the elimination order helps only large
+    /// systems (EdDSA family) and regresses tiny ones. The split-GB is
+    /// order-agnostic, so this only changes which equally valid GB is
+    /// computed; verdicts are guarded independently of the order. On by
+    /// default: a PLDI same-binary A/B (`chat/align-harness/dyn_off3.jsonl`
+    /// / `dyn_on3.jsonl`) measured -3.1% total wall-clock — the EdDSA
+    /// family -54..-585 ms via the elimination order on its large rings —
+    /// with identical verdicts and no regression (the size guard routes
+    /// small rings, where the elimination order regressed, to DegRevLex).
+    pub dynamic_order: bool,
     /// Cache the geobucket reducer's divisor index (DivMask buckets + degree
     /// order) across S-pair reductions whose active basis is unchanged,
     /// instead of rebuilding it per call. Result-preserving (same normal
@@ -260,6 +274,7 @@ impl Default for RuntimeConfig {
             split_triangular: false,
             membership_fastpath: true,
             matrix_elim_order: false,
+            dynamic_order: true,
             reducer_index_cache: false,
             frobenius_cache: true,
             branching_incremental_gb: true,
@@ -293,6 +308,7 @@ impl RuntimeConfig {
         if let Some(v) = o.split_triangular { self.split_triangular = v; }
         if let Some(v) = o.membership_fastpath { self.membership_fastpath = v; }
         if let Some(v) = o.matrix_elim_order { self.matrix_elim_order = v; }
+        if let Some(v) = o.dynamic_order { self.dynamic_order = v; }
         if let Some(v) = o.reducer_index_cache { self.reducer_index_cache = v; }
         if let Some(v) = o.frobenius_cache { self.frobenius_cache = v; }
         if let Some(v) = o.branching_incremental_gb { self.branching_incremental_gb = v; }
@@ -332,6 +348,7 @@ pub struct EngineOverlay {
     pub split_triangular: Option<bool>,
     pub membership_fastpath: Option<bool>,
     pub matrix_elim_order: Option<bool>,
+    pub dynamic_order: Option<bool>,
     pub reducer_index_cache: Option<bool>,
     pub frobenius_cache: Option<bool>,
     pub branching_incremental_gb: Option<bool>,

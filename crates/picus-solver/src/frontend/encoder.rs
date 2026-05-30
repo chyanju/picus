@@ -24,6 +24,8 @@ use num_bigint::BigUint;
 use std::collections::HashMap;
 
 use crate::ff::field::PrimeField;
+use crate::ff::matrix_order::{intern as intern_order, MatrixOrder};
+use crate::ff::monomial::MonomialOrder;
 use crate::poly::{FfPolyRing, Poly};
 
 /// Origin of an entry in [`EncodedSystem::polynomials`], parallel to it
@@ -226,6 +228,54 @@ fn compact_used_vars(system: &ConstraintSystem) -> ConstraintSystem {
     }
 }
 
+/// Alt-copy `y<i>` user variables — the eliminated set for an elimination
+/// order. Aux `__*` variables are excluded.
+fn elim_y_vars(var_names: &[String]) -> Vec<usize> {
+    var_names
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| {
+            n.len() > 1 && n.starts_with('y') && n[1..].bytes().all(|b| b.is_ascii_digit())
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Minimum ring width for `dynamic_order` to switch to the elimination
+/// order. Below it, DegRevLex is already cheap and the elimination order
+/// only risks blowing up the model search: a PLDI A/B showed the
+/// elimination order helps only large systems (EdDSA family, thousands of
+/// variables) and regresses tiny ones (a handful of variables). Size is
+/// the predictor — a per-generator S-pair proxy was both too costly on the
+/// large systems where it would matter and a poor predictor on the small
+/// ones — so `dynamic_order` selects on ring width.
+const DYNAMIC_ORDER_MIN_VARS: usize = 1000;
+
+/// Term order for the solve ring, from config. `matrix_elim_order` forces
+/// the alt-copy elimination order; `dynamic_order` uses it only on rings of
+/// at least [`DYNAMIC_ORDER_MIN_VARS`] variables; otherwise DegRevLex.
+/// Verdicts are order-independent, so this only changes which equally valid
+/// GB is computed.
+fn choose_solve_order(var_names: &[String]) -> MonomialOrder {
+    let (dynamic, elim_flag) = crate::config::with(|c| (c.dynamic_order, c.matrix_elim_order));
+    if !dynamic && !elim_flag {
+        return MonomialOrder::DegRevLex;
+    }
+    let elim_vars = elim_y_vars(var_names);
+    if elim_vars.is_empty() {
+        return MonomialOrder::DegRevLex;
+    }
+    let n_vars = var_names.len();
+    // `matrix_elim_order` forces the elimination order at any size;
+    // `dynamic_order` (when it is the only flag set) applies it only above
+    // the size guard. Explicit force takes precedence over the adaptive
+    // default.
+    if !elim_flag && n_vars < DYNAMIC_ORDER_MIN_VARS {
+        return MonomialOrder::DegRevLex;
+    }
+    MonomialOrder::Matrix(intern_order(MatrixOrder::elim(&elim_vars, n_vars)))
+}
+
 fn encode_impl(
     system: &ConstraintSystem,
     emit_rabinowitsch: bool,
@@ -271,40 +321,16 @@ fn encode_impl(
     }
 
     let field = PrimeField::new(system.prime.clone());
-    // Default DegRevLex; opt-in elimination order on the alt-copy `y`
-    // variables (`matrix_elim_order`). The split-GB pipeline is
-    // order-agnostic — it reads the order from the ring — so building the
-    // ring under an elimination order is sufficient to run the whole solve
-    // under it. The eliminated set is the `y<i>` user variables (the
-    // alt-copy of the uniqueness encoding); aux witness / bitsum vars
-    // (`__*`) are excluded. With no `y` vars (non-uniqueness producers) the
-    // elimination row would be empty, so fall back to DegRevLex.
-    let poly_ring = {
-        let use_elim = crate::config::with(|c| c.matrix_elim_order);
-        let elim: Vec<usize> = if use_elim {
-            var_names
-                .iter()
-                .enumerate()
-                .filter(|(_, n)| {
-                    n.len() > 1 && n.starts_with('y') && n[1..].bytes().all(|b| b.is_ascii_digit())
-                })
-                .map(|(i, _)| i)
-                .collect()
-        } else {
-            Vec::new()
-        };
-        if elim.is_empty() {
-            FfPolyRing::new(field, var_names.clone())
-        } else {
-            let order = crate::ff::monomial::MonomialOrder::Matrix(
-                crate::ff::matrix_order::intern(crate::ff::matrix_order::MatrixOrder::elim(
-                    &elim,
-                    var_names.len(),
-                )),
-            );
-            FfPolyRing::new_with_order(field, var_names.clone(), order)
-        }
-    };
+    // Term order for the solve ring. The split-GB is order-agnostic (it
+    // reads the order from the ring), so a non-default order selected here
+    // runs the whole solve under it; verdicts stay order-independent
+    // (guarded by verify_model / whole-ring detection). Default DegRevLex;
+    // `matrix_elim_order` forces an elimination order on the alt-copy `y`
+    // variables, and `dynamic_order` picks DegRevLex vs that elimination
+    // order per system by a cheap S-pair proxy. `new_with_order` with
+    // DegRevLex is identical to `new`, so the default path is unchanged.
+    let order = choose_solve_order(&var_names);
+    let poly_ring = FfPolyRing::new_with_order(field, var_names.clone(), order);
 
     // Build var_map for downstream callers that still consult it
     // (e.g. SUBP_CONSTANT_NAMES filtering in the picus crate).

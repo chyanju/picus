@@ -171,6 +171,12 @@ enum Commands {
         #[arg(long, value_parser = ["on", "off"])]
         matrix_elim_order: Option<String>,
 
+        /// Size-adaptive term-order selection for the native split-GB:
+        /// on | off. Uses the alt-copy elimination order on large rings and
+        /// DegRevLex on small ones. Omit to use the built-in default.
+        #[arg(long, value_parser = ["on", "off"])]
+        dynamic_order: Option<String>,
+
         /// Cache the reducer's divisor index across reductions with an
         /// unchanged active basis (native FF backend only): on | off. Omit
         /// to use the built-in default.
@@ -269,6 +275,7 @@ fn main() {
             split_triangular,
             membership_fastpath,
             matrix_elim_order,
+            dynamic_order,
             reducer_index_cache,
             frobenius_cache,
             branching_incremental_gb,
@@ -330,6 +337,7 @@ fn main() {
                     split_triangular: split_triangular.as_deref().map(|s| s == "on"),
                     membership_fastpath: membership_fastpath.as_deref().map(|s| s == "on"),
                     matrix_elim_order: matrix_elim_order.as_deref().map(|s| s == "on"),
+                    dynamic_order: dynamic_order.as_deref().map(|s| s == "on"),
                     reducer_index_cache: reducer_index_cache.as_deref().map(|s| s == "on"),
                     frobenius_cache: frobenius_cache.as_deref().map(|s| s == "on"),
                     branching_incremental_gb: branching_incremental_gb.as_deref().map(|s| s == "on"),
