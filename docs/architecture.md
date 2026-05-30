@@ -182,20 +182,35 @@ algebra), `smt2/`, and `split_gb/`, with `core.rs`, `boolean.rs`, and
   propagation — Tier 1 evaluates atoms under pinned variables, Tier
   2 reduces multi-variable trail atoms to `a·v + c = 0` and
   propagates against registered single-var equalities, with Fermat-
-  based modular inverse). `ff_theory_incremental` is a parallel
-  Theory impl that carries an `IncrementalGB` across SAT decisions
-  (Rabinowitsch encoding for disequalities, field-poly injection on
-  small primes); `multi_prime::FfTheoryRouter` partitions atoms by
-  GF(p) and runs `check_full_with_atoms` per slot, merging UNSAT
-  cores; `equality_engine` is a union-find over atom variables that
-  collapses same-canonical-polynomial atoms and detects polarity
-  contradictions on registration. `orchestrator` (`solve_formula`)
-  interleaves SAT propagation, theory notification, theory
-  propagation, full-effort theory check, and theory-conflict
-  learning. Layered after cvc5's `theory_ff.{h,cpp}` +
-  `sub_theory.{h,cpp}`.
+  based modular inverse;  `pinned_vars_for` / `eval_key_under_pinned`
+  / `compute_tier1_for` / `compute_tier2_for` are `pub(crate)` free
+  functions so sibling Theory impls reuse the substrate). 
+  `ff_theory_incremental::IncrementalFfTheoryState` carries an
+  `IncrementalGB` across SAT decisions; the model-extraction bridge
+  re-wraps the live basis on a user-namespaced facade ring and
+  delegates to `gb::model::find_zero_cancel`. `multi_prime::FfTheoryRouter`
+  partitions atoms by GF(p), runs `check_full_with_atoms` per slot,
+  and unions UNSAT cores; `solve_formula_multi` drives it with one
+  `tseitin` call per prime against a shared SAT solver.
+  `equality_engine` is a union-find over atom variables keyed on
+  canonicalised polynomial bytes; `register_atom` returns
+  `RegisterOutcome::Contradiction` when two singleton classes with
+  opposite asserted polarities merge, and `prior_witness(rep)`
+  surfaces the Var whose polarity first occupied the rep so a
+  caller can synthesise a precise 2-literal lemma. `ee_filtered`
+  wraps any inner Theory with the equality engine as a
+  fact-notification filter (`Fresh` forwards, `Redundant` drops,
+  `Contradiction` surfaces the 2-literal core at `post_check`).
+  `orchestrator` (`solve_formula`, `solve_formula_multi`) interleaves
+  SAT propagation, theory notification, theory propagation, full-
+  effort theory check, and theory-conflict learning. Layered after
+  cvc5's `theory_ff.{h,cpp}` + `sub_theory.{h,cpp}`.
 - **`model.rs`** — Model construction via iterative ideal
   augmentation (univariate roots, minimal polynomial, round-robin).
+  `compute_candidates` Case 2.5 routes zero-dimensional ideals
+  through `fglm_to_lex_cancel` + triangular DFS before the round-
+  robin fallback; an exhaustive DFS on the Lex GB yields
+  `Brancher::ProvedUnsat` so the loop tags a sound UNSAT verdict.
   Each DFS branch extends the parent basis with the single
   `(x_var − val)` constraint via `compute_gb_incremental_with_order`
   (`branching_incremental_gb`) instead of rebuilding Buchberger from
@@ -230,15 +245,21 @@ algebra), `smt2/`, and `split_gb/`, with `core.rs`, `boolean.rs`, and
   side-by-side wall-time table. Flags: `--cvc5 <path>`,
   `--timeout-ms <N>`, `--iters <K>`.
 - **`ff/`** — Gröbner-basis / root-finding engine over the `picus-core`
-  algebra: `buchberger/` (Buchberger with the GM-criterion incremental path
-  and S-pair criteria), `f4/` (matrix layer, workspace, symbolic
-  preprocessing), `sparse_gb` (Buchberger on the sparse representation with the
-  same product / M / B criteria, sugar selection, and incremental seeding),
-  `hilbert`, `spair`, `univariate` (Cantor-Zassenhaus with a
-  thread-local `x^p mod poly` memoization keyed on `(prime, coeffs)`
-  under `frobenius_cache`), and `repr_oracle`
-  (cross-checks the sparse GB and the F4 path against the dense per-pair
-  engine at the full reduced-GB level).
+  algebra: `buchberger/` (Buchberger with the GM-criterion incremental
+  path, S-pair criteria, and an F4-lite main loop whose batch
+  selection consults a Bigatti–Caboara–Robbiano Hilbert-function
+  oracle under `f4_hilbert_select`), `f4/` (matrix layer, workspace,
+  symbolic preprocessing; `F4Workspace.reducer_cache` stores only the
+  basis index per entry and rematerialises the reducer on hit time
+  under `f4_sparse_reducer_cache`), `sparse_gb` (Buchberger on the
+  sparse representation with the same product / M / B criteria,
+  sugar selection, and incremental seeding), `hilbert` (BCR colon
+  recursion + `HilbertNum::add_generators_incremental` for the F4
+  selection oracle), `spair`, `univariate` (Cantor-Zassenhaus with
+  a thread-local `x^p mod poly` memoization keyed on `(prime,
+  coeffs)` under `frobenius_cache`), and `repr_oracle` (cross-checks
+  the sparse GB and the F4 path against the dense per-pair engine
+  at the full reduced-GB level).
 
 ### `picus-smt`
 

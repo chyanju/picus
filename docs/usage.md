@@ -48,6 +48,11 @@ picus check --r1cs circuit.r1cs --dump-smt /tmp/smt/         # dump SMT queries
 | `--reducer-index-cache <on\|off>` | off | Cache the reducer's divisor index across reductions with an unchanged active basis (`native`) |
 | `--frobenius-cache <on\|off>` | on | Memoize `x^p mod poly` across Cantor–Zassenhaus calls on the same `(prime, poly)` (`native`) |
 | `--branching-incremental-gb <on\|off>` | on | Extend the parent GB with the single branching constraint via `compute_gb_incremental_with_order` instead of recomputing the full basis at each DFS branch (`native`) |
+| `--cdclt-multi-prime-router <on\|off>` | off | Route CDCL(T) facts through `cdclt::multi_prime::FfTheoryRouter` (single-slot when input is single-prime; multi-slot when fed by `parse_boolean_multi`) (`native`) |
+| `--cdclt-equality-engine <on\|off>` | off | Interpose `cdclt::equality_engine::EqualityEngine` before the FF theory; drops canonical-polynomial duplicate facts and surfaces precise 2-literal lemmas on polarity contradictions (`native`) |
+| `--cdclt-incremental-theory <on\|off>` | off | Route CDCL(T) through `cdclt::ff_theory_incremental::IncrementalFfTheoryState`; carries an `IncrementalGB` across SAT decisions, with model extraction via a user-namespaced facade ring (`native`) |
+| `--f4-hilbert-select <on\|off>` | on | BCR Hilbert-driven F4 batch selection (`HilbertNum::add_generators_incremental` per candidate; inert when `--use-f4` is off) (`native`) |
+| `--f4-sparse-reducer-cache <on\|off>` | on | Sparse-row reducer cache inside `F4Workspace`: stores basis index only, rematerialises the reducer at hit time (inert when `--use-f4` is off) (`native`) |
 
 > `z3 + ff` is rejected (z3 has no finite-field theory); `native + nia` is
 > rejected (the native backend implements only QF_FF).
@@ -73,7 +78,7 @@ only the keys it sets (later wins):
 key at its default value — copy it and edit. Keys are split into two tables:
 
 - `[analysis]` — `solver`, `theory`, `timeout_ms`, `selector`, `lemmas`, `dump_smt`. Backend-agnostic.
-- `[engine]` — Picus's in-tree engine: the native FF Gröbner solver knobs (`gb_strategy`, `use_f4`, `dnf_enabled`, `dnf_cap`, `cdclt_iter_cap`, `cache_enabled`, `linear_elim`, `split_triangular`, `reducer_index_cache`, `frobenius_cache`, `branching_incremental_gb`, `track_inter_reduce_deps`) plus the IR/lemma knobs that also shape the cvc5 path (`poly_repr`, `aboz_emit_disjunctions`) and the diagnostics (`gb_stats_enabled`, `gb_trace_enabled`, `profile_enabled`). The native-solver-only keys are unused when delegating to cvc5 / z3.
+- `[engine]` — Picus's in-tree engine: the native FF Gröbner solver knobs (`gb_strategy`, `use_f4`, `dnf_enabled`, `dnf_cap`, `cdclt_iter_cap`, `cache_enabled`, `linear_elim`, `split_triangular`, `reducer_index_cache`, `frobenius_cache`, `branching_incremental_gb`, `cdclt_multi_prime_router`, `cdclt_equality_engine`, `cdclt_incremental_theory`, `f4_hilbert_select`, `f4_sparse_reducer_cache`, `track_inter_reduce_deps`) plus the IR/lemma knobs that also shape the cvc5 path (`poly_repr`, `aboz_emit_disjunctions`) and the diagnostics (`gb_stats_enabled`, `gb_trace_enabled`, `profile_enabled`). The native-solver-only keys are unused when delegating to cvc5 / z3.
 
 ```toml
 [analysis]

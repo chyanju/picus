@@ -686,8 +686,7 @@ fn bench_f4_vs_per_pair() {
 ///
 /// Asserts that config 3's F4/pp ratio is no worse than config 2's
 /// (i.e. the Hilbert oracle + sparse cache do not regress the cyclic
-/// benchmarks). The assertion is the plan14 P3 acceptance gate
-/// "cyclic-6 ratio drops below 1.0 OR documented 'no improvement'".
+/// benchmarks).
 ///
 /// ```bash
 /// cargo test -p picus-solver --test bench_perf --release \
