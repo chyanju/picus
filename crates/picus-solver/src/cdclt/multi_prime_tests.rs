@@ -140,17 +140,43 @@ fn prop_router_push_pop_restores_per_slot_trails() {
 }
 
 #[test]
-fn prop_router_drops_facts_for_unregistered_vars() {
-    // A fact whose `Var` has not been assign_var'd is silently dropped.
+fn bug_router_unregistered_fact_degrades_to_unknown_not_sat() {
+    // A fact whose `Var` has not been assign_var'd cannot reach any
+    // per-prime slot. Silently dropping it would let an UNSAT-producing
+    // fact vanish, leaving the slot-union Sat for an unsatisfiable
+    // problem. notify_fact must flip the degraded flag so post_check
+    // returns Unknown.
     let cancel = CancelToken::none();
     let atoms_gf7 = AtomTable::new(BigUint::from(7u32));
     let mut router = FfTheoryRouter::new(vec![atoms_gf7], &cancel);
 
     let unregistered = crate::sat::Var(42);
     router.notify_fact(unregistered, true);
-    // No registered facts; SAT (empty).
+    match router.post_check() {
+        CheckOutcome::Unknown => {}
+        other => panic!("expected Unknown under unregistered-var degradation, got {:?}", other),
+    }
+}
+
+#[test]
+fn bug_router_pop_restores_degraded_flag() {
+    // push; notify_fact(unregistered) at level 1 sets degraded; pop
+    // restores degraded to its pre-push value (false), so the next
+    // post_check on an empty trail returns Sat rather than the
+    // post-degradation Unknown.
+    let cancel = CancelToken::none();
+    let atoms_gf7 = AtomTable::new(BigUint::from(7u32));
+    let mut router = FfTheoryRouter::new(vec![atoms_gf7], &cancel);
+
+    router.push();
+    router.notify_fact(crate::sat::Var(99), true);
+    match router.post_check() {
+        CheckOutcome::Unknown => {}
+        other => panic!("pre-pop should be Unknown after degradation, got {:?}", other),
+    }
+    router.pop();
     match router.post_check() {
         CheckOutcome::Sat => {}
-        other => panic!("empty router should be SAT, got {:?}", other),
+        other => panic!("post-pop should be Sat (degraded cleared), got {:?}", other),
     }
 }

@@ -60,8 +60,8 @@ fn audit_eq_dedups_same_polynomial_atoms() {
     let key_b = atoms_b.atom(var_b).expect("atom b present").clone();
 
     let mut eq = EqualityEngine::new();
-    eq.register_atom(var_a, &key_a);
-    eq.register_atom(var_b, &key_b);
+    assert_eq!(eq.register_atom(var_a, &key_a), RegisterOutcome::Ok);
+    assert_eq!(eq.register_atom(var_b, &key_b), RegisterOutcome::Ok);
 
     assert_eq!(eq.notify(var_a, true), NotifyOutcome::Fresh);
     assert_eq!(eq.notify(var_b, true), NotifyOutcome::Redundant);
@@ -136,6 +136,63 @@ fn audit_eq_push_pop_restores_polarities() {
     // After pop the polarity recorded for the rep is restored to `true`
     // (set before push), so a same-polarity notification is Redundant.
     assert_eq!(eq.notify(var_a, true), NotifyOutcome::Redundant);
+}
+
+#[test]
+fn bug_register_atom_surfaces_orphan_polarity_conflict() {
+    // notify-before-register: var_a is notified true and var_b is notified
+    // false BEFORE either is registered. They are then both registered
+    // with the same canonical key. The register_atom call that unions the
+    // two classes must surface RegisterOutcome::Contradiction; otherwise
+    // the merged class silently absorbs one polarity and the conflict is
+    // lost.
+    let mut atoms = AtomTable::new(BigUint::from(7u32));
+    let mut sat = Solver::new();
+    let mut vn: Vec<String> = Vec::new();
+    let var_a = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 3);
+    let var_b = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 4);
+    // Two DIFFERENT atoms initially; we will register var_b with var_a's
+    // key so the union conflicts.
+    let key_a = atoms.atom(var_a).expect("atom a").clone();
+
+    let mut eq = EqualityEngine::new();
+    assert_eq!(eq.notify(var_a, true), NotifyOutcome::Fresh);
+    assert_eq!(eq.notify(var_b, false), NotifyOutcome::Fresh);
+    assert_eq!(eq.register_atom(var_a, &key_a), RegisterOutcome::Ok);
+    assert_eq!(
+        eq.register_atom(var_b, &key_a),
+        RegisterOutcome::Contradiction
+    );
+}
+
+#[test]
+fn bug_register_atom_merges_opposite_polarity_classes_reports_contradiction() {
+    // Two atoms canonicalise to the same key; both are notified at
+    // opposite polarities before either canonical-key merge happens. The
+    // second register_atom must detect that the two singleton classes
+    // carry opposite polarities and surface Contradiction at
+    // registration time; the alternative — silent merge — loses the
+    // conflict whenever no subsequent notify hits the merged class.
+    let mut atoms_a = AtomTable::new(BigUint::from(7u32));
+    let mut atoms_b = AtomTable::new(BigUint::from(7u32));
+    let mut sat = Solver::new();
+    let mut vn_a: Vec<String> = Vec::new();
+    let mut vn_b: Vec<String> = Vec::new();
+    let var_a = intern_eq_var(&mut atoms_a, &mut sat, &mut vn_a, "x", 3);
+    let var_b = intern_eq_var(&mut atoms_b, &mut sat, &mut vn_b, "x", 3);
+    let key_a = atoms_a.atom(var_a).expect("atom a").clone();
+    let key_b = atoms_b.atom(var_b).expect("atom b").clone();
+
+    let mut eq = EqualityEngine::new();
+    assert_eq!(eq.register_atom(var_a, &key_a), RegisterOutcome::Ok);
+    assert_eq!(eq.notify(var_a, true), NotifyOutcome::Fresh);
+    // var_b is in a different singleton class but same canonical key as
+    // var_a; assert opposite polarity then register.
+    assert_eq!(eq.notify(var_b, false), NotifyOutcome::Fresh);
+    assert_eq!(
+        eq.register_atom(var_b, &key_b),
+        RegisterOutcome::Contradiction
+    );
 }
 
 #[test]

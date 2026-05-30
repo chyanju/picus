@@ -1,16 +1,11 @@
 //! Cross-decision incremental FF theory state.
 //!
-//! Parallel [`Theory`] implementation to [`super::ff_theory::FfTheory`]. The
-//! single-prime path stays untouched; this type is a capability add for
-//! callers that want the GB amortized across SAT decisions. Eager
-//! encoding: each [`notify_fact`] translates the asserted atom to a
-//! [`DensePoly`] on a pre-allocated ring and pushes it into an
-//! [`IncrementalGB`]. [`push`] / [`pop`] forward to the engine's
-//! checkpointing.
-//!
-//! Matches cvc5's `CDList<Node>` + persistent GBasis pattern: the trail
-//! grows incrementally and the Groebner basis cost amortizes over many
-//! facts. Default OFF — the orchestrator does not use this type today.
+//! Parallel [`Theory`] implementation to [`super::ff_theory::FfTheory`].
+//! Each [`notify_fact`] translates the asserted atom into a [`DensePoly`]
+//! on a pre-allocated ring and pushes it into an [`IncrementalGB`];
+//! [`push`] / [`pop`] forward to the engine's checkpointing so the
+//! Groebner basis is amortized across SAT decisions instead of rebuilt
+//! per check. Mirrors cvc5's `CDList<Node>` + persistent GBasis layout.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -51,13 +46,35 @@ pub struct IncrementalFfTheoryState<'a> {
     max_slots: usize,
     /// SAT-trail of asserted facts.
     facts: Vec<(Var, bool)>,
-    /// `levels[k]` snapshots `facts.len()` at SAT push k+1.
-    levels: Vec<usize>,
+    /// Per-level snapshot of state whose rollback must be atomic with
+    /// the [`IncrementalGB`] basis. `name_to_slot` / `next_slot` are
+    /// captured because [`get_or_create_slot`] injects `x^p − x` into the
+    /// basis at the level the slot is claimed; without the snapshot, a
+    /// `pop` rolls back the basis but leaves the slot claimed, so the
+    /// next reuse short-circuits and the field polynomial is never
+    /// re-injected (UNSAT then read as Sat under the `add_field_polys`
+    /// branch).
+    levels: Vec<LevelCheckpoint>,
     /// Per-disequality counter for witness slot naming.
     diseq_counter: usize,
     /// Cached last SAT model.
     last_model: Option<HashMap<String, BigUint>>,
     has_model: bool,
+    /// Sticky flag set whenever [`build_atom_polys`] cannot encode a
+    /// fact (slot budget exhausted, or atom not registered). While set,
+    /// [`post_check`] returns [`CheckOutcome::Unknown`] unconditionally:
+    /// the trail no longer matches the algebraic state in `igb`, so no
+    /// SAT/UNSAT verdict is safe. Snapshotted in `levels` so a `pop`
+    /// past the degradation point clears it.
+    degraded: bool,
+}
+
+struct LevelCheckpoint {
+    facts_len: usize,
+    name_to_slot: HashMap<String, usize>,
+    next_slot: usize,
+    diseq_counter: usize,
+    degraded: bool,
 }
 
 impl<'a> IncrementalFfTheoryState<'a> {
@@ -83,6 +100,7 @@ impl<'a> IncrementalFfTheoryState<'a> {
             diseq_counter: 0,
             last_model: None,
             has_model: false,
+            degraded: false,
         }
     }
 
@@ -167,16 +185,29 @@ impl<'a> IncrementalFfTheoryState<'a> {
 
 impl<'a> Theory for IncrementalFfTheoryState<'a> {
     fn notify_fact(&mut self, atom: Var, polarity: bool) {
-        self.facts.push((atom, polarity));
+        // Compute polys before mutating the trail: if `build_atom_polys`
+        // returns `None` (unregistered atom or slot budget exhausted) the
+        // fact cannot be reflected in `igb`, and pushing it onto `facts`
+        // anyway would desynchronize the trail from the algebraic state.
+        // The `degraded` flag forces `post_check` to Unknown until a
+        // `pop` undoes the offending level.
         let polys = match self.build_atom_polys(atom, polarity) {
             Some(p) => p,
-            None => return,
+            None => {
+                self.degraded = true;
+                return;
+            }
         };
+        self.facts.push((atom, polarity));
         let _ = self.igb.add_generators(polys);
     }
 
     fn post_check(&mut self) -> CheckOutcome {
         if self.cancel.is_cancelled() {
+            return CheckOutcome::Unknown;
+        }
+        if self.degraded {
+            self.has_model = false;
             return CheckOutcome::Unknown;
         }
         if self.facts.is_empty() {
@@ -208,13 +239,23 @@ impl<'a> Theory for IncrementalFfTheoryState<'a> {
     }
 
     fn push(&mut self) {
-        self.levels.push(self.facts.len());
+        self.levels.push(LevelCheckpoint {
+            facts_len: self.facts.len(),
+            name_to_slot: self.name_to_slot.clone(),
+            next_slot: self.next_slot,
+            diseq_counter: self.diseq_counter,
+            degraded: self.degraded,
+        });
         self.igb.push();
     }
 
     fn pop(&mut self) {
-        if let Some(h) = self.levels.pop() {
-            self.facts.truncate(h);
+        if let Some(cp) = self.levels.pop() {
+            self.facts.truncate(cp.facts_len);
+            self.name_to_slot = cp.name_to_slot;
+            self.next_slot = cp.next_slot;
+            self.diseq_counter = cp.diseq_counter;
+            self.degraded = cp.degraded;
         }
         self.igb.pop();
         self.has_model = false;
