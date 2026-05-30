@@ -149,6 +149,14 @@ pub struct RuntimeConfig {
     /// default until corpus differential confirms equivalence and the
     /// parser is widened to emit per-prime atom tables.
     pub cdclt_multi_prime_router: bool,
+    /// Interpose `cdclt::equality_engine::EqualityEngine` before the FF
+    /// theory at fact-notification time. `Fresh` facts forward to the
+    /// inner theory, `Redundant` facts are dropped, `Contradiction`
+    /// facts still forward (the inner theory's GB layer detects the
+    /// conflict). Off by default; the marginal value is dropping
+    /// repeated equalities across nested let-bindings or canonical
+    /// duplicates that escape `AtomTable::intern_eq`.
+    pub cdclt_equality_engine: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -172,6 +180,7 @@ impl Default for RuntimeConfig {
             frobenius_cache: true,
             branching_incremental_gb: true,
             cdclt_multi_prime_router: false,
+            cdclt_equality_engine: false,
         }
     }
 }
@@ -199,6 +208,7 @@ impl RuntimeConfig {
         if let Some(v) = o.frobenius_cache { self.frobenius_cache = v; }
         if let Some(v) = o.branching_incremental_gb { self.branching_incremental_gb = v; }
         if let Some(v) = o.cdclt_multi_prime_router { self.cdclt_multi_prime_router = v; }
+        if let Some(v) = o.cdclt_equality_engine { self.cdclt_equality_engine = v; }
     }
 }
 
@@ -232,6 +242,7 @@ pub struct EngineOverlay {
     pub frobenius_cache: Option<bool>,
     pub branching_incremental_gb: Option<bool>,
     pub cdclt_multi_prime_router: Option<bool>,
+    pub cdclt_equality_engine: Option<bool>,
 }
 
 thread_local! {

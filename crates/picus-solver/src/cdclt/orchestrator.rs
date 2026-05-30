@@ -16,6 +16,8 @@ use crate::timeout::CancelToken;
 
 use super::atoms::AtomTable;
 use super::cnf::{tseitin, TseitinResult};
+use super::ee_filtered::EeFilteredTheory;
+use super::equality_engine::{EqualityEngine, RegisterOutcome};
 use super::ff_theory::FfTheory;
 use super::multi_prime::FfTheoryRouter;
 use super::theory::{CheckOutcome, Theory};
@@ -46,12 +48,34 @@ pub fn solve_formula(
         return SolveOutcome::Unsat(Vec::new());
     }
 
-    if picus_core::config::with(|c| c.cdclt_multi_prime_router) {
-        // Capability-only path: route every non-aux atom through a
-        // single-slot `FfTheoryRouter`. Path-equivalent to `FfTheory`
-        // on single-prime input, with the router's per-slot dispatch
-        // exercised against the production corpus before any
-        // multi-prime parser lift can ride on it.
+    let use_router = picus_core::config::with(|c| c.cdclt_multi_prime_router);
+    let use_ee = picus_core::config::with(|c| c.cdclt_equality_engine);
+
+    // Build the EE once if requested; it is generic over the inner
+    // theory choice (FfTheory or FfTheoryRouter).
+    let ee = if use_ee {
+        let mut e = EqualityEngine::new();
+        for i in 0..atoms.n_atom_slots() {
+            let v = Var(i as u32);
+            if atoms.is_auxiliary(v) {
+                continue;
+            }
+            if let Some(key) = atoms.atom(v) {
+                if let RegisterOutcome::Contradiction = e.register_atom(v, key) {
+                    // Two atoms whose canonical polynomials match and
+                    // whose polarities already disagree at registration
+                    // — impossible today (no notifies have fired yet),
+                    // but the path is sound: return root-level UNSAT.
+                    return SolveOutcome::Unsat(Vec::new());
+                }
+            }
+        }
+        Some(e)
+    } else {
+        None
+    };
+
+    if use_router {
         let mut router = FfTheoryRouter::new(vec![atoms], cancel);
         let n_slots = router.slot_atoms_mut(0).n_atom_slots();
         for i in 0..n_slots {
@@ -60,10 +84,25 @@ pub fn solve_formula(
                 router.assign_var(v, 0);
             }
         }
-        return cdclt_loop(&mut sat, &mut router, cancel);
+        return match ee {
+            Some(e) => {
+                let mut wrapped = EeFilteredTheory::new(e, router);
+                cdclt_loop(&mut sat, &mut wrapped, cancel)
+            }
+            None => cdclt_loop(&mut sat, &mut router, cancel),
+        };
     }
-    let mut theory = FfTheory::new(&atoms, cancel);
-    cdclt_loop(&mut sat, &mut theory, cancel)
+    let theory = FfTheory::new(&atoms, cancel);
+    match ee {
+        Some(e) => {
+            let mut wrapped = EeFilteredTheory::new(e, theory);
+            cdclt_loop(&mut sat, &mut wrapped, cancel)
+        }
+        None => {
+            let mut theory = theory;
+            cdclt_loop(&mut sat, &mut theory, cancel)
+        }
+    }
 }
 
 /// Max CDCL(T) main-loop iterations before [`cdclt_loop`] returns

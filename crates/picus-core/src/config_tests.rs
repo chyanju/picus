@@ -29,6 +29,7 @@ fn apply_overlay_consumes_every_field() {
         frobenius_cache: Some(true),
         branching_incremental_gb: Some(true),
         cdclt_multi_prime_router: Some(true),
+        cdclt_equality_engine: Some(true),
     };
     let expected = RuntimeConfig {
         gb_strategy: GbStrategy::ByHomog,
@@ -49,6 +50,7 @@ fn apply_overlay_consumes_every_field() {
         frobenius_cache: true,
         branching_incremental_gb: true,
         cdclt_multi_prime_router: true,
+        cdclt_equality_engine: true,
     };
 
     // Every chosen value must differ from the compiled default, so a

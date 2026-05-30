@@ -181,6 +181,13 @@ enum Commands {
         /// built-in default.
         #[arg(long, value_parser = ["on", "off"])]
         cdclt_multi_prime_router: Option<String>,
+
+        /// Interpose `cdclt::equality_engine::EqualityEngine` before the
+        /// FF theory at fact-notification time, dropping
+        /// canonical-polynomial duplicates: on | off. Omit to use the
+        /// built-in default.
+        #[arg(long, value_parser = ["on", "off"])]
+        cdclt_equality_engine: Option<String>,
     },
 
     /// Print R1CS circuit information
@@ -233,6 +240,7 @@ fn main() {
             frobenius_cache,
             branching_incremental_gb,
             cdclt_multi_prime_router,
+            cdclt_equality_engine,
         } => {
             // CLI overlay — the highest-precedence config layer. Only the
             // flags the user actually passed become `Some`; everything
@@ -288,6 +296,7 @@ fn main() {
                     frobenius_cache: frobenius_cache.as_deref().map(|s| s == "on"),
                     branching_incremental_gb: branching_incremental_gb.as_deref().map(|s| s == "on"),
                     cdclt_multi_prime_router: cdclt_multi_prime_router.as_deref().map(|s| s == "on"),
+                    cdclt_equality_engine: cdclt_equality_engine.as_deref().map(|s| s == "on"),
                 },
             };
             let resolved = resolve_config(config.as_deref(), &overlay)

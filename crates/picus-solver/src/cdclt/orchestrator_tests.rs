@@ -1575,6 +1575,62 @@ fn audit_p2_router_single_slot_matches_default_on_eq_and_neq() {
     );
 }
 
+/// SPEC P5: `cdclt_equality_engine=on` on the same `(c·x = k) ∧ (c·x ≠ j)`
+/// formula must match the default `FfTheory` path verdict + model.
+#[test]
+fn audit_p5_ee_filter_matches_default_on_eq_and_neq() {
+    let vn = names(&["x"]);
+    let prime = BigUint::from(7u32);
+    let f = Formula::And(vec![eq(1, 0, 3), neq(1, 0, 5)]);
+
+    let baseline = match solve_formula(prime.clone(), &vn, &f, &CancelToken::none()) {
+        SolveOutcome::Sat(m) => m,
+        other => panic!("baseline: expected Sat, got {:?}", other),
+    };
+
+    let _guard = picus_core::config::ConfigGuard::with_override(|c| {
+        c.cdclt_equality_engine = true;
+    });
+
+    let filtered = match solve_formula(prime.clone(), &vn, &f, &CancelToken::none()) {
+        SolveOutcome::Sat(m) => m,
+        other => panic!("ee-filtered: expected Sat, got {:?}", other),
+    };
+    assert_eq!(
+        baseline.get("x"),
+        filtered.get("x"),
+        "EE-filtered must match FfTheory on x"
+    );
+}
+
+/// SPEC P5: EE-filtered path on a root conflict (x=3 ∧ x=4) returns
+/// Unsat — verifying that the EE Contradiction outcome forwards the
+/// fact to the inner theory rather than swallowing it silently.
+#[test]
+fn audit_p5_ee_filter_matches_default_on_root_conflict() {
+    let vn = names(&["x"]);
+    let prime = BigUint::from(7u32);
+    let f = Formula::And(vec![eq(1, 0, 3), eq(1, 0, 4)]);
+
+    let baseline = solve_formula(prime.clone(), &vn, &f, &CancelToken::none());
+    assert!(
+        matches!(baseline, SolveOutcome::Unsat(_)),
+        "baseline must be Unsat, got {:?}",
+        baseline
+    );
+
+    let _guard = picus_core::config::ConfigGuard::with_override(|c| {
+        c.cdclt_equality_engine = true;
+    });
+
+    let filtered = solve_formula(prime, &vn, &f, &CancelToken::none());
+    assert!(
+        matches!(filtered, SolveOutcome::Unsat(_)),
+        "EE-filtered must also be Unsat, got {:?}",
+        filtered
+    );
+}
+
 /// SPEC P2: router single-slot path on a trivially-UNSAT formula
 /// (`x = 3 ∧ x = 4` over GF(7)) returns Unsat with the same shape
 /// the default path does.
