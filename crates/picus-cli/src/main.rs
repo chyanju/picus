@@ -198,6 +198,13 @@ enum Commands {
         /// through but the upgrade is deferred): on | off.
         #[arg(long, value_parser = ["on", "off"])]
         f4_sparse_reducer_cache: Option<String>,
+
+        /// Route the FF theory through
+        /// `cdclt::ff_theory_incremental::IncrementalFfTheoryState`
+        /// (cross-decision IncrementalGB; large-prime non-trivial
+        /// bases return Unknown until model extraction lands): on | off.
+        #[arg(long, value_parser = ["on", "off"])]
+        cdclt_incremental_theory: Option<String>,
     },
 
     /// Print R1CS circuit information
@@ -253,6 +260,7 @@ fn main() {
             cdclt_equality_engine,
             f4_hilbert_select,
             f4_sparse_reducer_cache,
+            cdclt_incremental_theory,
         } => {
             // CLI overlay — the highest-precedence config layer. Only the
             // flags the user actually passed become `Some`; everything
@@ -311,6 +319,7 @@ fn main() {
                     cdclt_equality_engine: cdclt_equality_engine.as_deref().map(|s| s == "on"),
                     f4_hilbert_select: f4_hilbert_select.as_deref().map(|s| s == "on"),
                     f4_sparse_reducer_cache: f4_sparse_reducer_cache.as_deref().map(|s| s == "on"),
+                    cdclt_incremental_theory: cdclt_incremental_theory.as_deref().map(|s| s == "on"),
                 },
             };
             let resolved = resolve_config(config.as_deref(), &overlay)

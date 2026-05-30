@@ -19,6 +19,7 @@ use super::cnf::{tseitin, TseitinResult};
 use super::ee_filtered::EeFilteredTheory;
 use super::equality_engine::{EqualityEngine, RegisterOutcome};
 use super::ff_theory::FfTheory;
+use super::ff_theory_incremental::IncrementalFfTheoryState;
 use super::multi_prime::FfTheoryRouter;
 use super::theory::{CheckOutcome, Theory};
 
@@ -50,6 +51,7 @@ pub fn solve_formula(
 
     let use_router = picus_core::config::with(|c| c.cdclt_multi_prime_router);
     let use_ee = picus_core::config::with(|c| c.cdclt_equality_engine);
+    let use_incremental = picus_core::config::with(|c| c.cdclt_incremental_theory);
 
     // Build the EE once if requested; it is generic over the inner
     // theory choice (FfTheory or FfTheoryRouter).
@@ -90,6 +92,24 @@ pub fn solve_formula(
                 cdclt_loop(&mut sat, &mut wrapped, cancel)
             }
             None => cdclt_loop(&mut sat, &mut router, cancel),
+        };
+    }
+    if use_incremental {
+        // Conservative max-vars budget: every named variable plus every
+        // atom slot can claim a ring slot (atoms are interned eagerly via
+        // user names; aux-only slots never reach `build_atom_polys`).
+        // Disequality witnesses claim additional slots; bound them by
+        // the same conservative cap so a `degraded` flip from
+        // slot-budget exhaustion is reachable only on pathological
+        // inputs.
+        let max_vars = var_names.len() + atoms.n_atom_slots() + 64;
+        let mut theory = IncrementalFfTheoryState::new(&atoms, cancel, max_vars);
+        return match ee {
+            Some(e) => {
+                let mut wrapped = EeFilteredTheory::new(e, theory);
+                cdclt_loop(&mut sat, &mut wrapped, cancel)
+            }
+            None => cdclt_loop(&mut sat, &mut theory, cancel),
         };
     }
     let theory = FfTheory::new(&atoms, cancel);

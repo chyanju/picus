@@ -60,6 +60,10 @@ pub struct IncrementalFfTheoryState<'a> {
     /// Cached last SAT model.
     last_model: Option<HashMap<String, BigUint>>,
     has_model: bool,
+    /// Reason cache populated by [`Theory::propagate`] so [`explain`]
+    /// can recover the per-atom reason set later (mirrors
+    /// `FfTheory::pending_reasons`).
+    pending_reasons: HashMap<Var, Vec<(Var, bool)>>,
     /// Sticky flag set whenever [`build_atom_polys`] cannot encode a
     /// fact (slot budget exhausted, or atom not registered). While set,
     /// [`post_check`] returns [`CheckOutcome::Unknown`] unconditionally:
@@ -101,6 +105,7 @@ impl<'a> IncrementalFfTheoryState<'a> {
             last_model: None,
             has_model: false,
             degraded: false,
+            pending_reasons: HashMap::new(),
         }
     }
 
@@ -259,6 +264,26 @@ impl<'a> Theory for IncrementalFfTheoryState<'a> {
         }
         self.igb.pop();
         self.has_model = false;
+    }
+
+    fn propagate(&mut self) -> Vec<(Var, bool)> {
+        self.pending_reasons.clear();
+        let pinned = super::ff_theory::pinned_vars_for(self.atoms, &self.facts);
+        let tier1 = super::ff_theory::compute_tier1_for(self.atoms, &self.facts, &pinned);
+        let tier2 = super::ff_theory::compute_tier2_for(self.atoms, &self.facts, &pinned);
+        let mut props: Vec<(Var, bool)> = Vec::new();
+        let mut seen: std::collections::HashSet<Var> = std::collections::HashSet::new();
+        for (atom_v, polarity, reason) in tier1.into_iter().chain(tier2.into_iter()) {
+            if seen.insert(atom_v) {
+                props.push((atom_v, polarity));
+                self.pending_reasons.insert(atom_v, reason);
+            }
+        }
+        props
+    }
+
+    fn explain(&self, atom: Var, _polarity: bool) -> Vec<(Var, bool)> {
+        self.pending_reasons.get(&atom).cloned().unwrap_or_default()
     }
 
     fn collect_model(&self) -> Option<HashMap<String, BigUint>> {

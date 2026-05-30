@@ -77,41 +77,9 @@ impl<'a> FfTheory<'a> {
     /// `var_name -> (value, source_atom)` from positive single-variable
     /// equalities on the trail.
     fn pinned_vars(&self) -> HashMap<String, (BigUint, Var)> {
-        let prime = self.atoms.prime();
-        let mut pinned: HashMap<String, (BigUint, Var)> = HashMap::new();
-        for &(av, pol) in &self.facts {
-            if !pol {
-                continue;
-            }
-            let key = match self.atoms.atom(av) {
-                Some(k) => k,
-                None => continue,
-            };
-            if let Some((var, value)) = key.as_single_var_eq(prime) {
-                pinned.insert(var, (value, av));
-            }
-        }
-        pinned
+        pinned_vars_for(self.atoms, &self.facts)
     }
 
-    /// Evaluate `key` under `pinned`. `None` when any variable is unpinned.
-    fn eval_key(
-        &self,
-        key: &super::atoms::AtomKey,
-        pinned: &HashMap<String, (BigUint, Var)>,
-    ) -> Option<BigUint> {
-        let prime = self.atoms.prime();
-        let mut acc = BigUint::zero();
-        for (coeff, vars) in &key.terms {
-            let mut term_value = coeff.clone();
-            for var in vars {
-                let (v, _) = pinned.get(var)?;
-                term_value = (term_value * v) % prime;
-            }
-            acc = (acc + term_value) % prime;
-        }
-        Some(acc)
-    }
 
     /// Tier 1: atom polynomial fully reduces under `pinned`; derive its
     /// truth from the constant result. Reason = pinning sources.
@@ -119,47 +87,7 @@ impl<'a> FfTheory<'a> {
         &self,
         pinned: &HashMap<String, (BigUint, Var)>,
     ) -> Vec<(Var, bool, Vec<(Var, bool)>)> {
-        if pinned.is_empty() {
-            return Vec::new();
-        }
-        let on_trail: std::collections::HashSet<Var> =
-            self.facts.iter().map(|&(av, _)| av).collect();
-        let mut results = Vec::new();
-        for i in 0..self.atoms.n_atom_slots() {
-            let v = Var(i as u32);
-            if on_trail.contains(&v) {
-                continue;
-            }
-            let key = match self.atoms.atom(v) {
-                Some(k) => k,
-                None => continue,
-            };
-            let acc = match self.eval_key(key, pinned) {
-                Some(val) => val,
-                None => continue,
-            };
-            let used_vars: std::collections::HashSet<&String> = key
-                .terms
-                .iter()
-                .flat_map(|(_, vs)| vs.iter())
-                .collect();
-            // Constant-only atom: skip to avoid an empty-reason
-            // propagation (handled at root by `post_check`).
-            if used_vars.is_empty() {
-                continue;
-            }
-            let mut reason: Vec<(Var, bool)> = Vec::new();
-            let mut included: std::collections::HashSet<Var> = std::collections::HashSet::new();
-            for var in &used_vars {
-                if let Some((_, src)) = pinned.get(*var) {
-                    if included.insert(*src) {
-                        reason.push((*src, true));
-                    }
-                }
-            }
-            results.push((v, acc.is_zero(), reason));
-        }
-        results
+        compute_tier1_for(self.atoms, &self.facts, pinned)
     }
 
     /// Tier 2: a positive multi-var atom A on the trail reduces under
@@ -171,106 +99,207 @@ impl<'a> FfTheory<'a> {
         &self,
         pinned: &HashMap<String, (BigUint, Var)>,
     ) -> Vec<(Var, bool, Vec<(Var, bool)>)> {
-        let prime = self.atoms.prime();
-        let on_trail: std::collections::HashSet<Var> =
-            self.facts.iter().map(|&(av, _)| av).collect();
-        let one = BigUint::from(1u32);
-        let mut results = Vec::new();
-        for &(src_av, src_pol) in &self.facts {
-            if !src_pol {
-                continue;
-            }
-            let src_key = match self.atoms.atom(src_av) {
-                Some(k) => k,
-                None => continue,
-            };
-            if src_key.as_single_var_eq(prime).is_some() {
-                continue;
-            }
-            let mut acc_const = BigUint::zero();
-            let mut unpinned: Option<String> = None;
-            let mut unpinned_coeff = BigUint::zero();
-            let mut other_used_sources: Vec<Var> = Vec::new();
-            let mut already_included: std::collections::HashSet<Var> =
-                std::collections::HashSet::new();
-            let mut bad = false;
-            for (coeff, vars) in &src_key.terms {
-                let mut pinned_product = one.clone();
-                let mut term_unpinned: Option<String> = None;
-                let mut term_unpinned_count: usize = 0;
-                for var in vars {
-                    match pinned.get(var) {
-                        Some((val, src)) => {
-                            pinned_product = (pinned_product * val) % prime;
-                            if already_included.insert(*src) {
-                                other_used_sources.push(*src);
-                            }
-                        }
-                        None => {
-                            term_unpinned_count += 1;
-                            term_unpinned = Some(var.clone());
-                        }
-                    }
+        compute_tier2_for(self.atoms, &self.facts, pinned)
+    }
+}
+
+/// Free-function port of `FfTheory::pinned_vars` so a sibling theory
+/// implementation (`IncrementalFfTheoryState`) can reuse the propagation
+/// substrate without duplicating ~150 LoC of tier1/tier2 logic.
+pub(crate) fn pinned_vars_for(
+    atoms: &AtomTable,
+    facts: &[(Var, bool)],
+) -> HashMap<String, (BigUint, Var)> {
+    let prime = atoms.prime();
+    let mut pinned: HashMap<String, (BigUint, Var)> = HashMap::new();
+    for &(av, pol) in facts {
+        if !pol {
+            continue;
+        }
+        let key = match atoms.atom(av) {
+            Some(k) => k,
+            None => continue,
+        };
+        if let Some((var, value)) = key.as_single_var_eq(prime) {
+            pinned.insert(var, (value, av));
+        }
+    }
+    pinned
+}
+
+/// Free-function port of `FfTheory::eval_key`.
+pub(crate) fn eval_key_under_pinned(
+    key: &super::atoms::AtomKey,
+    pinned: &HashMap<String, (BigUint, Var)>,
+    prime: &BigUint,
+) -> Option<BigUint> {
+    let mut acc = BigUint::zero();
+    for (coeff, vars) in &key.terms {
+        let mut term_value = coeff.clone();
+        for var in vars {
+            let (v, _) = pinned.get(var)?;
+            term_value = (term_value * v) % prime;
+        }
+        acc = (acc + term_value) % prime;
+    }
+    Some(acc)
+}
+
+/// Free-function port of `FfTheory::compute_tier1`.
+pub(crate) fn compute_tier1_for(
+    atoms: &AtomTable,
+    facts: &[(Var, bool)],
+    pinned: &HashMap<String, (BigUint, Var)>,
+) -> Vec<(Var, bool, Vec<(Var, bool)>)> {
+    if pinned.is_empty() {
+        return Vec::new();
+    }
+    let on_trail: std::collections::HashSet<Var> =
+        facts.iter().map(|&(av, _)| av).collect();
+    let prime = atoms.prime();
+    let mut results = Vec::new();
+    for i in 0..atoms.n_atom_slots() {
+        let v = Var(i as u32);
+        if on_trail.contains(&v) {
+            continue;
+        }
+        let key = match atoms.atom(v) {
+            Some(k) => k,
+            None => continue,
+        };
+        let acc = match eval_key_under_pinned(key, pinned, prime) {
+            Some(val) => val,
+            None => continue,
+        };
+        let used_vars: std::collections::HashSet<&String> = key
+            .terms
+            .iter()
+            .flat_map(|(_, vs)| vs.iter())
+            .collect();
+        // Constant-only atom: skip to avoid an empty-reason
+        // propagation (handled at root by `post_check`).
+        if used_vars.is_empty() {
+            continue;
+        }
+        let mut reason: Vec<(Var, bool)> = Vec::new();
+        let mut included: std::collections::HashSet<Var> = std::collections::HashSet::new();
+        for var in &used_vars {
+            if let Some((_, src)) = pinned.get(*var) {
+                if included.insert(*src) {
+                    reason.push((*src, true));
                 }
-                if term_unpinned_count == 0 {
-                    let term_val = (coeff * &pinned_product) % prime;
-                    acc_const = (acc_const + term_val) % prime;
-                } else if term_unpinned_count == 1 {
-                    let var = term_unpinned.expect("set when count == 1");
-                    match &unpinned {
-                        None => unpinned = Some(var),
-                        Some(prev) if prev == &var => {}
-                        _ => {
-                            bad = true;
-                            break;
-                        }
-                    }
-                    let term_val = (coeff * &pinned_product) % prime;
-                    unpinned_coeff = (unpinned_coeff + term_val) % prime;
-                } else {
-                    bad = true;
-                    break;
-                }
-            }
-            if bad {
-                continue;
-            }
-            let var_name = match unpinned {
-                Some(v) => v,
-                None => continue,
-            };
-            if unpinned_coeff.is_zero() {
-                continue;
-            }
-            let neg_c = if acc_const.is_zero() {
-                BigUint::zero()
-            } else {
-                prime - &acc_const
-            };
-            let inv_a = match super::field_inverse(&unpinned_coeff, prime) {
-                Some(i) => i,
-                None => continue,
-            };
-            let derived_value = (neg_c * inv_a) % prime;
-            let mut reason_base: Vec<(Var, bool)> =
-                Vec::with_capacity(other_used_sources.len() + 1);
-            reason_base.push((src_av, true));
-            for src in &other_used_sources {
-                reason_base.push((*src, true));
-            }
-            for (other_value, other_atom_var) in self.atoms.atoms_for_var(&var_name) {
-                if *other_atom_var == src_av {
-                    continue;
-                }
-                if on_trail.contains(other_atom_var) {
-                    continue;
-                }
-                let polarity = other_value == &derived_value;
-                results.push((*other_atom_var, polarity, reason_base.clone()));
             }
         }
-        results
+        results.push((v, acc.is_zero(), reason));
     }
+    results
+}
+
+/// Free-function port of `FfTheory::compute_tier2`.
+pub(crate) fn compute_tier2_for(
+    atoms: &AtomTable,
+    facts: &[(Var, bool)],
+    pinned: &HashMap<String, (BigUint, Var)>,
+) -> Vec<(Var, bool, Vec<(Var, bool)>)> {
+    let prime = atoms.prime();
+    let on_trail: std::collections::HashSet<Var> =
+        facts.iter().map(|&(av, _)| av).collect();
+    let one = BigUint::from(1u32);
+    let mut results = Vec::new();
+    for &(src_av, src_pol) in facts {
+        if !src_pol {
+            continue;
+        }
+        let src_key = match atoms.atom(src_av) {
+            Some(k) => k,
+            None => continue,
+        };
+        if src_key.as_single_var_eq(prime).is_some() {
+            continue;
+        }
+        let mut acc_const = BigUint::zero();
+        let mut unpinned: Option<String> = None;
+        let mut unpinned_coeff = BigUint::zero();
+        let mut other_used_sources: Vec<Var> = Vec::new();
+        let mut already_included: std::collections::HashSet<Var> =
+            std::collections::HashSet::new();
+        let mut bad = false;
+        for (coeff, vars) in &src_key.terms {
+            let mut pinned_product = one.clone();
+            let mut term_unpinned: Option<String> = None;
+            let mut term_unpinned_count: usize = 0;
+            for var in vars {
+                match pinned.get(var) {
+                    Some((val, src)) => {
+                        pinned_product = (pinned_product * val) % prime;
+                        if already_included.insert(*src) {
+                            other_used_sources.push(*src);
+                        }
+                    }
+                    None => {
+                        term_unpinned_count += 1;
+                        term_unpinned = Some(var.clone());
+                    }
+                }
+            }
+            if term_unpinned_count == 0 {
+                let term_val = (coeff * &pinned_product) % prime;
+                acc_const = (acc_const + term_val) % prime;
+            } else if term_unpinned_count == 1 {
+                let var = term_unpinned.expect("set when count == 1");
+                match &unpinned {
+                    None => unpinned = Some(var),
+                    Some(prev) if prev == &var => {}
+                    _ => {
+                        bad = true;
+                        break;
+                    }
+                }
+                let term_val = (coeff * &pinned_product) % prime;
+                unpinned_coeff = (unpinned_coeff + term_val) % prime;
+            } else {
+                bad = true;
+                break;
+            }
+        }
+        if bad {
+            continue;
+        }
+        let var_name = match unpinned {
+            Some(v) => v,
+            None => continue,
+        };
+        if unpinned_coeff.is_zero() {
+            continue;
+        }
+        let neg_c = if acc_const.is_zero() {
+            BigUint::zero()
+        } else {
+            prime - &acc_const
+        };
+        let inv_a = match super::field_inverse(&unpinned_coeff, prime) {
+            Some(i) => i,
+            None => continue,
+        };
+        let derived_value = (neg_c * inv_a) % prime;
+        let mut reason_base: Vec<(Var, bool)> =
+            Vec::with_capacity(other_used_sources.len() + 1);
+        reason_base.push((src_av, true));
+        for src in &other_used_sources {
+            reason_base.push((*src, true));
+        }
+        for (other_value, other_atom_var) in atoms.atoms_for_var(&var_name) {
+            if *other_atom_var == src_av {
+                continue;
+            }
+            if on_trail.contains(other_atom_var) {
+                continue;
+            }
+            let polarity = other_value == &derived_value;
+            results.push((*other_atom_var, polarity, reason_base.clone()));
+        }
+    }
+    results
 }
 
 /// Map a theory UNSAT core (polynomial indices into `encoded`) back to the

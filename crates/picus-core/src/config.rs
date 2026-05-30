@@ -171,6 +171,14 @@ pub struct RuntimeConfig {
     /// sparse-row + global-column rebinding upgrade described in
     /// plan14 ships under this flag in a separate round.
     pub f4_sparse_reducer_cache: bool,
+    /// Route the FF theory through `cdclt::ff_theory_incremental::
+    /// IncrementalFfTheoryState`, which carries an `IncrementalGB`
+    /// across SAT decisions instead of rebuilding the basis per
+    /// `post_check`. Off by default; the wire-up ports the tier1+tier2
+    /// propagation from `FfTheory` and falls back to Unknown on
+    /// large-prime non-trivial bases (BN254/BabyJubJub) until model
+    /// extraction lands in a follow-up round.
+    pub cdclt_incremental_theory: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -197,6 +205,7 @@ impl Default for RuntimeConfig {
             cdclt_equality_engine: false,
             f4_hilbert_select: false,
             f4_sparse_reducer_cache: false,
+            cdclt_incremental_theory: false,
         }
     }
 }
@@ -227,6 +236,7 @@ impl RuntimeConfig {
         if let Some(v) = o.cdclt_equality_engine { self.cdclt_equality_engine = v; }
         if let Some(v) = o.f4_hilbert_select { self.f4_hilbert_select = v; }
         if let Some(v) = o.f4_sparse_reducer_cache { self.f4_sparse_reducer_cache = v; }
+        if let Some(v) = o.cdclt_incremental_theory { self.cdclt_incremental_theory = v; }
     }
 }
 
@@ -263,6 +273,7 @@ pub struct EngineOverlay {
     pub cdclt_equality_engine: Option<bool>,
     pub f4_hilbert_select: Option<bool>,
     pub f4_sparse_reducer_cache: Option<bool>,
+    pub cdclt_incremental_theory: Option<bool>,
 }
 
 thread_local! {
