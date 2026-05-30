@@ -157,6 +157,14 @@ enum Commands {
         #[arg(long, value_parser = ["on", "off"])]
         split_triangular: Option<String>,
 
+        /// Ideal-membership Safe fast-path for uniqueness queries on the
+        /// cached split-GB path (native FF backend only): on | off. Reduce
+        /// `x_a − x_b` against the constraint-side basis and return UNSAT
+        /// directly on a zero remainder, skipping the Rabinowitsch extend.
+        /// Omit to use the built-in default.
+        #[arg(long, value_parser = ["on", "off"])]
+        membership_fastpath: Option<String>,
+
         /// Cache the reducer's divisor index across reductions with an
         /// unchanged active basis (native FF backend only): on | off. Omit
         /// to use the built-in default.
@@ -253,6 +261,7 @@ fn main() {
             no_aboz_disj,
             linear_elim,
             split_triangular,
+            membership_fastpath,
             reducer_index_cache,
             frobenius_cache,
             branching_incremental_gb,
@@ -312,6 +321,7 @@ fn main() {
                     // core tracking is a niche knob; set it via picus.toml.
                     track_inter_reduce_deps: None,
                     split_triangular: split_triangular.as_deref().map(|s| s == "on"),
+                    membership_fastpath: membership_fastpath.as_deref().map(|s| s == "on"),
                     reducer_index_cache: reducer_index_cache.as_deref().map(|s| s == "on"),
                     frobenius_cache: frobenius_cache.as_deref().map(|s| s == "on"),
                     branching_incremental_gb: branching_incremental_gb.as_deref().map(|s| s == "on"),

@@ -127,6 +127,23 @@ pub struct RuntimeConfig {
     /// otherwise avoids, so it is opt-in for zero-dimensional workloads the
     /// bounded brancher leaves `Unknown`.
     pub split_triangular: bool,
+    /// Ideal-membership Safe fast-path for uniqueness queries on the
+    /// cached split-GB path. Before extending the constraint-side basis
+    /// with a query disequality's Rabinowitsch polynomial, reduce the
+    /// difference `x_a − x_b` against that basis: a zero remainder proves
+    /// `x_a − x_b ∈ I`, so the two copies are forced equal on every
+    /// solution and the disequality query is UNSAT — returned directly,
+    /// skipping the Rabinowitsch extend. Sound: reduction to zero against
+    /// the constraint generators proves membership, so the verdict matches
+    /// the full solve; a nonzero remainder is inconclusive and falls
+    /// through. For primes ≤ 1000 the basis already carries the field
+    /// polynomials, so the test is exact radical membership; for large
+    /// primes it is a one-sided Safe filter (misses fall through). On by
+    /// default: a PLDI same-binary A/B (`chat/align-harness/memb_off.jsonl`
+    /// / `memb_on.jsonl`) measured −2.9% total wall-clock on completing
+    /// circuits — the multi-output EdDSA family −0.03 to −0.37 s each — with
+    /// identical verdicts and no fixture-level regression.
+    pub membership_fastpath: bool,
     /// Cache the geobucket reducer's divisor index (DivMask buckets + degree
     /// order) across S-pair reductions whose active basis is unchanged,
     /// instead of rebuilding it per call. Result-preserving (same normal
@@ -224,6 +241,7 @@ impl Default for RuntimeConfig {
             linear_elim: false,
             track_inter_reduce_deps: true,
             split_triangular: false,
+            membership_fastpath: true,
             reducer_index_cache: false,
             frobenius_cache: true,
             branching_incremental_gb: true,
@@ -255,6 +273,7 @@ impl RuntimeConfig {
         if let Some(v) = o.linear_elim { self.linear_elim = v; }
         if let Some(v) = o.track_inter_reduce_deps { self.track_inter_reduce_deps = v; }
         if let Some(v) = o.split_triangular { self.split_triangular = v; }
+        if let Some(v) = o.membership_fastpath { self.membership_fastpath = v; }
         if let Some(v) = o.reducer_index_cache { self.reducer_index_cache = v; }
         if let Some(v) = o.frobenius_cache { self.frobenius_cache = v; }
         if let Some(v) = o.branching_incremental_gb { self.branching_incremental_gb = v; }
@@ -292,6 +311,7 @@ pub struct EngineOverlay {
     pub linear_elim: Option<bool>,
     pub track_inter_reduce_deps: Option<bool>,
     pub split_triangular: Option<bool>,
+    pub membership_fastpath: Option<bool>,
     pub reducer_index_cache: Option<bool>,
     pub frobenius_cache: Option<bool>,
     pub branching_incremental_gb: Option<bool>,

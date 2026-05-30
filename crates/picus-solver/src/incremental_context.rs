@@ -477,12 +477,76 @@ fn encode_query_disequalities(
     Ok(out)
 }
 
+/// Ideal-membership Safe fast-path (config `membership_fastpath`).
+///
+/// For each query disequality `(a, b)`, reduce `x_a − x_b` against the
+/// cached constraint-side basis. A zero remainder proves
+/// `x_a − x_b ∈ I` (reduction to zero against constraint generators is a
+/// membership proof, GB or not), so the two copies are forced equal on
+/// every solution and the disequality is unsatisfiable — the query is
+/// UNSAT, returned without the Rabinowitsch extend. Returns `Some(Unsat)`
+/// on the first forced disequality, `None` if none reduce to zero (the
+/// full solve then runs). Never changes a verdict: a nonzero remainder is
+/// inconclusive and a zero remainder is a sound UNSAT.
+fn membership_fastpath_unsat(
+    cached: &CachedBase,
+    cs: &ConstraintSystem,
+    cancel: &CancelToken,
+) -> Option<SolveOutcome> {
+    let poly_ring: &FfPolyRing = &cached.poly_ring;
+    let ring = poly_ring.ctx();
+    // Constraint-side generators: both partition bases plus the bitsum
+    // definitions — all subsets of the constraint ideal `I`.
+    let mut divisors: Vec<&Poly> = Vec::new();
+    for part in &cached.split_gb_owned {
+        for p in part {
+            divisors.push(p);
+        }
+    }
+    for p in &cached.bitsum_polys {
+        divisors.push(p);
+    }
+    if divisors.is_empty() {
+        return None;
+    }
+    for &(a, b) in &cs.disequalities {
+        // Resolve the producer-frame VarIdx to the cached ring frame by
+        // name (the mapping `encode_query_disequalities` uses). A name the
+        // compacted ring dropped means the difference cannot be tested
+        // here; defer the whole query to the full path.
+        let a_idx = cs.var_names.get(a as usize).and_then(|n| cached.var_map.get(n)).copied();
+        let b_idx = cs.var_names.get(b as usize).and_then(|n| cached.var_map.get(n)).copied();
+        let (a_idx, b_idx) = match (a_idx, b_idx) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return None,
+        };
+        let diff = poly_ring.sub(poly_ring.var(a_idx), poly_ring.var(b_idx));
+        let rem = diff.reduce_by_refs_cancel(&divisors, ring, cancel);
+        if cancel.is_cancelled() {
+            // A cancelled reduction may falsely look nonzero; do not trust it.
+            return None;
+        }
+        if rem.is_zero() {
+            return Some(SolveOutcome::Unsat((0..cached.constraint_polys.len()).collect()));
+        }
+    }
+    None
+}
+
 fn solve_with_cached(
     cached: &CachedBase,
     cs: &ConstraintSystem,
     cancel: &CancelToken,
 ) -> SolveOutcome {
     let poly_ring: &FfPolyRing = &cached.poly_ring;
+
+    // Opt-in membership Safe fast-path: may resolve the query UNSAT by a
+    // single reduction, skipping the Rabinowitsch extend below.
+    if crate::config::with(|c| c.membership_fastpath) {
+        if let Some(outcome) = membership_fastpath_unsat(cached, cs, cancel) {
+            return outcome;
+        }
+    }
 
     let query_polys = match encode_query_disequalities(cs, poly_ring, &cached.var_map) {
         Ok(polys) => polys,

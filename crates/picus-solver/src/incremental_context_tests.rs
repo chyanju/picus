@@ -1219,3 +1219,55 @@ fn solve_with_cached_k1_fallback_places_query_in_partition_zero() {
         out
     );
 }
+
+/// `x − y = 0` (forces x = y) over GF(7) with disequality `(x, y)`: UNSAT.
+fn forced_diseq_sys() -> ConstraintSystem {
+    let mut b = ConstraintSystemBuilder::new(BigUint::from(7u32));
+    let x = b.var("x");
+    let y = b.var("y");
+    // x + 6y = 0  (6 ≡ −1 mod 7), i.e. x − y = 0.
+    b.add_equality(vec![
+        PolyTerm { coeff: BigUint::from(1u32), vars: vec![(x, 1)] },
+        PolyTerm { coeff: BigUint::from(6u32), vars: vec![(y, 1)] },
+    ]);
+    b.add_disequality(x, y);
+    b.build()
+}
+
+#[test]
+fn membership_fastpath_forced_diseq_unsat_matches_full_path() {
+    // `x − y ∈ I`, so the disequality is unsatisfiable. The membership
+    // fast-path (flag on) and the full Rabinowitsch path (flag off) must
+    // both report UNSAT — the fast-path never changes a verdict.
+    let sys = forced_diseq_sys();
+    let cancel = CancelToken::none();
+
+    let off = {
+        let mut ctx = IncrementalSolverContext::new();
+        ctx.solve(&sys, &cancel); // prime the digest (stateless)
+        ctx.solve(&sys, &cancel) // cached path
+    };
+    assert!(matches!(off, SolveOutcome::Unsat(_)), "full path: {:?}", off);
+
+    let on = {
+        let _g = crate::config::ConfigGuard::with_override(|c| c.membership_fastpath = true);
+        let mut ctx = IncrementalSolverContext::new();
+        ctx.solve(&sys, &cancel);
+        ctx.solve(&sys, &cancel)
+    };
+    assert!(matches!(on, SolveOutcome::Unsat(_)), "fast path: {:?}", on);
+}
+
+#[test]
+fn membership_fastpath_does_not_falsely_unsat_satisfiable_diseq() {
+    // x = 4 (from `x + 3 = 0`), diseq `(x, __zero=0)`: SAT (4 ≠ 0). `x − 0`
+    // is not in the ideal, so the fast-path must fall through to the full
+    // solve and return SAT — a soundness guard against a false UNSAT.
+    let sys = lin_eq_with_diseq();
+    let cancel = CancelToken::none();
+    let _g = crate::config::ConfigGuard::with_override(|c| c.membership_fastpath = true);
+    let mut ctx = IncrementalSolverContext::new();
+    ctx.solve(&sys, &cancel);
+    let r = ctx.solve(&sys, &cancel);
+    assert!(matches!(r, SolveOutcome::Sat(_)), "{:?}", r);
+}
