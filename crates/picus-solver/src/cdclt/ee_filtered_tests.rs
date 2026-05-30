@@ -74,6 +74,48 @@ fn intern_eq(
     }
 }
 
+/// SPEC P5: EE polarity contradiction at notify time synthesises a
+/// 2-literal UNSAT core `{new_atom, witness_atom}` at post_check, not
+/// the full trail. Probe via two atoms sharing a canonical poly but
+/// asserted at opposite polarities.
+#[test]
+fn audit_p5_precise_2lit_lemma_on_polarity_contradiction() {
+    let cancel = CancelToken::none();
+    // Two AtomTables produce two distinct Vars for the same canonical
+    // polynomial; this is the scenario the EE was designed for.
+    let mut atoms_a = AtomTable::new(BigUint::from(7u32));
+    let mut atoms_b = AtomTable::new(BigUint::from(7u32));
+    let mut sat = crate::sat::Solver::new();
+    let mut vn_a: Vec<String> = Vec::new();
+    let mut vn_b: Vec<String> = Vec::new();
+    let var_a = intern_eq(&mut atoms_a, &mut sat, &mut vn_a, "x", 3);
+    let var_b = intern_eq(&mut atoms_b, &mut sat, &mut vn_b, "x", 3);
+    let key_a = atoms_a.atom(var_a).expect("a").clone();
+    let key_b = atoms_b.atom(var_b).expect("b").clone();
+
+    let mut ee = EqualityEngine::new();
+    assert_eq!(ee.register_atom(var_a, &key_a), crate::cdclt::equality_engine::RegisterOutcome::Ok);
+    assert_eq!(ee.register_atom(var_b, &key_b), crate::cdclt::equality_engine::RegisterOutcome::Ok);
+
+    let inner = FfTheory::new(&atoms_a, &cancel);
+    let mut filtered = EeFilteredTheory::new(ee, inner);
+
+    filtered.notify_fact(var_a, true);
+    filtered.notify_fact(var_b, false);
+
+    match filtered.post_check() {
+        CheckOutcome::Unsat { core } => {
+            assert_eq!(core.len(), 2, "precise lemma must carry exactly 2 lits");
+            assert!(
+                core.contains(&var_a) && core.contains(&var_b),
+                "core must be {{var_a, var_b}}, got {:?}",
+                core
+            );
+        }
+        other => panic!("expected Unsat with 2-lit core, got {:?}", other),
+    }
+}
+
 /// SPEC P5: push/pop run in lockstep — pushing fact at level 1, popping
 /// back, then notifying the same fact at level 0 must be Fresh again,
 /// because pop rewound the EE polarity trail.
