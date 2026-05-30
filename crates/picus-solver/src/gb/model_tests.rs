@@ -204,7 +204,7 @@ fn compute_candidates_all_assigned_returns_empty_roots() {
     let bx = pr.sub(pr.var(0), pr.constant(pr.field().from_int(1)));
     let by = pr.sub(pr.var(1), pr.constant(pr.field().from_int(2)));
     let ideal = Ideal::from_gb(&pr, vec![bx, by]);
-    let brancher = compute_candidates(&pr, &ideal);
+    let brancher = compute_candidates(&pr, &ideal, &CancelToken::none());
     match brancher {
         Brancher::Roots(v) => assert!(v.is_empty(), "all-assigned ⇒ no candidates"),
         _ => panic!("expected Brancher::Roots([])"),
@@ -221,7 +221,7 @@ fn compute_candidates_case1_univariate_cubic_returns_all_roots() {
     let x3 = pr.mul(pr.mul(pr.var(0), pr.var(0)), pr.var(0));
     let p = pr.sub(x3, pr.one());
     let ideal = Ideal::from_gb(&pr, vec![p]);
-    let brancher = compute_candidates(&pr, &ideal);
+    let brancher = compute_candidates(&pr, &ideal, &CancelToken::none());
     assert_eq!(
         roots_for_var(&pr, &brancher, 0),
         vec![BigUint::from(1u32), BigUint::from(2u32), BigUint::from(4u32)],
@@ -238,7 +238,7 @@ fn compute_candidates_case1_skips_assigned_variable() {
     let px = pr.sub(x3, pr.one()); // x^3 = 1 → {1,2,4}
     let py = pr.sub(pr.var(1), pr.constant(pr.field().from_int(2)));
     let ideal = Ideal::from_gb(&pr, vec![px, py]);
-    let brancher = compute_candidates(&pr, &ideal);
+    let brancher = compute_candidates(&pr, &ideal, &CancelToken::none());
     // No candidate ever names the assigned variable y.
     assert!(
         roots_for_var(&pr, &brancher, 1).is_empty(),
@@ -408,7 +408,7 @@ fn compute_candidates_case2_minimal_polynomial_returns_roots() {
     let ideal = Ideal::from_gb(&pr, vec![g0, g1]);
     // Confirm the Case-2 precondition: zero-dimensional, no univariate deg>1.
     assert!(ideal.is_zero_dim(), "{{x^2-y, y^2-x}} must be zero-dimensional");
-    let brancher = compute_candidates(&pr, &ideal);
+    let brancher = compute_candidates(&pr, &ideal, &CancelToken::none());
     // Brancher::Roots (Case 2) — a Case-3 RoundRobin would make roots_for_var
     // panic, so reaching this assertion proves Case 2 fired.
     assert_eq!(
@@ -489,5 +489,79 @@ fn audit_branching_incremental_gb_parity() {
         };
         check(xv1, yv1);
         check(xv2, yv2);
+    }
+}
+
+#[test]
+fn audit_p1_tri_dfs_on_lex_finds_model_on_known_lex_gb() {
+    // Hand-crafted Lex GB over GF(7) ordering x > y:
+    //   y^2 - 4 = 0   (y in {2, 5})
+    //   x - y = 0     (x equals y after lift)
+    // tri_dfs_on_lex picks the univariate residue, recurses one level,
+    // returns a verified model.
+    let pr = FfPolyRing::new(PrimeField::new(BigUint::from(7u32)), vec!["x".into(), "y".into()]);
+    let y2 = pr.mul(pr.var(1), pr.var(1));
+    let four = pr.constant(pr.field().from_int(4));
+    let g_y = pr.sub(y2, four);
+    let g_x = pr.sub(pr.var(0), pr.var(1));
+    let lex_gb = vec![g_y, g_x];
+
+    match tri_dfs_on_lex(&pr, &lex_gb, &CancelToken::none()) {
+        TriResult::Sat(model) => {
+            assert_eq!(model.len(), 2, "model must bind both variables");
+            let x_val = pr.field().to_biguint(&model[&0]);
+            let y_val = pr.field().to_biguint(&model[&1]);
+            assert!(
+                (y_val == BigUint::from(2u32) || y_val == BigUint::from(5u32))
+                    && x_val == y_val,
+                "expected (x,y) ∈ {{(2,2),(5,5)}}, got ({}, {})",
+                x_val,
+                y_val
+            );
+        }
+        other => panic!("expected Sat, got {:?}", match other {
+            TriResult::Sat(_) => "Sat",
+            TriResult::Unsat => "Unsat",
+            TriResult::FallThrough => "FallThrough",
+        }),
+    }
+}
+
+#[test]
+fn audit_p1_tri_dfs_on_lex_returns_unsat_when_no_fp_solution() {
+    // Lex GB {x^2 + 1, y - 1} over GF(7): squares mod 7 = {0,1,2,4},
+    // so x^2 + 1 = 0 has no F_p solution and the DFS exhausts every
+    // top-level branch (zero branches, in fact) without finding a
+    // witness. The result must be sound UNSAT, not FallThrough.
+    let pr = FfPolyRing::new(PrimeField::new(BigUint::from(7u32)), vec!["x".into(), "y".into()]);
+    let x2 = pr.mul(pr.var(0), pr.var(0));
+    let x2_plus_1 = pr.add(x2, pr.one());
+    let y_minus_1 = pr.sub(pr.var(1), pr.one());
+    let lex_gb = vec![x2_plus_1, y_minus_1];
+
+    match tri_dfs_on_lex(&pr, &lex_gb, &CancelToken::none()) {
+        TriResult::Unsat => {}
+        TriResult::Sat(_) => panic!("expected Unsat, got Sat — x^2+1=0 has no GF(7) solution"),
+        TriResult::FallThrough => panic!("expected Unsat, got FallThrough"),
+    }
+}
+
+#[test]
+fn audit_p1_compute_candidates_skips_fglm_on_positive_dim_ideal() {
+    // {x*y - 1} over GF(7) is positive-dimensional (a curve), so
+    // `is_zero_dim()` is false and Case 2.5 must not fire. Without any
+    // univariate-deg-1 assignment in the basis, compute_candidates falls
+    // through to Case 3 round-robin.
+    let pr = FfPolyRing::new(PrimeField::new(BigUint::from(7u32)), vec!["x".into(), "y".into()]);
+    let xy = pr.mul(pr.var(0), pr.var(1));
+    let xy_minus_1 = pr.sub(xy, pr.one());
+    let ideal = Ideal::from_gb(&pr, vec![xy_minus_1]);
+    assert!(!ideal.is_zero_dim(), "test precondition: ideal must be positive-dim");
+
+    match compute_candidates(&pr, &ideal, &CancelToken::none()) {
+        Brancher::RoundRobin { .. } => {}
+        Brancher::Roots(_) | Brancher::ProvedUnsat => {
+            panic!("positive-dim ideal must fall through to round-robin, not Case 2.5")
+        }
     }
 }

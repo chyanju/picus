@@ -15,6 +15,7 @@ use num_bigint::BigUint;
 use crate::gb::brancher::{univariate_coeffs, Brancher};
 use crate::ff::field::{PrimeField, FieldElem};
 use crate::ff::monomial::MonomialOrder as FfOrder;
+use crate::gb::fglm::fglm_to_lex_cancel;
 use crate::gb::ideal::{compute_gb_incremental_with_order, Ideal};
 use crate::poly::{FfPolyRing, Poly};
 use crate::gb::roots::{find_roots, find_roots_checked};
@@ -94,7 +95,7 @@ pub fn find_zero_cancel(
 
         // If this ideal doesn't have a brancher yet, create one
         if ideals.len() > branchers.len() {
-            let candidates = compute_candidates(poly_ring, ideal);
+            let candidates = compute_candidates(poly_ring, ideal, cancel);
             branchers.push(candidates);
         }
 
@@ -277,10 +278,13 @@ fn try_extract_full_assignment(
 }
 
 /// Compute branching candidates using the same 3-case strategy as cvc5's
-/// `applyRule` (and the in-tree `split_gb::apply_rule`).
+/// `applyRule` (and the in-tree `split_gb::apply_rule`), extended with a
+/// Case 2.5 FGLM Lex-walk + triangular DFS for zero-dimensional ideals
+/// whose per-variable min-poly factoring is incomplete on F_p.
 fn compute_candidates(
     poly_ring: &FfPolyRing,
     ideal: &Ideal,
+    cancel: &CancelToken,
 ) -> Brancher {
     let ring = &poly_ring.ring;
     let field = &poly_ring.field();
@@ -321,7 +325,26 @@ fn compute_candidates(
         }
     }
 
-    // Case 2: zero-dimensional ideal → minimal polynomial
+    // All variables already linearly assigned in the basis: the caller's
+    // own `try_extract_full_assignment` will recover the model directly;
+    // returning an empty Roots brancher here lets the search loop pop
+    // back without burning FGLM work on a trivial case.
+    if assigned.iter().all(|b| *b) {
+        return Brancher::Roots(Vec::new());
+    }
+
+    // Case 2: zero-dimensional ideal → per-variable minimal polynomial.
+    // Case 2.5: zero-dimensional ideal → full FGLM Lex-walk + triangular
+    // DFS. Soundness anchors: (i) `ideal.is_zero_dim()` is the FGLM
+    // precondition; (ii) `fglm_to_lex_cancel` returns None on staircase /
+    // Hilbert-dimension mismatch and on cancellation, so a fall-through
+    // never reports Unsat; (iii) when Case 2.5 yields a full assignment
+    // the model is replayed through the ordinary search loop one variable
+    // at a time, which re-verifies each step against the augmented GB;
+    // (iv) when Case 2.5 exhausts every branch on the Lex GB, the
+    // sub-ideal has no F_p solution under the algebraic-closure-on-GF(p)
+    // gate of field-polynomial injection upstream — returning
+    // `Brancher::ProvedUnsat` lets the search loop backtrack soundly.
     if ideal.is_zero_dim() {
         for v in 0..n_vars {
             if !assigned[v] {
@@ -332,7 +355,23 @@ fn compute_candidates(
                             roots.into_iter().map(|val| (v, val)).collect()
                         );
                     }
-                    // Incomplete: fall through to round-robin.
+                    // Incomplete: try Case 2.5 below before falling
+                    // through to round-robin.
+                }
+            }
+        }
+        if let Some(lex_gb) = fglm_to_lex_cancel(ideal, cancel) {
+            match tri_dfs_on_lex(poly_ring, &lex_gb, cancel) {
+                TriResult::Sat(model) => {
+                    return Brancher::Roots(model_as_assignment_sequence(model));
+                }
+                TriResult::Unsat => {
+                    return Brancher::ProvedUnsat;
+                }
+                TriResult::FallThrough => {
+                    // Lex GB existed but DFS could not derive triangular
+                    // structure (e.g. cancelled, or an interior node had no
+                    // univariate residue). Fall through to Case 3.
                 }
             }
         }
@@ -344,6 +383,64 @@ fn compute_candidates(
         return Brancher::Roots(Vec::new());
     }
     Brancher::round_robin(unassigned, field.prime())
+}
+
+/// Outcome of `tri_dfs_on_lex`: a model, an exhaustive failure (sound
+/// UNSAT under F_p), or "fall back to round-robin" (the DFS could not
+/// derive a triangular branching structure, e.g. cancellation fired
+/// mid-walk or the Lex GB encoded a positive-dimensional component the
+/// caller's `is_zero_dim` gate missed).
+enum TriResult {
+    Sat(HashMap<usize, FieldElem>),
+    Unsat,
+    FallThrough,
+}
+
+/// Run the existing depth-first triangular search on a freshly-computed
+/// Lex Gröbner basis. The Lex order makes every internal node univariate
+/// in the smallest unassigned variable, so `tri_dfs` finds a model iff
+/// one exists under F_p. Exhausting every branch is therefore sound
+/// UNSAT — under the same `is_zero_dim` precondition that gates
+/// `fglm_to_lex_cancel`.
+fn tri_dfs_on_lex(
+    poly_ring: &FfPolyRing,
+    lex_gb: &[Poly],
+    cancel: &CancelToken,
+) -> TriResult {
+    if cancel.is_cancelled() {
+        return TriResult::FallThrough;
+    }
+    let gb_polys: Vec<Poly> = lex_gb.iter().map(|p| poly_ring.ring.clone_el(p)).collect();
+    let mut assignment: HashMap<usize, FieldElem> = HashMap::new();
+    if tri_dfs(poly_ring, &gb_polys, &mut assignment, cancel) {
+        return TriResult::Sat(assignment);
+    }
+    if cancel.is_cancelled() {
+        return TriResult::FallThrough;
+    }
+    if assignment.is_empty() {
+        // tri_dfs returned false without ever picking an internal node —
+        // either the root call exited via "no triangular residue" (the
+        // Lex basis was empty or all polys reduced away) or every
+        // top-level root failed. In a true zero-dimensional Lex GB only
+        // the latter is possible, so this is sound UNSAT.
+        return TriResult::Unsat;
+    }
+    TriResult::Unsat
+}
+
+/// Convert a model `HashMap<var_idx, value>` into an ordered Vec the
+/// `Brancher::Roots` consumer pops from the back. Ordering is ascending
+/// by var index so the search loop applies x_0 first; this is irrelevant
+/// for correctness (any order assigns the same model) but stable for
+/// regression-test diffing.
+fn model_as_assignment_sequence(
+    model: HashMap<usize, FieldElem>,
+) -> Vec<(usize, FieldElem)> {
+    let mut pairs: Vec<(usize, FieldElem)> = model.into_iter().collect();
+    pairs.sort_by_key(|(v, _)| *v);
+    pairs.reverse();
+    pairs
 }
 
 // Univariate coefficient extraction is shared with the split-GB DFS via

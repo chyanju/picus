@@ -28,6 +28,7 @@ use crate::ff::monomial::{Monomial, MonomialOrder};
 use crate::gb::ideal::Ideal;
 use crate::metric;
 use crate::poly::Poly;
+use crate::timeout::CancelToken;
 
 /// Candidate monomial ordered by the target (Lex) order, for the BFS queue.
 #[derive(Clone)]
@@ -58,7 +59,17 @@ const FGLM_MONO_CAP: usize = 200_000;
 /// Convert the (reduced) Gröbner basis held by `ideal` to a reduced Lex
 /// Gröbner basis via FGLM. Returns `None` if the ideal is not
 /// zero-dimensional (the caller should fall back to direct computation).
+///
+/// Uncancellable variant; for cancel-aware callers use
+/// [`fglm_to_lex_cancel`].
 pub fn fglm_to_lex(ideal: &Ideal) -> Option<Vec<Poly>> {
+    fglm_to_lex_cancel(ideal, &CancelToken::none())
+}
+
+/// Cancel-aware FGLM: same as [`fglm_to_lex`] but bails out with `None`
+/// when `cancel` fires mid-walk (large staircases on big primes can
+/// otherwise run for seconds before the BFS queue drains).
+pub fn fglm_to_lex_cancel(ideal: &Ideal, cancel: &CancelToken) -> Option<Vec<Poly>> {
     let pr = ideal.poly_ring;
     let f = &pr.field();
     let ctx = pr.ctx();
@@ -103,6 +114,9 @@ pub fn fglm_to_lex(ideal: &Ideal) -> Option<Vec<Poly>> {
 
     let mut processed = 0usize;
     while let Some(key) = queue.iter().next().cloned() {
+        if cancel.is_cancelled() {
+            return None;
+        }
         queue.remove(&key);
         let m = key.0;
         processed += 1;

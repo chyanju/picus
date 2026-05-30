@@ -158,6 +158,7 @@ pub fn split_zero_extend_cancel<'r>(
             Brancher::Roots(v) => format!("Roots({})", v.len()),
             Brancher::RoundRobin { unassigned, .. } =>
                 format!("RoundRobin({} vars)", unassigned.len()),
+            Brancher::ProvedUnsat => "ProvedUnsat".to_string(),
         }
     );
 
@@ -340,6 +341,7 @@ pub fn split_zero_extend_cancel<'r>(
                 Brancher::Roots(v) => format!("Roots({})", v.len()),
                 Brancher::RoundRobin { unassigned, .. } =>
                     format!("RoundRobin({} vars)", unassigned.len()),
+                Brancher::ProvedUnsat => "ProvedUnsat".to_string(),
             }
         );
         stack.push(Frame {

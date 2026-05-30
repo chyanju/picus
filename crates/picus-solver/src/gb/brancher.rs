@@ -11,9 +11,14 @@ use std::collections::HashMap;
 
 /// Brancher: lazily produces (var_idx, value) candidates.
 ///
-/// Two modes:
+/// Three modes:
 /// - `Roots`: pre-computed root list (from univariate factoring or min-poly).
 /// - `RoundRobin`: lazily generates (var, val) from an index counter.
+/// - `ProvedUnsat`: empty + exhaustive; signals a sub-ideal with no F_p
+///   solution (e.g. FGLM Lex-walk + triangular DFS exhausted every
+///   branch). Distinct from `Roots(Vec::new())` only in intent and in
+///   diagnostics; the search loop treats it identically (next ⇒ None,
+///   is_exhaustive ⇒ true ⇒ backtrack contributes to Unsat verdict).
 pub enum Brancher {
     /// Pre-computed root list: iterate from back via `pop()`.
     Roots(Vec<(usize, FieldElem)>),
@@ -27,6 +32,10 @@ pub enum Brancher {
         /// exhaustion is NOT a proof of UNSAT.
         exhaustive: bool,
     },
+    /// Sound UNSAT for the current sub-ideal under F_p; produced by
+    /// FGLM-to-Lex + triangular-DFS exhaustion on a zero-dimensional
+    /// ideal. Always exhaustive; `next` returns `None` immediately.
+    ProvedUnsat,
 }
 
 impl Brancher {
@@ -60,17 +69,20 @@ impl Brancher {
                 let val_bi = num_bigint::BigUint::from(which_val);
                 Some((unassigned[which_var], field.from_biguint(&val_bi)))
             }
+            Brancher::ProvedUnsat => None,
         }
     }
 
     /// Whether exhausting this brancher constitutes a proof that no
     /// extension exists.  `Roots` is always exhaustive (we computed
     /// every root over F_p); `RoundRobin` is exhaustive only when the
-    /// per-variable cap covers F_p (i.e. small primes).
+    /// per-variable cap covers F_p (i.e. small primes); `ProvedUnsat`
+    /// is exhaustive by construction.
     pub fn is_exhaustive(&self) -> bool {
         match self {
             Brancher::Roots(_) => true,
             Brancher::RoundRobin { exhaustive, .. } => *exhaustive,
+            Brancher::ProvedUnsat => true,
         }
     }
 }
