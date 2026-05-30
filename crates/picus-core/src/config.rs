@@ -157,13 +157,20 @@ pub struct RuntimeConfig {
     /// default until corpus differential confirms equivalence and the
     /// parser is widened to emit per-prime atom tables.
     pub cdclt_multi_prime_router: bool,
-    /// Interpose `cdclt::equality_engine::EqualityEngine` before the FF
-    /// theory at fact-notification time. `Fresh` facts forward to the
-    /// inner theory, `Redundant` facts are dropped, `Contradiction`
-    /// facts still forward (the inner theory's GB layer detects the
-    /// conflict). Off by default; the marginal value is dropping
-    /// repeated equalities across nested let-bindings or canonical
-    /// duplicates that escape `AtomTable::intern_eq`.
+    /// Interpose `cdclt::equality_engine::EqualityEngine` before the
+    /// FF theory at fact-notification time. `Fresh` facts forward,
+    /// `Redundant` facts drop, `Contradiction` facts surface a
+    /// precise 2-literal lemma `{atom, witness}` via
+    /// `EqualityEngine::prior_witness` instead of deferring to the
+    /// inner GB collapse. Off by default after a PLDI corpus
+    /// differential (`chat/ee_off.tsv` / `chat/ee_on.tsv`):
+    /// −0.38% total wall-clock, 0 verdict regressions,
+    /// EdDSAMiMCVerifier −21% clean win and Pedersen@pedersen −3.6%,
+    /// but a borderline EdDSAMiMCSpongeVerifier +1.7% keeps strict
+    /// adherence to the default-flag-flip rule conservative; flip
+    /// with explicit per-release authorisation once the +1.7%
+    /// fixture is checked against a follow-up run for noise versus
+    /// systematic effect.
     pub cdclt_equality_engine: bool,
     /// Reorder F4 S-pair batches by predicted Hilbert-function drop
     /// instead of pure sugar-degree FIFO. Stub today: the flag plumbs
