@@ -345,6 +345,19 @@ fn compute_candidates(
     // sub-ideal has no F_p solution under the algebraic-closure-on-GF(p)
     // gate of field-polynomial injection upstream — returning
     // `Brancher::ProvedUnsat` lets the search loop backtrack soundly.
+    //
+    // Why Case 2.5 lights zero hot fixtures on the PLDI corpus today:
+    // every PLDI fixture is R1CS over BN254. The post-encode ideal
+    // shape is overwhelmingly either (a) positive-dimensional — so
+    // `ideal.is_zero_dim()` is false and Case 2.5 never fires — or
+    // (b) zero-dimensional with a per-variable min-poly that
+    // `find_roots_checked` (Cantor–Zassenhaus over the prime field) is
+    // already `complete` on, so Case 2 succeeds without needing the
+    // FGLM fallback. Case 2.5 ships as a sound fallback for the class
+    // of zero-dim BN254 ideals whose min-poly has an irreducible
+    // factor of degree ≥ 2 that Cantor–Zassenhaus's randomised retry
+    // budget cannot split — a class the current PLDI corpus does not
+    // exercise but which appears in adversarial SMT-LIB inputs.
     if ideal.is_zero_dim() {
         for v in 0..n_vars {
             if !assigned[v] {

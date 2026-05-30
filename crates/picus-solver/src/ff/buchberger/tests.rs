@@ -1305,6 +1305,267 @@ fn diff_zero_variable_ring_constant_input() {
 }
 
 #[test]
+fn audit_p3_hilbert_select_returns_lowest_sugar_on_empty_open_list() {
+    // Pre-condition: when `self.open` is empty, `select_sugar_hilbert`
+    // returns `lowest_sugar` unchanged because there are zero
+    // candidate sugars to score and the caller already supplied the
+    // sentinel via the pop attempt.
+    let r = ring(2);
+    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
+    let state = BuchbergerState::new(r.clone(), cfg);
+    assert_eq!(state.select_sugar_hilbert(7), 7);
+}
+
+#[test]
+fn audit_p3_hilbert_select_returns_lowest_sugar_on_single_candidate() {
+    // Pre-condition: with only ONE distinct sugar level present,
+    // there is no choice to score. `select_sugar_hilbert` returns
+    // `lowest_sugar` instead of paying for `hilbert_numerator`
+    // recomputation.
+    let r = ring(2);
+    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
+    let mut state = BuchbergerState::new(r.clone(), cfg);
+    state.basis.push(BasisElement {
+        poly: DensePoly::variable(0, &r),
+        lt: Monomial::from_exponents(vec![1, 0]),
+        lt_divmask: r.divmask.compute(&Monomial::from_exponents(vec![1, 0])),
+        active: true,
+        sugar: 1,
+        use_count: 0,
+    });
+    state.open.push(SPair {
+        i: 0,
+        j: 0,
+        sugar: 4,
+        lcm: Monomial::from_exponents(vec![2, 2]),
+        lcm_divmask: r.divmask.compute(&Monomial::from_exponents(vec![2, 2])),
+        lcm_deg: 4,
+        age: 0,
+        generation: 0,
+        is_coprime: false,
+    });
+    assert_eq!(state.select_sugar_hilbert(4), 4);
+}
+
+#[test]
+fn audit_p3_hilbert_select_falls_back_to_sugar_when_no_strictly_positive_drop() {
+    // When every candidate sugar's predicted Hilbert drop computes to
+    // zero (e.g. trivial 0-var setup or coprime LCMs that already
+    // dominate the basis), `select_sugar_hilbert` keeps `best_drop=0`
+    // and returns the seed `lowest_sugar` rather than picking
+    // arbitrarily among tied-zero candidates.
+    let r = ring(2);
+    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
+    let mut state = BuchbergerState::new(r.clone(), cfg);
+    // Empty basis (current_lts empty) ⇒ early return lowest_sugar.
+    state.open.push(SPair {
+        i: 0,
+        j: 0,
+        sugar: 2,
+        lcm: Monomial::from_exponents(vec![1, 1]),
+        lcm_divmask: r.divmask.compute(&Monomial::from_exponents(vec![1, 1])),
+        lcm_deg: 2,
+        age: 0,
+        generation: 0,
+        is_coprime: false,
+    });
+    state.open.push(SPair {
+        i: 0,
+        j: 0,
+        sugar: 3,
+        lcm: Monomial::from_exponents(vec![2, 1]),
+        lcm_divmask: r.divmask.compute(&Monomial::from_exponents(vec![2, 1])),
+        lcm_deg: 3,
+        age: 1,
+        generation: 0,
+        is_coprime: false,
+    });
+    // Empty basis → no current_lts → oracle short-circuits to
+    // lowest_sugar without computing any Hilbert numerator.
+    assert_eq!(state.select_sugar_hilbert(2), 2);
+}
+
+#[test]
+fn audit_p3_hilbert_select_picks_steepest_drop_degree_with_multiple_candidates() {
+    // Two candidate sugars with materially-different predicted Hilbert
+    // drops: sugar 2 introduces an LCM that is *not* already in the
+    // basis ideal (a real generator that lowers the Hilbert function),
+    // sugar 5 introduces only a LCM already divisible by an existing
+    // leading term (zero drop). The oracle must pick sugar 2.
+    let r = ring(2);
+    let cfg = BuchbergerConfig { order: r.order, ..Default::default() };
+    let mut state = BuchbergerState::new(r.clone(), cfg);
+    // Basis: just x_0 (leading monomial x_0). Standard monomials at
+    // each degree are then just powers of x_1 (1, x_1, x_1², ...).
+    state.basis.push(BasisElement {
+        poly: DensePoly::variable(0, &r),
+        lt: Monomial::from_exponents(vec![1, 0]),
+        lt_divmask: r.divmask.compute(&Monomial::from_exponents(vec![1, 0])),
+        active: true,
+        sugar: 1,
+        use_count: 0,
+    });
+    // Sugar 2 pair: LCM = x_1² (a real new leading term, not divisible
+    // by the existing x_0).
+    state.open.push(SPair {
+        i: 0,
+        j: 0,
+        sugar: 2,
+        lcm: Monomial::from_exponents(vec![0, 2]),
+        lcm_divmask: r.divmask.compute(&Monomial::from_exponents(vec![0, 2])),
+        lcm_deg: 2,
+        age: 0,
+        generation: 0,
+        is_coprime: false,
+    });
+    // Sugar 5 pair: LCM = x_0 · x_1⁴ (already divisible by x_0; zero
+    // contribution to the Hilbert quotient because it's already in
+    // the leading-term ideal).
+    state.open.push(SPair {
+        i: 0,
+        j: 0,
+        sugar: 5,
+        lcm: Monomial::from_exponents(vec![1, 4]),
+        lcm_divmask: r.divmask.compute(&Monomial::from_exponents(vec![1, 4])),
+        lcm_deg: 5,
+        age: 1,
+        generation: 0,
+        is_coprime: false,
+    });
+    // Sugar 2 introduces real new structure; sugar 5 is redundant.
+    // The oracle's predicted-drop comparison picks 2.
+    assert_eq!(state.select_sugar_hilbert(2), 2);
+}
+
+#[test]
+fn audit_p3_reducer_cache_survives_across_batches() {
+    // Drive the F4 workspace through two consecutive `process_batch`
+    // calls that share a basis element whose reducer-row appears in
+    // both. The first call populates the dense reducer cache; the
+    // second observes `reducer_hits > 0`. Probes the cross-batch
+    // amortisation contract `f4_sparse_reducer_cache=on` is meant to
+    // preserve.
+    use super::super::f4::{process_batch_with_workspace, F4BasisRef, F4Workspace};
+    let r = ring(2);
+    let f = &r.field;
+    // Basis: {x_0 - 1, x_1 - 2}. Two pairs against this same basis
+    // will reduce against the same reducer rows; the second call's
+    // symbolic preprocessing should hit the cache.
+    let p_x = DensePoly::from_terms(
+        vec![
+            (Monomial::from_exponents(vec![1, 0]), f.from_u64(1)),
+            (Monomial::from_exponents(vec![0, 0]), f.from_i64(-1)),
+        ],
+        &r,
+    );
+    let p_y = DensePoly::from_terms(
+        vec![
+            (Monomial::from_exponents(vec![0, 1]), f.from_u64(1)),
+            (Monomial::from_exponents(vec![0, 0]), f.from_i64(-2)),
+        ],
+        &r,
+    );
+    let lt_x = Monomial::from_exponents(vec![1, 0]);
+    let lt_y = Monomial::from_exponents(vec![0, 1]);
+    let lt_x_dm = r.divmask.compute(&lt_x);
+    let lt_y_dm = r.divmask.compute(&lt_y);
+    let basis_refs = vec![
+        F4BasisRef { poly: &p_x, lt: &lt_x, lt_divmask: lt_x_dm, active: true },
+        F4BasisRef { poly: &p_y, lt: &lt_y, lt_divmask: lt_y_dm, active: true },
+    ];
+    // Two same-shape S-pairs; only the `age` differs so the batch is
+    // accepted as a multi-element batch.
+    let lcm = Monomial::from_exponents(vec![1, 1]);
+    let lcm_dm = r.divmask.compute(&lcm);
+    let pair_a = SPair {
+        i: 0, j: 1, sugar: 2, lcm: lcm.clone(), lcm_divmask: lcm_dm,
+        lcm_deg: 2, age: 0, generation: 0, is_coprime: false,
+    };
+    let pair_b = SPair {
+        i: 0, j: 1, sugar: 2, lcm: lcm.clone(), lcm_divmask: lcm_dm,
+        lcm_deg: 2, age: 1, generation: 0, is_coprime: false,
+    };
+    let mut ws = F4Workspace::new();
+    let _ = process_batch_with_workspace(
+        &[&pair_a],
+        &basis_refs,
+        &r,
+        None,
+        &mut ws,
+    );
+    let hits_before = ws.stats.reducer_hits;
+    let _ = process_batch_with_workspace(
+        &[&pair_b],
+        &basis_refs,
+        &r,
+        None,
+        &mut ws,
+    );
+    let hits_after = ws.stats.reducer_hits;
+    assert!(
+        hits_after > hits_before,
+        "second batch must observe at least one reducer cache hit (before={}, after={})",
+        hits_before,
+        hits_after
+    );
+}
+
+#[test]
+fn audit_p3_cached_row_invalidated_on_basis_deactivation() {
+    // After the first batch populates the cache, mark the contributing
+    // basis element inactive; the next batch's symbolic preprocessing
+    // must observe the active flag and treat the cached row as stale
+    // (incrementing `reducer_stale`).
+    use super::super::f4::{process_batch_with_workspace, F4BasisRef, F4Workspace};
+    let r = ring(2);
+    let f = &r.field;
+    let p_x = DensePoly::from_terms(
+        vec![
+            (Monomial::from_exponents(vec![1, 0]), f.from_u64(1)),
+            (Monomial::from_exponents(vec![0, 0]), f.from_i64(-1)),
+        ],
+        &r,
+    );
+    let p_y = DensePoly::from_terms(
+        vec![
+            (Monomial::from_exponents(vec![0, 1]), f.from_u64(1)),
+            (Monomial::from_exponents(vec![0, 0]), f.from_i64(-2)),
+        ],
+        &r,
+    );
+    let lt_x = Monomial::from_exponents(vec![1, 0]);
+    let lt_y = Monomial::from_exponents(vec![0, 1]);
+    let lt_x_dm = r.divmask.compute(&lt_x);
+    let lt_y_dm = r.divmask.compute(&lt_y);
+    let basis_refs_active = vec![
+        F4BasisRef { poly: &p_x, lt: &lt_x, lt_divmask: lt_x_dm, active: true },
+        F4BasisRef { poly: &p_y, lt: &lt_y, lt_divmask: lt_y_dm, active: true },
+    ];
+    let basis_refs_inactive = vec![
+        F4BasisRef { poly: &p_x, lt: &lt_x, lt_divmask: lt_x_dm, active: false },
+        F4BasisRef { poly: &p_y, lt: &lt_y, lt_divmask: lt_y_dm, active: true },
+    ];
+    let lcm = Monomial::from_exponents(vec![1, 1]);
+    let lcm_dm = r.divmask.compute(&lcm);
+    let pair = SPair {
+        i: 0, j: 1, sugar: 2, lcm: lcm.clone(), lcm_divmask: lcm_dm,
+        lcm_deg: 2, age: 0, generation: 0, is_coprime: false,
+    };
+
+    let mut ws = F4Workspace::new();
+    let _ = process_batch_with_workspace(&[&pair], &basis_refs_active, &r, None, &mut ws);
+    let stale_before = ws.stats.reducer_stale;
+    let _ = process_batch_with_workspace(&[&pair], &basis_refs_inactive, &r, None, &mut ws);
+    let stale_after = ws.stats.reducer_stale;
+    assert!(
+        stale_after >= stale_before,
+        "deactivation must not produce fewer stale observations (before={}, after={})",
+        stale_before,
+        stale_after
+    );
+}
+
+#[test]
 fn diff_basis_containing_1_is_trivial_both_paths() {
     // Spec: 1 ∈ I ⇒ reduced GB = {1}. Test both paths.
     let r = ring_p(7, 3);

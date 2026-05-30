@@ -343,13 +343,15 @@ const USE_COUNT_SORT_THRESHOLD: usize = 32;
 const F4_MIN_BATCH: usize = 12;
 
 /// Basis-size cap above which `f4_hilbert_select` falls back to the
-/// sugar-classical selection. `hilbert_numerator` is O(s²) in the
-/// number of minimal generators (`s` ≈ active basis size); recomputing
-/// it for every candidate sugar across `s ≥ 50` would dominate
-/// runtime. An incremental BCR-recursion update would lift the cap;
-/// without it, gating on size keeps the oracle cheap on the workloads
-/// the cap was calibrated for.
-const HILBERT_SELECT_BASIS_CAP: usize = 50;
+/// sugar-classical selection. The cap exists because the BCR colon
+/// recursion `hilbert_numerator` reduces an s-generator monomial
+/// ideal but its worst-case is exponential. With the incremental
+/// `HilbertNum::add_generators_incremental` lifting the per-call cost
+/// to only the colon-ideal walk on the new candidate, the original
+/// `s ≤ 50` ceiling can be relaxed to a more permissive bound that
+/// still guards against the pathological branch where every candidate
+/// sugar's LCM colon-ideal is the worst case for BCR.
+const HILBERT_SELECT_BASIS_CAP: usize = 250;
 
 impl BuchbergerState {
     pub(super) fn new(ring: Arc<PolyRing>, cfg: BuchbergerConfig) -> Self {
@@ -1119,9 +1121,10 @@ impl BuchbergerState {
     /// candidate-pair LCMs introduce the largest predicted drop in
     /// the Hilbert function at that degree. Falls back to
     /// `lowest_sugar` on tie or when every candidate's predicted drop
-    /// is zero. Recomputes `hilbert_numerator` from scratch each call
-    /// — gated by `HILBERT_SELECT_BASIS_CAP` at the caller so the
-    /// O(s²) recursion stays bounded.
+    /// is zero. Caches `N(I)` once and consults
+    /// `HilbertNum::add_generators_incremental` per candidate so the
+    /// per-iteration cost is the BCR colon recursion on
+    /// `(I : new_LCMs)`, not the full union BCR.
     fn select_sugar_hilbert(&self, lowest_sugar: u32) -> u32 {
         use std::collections::BTreeSet;
         let mut sugars: BTreeSet<u32> = BTreeSet::new();
@@ -1157,9 +1160,10 @@ impl BuchbergerState {
             if lcms.is_empty() {
                 continue;
             }
-            let mut hyp_lts = current_lts.clone();
-            hyp_lts.extend(lcms);
-            let hyp_hn = super::hilbert::hilbert_numerator(&hyp_lts);
+            // BCR-incremental: `N(I ∪ candidate_LCMs)` from cached
+            // `N(I)` + colon recursion on the new LCMs, instead of a
+            // full union BCR.
+            let hyp_hn = current_hn.add_generators_incremental(&current_lts, &lcms);
 
             let degree = sugar;
             let before = current_hn.hf_at(degree, n_vars);

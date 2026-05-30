@@ -1852,6 +1852,107 @@ fn audit_p2_parse_boolean_multi_rejects_cross_prime_assert() {
 }
 
 #[test]
+fn audit_p2_two_primes_one_unsat_other_sat() {
+    use crate::cdclt::orchestrator::solve_formula_multi;
+    use crate::core::SolveOutcome;
+    use crate::timeout::CancelToken;
+
+    // GF(7) sub: (x = 3) ∧ (x = 4) — UNSAT; GF(11) sub: (y = 5) — SAT.
+    // The combined verdict must be UNSAT.
+    let src = "
+        (declare-fun x () (_ FiniteField 7))
+        (declare-fun y () (_ FiniteField 11))
+        (assert (and (= x #f3m7) (= x #f4m7)))
+        (assert (= y #f5m11))
+    ";
+    let subs = parse_boolean_multi(src).expect("parse");
+    let primes_subs: Vec<_> = subs
+        .into_iter()
+        .map(|q| (q.prime.clone(), q.var_names().to_vec(), q.formula.clone()))
+        .collect();
+    let outcome = solve_formula_multi(primes_subs, &CancelToken::none());
+    assert!(
+        matches!(outcome, SolveOutcome::Unsat(_)),
+        "one-prime-UNSAT-other-prime-SAT must be Unsat, got {:?}",
+        outcome
+    );
+}
+
+#[test]
+fn audit_p2_literal_routed_to_correct_prime() {
+    // `#f6m7` reduces to 6 mod 7 = 6; `#f12m11` reduces to 12 mod 11
+    // = 1. The two literals' canonical values differ, so a sound
+    // multi-prime parse must preserve the distinction by routing each
+    // to its own prime's atom table. The probe asserts (x = #f6m7)
+    // and (y = #f12m11), then verifies the produced sub-queries pin
+    // their respective primes via the per-sub `prime` field, and that
+    // the verdict is Sat with the values matching the per-prime
+    // reductions.
+    use crate::cdclt::orchestrator::solve_formula_multi;
+    use crate::core::SolveOutcome;
+    use crate::timeout::CancelToken;
+    let src = "
+        (declare-fun x () (_ FiniteField 7))
+        (declare-fun y () (_ FiniteField 11))
+        (assert (= x #f6m7))
+        (assert (= y #f12m11))
+    ";
+    let subs = parse_boolean_multi(src).expect("parse");
+    assert_eq!(subs.len(), 2);
+    assert_eq!(subs[0].prime, BigUint::from(7u32));
+    assert_eq!(subs[1].prime, BigUint::from(11u32));
+    let primes_subs: Vec<_> = subs
+        .into_iter()
+        .map(|q| (q.prime.clone(), q.var_names().to_vec(), q.formula.clone()))
+        .collect();
+    let outcome = solve_formula_multi(primes_subs, &CancelToken::none());
+    let model = match outcome {
+        SolveOutcome::Sat(m) => m,
+        other => panic!("expected Sat, got {:?}", other),
+    };
+    // GF(7): 6 mod 7 = 6. GF(11): 12 mod 11 = 1.
+    assert_eq!(
+        model.get("x"),
+        Some(&BigUint::from(6u32)),
+        "x must canonicalise under GF(7), not GF(11)"
+    );
+    assert_eq!(
+        model.get("y"),
+        Some(&BigUint::from(1u32)),
+        "y must canonicalise under GF(11), not GF(7)"
+    );
+}
+
+#[test]
+fn audit_p2_aux_var_does_not_trip_degraded_in_router() {
+    // Drive a multi-prime SMT-LIB session whose Tseitin transform
+    // allocates auxiliary SAT variables (a top-level Or). The router
+    // must drop the aux vars from `notify_fact` without flipping
+    // `degraded`, so the overall verdict is Sat — a degraded path
+    // would surface Unknown.
+    use crate::cdclt::orchestrator::solve_formula_multi;
+    use crate::core::SolveOutcome;
+    use crate::timeout::CancelToken;
+    let src = "
+        (declare-fun x () (_ FiniteField 7))
+        (declare-fun y () (_ FiniteField 11))
+        (assert (or (= x #f3m7) (= x #f4m7)))
+        (assert (= y #f5m11))
+    ";
+    let subs = parse_boolean_multi(src).expect("parse");
+    let primes_subs: Vec<_> = subs
+        .into_iter()
+        .map(|q| (q.prime.clone(), q.var_names().to_vec(), q.formula.clone()))
+        .collect();
+    let outcome = solve_formula_multi(primes_subs, &CancelToken::none());
+    assert!(
+        matches!(outcome, SolveOutcome::Sat(_)),
+        "aux vars from the Tseitin Or must not trip degraded, got {:?}",
+        outcome
+    );
+}
+
+#[test]
 fn audit_p2_solve_formula_multi_two_primes_both_sat() {
     use crate::cdclt::orchestrator::solve_formula_multi;
     use crate::core::SolveOutcome;

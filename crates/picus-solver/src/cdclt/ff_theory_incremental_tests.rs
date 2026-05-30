@@ -306,6 +306,56 @@ fn audit_inc_large_prime_pinned_eq_extracts_model_via_bridge() {
 }
 
 #[test]
+fn audit_inc_propagate_pins_single_var_eq() {
+    // Tier-1 propagation: (x = 3) on the trail pins x ↦ 3. A separate
+    // multi-variable atom `(x + y = 5)` whose other variable y is
+    // unpinned receives no tier-1 propagation (constant evaluation
+    // requires every variable pinned), but the tier-2 path solves
+    // `1·y + 3 − 5 = 0` ⇒ y = 2 over GF(7) and dispatches polarity
+    // against every registered single-variable equality on y:
+    // `(y = 5)` becomes False because the derived value is 2, not 5.
+    // This is the port of `FfTheory`'s tier1+tier2 propagation
+    // against the incremental theory's identical substrate.
+    let cancel = CancelToken::none();
+    let mut atoms = AtomTable::new(BigUint::from(7u32));
+    let mut sat = Solver::new();
+    let mut vn: Vec<String> = Vec::new();
+    let v_x_eq_3 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 3);
+    let v_y_eq_5 = intern_eq_var(&mut atoms, &mut sat, &mut vn, "y", 5);
+    // (x + y = 5) atom.
+    let lhs = vec![
+        crate::frontend::encoder::PolyTerm {
+            coeff: BigUint::from(1u32),
+            vars: vec![(ensure_var(&mut vn, "x"), 1u16)],
+        },
+        crate::frontend::encoder::PolyTerm {
+            coeff: BigUint::from(1u32),
+            vars: vec![(ensure_var(&mut vn, "y"), 1u16)],
+        },
+    ];
+    let rhs = vec![crate::frontend::encoder::PolyTerm {
+        coeff: BigUint::from(5u32),
+        vars: Vec::new(),
+    }];
+    let v_xy_eq_5 = match atoms.intern_eq(&lhs, &rhs, &mut vn, &mut sat) {
+        InternResult::Var(v) => v,
+        _ => panic!("expected Var"),
+    };
+
+    let mut th = IncrementalFfTheoryState::new(&atoms, &cancel, 16);
+    th.notify_fact(v_x_eq_3, true);
+    th.notify_fact(v_xy_eq_5, true);
+    let derived: Vec<_> = th.propagate();
+    // Tier-2 derives `(y = 5) ↦ False` from x=3 ∧ x+y=5 (which gives
+    // y=2, contradicting the y=5 atom).
+    assert!(
+        derived.iter().any(|&(v, pol)| v == v_y_eq_5 && !pol),
+        "tier-2 must propagate (y = 5) ↦ False, derived: {:?}",
+        derived
+    );
+}
+
+#[test]
 fn audit_inc_empty_trail_is_sat() {
     let cancel = CancelToken::none();
     let atoms = AtomTable::new(BigUint::from(7u32));

@@ -206,6 +206,72 @@ impl HilbertNum {
 /// `k` chosen as the variable appearing in the most minimal
 /// generators and `e` as the smallest nonzero `x_k`-exponent across
 /// the minimal generators (which guarantees both subproblems shrink).
+impl HilbertNum {
+    /// Incrementally update `self = N(I)` to `N(I ∪ {new_gens})` using the
+    /// Bigatti–Caboara–Robbiano recursion
+    ///
+    /// ```text
+    ///     N(I ∪ {g}) = N(I) − t^deg(g) · N(I : g)
+    /// ```
+    ///
+    /// where `(I : g) = ⟨ m / gcd(m, g) | m ∈ minimal generators of I ⟩`
+    /// for a monomial ideal `I` and monomial `g`. Each new generator is
+    /// folded in one at a time so the running `I` includes prior
+    /// additions when computing the next colon ideal. Generators
+    /// already divisible by some existing generator are skipped (the
+    /// ideal is unchanged). The colon-ideal numerator is computed via
+    /// the regular [`hilbert_numerator`] free function, which BCR-
+    /// recurses on a strictly smaller problem than recomputing
+    /// `N(I ∪ {new_gens})` from scratch — the savings are largest when
+    /// each new generator's colon ideal collapses to a few minimal
+    /// generators (a common case for picus's typical `select_sugar_hilbert`
+    /// candidate LCMs sharing structure with the existing basis).
+    ///
+    /// Requires the caller-supplied `existing_gens` (the minimal
+    /// generators that produced `self`) because the colon recursion
+    /// needs to see them; the alternative — caching them inside
+    /// `HilbertNum` itself — would make every `HilbertNum::clone` /
+    /// `add_assign` carry a Vec<Monomial> through the BCR pivot
+    /// recursion and is the wrong place to hold the invariant.
+    pub fn add_generators_incremental(
+        &self,
+        existing_gens: &[Monomial],
+        new_gens: &[Monomial],
+    ) -> Self {
+        if new_gens.is_empty() {
+            return self.clone();
+        }
+        let mut current_gens: Vec<Monomial> = existing_gens.to_vec();
+        let mut current_hn = self.clone();
+        for g in new_gens {
+            // Redundant generator: g ∈ I already (divisible by some
+            // existing minimal generator). I ∪ {g} = I, so the
+            // numerator is unchanged.
+            if current_gens.iter().any(|m| m.divides(g)) {
+                continue;
+            }
+            // Colon ideal (I : g) = ⟨ m / gcd(m, g) ⟩.
+            let n_vars = g.n_vars();
+            let g_exps = g.exponents();
+            let mut colon_gens: Vec<Monomial> = Vec::with_capacity(current_gens.len());
+            for m in &current_gens {
+                let m_exps = m.exponents();
+                debug_assert_eq!(m_exps.len(), n_vars);
+                let out_exps: Vec<u16> = (0..n_vars)
+                    .map(|i| m_exps[i].saturating_sub(g_exps[i]))
+                    .collect();
+                colon_gens.push(Monomial::from_exponents(out_exps));
+            }
+            let n_colon = hilbert_numerator(&colon_gens);
+            let mut shifted = n_colon;
+            shifted.mul_t_pow_assign(g.total_degree());
+            current_hn.sub_assign(&shifted);
+            current_gens.push(g.clone());
+        }
+        current_hn
+    }
+}
+
 pub fn hilbert_numerator(gens: &[Monomial]) -> HilbertNum {
     if gens.is_empty() {
         return HilbertNum::one();

@@ -200,6 +200,7 @@ impl<'r> Ideal<'r> {
 
     /// Returns `true` iff `R/I` is a finite-dimensional `K`-vector space.
     pub fn is_zero_dim(&self) -> bool {
+        metric::incr!(picus_core::profile::IDEAL.is_zero_dim_calls);
         if self.is_whole_ring() {
             return true;
         }
@@ -246,6 +247,7 @@ impl<'r> Ideal<'r> {
     /// combinatorial read of the finished basis (sound, verdict-neutral);
     /// cross-checks the FGLM staircase size in [`crate::gb::fglm`].
     pub fn quotient_dimension(&self) -> Option<u128> {
+        metric::incr!(picus_core::profile::IDEAL.quotient_dimension_calls);
         if self.is_whole_ring() {
             return Some(0);
         }

@@ -678,3 +678,241 @@ fn bench_f4_vs_per_pair() {
         }
     }
 }
+
+/// Cyclic-N ratios for three F4 configurations:
+///   1. per-pair (no F4)
+///   2. F4 (sugar selection + cross-batch dense reducer cache off)
+///   3. F4 + Hilbert select + sparse cross-batch reducer cache
+///
+/// Asserts that config 3's F4/pp ratio is no worse than config 2's
+/// (i.e. the Hilbert oracle + sparse cache do not regress the cyclic
+/// benchmarks). The assertion is the plan14 P3 acceptance gate
+/// "cyclic-6 ratio drops below 1.0 OR documented 'no improvement'".
+///
+/// ```bash
+/// cargo test -p picus-solver --test bench_perf --release \
+///   audit_p3_cyclic_n_hilbert_and_sparse_cache_do_not_regress \
+///   -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore]
+fn audit_p3_cyclic_n_hilbert_and_sparse_cache_do_not_regress() {
+    use picus_solver::ff::buchberger::{BuchbergerConfig, IncrementalGB};
+    use picus_core::ff::monomial::MonomialOrder;
+    use picus_core::ff::polynomial::PolyRing;
+    use picus_core::ff::field::PrimeField;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    fn cyclic_n(n: usize, ring: &Arc<PolyRing>) -> Vec<picus_core::ff::polynomial::Polynomial> {
+        use picus_core::ff::polynomial::Polynomial;
+        let xs: Vec<Polynomial> = (0..n).map(|i| Polynomial::variable(i, ring)).collect();
+        let mut polys: Vec<Polynomial> = Vec::new();
+        for d in 1..n {
+            let mut acc = Polynomial::zero();
+            for r in 0..n {
+                let mut prod = xs[r % n].clone();
+                for k in 1..d {
+                    prod = prod.mul(&xs[(r + k) % n], ring);
+                }
+                acc = acc.add(&prod, ring);
+            }
+            polys.push(acc);
+        }
+        let mut p = xs[0].clone();
+        for k in 1..n {
+            p = p.mul(&xs[k], ring);
+        }
+        let one = ring.field.one();
+        p = p.sub(&Polynomial::constant(one, ring), ring);
+        polys.push(p);
+        polys
+    }
+
+    fn run_one(
+        polys: &[picus_core::ff::polynomial::Polynomial],
+        ring: &Arc<PolyRing>,
+        use_f4: bool,
+    ) -> u128 {
+        let cfg = BuchbergerConfig {
+            order: MonomialOrder::DegRevLex,
+            cancel_token: None,
+            abort_on_trivial: false,
+            use_f4,
+        };
+        let mut igb = IncrementalGB::new(Arc::clone(ring), cfg);
+        let t = Instant::now();
+        igb.add_generators(polys.iter().map(|p| p.as_dense(ring).into_owned()).collect())
+            .expect("add_generators");
+        t.elapsed().as_micros()
+    }
+
+    println!();
+    println!(
+        "{:<10} | {:>10} | {:>10} | {:>10} | {:>10} | {:>10}",
+        "workload", "pp_us", "f4_us", "f4_h_us", "f4/pp", "f4_h/pp"
+    );
+    println!("{}", "-".repeat(75));
+
+    let configs: Vec<(BigUint, usize)> = vec![
+        (BigUint::from(7919u32), 4),
+        (BigUint::from(7919u32), 5),
+        (BigUint::from(7919u32), 6),
+    ];
+
+    for (prime, n_vars) in &configs {
+        let names: Vec<String> = (0..*n_vars).map(|i| format!("x{}", i)).collect();
+        let ring = PolyRing::new(
+            PrimeField::new(prime.clone()),
+            names,
+            MonomialOrder::DegRevLex,
+        );
+        let polys = cyclic_n(*n_vars, &ring);
+
+        // (1) per-pair, default config.
+        let pp_med = {
+            let mut ts = Vec::new();
+            let _ = run_one(&polys, &ring, false);
+            for _ in 0..3 { ts.push(run_one(&polys, &ring, false)); }
+            ts.sort();
+            ts[1]
+        };
+        // (2) F4 with default config (f4_hilbert_select=off, f4_sparse_reducer_cache=off).
+        let f4_med = {
+            let _guard = picus_core::config::ConfigGuard::with_override(|c| {
+                c.f4_hilbert_select = false;
+                c.f4_sparse_reducer_cache = false;
+            });
+            let mut ts = Vec::new();
+            let _ = run_one(&polys, &ring, true);
+            for _ in 0..3 { ts.push(run_one(&polys, &ring, true)); }
+            ts.sort();
+            ts[1]
+        };
+        // (3) F4 with Hilbert select + sparse reducer cache ON.
+        let f4_h_med = {
+            let _guard = picus_core::config::ConfigGuard::with_override(|c| {
+                c.f4_hilbert_select = true;
+                c.f4_sparse_reducer_cache = true;
+            });
+            let mut ts = Vec::new();
+            let _ = run_one(&polys, &ring, true);
+            for _ in 0..3 { ts.push(run_one(&polys, &ring, true)); }
+            ts.sort();
+            ts[1]
+        };
+        let f4_ratio = f4_med as f64 / pp_med as f64;
+        let f4_h_ratio = f4_h_med as f64 / pp_med as f64;
+        println!(
+            "{:<10} | {:>10} | {:>10} | {:>10} | {:>9.2}x | {:>9.2}x",
+            format!("cyclic-{}", n_vars),
+            pp_med, f4_med, f4_h_med, f4_ratio, f4_h_ratio
+        );
+        // Acceptance gate: Hilbert+sparse should not make F4
+        // materially worse than the sugar-classical F4 path. Allow a
+        // 20% noise band — the cyclic-N timings are noisy enough at
+        // µs scale that a strict comparison fires false negatives.
+        assert!(
+            f4_h_ratio <= f4_ratio * 1.20 + 0.05,
+            "cyclic-{}: Hilbert+sparse F4 (ratio {:.2}x) regressed >20% vs sugar F4 (ratio {:.2}x)",
+            n_vars, f4_h_ratio, f4_ratio
+        );
+    }
+
+    // Katsura-N: heterogeneous workload mixing a degree-1 linear
+    // constraint with quadratic generators, so `self.open` carries
+    // multiple sugar levels during the F4 main loop and the Hilbert
+    // oracle has a real choice to rank instead of the single-sugar
+    // batch cyclic-N produces. Definition (Faugère normalisation):
+    //   u_n = 2 * (u_1 + u_2 + ... + u_{n-1}) + u_0,  u_0 + u_n = 1
+    //   for k = 1..n-1: sum_{i+j=k, |i|,|j|≤n} u_|i| * u_|j| = u_k
+    fn katsura_n(n: usize, ring: &Arc<PolyRing>) -> Vec<picus_core::ff::polynomial::Polynomial> {
+        use picus_core::ff::polynomial::Polynomial;
+        // u_i is stored at index i (0..n).
+        let us: Vec<Polynomial> = (0..n).map(|i| Polynomial::variable(i, ring)).collect();
+        let mut polys = Vec::new();
+        let one = Polynomial::constant(ring.field.one(), ring);
+        // Normalisation: u_0 + 2 * (u_1 + ... + u_{n-1}) − 1 = 0.
+        let mut norm = us[0].clone();
+        for i in 1..n {
+            let two = ring.field.from_u64(2);
+            let two_poly = Polynomial::constant(two, ring);
+            norm = norm.add(&two_poly.mul(&us[i], ring), ring);
+        }
+        norm = norm.sub(&one, ring);
+        polys.push(norm);
+        // Quadratic relations for k = 0..n-2.
+        for k in 0..(n - 1) {
+            let mut acc = Polynomial::zero();
+            for i in (-(n as isize - 1))..=(n as isize - 1) {
+                let j = k as isize - i;
+                if j < -(n as isize - 1) || j > (n as isize - 1) {
+                    continue;
+                }
+                let ui = us[i.unsigned_abs()].clone();
+                let uj = us[j.unsigned_abs()].clone();
+                acc = acc.add(&ui.mul(&uj, ring), ring);
+            }
+            acc = acc.sub(&us[k], ring);
+            polys.push(acc);
+        }
+        polys
+    }
+
+    println!();
+    println!(
+        "{:<10} | {:>10} | {:>10} | {:>10} | {:>10} | {:>10}",
+        "workload", "pp_us", "f4_us", "f4_h_us", "f4/pp", "f4_h/pp"
+    );
+    println!("{}", "-".repeat(75));
+    for &n_vars in &[4usize, 5] {
+        let names: Vec<String> = (0..n_vars).map(|i| format!("u{}", i)).collect();
+        let ring = PolyRing::new(
+            PrimeField::new(BigUint::from(7919u32)),
+            names,
+            MonomialOrder::DegRevLex,
+        );
+        let polys = katsura_n(n_vars, &ring);
+        let pp_med = {
+            let mut ts = Vec::new();
+            let _ = run_one(&polys, &ring, false);
+            for _ in 0..3 { ts.push(run_one(&polys, &ring, false)); }
+            ts.sort();
+            ts[1]
+        };
+        let f4_med = {
+            let _guard = picus_core::config::ConfigGuard::with_override(|c| {
+                c.f4_hilbert_select = false;
+                c.f4_sparse_reducer_cache = false;
+            });
+            let mut ts = Vec::new();
+            let _ = run_one(&polys, &ring, true);
+            for _ in 0..3 { ts.push(run_one(&polys, &ring, true)); }
+            ts.sort();
+            ts[1]
+        };
+        let f4_h_med = {
+            let _guard = picus_core::config::ConfigGuard::with_override(|c| {
+                c.f4_hilbert_select = true;
+                c.f4_sparse_reducer_cache = true;
+            });
+            let mut ts = Vec::new();
+            let _ = run_one(&polys, &ring, true);
+            for _ in 0..3 { ts.push(run_one(&polys, &ring, true)); }
+            ts.sort();
+            ts[1]
+        };
+        let f4_ratio = f4_med as f64 / pp_med as f64;
+        let f4_h_ratio = f4_h_med as f64 / pp_med as f64;
+        println!(
+            "{:<10} | {:>10} | {:>10} | {:>10} | {:>9.2}x | {:>9.2}x",
+            format!("katsura-{}", n_vars),
+            pp_med, f4_med, f4_h_med, f4_ratio, f4_h_ratio
+        );
+        assert!(
+            f4_h_ratio <= f4_ratio * 1.20 + 0.05,
+            "katsura-{}: Hilbert+sparse F4 (ratio {:.2}x) regressed >20% vs sugar F4 (ratio {:.2}x)",
+            n_vars, f4_h_ratio, f4_ratio
+        );
+    }
+}

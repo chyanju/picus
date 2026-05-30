@@ -504,6 +504,61 @@ fn hf_at_consistency_for_pure_power_single_var() {
 }
 
 #[test]
+fn audit_p3_add_generators_incremental_matches_from_scratch_on_coprime_box() {
+    // <x^5, y^5> in 2 vars. Add x*y as a third generator.
+    // Incremental: N(<x^5, y^5>) + x*y vs from-scratch N(<x^5, y^5, x*y>).
+    let existing = vec![x(2, 0, 5), x(2, 1, 5)];
+    let extra = vec![from_exps(vec![1, 1])];
+    let hn_existing = hilbert_numerator(&existing);
+    let hn_incremental = hn_existing.add_generators_incremental(&existing, &extra);
+
+    let mut full = existing.clone();
+    full.extend(extra.iter().cloned());
+    let hn_full = hilbert_numerator(&full);
+
+    assert_eq!(hn_incremental, hn_full,
+        "incremental BCR update must equal from-scratch hilbert_numerator");
+}
+
+#[test]
+fn audit_p3_add_generators_incremental_skips_redundant_generator() {
+    // <x^2, y^2>; add (x^3, y^3) — both divisible by existing generators.
+    // The incremental update must short-circuit (no recursive BCR call)
+    // and leave the numerator unchanged.
+    let existing = vec![x(2, 0, 2), x(2, 1, 2)];
+    let extra = vec![x(2, 0, 3), x(2, 1, 3)];
+    let hn_existing = hilbert_numerator(&existing);
+    let hn_incremental = hn_existing.add_generators_incremental(&existing, &extra);
+    assert_eq!(hn_incremental, hn_existing,
+        "adding generators already in I must not change the numerator");
+}
+
+#[test]
+fn audit_p3_add_generators_incremental_handles_empty_new_gens() {
+    let existing = vec![x(2, 0, 2)];
+    let hn_existing = hilbert_numerator(&existing);
+    let hn_incremental = hn_existing.add_generators_incremental(&existing, &[]);
+    assert_eq!(hn_incremental, hn_existing, "empty new_gens is identity");
+}
+
+#[test]
+fn audit_p3_add_generators_incremental_matches_on_three_vars_mixed() {
+    // 3-var diverse case: <x^3, y^3, z^3> + xyz + x^2yz.
+    let existing = vec![x(3, 0, 3), x(3, 1, 3), x(3, 2, 3)];
+    let extra = vec![
+        from_exps(vec![1, 1, 1]),
+        from_exps(vec![2, 1, 1]),
+    ];
+    let hn_existing = hilbert_numerator(&existing);
+    let hn_incremental = hn_existing.add_generators_incremental(&existing, &extra);
+
+    let mut full = existing.clone();
+    full.extend(extra.iter().cloned());
+    let hn_full = hilbert_numerator(&full);
+    assert_eq!(hn_incremental, hn_full);
+}
+
+#[test]
 fn quotient_dim_positive_dim_in_three_vars_diverse() {
     // SPEC: an ideal where any one variable lacks a pure power is
     // positive-dimensional ⇒ dim is None.

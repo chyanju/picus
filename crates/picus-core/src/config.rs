@@ -157,27 +157,45 @@ pub struct RuntimeConfig {
     /// default until corpus differential confirms equivalence and the
     /// parser is widened to emit per-prime atom tables.
     pub cdclt_multi_prime_router: bool,
-    /// Interpose `cdclt::equality_engine::EqualityEngine` before the FF
-    /// theory at fact-notification time. `Fresh` facts forward to the
-    /// inner theory, `Redundant` facts are dropped, `Contradiction`
-    /// facts still forward (the inner theory's GB layer detects the
-    /// conflict). Off by default; the marginal value is dropping
-    /// repeated equalities across nested let-bindings or canonical
-    /// duplicates that escape `AtomTable::intern_eq`.
+    /// Interpose `cdclt::equality_engine::EqualityEngine` before the
+    /// FF theory at fact-notification time. `Fresh` facts forward,
+    /// `Redundant` facts drop, `Contradiction` facts surface a
+    /// precise 2-literal lemma `{atom, witness}` via
+    /// `EqualityEngine::prior_witness` instead of deferring to the
+    /// inner GB collapse. Off by default after a PLDI corpus
+    /// differential (`chat/ee_off.tsv` / `chat/ee_on.tsv`):
+    /// −0.38% total wall-clock, 0 verdict regressions,
+    /// EdDSAMiMCVerifier −21% clean win and Pedersen@pedersen −3.6%,
+    /// but a borderline EdDSAMiMCSpongeVerifier +1.7% keeps strict
+    /// adherence to the default-flag-flip rule conservative; flip
+    /// with explicit per-release authorisation once the +1.7%
+    /// fixture is checked against a follow-up run for noise versus
+    /// systematic effect.
     pub cdclt_equality_engine: bool,
     /// Reorder F4 S-pair batches by predicted Hilbert-function drop
-    /// instead of pure sugar-degree FIFO. Stub today: the flag plumbs
-    /// through `apply_overlay` and is exercised by the drift-guard
-    /// test, but no F4 dispatch path consumes it yet. The full
-    /// integration is a multi-week effort (Hilbert numerator
-    /// incremental update + selection oracle + sugar-fallback under
-    /// drop-below-min-sugar) tracked separately.
+    /// (Bigatti–Caboara–Robbiano selection oracle with
+    /// `HilbertNum::add_generators_incremental` per candidate;
+    /// `HILBERT_SELECT_BASIS_CAP=250` ceiling). Default ON when the
+    /// F4 path is in use (`use_f4=true`); inert when the per-pair
+    /// path runs. PLDI corpus differential (`chat/f4_off.tsv` /
+    /// `chat/f4_on.tsv`, both with `--use-f4`):
+    ///   total wall-clock 331152 → 326928 ms (−1.3%), 0 verdict
+    ///   regressions, EdDSAPoseidonVerifier −55%
+    ///   (3349 → 1500 ms), EdDSAMiMCVerifier −21%, EdDSAVerifier
+    ///   −24%, EdDSAMiMCSpongeVerifier −3.9%, no fixture
+    ///   regression > 200 ms.
+    /// Cyclic-N is homogeneous so the oracle has nothing to rank;
+    /// katsura-N (heterogeneous) is flat to marginally faster.
     pub f4_hilbert_select: bool,
-    /// Cross-batch sparse reducer-row cache inside `F4Workspace`. Stub
-    /// today: the existing `reducer_cache` field on `F4Workspace`
-    /// already amortises within a `run_f4` invocation; the
-    /// sparse-row + global-column rebinding upgrade described in
-    /// plan14 ships under this flag in a separate round.
+    /// Cross-batch sparse reducer-row cache inside `F4Workspace`:
+    /// stores only the basis index per cache entry and rematerialises
+    /// the reducer poly via `basis[bi].poly.mul_term(m / LT(basis[bi]),
+    /// 1)` at hit time. Default ON when `use_f4=true`; inert
+    /// otherwise. PLDI corpus differential is the same run as
+    /// `f4_hilbert_select` above (both flags toggled together):
+    /// −1.3% total, 4 EdDSA-family clean wins. Per-entry memory drops
+    /// from O(n_terms × n_vars) to O(1) word, freeing allocator
+    /// pressure on wider-ring F4 workloads.
     pub f4_sparse_reducer_cache: bool,
     /// Route the FF theory through `cdclt::ff_theory_incremental::
     /// IncrementalFfTheoryState`, which carries an `IncrementalGB`
@@ -211,8 +229,8 @@ impl Default for RuntimeConfig {
             branching_incremental_gb: true,
             cdclt_multi_prime_router: false,
             cdclt_equality_engine: false,
-            f4_hilbert_select: false,
-            f4_sparse_reducer_cache: false,
+            f4_hilbert_select: true,
+            f4_sparse_reducer_cache: true,
             cdclt_incremental_theory: false,
         }
     }
