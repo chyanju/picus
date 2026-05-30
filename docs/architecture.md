@@ -182,12 +182,24 @@ algebra), `smt2/`, and `split_gb/`, with `core.rs`, `boolean.rs`, and
   propagation — Tier 1 evaluates atoms under pinned variables, Tier
   2 reduces multi-variable trail atoms to `a·v + c = 0` and
   propagates against registered single-var equalities, with Fermat-
-  based modular inverse), `orchestrator` (`solve_formula` interleaves
-  SAT propagation, theory notification, theory propagation, full-
-  effort theory check, and theory-conflict learning). Layered after
-  cvc5's `theory_ff.{h,cpp}` + `sub_theory.{h,cpp}`.
+  based modular inverse). `ff_theory_incremental` is a parallel
+  Theory impl that carries an `IncrementalGB` across SAT decisions
+  (Rabinowitsch encoding for disequalities, field-poly injection on
+  small primes); `multi_prime::FfTheoryRouter` partitions atoms by
+  GF(p) and runs `check_full_with_atoms` per slot, merging UNSAT
+  cores; `equality_engine` is a union-find over atom variables that
+  collapses same-canonical-polynomial atoms and detects polarity
+  contradictions on registration. `orchestrator` (`solve_formula`)
+  interleaves SAT propagation, theory notification, theory
+  propagation, full-effort theory check, and theory-conflict
+  learning. Layered after cvc5's `theory_ff.{h,cpp}` +
+  `sub_theory.{h,cpp}`.
 - **`model.rs`** — Model construction via iterative ideal
   augmentation (univariate roots, minimal polynomial, round-robin).
+  Each DFS branch extends the parent basis with the single
+  `(x_var − val)` constraint via `compute_gb_incremental_with_order`
+  (`branching_incremental_gb`) instead of rebuilding Buchberger from
+  the merged generator set.
 - **`bitprop.rs`** — Bit propagation (constant + equal bitsum)
   across split bases.
 - **`parse.rs`** — Pattern detection
@@ -222,7 +234,9 @@ algebra), `smt2/`, and `split_gb/`, with `core.rs`, `boolean.rs`, and
   and S-pair criteria), `f4/` (matrix layer, workspace, symbolic
   preprocessing), `sparse_gb` (Buchberger on the sparse representation with the
   same product / M / B criteria, sugar selection, and incremental seeding),
-  `hilbert`, `spair`, `univariate` (Cantor-Zassenhaus), and `repr_oracle`
+  `hilbert`, `spair`, `univariate` (Cantor-Zassenhaus with a
+  thread-local `x^p mod poly` memoization keyed on `(prime, coeffs)`
+  under `frobenius_cache`), and `repr_oracle`
   (cross-checks the sparse GB and the F4 path against the dense per-pair
   engine at the full reduced-GB level).
 
