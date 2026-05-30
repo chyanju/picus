@@ -103,8 +103,26 @@ impl<'a> FfTheoryRouter<'a> {
 impl<'a> Theory for FfTheoryRouter<'a> {
     fn notify_fact(&mut self, atom: Var, polarity: bool) {
         match self.var_to_slot.get(&atom) {
-            Some(&idx) => self.slots[idx].facts.push((atom, polarity)),
-            None => self.degraded = true,
+            Some(&idx) => {
+                if self.slots[idx].atoms.is_auxiliary(atom) {
+                    return;
+                }
+                self.slots[idx].facts.push((atom, polarity));
+            }
+            None => {
+                // Tseitin auxiliaries have no source prime and are not
+                // theory facts; drop them silently regardless of which
+                // slot's atom table they happen to fall under. Any
+                // genuinely unassigned non-aux atom trips the degraded
+                // flag — the per-slot trail no longer reflects the full
+                // asserted set so post_check returns Unknown.
+                for slot in &self.slots {
+                    if slot.atoms.is_auxiliary(atom) {
+                        return;
+                    }
+                }
+                self.degraded = true;
+            }
         }
     }
 

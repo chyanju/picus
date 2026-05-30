@@ -17,6 +17,7 @@ use crate::timeout::CancelToken;
 use super::atoms::AtomTable;
 use super::cnf::{tseitin, TseitinResult};
 use super::ff_theory::FfTheory;
+use super::multi_prime::FfTheoryRouter;
 use super::theory::{CheckOutcome, Theory};
 
 /// Solve a `Formula` over GF(`prime`) via CDCL(T) with the FF theory.
@@ -45,6 +46,22 @@ pub fn solve_formula(
         return SolveOutcome::Unsat(Vec::new());
     }
 
+    if picus_core::config::with(|c| c.cdclt_multi_prime_router) {
+        // Capability-only path: route every non-aux atom through a
+        // single-slot `FfTheoryRouter`. Path-equivalent to `FfTheory`
+        // on single-prime input, with the router's per-slot dispatch
+        // exercised against the production corpus before any
+        // multi-prime parser lift can ride on it.
+        let mut router = FfTheoryRouter::new(vec![atoms], cancel);
+        let n_slots = router.slot_atoms_mut(0).n_atom_slots();
+        for i in 0..n_slots {
+            let v = Var(i as u32);
+            if router.slot_atoms_mut(0).atom(v).is_some() {
+                router.assign_var(v, 0);
+            }
+        }
+        return cdclt_loop(&mut sat, &mut router, cancel);
+    }
     let mut theory = FfTheory::new(&atoms, cancel);
     cdclt_loop(&mut sat, &mut theory, cancel)
 }

@@ -1543,3 +1543,62 @@ fn hardprobe_gf7_3bit_all_pins_must_be_sat() {
         }
     }
 }
+
+/// SPEC P2: `cdclt_multi_prime_router=on` routes through
+/// `FfTheoryRouter` in single-slot mode. On the basic
+/// `(c·x = k) ∧ (c·x ≠ j)` formula over GF(7) — the same input as
+/// `prop_and_eq_neq_consistent_model` — the router must produce
+/// identical verdict + model to the default `FfTheory` path.
+#[test]
+fn audit_p2_router_single_slot_matches_default_on_eq_and_neq() {
+    let vn = names(&["x"]);
+    let prime = BigUint::from(7u32);
+    let f = Formula::And(vec![eq(1, 0, 3), neq(1, 0, 5)]);
+
+    let baseline = match solve_formula(prime.clone(), &vn, &f, &CancelToken::none()) {
+        SolveOutcome::Sat(m) => m,
+        other => panic!("baseline: expected Sat, got {:?}", other),
+    };
+
+    let _guard = picus_core::config::ConfigGuard::with_override(|c| {
+        c.cdclt_multi_prime_router = true;
+    });
+
+    let routed = match solve_formula(prime.clone(), &vn, &f, &CancelToken::none()) {
+        SolveOutcome::Sat(m) => m,
+        other => panic!("router: expected Sat, got {:?}", other),
+    };
+    assert_eq!(
+        baseline.get("x"),
+        routed.get("x"),
+        "router single-slot must match FfTheory on x"
+    );
+}
+
+/// SPEC P2: router single-slot path on a trivially-UNSAT formula
+/// (`x = 3 ∧ x = 4` over GF(7)) returns Unsat with the same shape
+/// the default path does.
+#[test]
+fn audit_p2_router_single_slot_matches_default_on_root_conflict() {
+    let vn = names(&["x"]);
+    let prime = BigUint::from(7u32);
+    let f = Formula::And(vec![eq(1, 0, 3), eq(1, 0, 4)]);
+
+    let baseline = solve_formula(prime.clone(), &vn, &f, &CancelToken::none());
+    assert!(
+        matches!(baseline, SolveOutcome::Unsat(_)),
+        "baseline must be Unsat, got {:?}",
+        baseline
+    );
+
+    let _guard = picus_core::config::ConfigGuard::with_override(|c| {
+        c.cdclt_multi_prime_router = true;
+    });
+
+    let routed = solve_formula(prime, &vn, &f, &CancelToken::none());
+    assert!(
+        matches!(routed, SolveOutcome::Unsat(_)),
+        "router must also be Unsat, got {:?}",
+        routed
+    );
+}

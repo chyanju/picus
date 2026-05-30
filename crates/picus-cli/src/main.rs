@@ -174,6 +174,13 @@ enum Commands {
         /// from scratch: on | off. Omit to use the built-in default.
         #[arg(long, value_parser = ["on", "off"])]
         branching_incremental_gb: Option<String>,
+
+        /// Route CDCL(T) facts through `cdclt::multi_prime::FfTheoryRouter`
+        /// (single slot for the input prime; capability for future
+        /// multi-prime SMT-LIB inputs): on | off. Omit to use the
+        /// built-in default.
+        #[arg(long, value_parser = ["on", "off"])]
+        cdclt_multi_prime_router: Option<String>,
     },
 
     /// Print R1CS circuit information
@@ -225,6 +232,7 @@ fn main() {
             reducer_index_cache,
             frobenius_cache,
             branching_incremental_gb,
+            cdclt_multi_prime_router,
         } => {
             // CLI overlay — the highest-precedence config layer. Only the
             // flags the user actually passed become `Some`; everything
@@ -279,6 +287,7 @@ fn main() {
                     reducer_index_cache: reducer_index_cache.as_deref().map(|s| s == "on"),
                     frobenius_cache: frobenius_cache.as_deref().map(|s| s == "on"),
                     branching_incremental_gb: branching_incremental_gb.as_deref().map(|s| s == "on"),
+                    cdclt_multi_prime_router: cdclt_multi_prime_router.as_deref().map(|s| s == "on"),
                 },
             };
             let resolved = resolve_config(config.as_deref(), &overlay)

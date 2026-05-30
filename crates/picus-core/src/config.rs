@@ -141,6 +141,14 @@ pub struct RuntimeConfig {
     /// canonicalisation) — only the work to reach it is amortized across
     /// branches. Off by default; flip on if PLDI total wall-clock drops.
     pub branching_incremental_gb: bool,
+    /// Route the FF theory through `cdclt::multi_prime::FfTheoryRouter`
+    /// instead of the single-prime `FfTheory`. Capability flag for
+    /// future multi-prime SMT-LIB inputs; the parser today still
+    /// rejects multi-prime sessions, so the router runs in single-slot
+    /// mode (path-equivalent to `FfTheory` on the same input). Off by
+    /// default until corpus differential confirms equivalence and the
+    /// parser is widened to emit per-prime atom tables.
+    pub cdclt_multi_prime_router: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -163,6 +171,7 @@ impl Default for RuntimeConfig {
             reducer_index_cache: false,
             frobenius_cache: true,
             branching_incremental_gb: true,
+            cdclt_multi_prime_router: false,
         }
     }
 }
@@ -189,6 +198,7 @@ impl RuntimeConfig {
         if let Some(v) = o.reducer_index_cache { self.reducer_index_cache = v; }
         if let Some(v) = o.frobenius_cache { self.frobenius_cache = v; }
         if let Some(v) = o.branching_incremental_gb { self.branching_incremental_gb = v; }
+        if let Some(v) = o.cdclt_multi_prime_router { self.cdclt_multi_prime_router = v; }
     }
 }
 
@@ -221,6 +231,7 @@ pub struct EngineOverlay {
     pub reducer_index_cache: Option<bool>,
     pub frobenius_cache: Option<bool>,
     pub branching_incremental_gb: Option<bool>,
+    pub cdclt_multi_prime_router: Option<bool>,
 }
 
 thread_local! {
