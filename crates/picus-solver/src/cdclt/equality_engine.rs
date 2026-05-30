@@ -2,16 +2,12 @@
 //!
 //! Union-find over atom variables: two distinct atom vars whose underlying
 //! polynomial equality canonicalises to the same byte sequence share a
-//! union-find representative. Asserting one of them then the other (same
-//! polarity) is dropped before reaching the GB; opposite polarity is
-//! flagged as a polarity contradiction.
+//! union-find representative. Asserting one of them then the other at the
+//! same polarity is dropped before reaching the GB; opposite polarity is
+//! a theory-level conflict.
 //!
-//! This is the first half of cvc5's equality-engine integration —
-//! polynomial-level atom dedup. Congruence over FF_ADD/MULT/NEG kinds
-//! requires a term DAG picus does not currently maintain and is left for
-//! a follow-up. The capability ships default-OFF; callers opt in by
-//! piping facts through [`EqualityEngine::notify`] before forwarding to
-//! the underlying theory.
+//! Scope: polynomial-level atom dedup only. Congruence over FF_ADD /
+//! FF_MULT / FF_NEG kinds would require a term DAG and is out of scope.
 
 use std::collections::HashMap;
 
@@ -28,6 +24,23 @@ pub enum NotifyOutcome {
     Redundant,
     /// This rep is asserted at the OPPOSITE polarity. Caller should treat
     /// as a theory-level conflict.
+    Contradiction,
+}
+
+/// Outcome of [`EqualityEngine::register_atom`]. Distinct from
+/// [`NotifyOutcome`]: registration is monotonic so `Fresh`/`Redundant`
+/// have no meaning, but a union of two classes whose endpoints carry
+/// opposite asserted polarities is a theory conflict.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegisterOutcome {
+    /// Registration completed without exposing a polarity conflict. The
+    /// caller need not forward anything to the underlying theory.
+    Ok,
+    /// The union performed by registration merged two classes whose
+    /// previously-asserted polarities disagree. Caller must treat as a
+    /// theory-level conflict (the polarity table is left untouched on
+    /// this branch, so a subsequent [`notify`] would still see the
+    /// per-endpoint disagreement and re-report it).
     Contradiction,
 }
 
@@ -85,18 +98,6 @@ impl EqualityEngine {
         x
     }
 
-    fn union(&mut self, a: Var, b: Var) -> Var {
-        let ra = self.find(a);
-        let rb = self.find(b);
-        if ra == rb {
-            return ra;
-        }
-        // Use lower-index as canonical rep for determinism.
-        let (lo, hi) = if ra.0 <= rb.0 { (ra, rb) } else { (rb, ra) };
-        self.parent[hi.0 as usize] = lo;
-        lo
-    }
-
     /// Canonicalise an atom's poly into a byte vector. Same poly → same
     /// bytes; different poly → different bytes (collision-free).
     fn canonicalise(key: &AtomKey) -> Vec<u8> {
@@ -126,16 +127,45 @@ impl EqualityEngine {
         out
     }
 
-    /// Register `(var, atom_key)`. If another registered atom has the same
-    /// canonical poly, `var` is unioned into that atom's class.
-    pub fn register_atom(&mut self, var: Var, atom: &AtomKey) {
+    /// Register `(var, atom_key)`. If another registered atom has the
+    /// same canonical poly, `var` is unioned into that atom's class.
+    /// Returns [`RegisterOutcome::Contradiction`] iff the union merges
+    /// two classes whose endpoints carry opposite asserted polarities.
+    /// On Contradiction the polarity table is left untouched, so a
+    /// subsequent [`notify`] on either endpoint trips the same
+    /// disagreement.
+    pub fn register_atom(&mut self, var: Var, atom: &AtomKey) -> RegisterOutcome {
         self.ensure_slot(var);
         let canon = Self::canonicalise(atom);
-        if let Some(&existing) = self.canonical_to_rep.get(&canon) {
-            self.union(var, existing);
-        } else {
-            self.canonical_to_rep.insert(canon, var);
+        let existing = match self.canonical_to_rep.get(&canon).copied() {
+            Some(e) => e,
+            None => {
+                self.canonical_to_rep.insert(canon, var);
+                return RegisterOutcome::Ok;
+            }
+        };
+        let ra = self.find(var);
+        let rb = self.find(existing);
+        if ra == rb {
+            return RegisterOutcome::Ok;
         }
+        let pa = self.rep_polarity.get(&ra).copied();
+        let pb = self.rep_polarity.get(&rb).copied();
+        if let (Some(a), Some(b)) = (pa, pb) {
+            if a != b {
+                return RegisterOutcome::Contradiction;
+            }
+        }
+        let (lo, hi) = if ra.0 <= rb.0 { (ra, rb) } else { (rb, ra) };
+        self.parent[hi.0 as usize] = lo;
+        // Migrate any polarity asserted on the absorbed endpoint into the
+        // surviving rep so subsequent notify() calls find it.
+        if self.rep_polarity.get(&lo).is_none() {
+            if let Some(p) = pa.or(pb) {
+                self.rep_polarity.insert(lo, p);
+            }
+        }
+        RegisterOutcome::Ok
     }
 
     /// Notify the engine of a SAT-asserted fact. Returns whether the
