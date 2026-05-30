@@ -3,8 +3,9 @@
 //! An UNSAT core is a list of input fact indices that are jointly
 //! unsatisfiable. The single-GB solver uses Buchberger observer hooks
 //! (via [`crate::gb::tracer::GbTracer`]) to track which input polynomials
-//! contribute to the UNSAT proof. The split-GB solver returns trivial
-//! (all-input) cores.
+//! contribute to the UNSAT proof. The split-GB solver returns the traced
+//! dependency core when the whole-ring element can be attributed to a
+//! subset of inputs, and the all-input core as a sound fallback otherwise.
 
 use std::collections::{HashMap, HashSet};
 
@@ -31,7 +32,7 @@ pub type UnsatCore = Vec<usize>;
 pub enum SolveOutcome {
     /// SAT — a model assigning every variable a field element (as BigUint).
     Sat(HashMap<String, BigUint>),
-    /// UNSAT, with a (trivial) UNSAT core: indices of input facts.
+    /// UNSAT, with an UNSAT core: indices of input facts.
     Unsat(UnsatCore),
     /// Unknown — the solver was cancelled, or bounded search exhausted
     /// without proving a definite verdict. Distinct from `Unsat`.
@@ -138,6 +139,23 @@ pub fn solve_split_gb_cancel<'r>(
     // reaching this conjunctive core — on both the direct and the CDCL(T)
     // per-check paths — are already reduced. This function does not
     // re-eliminate.
+
+    // Pre-GB short-circuit: a generator that is itself a nonzero constant
+    // makes the ideal the whole ring (a nonzero field constant is a unit),
+    // so the system is UNSAT. This mirrors cvc5's `postRewriteFfEq` folding
+    // a `const = const` assertion to `false` before the solver runs, and
+    // lets a trivially-contradictory input (an assertion `2 = 1`, or an
+    // equality that rewrote to a nonzero constant) skip partition building
+    // and the split-GB fixpoint. The `is_whole_ring` check after the
+    // fixpoint reaches the same verdict, so this changes only when (earlier),
+    // not what; it also yields the exact one-element core for this case.
+    if let Some(i) = original_polys
+        .iter()
+        .position(|p| !p.is_zero() && p.is_constant())
+    {
+        return SolveOutcome::Unsat(vec![i]);
+    }
+
     let (gens, provenance) =
         crate::split_gb::build_partitions(poly_ring, original_polys, bitsum_polys);
     // Lower each generator's provenance to its UNSAT-core dependency set: an

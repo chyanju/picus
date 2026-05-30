@@ -42,6 +42,35 @@ fn test_solve_unsat_returns_core() {
 }
 
 #[test]
+fn nonzero_constant_generator_is_unsat_with_singleton_core() {
+    // A generator that is itself a nonzero constant (e.g. a `const = const`
+    // assertion like `2 = 1` over GF(7) rewriting to the constant `1`) makes
+    // the ideal the whole ring: UNSAT, with the precise one-element core.
+    let pr = FfPolyRing::new(ff(7), vec!["x".into()]);
+    let three = pr.field().from_int(3); // nonzero constant over GF(7)
+    let c = pr.constant(three);
+    match solve_split_gb(&pr, &[c], &[]) {
+        SolveOutcome::Unsat(core) => assert_eq!(core, vec![0]),
+        other => panic!("expected UNSAT, got {:?}", other),
+    }
+}
+
+#[test]
+fn nonzero_constant_among_constraints_yields_precise_singleton_core() {
+    // `[x - 2, 3]`: the bare nonzero constant alone is UNSAT, so the core is
+    // exactly the constant's index, not a union with the satisfiable `x - 2`.
+    let pr = FfPolyRing::new(ff(7), vec!["x".into()]);
+    let two = pr.field().from_int(2);
+    let three = pr.field().from_int(3);
+    let p0 = pr.sub(pr.var(0), pr.constant(two));
+    let p1 = pr.constant(three);
+    match solve_split_gb(&pr, &[p0, p1], &[]) {
+        SolveOutcome::Unsat(core) => assert_eq!(core, vec![1]),
+        other => panic!("expected UNSAT, got {:?}", other),
+    }
+}
+
+#[test]
 fn satisfiable_system_with_bitsum_shaped_linear_part_is_not_false_unsat() {
     // A single satisfiable quadratic over GF(7) whose linear part is
     // `y + 2z` — i.e. a `c, 2c` coefficient run that bitsum extraction
