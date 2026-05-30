@@ -96,6 +96,14 @@ pub struct RuntimeConfig {
     /// nonlinear part and add per-`solve` overhead, so it is a net loss on
     /// the general workload. Exposed as a knob for linear-heavy
     /// conjunctive circuits where it may pay off.
+    /// Linear (Gaussian) pre-elimination before the GB solve. Off by
+    /// default: a PLDI corpus differential (`linelim_off.tsv` /
+    /// `linelim_on.tsv` under `chat/`) measured +3.3% total
+    /// wall-clock with 7 fixture-level regressions ≥200 ms (BinSum
+    /// and BinSub 80× slower; EdDSA family 1.3-1.6× slower; Pedersen
+    /// +2.9 s) and zero clean wins. Re-evaluate the default when the
+    /// corpus expands toward linear-heavy circuits the substitution
+    /// pre-pass would amortise.
     pub linear_elim: bool,
     /// Track inter-reduction reducer dependencies in the single-GB UNSAT-core
     /// tracer (`GbTracer`), so a trivial core reflects the basis elements that
