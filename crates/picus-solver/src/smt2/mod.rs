@@ -1290,6 +1290,252 @@ pub fn parse_boolean(src: &str) -> Result<BooleanQuery, ParseError> {
 
 
 
+/// Parse an SMT-LIB v2 query with one or more `(_ FiniteField p)` sorts.
+///
+/// Returns a `Vec<BooleanQuery>` with one entry per declared prime, in
+/// ascending prime order. Each entry carries the sub-formula referencing
+/// only its own prime's variables and literals. Single-prime input
+/// (the common case) returns a `Vec` of length 1 with the same content
+/// `parse_boolean` would produce. Cross-prime atoms — an assert whose
+/// body mentions variables of two distinct primes — are rejected as
+/// `Malformed`; finite fields of different sizes are different sorts
+/// and an equality between them is ill-typed SMT-LIB.
+///
+/// The lifted multi-prime path produces queries that the orchestrator
+/// joins via [`crate::cdclt::orchestrator::solve_formula_multi`].
+pub fn parse_boolean_multi(src: &str) -> Result<Vec<BooleanQuery>, ParseError> {
+    let toks = tokenize(src);
+    let sexprs = parse_sexprs(&toks)?;
+
+    // First pass: collect declared variable primes and the set of all
+    // primes the file mentions (sort declarations + literal suffixes).
+    let mut var_primes: HashMap<String, BigUint> = HashMap::new();
+    let mut all_primes: BTreeSet<BigUint> = BTreeSet::new();
+    let mut macro_names: BTreeSet<String> = BTreeSet::new();
+    for s in &sexprs {
+        let list = match s {
+            Sexpr::List(l) => l,
+            _ => continue,
+        };
+        if list.is_empty() {
+            continue;
+        }
+        let head = match list.first() {
+            Some(Sexpr::Atom(a)) => a.as_str(),
+            _ => continue,
+        };
+        match head {
+            "define-sort" => {
+                if list.len() >= 4 {
+                    if let Some(p) = finite_field_prime_str(&list[3]) {
+                        let n = p
+                            .parse::<BigUint>()
+                            .map_err(|_| ParseError::Malformed(format!("bad prime: {}", p)))?;
+                        all_primes.insert(n);
+                    }
+                }
+            }
+            "declare-fun" | "declare-const" => {
+                if let Some((name, _sort, inferred)) = classify_declare(head, list) {
+                    if let Some(n) = inferred {
+                        all_primes.insert(n.clone());
+                        var_primes.insert(name, n);
+                    }
+                }
+            }
+            "define-fun" => {
+                if list.len() >= 2 {
+                    if let Some(Sexpr::Atom(n)) = list.get(1) {
+                        macro_names.insert(n.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+        collect_ff_literal_primes(s, &mut all_primes);
+    }
+
+    if all_primes.len() <= 1 {
+        // Single-prime: defer verbatim to the existing parser.
+        return parse_boolean(src).map(|q| vec![q]);
+    }
+
+    // Multi-prime: build a per-prime subset of the source. Declarations
+    // are dispatched by their declared sort; asserts are dispatched by
+    // the unique prime their body references (else error). Macros are
+    // duplicated to every prime's subset because a `define-fun` body
+    // could be used by asserts of any prime; the per-prime parse will
+    // only reference the ones it actually binds.
+    let mut subset_lines_by_prime: BTreeMap<BigUint, Vec<String>> = BTreeMap::new();
+    for prime in &all_primes {
+        subset_lines_by_prime.insert(prime.clone(), Vec::new());
+    }
+
+    for s in &sexprs {
+        let list = match s {
+            Sexpr::List(l) => l,
+            _ => continue,
+        };
+        if list.is_empty() {
+            continue;
+        }
+        let head_str = match list.first() {
+            Some(Sexpr::Atom(a)) => a.as_str(),
+            _ => continue,
+        };
+        match head_str {
+            "set-logic" | "set-info" | "set-option" | "check-sat" | "exit" | "get-model"
+            | "push" | "pop" | "echo" => {
+                // No-op for prime dispatch but pass through to every
+                // subset so each per-prime parse sees the same
+                // session-level commands.
+                let text = sexpr_to_string(s);
+                for lines in subset_lines_by_prime.values_mut() {
+                    lines.push(text.clone());
+                }
+            }
+            "define-sort" => {
+                // Sort definitions are prime-specific; route only to
+                // the prime whose finite-field size they declare.
+                if list.len() >= 4 {
+                    if let Some(p) = finite_field_prime_str(&list[3]) {
+                        let n = p
+                            .parse::<BigUint>()
+                            .map_err(|_| ParseError::Malformed(format!("bad prime: {}", p)))?;
+                        if let Some(lines) = subset_lines_by_prime.get_mut(&n) {
+                            lines.push(sexpr_to_string(s));
+                        }
+                    }
+                }
+            }
+            "declare-fun" | "declare-const" => {
+                if let Some((_, _, inferred)) = classify_declare(head_str, list) {
+                    if let Some(n) = inferred {
+                        if let Some(lines) = subset_lines_by_prime.get_mut(&n) {
+                            lines.push(sexpr_to_string(s));
+                        }
+                    }
+                }
+            }
+            "define-fun" => {
+                // Macros may be invoked by asserts of any prime; ship
+                // to every subset.
+                let text = sexpr_to_string(s);
+                for lines in subset_lines_by_prime.values_mut() {
+                    lines.push(text.clone());
+                }
+            }
+            "assert" => {
+                if list.len() != 2 {
+                    return Err(ParseError::Malformed("'assert' arity".into()));
+                }
+                let p = assert_target_prime(&list[1], &var_primes, &macro_names)?;
+                let p = match p {
+                    Some(p) => p,
+                    None => {
+                        // Purely Boolean assert with no FF references.
+                        // Route to the smallest prime arbitrarily; the
+                        // user will see the same overall result in
+                        // either case because the boolean structure is
+                        // independent of the prime.
+                        all_primes.iter().next().unwrap().clone()
+                    }
+                };
+                if let Some(lines) = subset_lines_by_prime.get_mut(&p) {
+                    lines.push(sexpr_to_string(s));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Each subset is self-contained single-prime SMT-LIB. Parse via the
+    // existing entry point.
+    let mut subs: Vec<BooleanQuery> = Vec::with_capacity(subset_lines_by_prime.len());
+    for (_prime, lines) in subset_lines_by_prime {
+        let subset_src = lines.join("\n");
+        let q = parse_boolean(&subset_src)?;
+        subs.push(q);
+    }
+    Ok(subs)
+}
+
+/// Recursively format `s` back to SMT-LIB source. Used by
+/// `parse_boolean_multi` to rebuild per-prime subset queries.
+fn sexpr_to_string(s: &Sexpr) -> String {
+    match s {
+        Sexpr::Atom(a) => a.clone(),
+        Sexpr::List(items) => {
+            let mut out = String::from("(");
+            for (i, child) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(' ');
+                }
+                out.push_str(&sexpr_to_string(child));
+            }
+            out.push(')');
+            out
+        }
+    }
+}
+
+/// Walk an assert body and identify the unique prime whose variables
+/// and literals it references. Returns `Ok(Some(p))` when the
+/// references are non-empty and all of prime `p`, `Ok(None)` when no
+/// FF references appear (a purely Boolean assert), and
+/// `Err(Malformed)` when references mix two distinct primes.
+fn assert_target_prime(
+    body: &Sexpr,
+    var_primes: &HashMap<String, BigUint>,
+    macro_names: &BTreeSet<String>,
+) -> Result<Option<BigUint>, ParseError> {
+    let mut seen: BTreeSet<BigUint> = BTreeSet::new();
+    collect_assert_primes(body, var_primes, macro_names, &mut seen);
+    if seen.len() > 1 {
+        return Err(ParseError::Malformed(format!(
+            "assert references multiple FF primes: {:?}",
+            seen.iter().collect::<Vec<_>>()
+        )));
+    }
+    Ok(seen.into_iter().next())
+}
+
+fn collect_assert_primes(
+    s: &Sexpr,
+    var_primes: &HashMap<String, BigUint>,
+    macro_names: &BTreeSet<String>,
+    seen: &mut BTreeSet<BigUint>,
+) {
+    match s {
+        Sexpr::Atom(a) => {
+            // `#fNmP` literal: collect P.
+            if let Some(rest) = a.strip_prefix("#f") {
+                if let Some(idx) = rest.find('m') {
+                    let p_str = &rest[idx + 1..];
+                    if let Ok(p) = p_str.parse::<BigUint>() {
+                        seen.insert(p);
+                        return;
+                    }
+                }
+            }
+            // Variable reference: lookup its declared prime. Macro
+            // names and bound let-variables are skipped (the prime
+            // they implicate is recorded by the bound-expression
+            // walk).
+            if !macro_names.contains(a) {
+                if let Some(p) = var_primes.get(a) {
+                    seen.insert(p.clone());
+                }
+            }
+        }
+        Sexpr::List(items) => {
+            for child in items {
+                collect_assert_primes(child, var_primes, macro_names, seen);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

@@ -1800,3 +1800,79 @@ fn finite_field_prime_str_returns_none_on_non_atom_components() {
     );
 }
 
+#[test]
+fn audit_p2_parse_boolean_multi_accepts_two_distinct_primes() {
+    // Two-prime SMT-LIB session. `parse_boolean` would reject this at
+    // the literal multi-prime guard; `parse_boolean_multi` accepts it
+    // and produces one BooleanQuery per declared prime, in ascending
+    // prime order.
+    let src = "
+        (declare-fun x () (_ FiniteField 7))
+        (declare-fun y () (_ FiniteField 11))
+        (assert (= x #f3m7))
+        (assert (= y #f5m11))
+    ";
+    let subs = parse_boolean_multi(src).expect("multi-prime parse");
+    assert_eq!(subs.len(), 2, "two-prime input must produce two sub-queries");
+    assert_eq!(subs[0].prime, BigUint::from(7u32));
+    assert_eq!(subs[1].prime, BigUint::from(11u32));
+}
+
+#[test]
+fn audit_p2_parse_boolean_multi_single_prime_path_equivalent() {
+    // Single-prime input degrades to `parse_boolean` verbatim — same
+    // prime, same builder var frame, same formula shape.
+    let src = "
+        (declare-fun x () (_ FiniteField 7))
+        (assert (= x #f3m7))
+    ";
+    let from_multi = parse_boolean_multi(src).expect("single via multi");
+    let from_single = parse_boolean(src).expect("single direct");
+    assert_eq!(from_multi.len(), 1);
+    assert_eq!(from_multi[0].prime, from_single.prime);
+    assert_eq!(from_multi[0].var_names(), from_single.var_names());
+}
+
+#[test]
+fn audit_p2_parse_boolean_multi_rejects_cross_prime_assert() {
+    // An assert that mentions both primes is ill-typed SMT-LIB
+    // (equality between distinct finite-field sorts is undefined);
+    // the parser must reject it as Malformed.
+    let src = "
+        (declare-fun x () (_ FiniteField 7))
+        (declare-fun y () (_ FiniteField 11))
+        (assert (= x y))
+    ";
+    let result = parse_boolean_multi(src);
+    assert!(
+        matches!(result, Err(ParseError::Malformed(_))),
+        "cross-prime assert must be rejected, got {:?}",
+        result
+    );
+}
+
+#[test]
+fn audit_p2_solve_formula_multi_two_primes_both_sat() {
+    use crate::cdclt::orchestrator::solve_formula_multi;
+    use crate::core::SolveOutcome;
+    use crate::timeout::CancelToken;
+
+    let src = "
+        (declare-fun x () (_ FiniteField 7))
+        (declare-fun y () (_ FiniteField 11))
+        (assert (= x #f3m7))
+        (assert (= y #f5m11))
+    ";
+    let subs = parse_boolean_multi(src).expect("parse");
+    let primes_subs: Vec<_> = subs
+        .into_iter()
+        .map(|q| (q.prime.clone(), q.var_names().to_vec(), q.formula.clone()))
+        .collect();
+    let outcome = solve_formula_multi(primes_subs, &CancelToken::none());
+    assert!(
+        matches!(outcome, SolveOutcome::Sat(_)),
+        "two-prime independently-SAT input must be Sat, got {:?}",
+        outcome
+    );
+}
+

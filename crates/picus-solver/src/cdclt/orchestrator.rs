@@ -125,6 +125,67 @@ pub fn solve_formula(
     }
 }
 
+/// Multi-prime entry: solve a list of per-prime `(prime, var_names,
+/// formula)` triples against a single SAT solver and a
+/// [`FfTheoryRouter`]. Tseitin runs once per prime so each tseitin
+/// call's atoms intern into the matching prime's [`AtomTable`]; the
+/// resulting top-level literals are conjoined as unit clauses.
+///
+/// A length-1 input degrades to the single-prime path
+/// ([`solve_formula`]) verbatim so callers can route both shapes
+/// through the same multi-prime API.
+pub fn solve_formula_multi(
+    primes_subs: Vec<(BigUint, Vec<String>, crate::boolean::Formula)>,
+    cancel: &CancelToken,
+) -> SolveOutcome {
+    if primes_subs.len() == 1 {
+        let (prime, var_names, formula) = primes_subs.into_iter().next().unwrap();
+        return solve_formula(prime, &var_names, &formula, cancel);
+    }
+
+    let mut sat = Solver::new();
+    let mut atoms_by_prime: Vec<AtomTable> = Vec::with_capacity(primes_subs.len());
+    // Slot index in the router matches the order of `primes_subs`.
+    // `var_to_slot` maps every non-aux SAT Var produced by tseitin to
+    // its owning slot so the router routes facts to the correct
+    // sub-theory at notify time.
+    let mut var_to_slot: HashMap<Var, usize> = HashMap::new();
+
+    for (slot_idx, (prime, var_names, formula)) in primes_subs.into_iter().enumerate() {
+        let mut atoms = AtomTable::new(prime);
+        let top = match tseitin(&formula, &var_names, &mut atoms, &mut sat) {
+            TseitinResult::Constant(true) => {
+                atoms_by_prime.push(atoms);
+                continue;
+            }
+            TseitinResult::Constant(false) => return SolveOutcome::Unsat(Vec::new()),
+            TseitinResult::Lit(l) => l,
+        };
+        if !sat.add_clause(vec![top]) {
+            atoms_by_prime.push(atoms);
+            return SolveOutcome::Unsat(Vec::new());
+        }
+        if sat.is_unsat() {
+            atoms_by_prime.push(atoms);
+            return SolveOutcome::Unsat(Vec::new());
+        }
+        // Snapshot every non-aux Var atoms touched into the slot map.
+        for i in 0..atoms.n_atom_slots() {
+            let v = Var(i as u32);
+            if atoms.atom(v).is_some() {
+                var_to_slot.insert(v, slot_idx);
+            }
+        }
+        atoms_by_prime.push(atoms);
+    }
+
+    let mut router = FfTheoryRouter::new(atoms_by_prime, cancel);
+    for (v, slot) in var_to_slot {
+        router.assign_var(v, slot);
+    }
+    cdclt_loop(&mut sat, &mut router, cancel)
+}
+
 /// Max CDCL(T) main-loop iterations before [`cdclt_loop`] returns
 /// `Unknown`. Configured via [`crate::config::RuntimeConfig::cdclt_iter_cap`].
 pub fn iter_cap() -> u64 {
