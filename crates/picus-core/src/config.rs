@@ -175,28 +175,27 @@ pub struct RuntimeConfig {
     /// Reorder F4 S-pair batches by predicted Hilbert-function drop
     /// (Bigatti–Caboara–Robbiano selection oracle with
     /// `HilbertNum::add_generators_incremental` per candidate;
-    /// `HILBERT_SELECT_BASIS_CAP=250` ceiling). Off by default after
-    /// cyclic-N regression measurement: cyclic-{4,5,6} ratios match
-    /// the sugar-classical F4 path within noise (0.79→0.87, 1.27→1.35,
-    /// 1.83→1.86) — no improvement, no material regression. The
-    /// homogeneous cyclic structure provides only a single candidate
-    /// sugar per selection so the oracle has nothing to rank.
-    /// Heterogeneous workloads (multiple sugar levels coexisting in
-    /// `self.open`) are where the oracle's predicted-drop ranking can
-    /// pay off; corpus expansion toward such workloads should revisit
-    /// the default.
+    /// `HILBERT_SELECT_BASIS_CAP=250` ceiling). Default ON when the
+    /// F4 path is in use (`use_f4=true`); inert when the per-pair
+    /// path runs. PLDI corpus differential (`chat/f4_off.tsv` /
+    /// `chat/f4_on.tsv`, both with `--use-f4`):
+    ///   total wall-clock 331152 → 326928 ms (−1.3%), 0 verdict
+    ///   regressions, EdDSAPoseidonVerifier −55%
+    ///   (3349 → 1500 ms), EdDSAMiMCVerifier −21%, EdDSAVerifier
+    ///   −24%, EdDSAMiMCSpongeVerifier −3.9%, no fixture
+    ///   regression > 200 ms.
+    /// Cyclic-N is homogeneous so the oracle has nothing to rank;
+    /// katsura-N (heterogeneous) is flat to marginally faster.
     pub f4_hilbert_select: bool,
     /// Cross-batch sparse reducer-row cache inside `F4Workspace`:
     /// stores only the basis index per cache entry and rematerialises
     /// the reducer poly via `basis[bi].poly.mul_term(m / LT(basis[bi]),
-    /// 1)` at hit time. Off by default after the same cyclic-N
-    /// measurement: cyclic-N reducers are small so the per-entry
-    /// memory win doesn't translate to a CPU win; the materialisation
-    /// cost on each hit slightly exceeds the dense-clone cost on the
-    /// narrow rings cyclic uses. Heterogeneous wide-ring workloads
-    /// (many variables, many terms per reducer) are where the memory
-    /// density translates to fewer allocator stalls; corpus expansion
-    /// toward such workloads should revisit the default.
+    /// 1)` at hit time. Default ON when `use_f4=true`; inert
+    /// otherwise. PLDI corpus differential is the same run as
+    /// `f4_hilbert_select` above (both flags toggled together):
+    /// −1.3% total, 4 EdDSA-family clean wins. Per-entry memory drops
+    /// from O(n_terms × n_vars) to O(1) word, freeing allocator
+    /// pressure on wider-ring F4 workloads.
     pub f4_sparse_reducer_cache: bool,
     /// Route the FF theory through `cdclt::ff_theory_incremental::
     /// IncrementalFfTheoryState`, which carries an `IncrementalGB`
@@ -230,8 +229,8 @@ impl Default for RuntimeConfig {
             branching_incremental_gb: true,
             cdclt_multi_prime_router: false,
             cdclt_equality_engine: false,
-            f4_hilbert_select: false,
-            f4_sparse_reducer_cache: false,
+            f4_hilbert_select: true,
+            f4_sparse_reducer_cache: true,
             cdclt_incremental_theory: false,
         }
     }
