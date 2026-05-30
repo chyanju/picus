@@ -194,6 +194,118 @@ fn bug_inc_notify_fact_unknown_atom_returns_unknown() {
 }
 
 #[test]
+fn audit_inc_deep_dfs_amortizes_gb() {
+    // Drive a deep push/notify chain over GF(7) and verify the
+    // IncrementalGB amortises across decisions. After N push+notify
+    // levels followed by N pops + a final post_check, the total
+    // useful-reduction count is bounded by the *unique* atoms ever
+    // pushed plus their field polynomials; a per-check rebuild would
+    // re-process every active pair from scratch at every post_check
+    // call (we issue one per level), producing reduction counts
+    // proportional to N^2. The bound is therefore a lower bound on
+    // amortisation savings — `useful_reductions < 8 * N` is generous
+    // enough to be insensitive to interreduce-period changes yet
+    // tight enough to flag a regression to non-incremental behaviour.
+    let _guard = picus_core::config::ConfigGuard::with_override(|c| {
+        c.gb_stats_enabled = true;
+    });
+    let cancel = CancelToken::none();
+    let mut atoms = AtomTable::new(BigUint::from(7u32));
+    let mut sat = Solver::new();
+    let mut vn: Vec<String> = Vec::new();
+    let mut atom_vars: Vec<crate::sat::Var> = Vec::new();
+    let n: usize = 5;
+    for i in 0..n {
+        let var = format!("x{}", i);
+        atom_vars.push(intern_eq_var(&mut atoms, &mut sat, &mut vn, &var, i as u64));
+    }
+
+    let mut th = IncrementalFfTheoryState::new(&atoms, &cancel, 64);
+    for &av in &atom_vars {
+        th.push();
+        th.notify_fact(av, true);
+        let _ = th.post_check();
+    }
+    for _ in 0..n {
+        th.pop();
+    }
+    match th.post_check() {
+        CheckOutcome::Sat => {}
+        other => panic!("post-all-pop empty trail must be Sat, got {:?}", other),
+    }
+
+    let stats = th.engine_stats();
+    let budget = 8 * (n as u64);
+    assert!(
+        stats.reductions_useful < budget,
+        "expected useful reductions amortised below {} (got {}); a per-check rebuild would scale as N^2",
+        budget,
+        stats.reductions_useful
+    );
+}
+
+#[test]
+fn audit_inc_small_prime_sat_returns_nonempty_model() {
+    // Over GF(7) with `(x = 3) ∧ (y = 5)`, the incremental basis is
+    // non-trivial after both notifies; the model-extraction bridge
+    // must surface the user-facing bindings `{x: 3, y: 5}` instead of
+    // an empty placeholder map.
+    let cancel = CancelToken::none();
+    let mut atoms = AtomTable::new(BigUint::from(7u32));
+    let mut sat = Solver::new();
+    let mut vn: Vec<String> = Vec::new();
+    let v_x = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 3);
+    let v_y = intern_eq_var(&mut atoms, &mut sat, &mut vn, "y", 5);
+
+    let mut th = IncrementalFfTheoryState::new(&atoms, &cancel, 64);
+    th.notify_fact(v_x, true);
+    th.notify_fact(v_y, true);
+
+    match th.post_check() {
+        CheckOutcome::Sat => {}
+        other => panic!("expected Sat, got {:?}", other),
+    }
+    let m = th.collect_model().expect("Sat must produce a model");
+    assert_eq!(m.get("x"), Some(&BigUint::from(3u32)));
+    assert_eq!(m.get("y"), Some(&BigUint::from(5u32)));
+    assert!(
+        !m.keys().any(|k| k.starts_with("__slot_") || k.starts_with("__w_")),
+        "model must not surface internal placeholder names: {:?}",
+        m.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn audit_inc_large_prime_pinned_eq_extracts_model_via_bridge() {
+    // BN254 scalar prime, single linear assignment `x = 12345`. The
+    // model-extraction bridge runs `find_zero_cancel` against a
+    // user-namespaced facade ring; the only basis element after
+    // notify is `x - 12345`, which `try_extract_full_assignment`
+    // resolves directly. Verdict: Sat with `{x: 12345}`. Was
+    // previously Unknown (large prime + non-trivial basis ⇒ Unknown
+    // hardcoded) before the bridge landed.
+    let cancel = CancelToken::none();
+    let prime = BigUint::parse_bytes(
+        b"21888242871839275222246405745257275088548364400416034343698204186575808495617",
+        10,
+    )
+    .unwrap();
+    let mut atoms = AtomTable::new(prime.clone());
+    let mut sat = Solver::new();
+    let mut vn: Vec<String> = Vec::new();
+    let v_x = intern_eq_var(&mut atoms, &mut sat, &mut vn, "x", 12345);
+
+    let mut th = IncrementalFfTheoryState::new(&atoms, &cancel, 16);
+    th.notify_fact(v_x, true);
+    match th.post_check() {
+        CheckOutcome::Sat => {}
+        other => panic!("large-prime pinned-eq: expected Sat after bridge, got {:?}", other),
+    }
+    let m = th.collect_model().expect("Sat must produce a model");
+    assert_eq!(m.get("x"), Some(&BigUint::from(12345u32)));
+}
+
+#[test]
 fn audit_inc_empty_trail_is_sat() {
     let cancel = CancelToken::none();
     let atoms = AtomTable::new(BigUint::from(7u32));
