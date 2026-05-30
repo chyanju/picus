@@ -447,3 +447,75 @@ fn compute_gb_with_order_dense_repr_records_dense_dispatch() {
         "dense repr must dispatch a dense algorithm, got {name}"
     );
 }
+
+// ────────── matrix order ≡ enum order (end-to-end GB equivalence) ──────────
+
+use crate::ff::matrix_order::{intern, MatrixOrder};
+
+/// A small nonlinear system over GF(7) whose Buchberger run does real
+/// work (S-pairs + reductions), built through the facade.
+fn sym_system(pr: &FfPolyRing) -> Vec<crate::poly::Poly> {
+    let xy = pr.mul(pr.var(0), pr.var(1));
+    let yz = pr.mul(pr.var(1), pr.var(2));
+    let xz = pr.mul(pr.var(0), pr.var(2));
+    vec![
+        pr.sub(xy, pr.var(2)), // xy - z
+        pr.sub(yz, pr.var(0)), // yz - x
+        pr.sub(xz, pr.var(1)), // xz - y
+    ]
+}
+
+fn gb_hashes(pr: &FfPolyRing, gens: Vec<crate::poly::Poly>, order: FfOrder) -> Vec<u64> {
+    let gb = compute_gb_with_order(pr, gens, &CancelToken::none(), order);
+    let mut h: Vec<u64> = gb.iter().map(|p| p.content_hash()).collect();
+    h.sort_unstable();
+    h
+}
+
+#[test]
+fn matrix_degrevlex_gb_equals_enum_degrevlex_sparse() {
+    // Default (sparse) engine: a GB computed under Matrix(degrevlex) must
+    // equal the reduced GB under enum DegRevLex element-for-element. This
+    // drives the whole pipeline (from_terms sort, geobucket, reduction,
+    // final sort) through the sparse matrix comparison arm.
+    let pr = pr3();
+    let enum_h = gb_hashes(&pr, sym_system(&pr), FfOrder::DegRevLex);
+    let idx = intern(MatrixOrder::degrevlex(pr.n_vars()));
+    let mat_h = gb_hashes(&pr, sym_system(&pr), FfOrder::Matrix(idx));
+    assert_eq!(enum_h, mat_h, "sparse: matrix-degrevlex GB != enum-degrevlex GB");
+}
+
+#[test]
+fn matrix_degrevlex_gb_equals_enum_degrevlex_dense() {
+    // Same equivalence on the dense engine (dense comparison arm).
+    let _g = ConfigGuard::install({
+        let mut c = RuntimeConfig::default();
+        c.poly_repr = crate::config::ReprKind::Dense;
+        c.gb_strategy = GbStrategy::Direct;
+        c
+    });
+    let pr = FfPolyRing::new_with_repr(
+        PrimeField::new(BigUint::from(7u32)),
+        vec!["x".into(), "y".into(), "z".into()],
+        crate::config::ReprKind::Dense,
+    );
+    let enum_h = gb_hashes(&pr, sym_system(&pr), FfOrder::DegRevLex);
+    let idx = intern(MatrixOrder::degrevlex(pr.n_vars()));
+    let mat_h = gb_hashes(&pr, sym_system(&pr), FfOrder::Matrix(idx));
+    assert_eq!(enum_h, mat_h, "dense: matrix-degrevlex GB != enum-degrevlex GB");
+}
+
+#[test]
+fn elim_order_gb_terminates_and_is_consistent() {
+    // An elimination order is a valid (different) term order: Buchberger
+    // must terminate and yield a non-trivial GB of the same consistent
+    // ideal (no nonzero constant ⇒ not whole-ring).
+    let pr = pr3();
+    let idx = intern(MatrixOrder::elim(&[2], pr.n_vars())); // eliminate z
+    let gb = compute_gb_with_order(&pr, sym_system(&pr), &CancelToken::none(), FfOrder::Matrix(idx));
+    assert!(!gb.is_empty(), "elim-order GB of a consistent system is non-empty");
+    assert!(
+        !gb.iter().any(|p| !pr.is_zero(p) && p.is_constant()),
+        "consistent system must not produce a whole-ring (constant) basis"
+    );
+}

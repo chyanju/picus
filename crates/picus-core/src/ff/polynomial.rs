@@ -741,6 +741,9 @@ impl DensePoly {
                 }
                 o => o,
             },
+            MonomialOrder::Matrix(idx) => {
+                super::matrix_order::resolve(idx).cmp_dense(a_exps, b_exps)
+            }
         }
     }
 

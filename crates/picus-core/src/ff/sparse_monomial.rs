@@ -326,6 +326,8 @@ impl MonomialRepr for SparseMonomial {
                 Ordering::Equal => self.cmp_revlex(other),
                 o => o,
             },
+            MonomialOrder::Matrix(idx) => super::matrix_order::resolve(idx)
+                .cmp_dense(&self.to_dense(), &other.to_dense()),
         }
     }
 }

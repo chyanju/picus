@@ -8,6 +8,7 @@
 
 pub mod field;
 pub mod monomial;
+pub mod matrix_order;
 pub mod divmask;
 pub mod polynomial;
 pub mod geobucket;

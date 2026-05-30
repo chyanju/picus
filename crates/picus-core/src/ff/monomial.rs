@@ -14,6 +14,12 @@ pub enum MonomialOrder {
     DegRevLex,
     /// Pure lexicographic ordering.
     Lex,
+    /// Matrix-defined ordering, identified by an index into the
+    /// thread-local registry in [`super::matrix_order`]. Carries only a
+    /// `u32` so the enum stays one word wide and `Copy`; resolve the
+    /// index to its [`super::matrix_order::MatrixOrder`] at comparison
+    /// time. Used only on the opt-in matrix-order path.
+    Matrix(u32),
 }
 
 /// A monomial `x_0^{e_0} * x_1^{e_1} * ... * x_{n-1}^{e_{n-1}}`.
@@ -172,6 +178,9 @@ impl Monomial {
                     Ordering::Equal => cmp_revlex(&self.exponents, &other.exponents),
                     o => o,
                 }
+            }
+            MonomialOrder::Matrix(idx) => {
+                super::matrix_order::resolve(idx).cmp_dense(&self.exponents, &other.exponents)
             }
         }
     }
