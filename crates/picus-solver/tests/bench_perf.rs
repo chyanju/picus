@@ -818,4 +818,101 @@ fn audit_p3_cyclic_n_hilbert_and_sparse_cache_do_not_regress() {
             n_vars, f4_h_ratio, f4_ratio
         );
     }
+
+    // Katsura-N: heterogeneous workload mixing a degree-1 linear
+    // constraint with quadratic generators, so `self.open` carries
+    // multiple sugar levels during the F4 main loop and the Hilbert
+    // oracle has a real choice to rank instead of the single-sugar
+    // batch cyclic-N produces. Definition (Faugère normalisation):
+    //   u_n = 2 * (u_1 + u_2 + ... + u_{n-1}) + u_0,  u_0 + u_n = 1
+    //   for k = 1..n-1: sum_{i+j=k, |i|,|j|≤n} u_|i| * u_|j| = u_k
+    fn katsura_n(n: usize, ring: &Arc<PolyRing>) -> Vec<picus_core::ff::polynomial::Polynomial> {
+        use picus_core::ff::polynomial::Polynomial;
+        // u_i is stored at index i (0..n).
+        let us: Vec<Polynomial> = (0..n).map(|i| Polynomial::variable(i, ring)).collect();
+        let mut polys = Vec::new();
+        let one = Polynomial::constant(ring.field.one(), ring);
+        // Normalisation: u_0 + 2 * (u_1 + ... + u_{n-1}) − 1 = 0.
+        let mut norm = us[0].clone();
+        for i in 1..n {
+            let two = ring.field.from_u64(2);
+            let two_poly = Polynomial::constant(two, ring);
+            norm = norm.add(&two_poly.mul(&us[i], ring), ring);
+        }
+        norm = norm.sub(&one, ring);
+        polys.push(norm);
+        // Quadratic relations for k = 0..n-2.
+        for k in 0..(n - 1) {
+            let mut acc = Polynomial::zero();
+            for i in (-(n as isize - 1))..=(n as isize - 1) {
+                let j = k as isize - i;
+                if j < -(n as isize - 1) || j > (n as isize - 1) {
+                    continue;
+                }
+                let ui = us[i.unsigned_abs()].clone();
+                let uj = us[j.unsigned_abs()].clone();
+                acc = acc.add(&ui.mul(&uj, ring), ring);
+            }
+            acc = acc.sub(&us[k], ring);
+            polys.push(acc);
+        }
+        polys
+    }
+
+    println!();
+    println!(
+        "{:<10} | {:>10} | {:>10} | {:>10} | {:>10} | {:>10}",
+        "workload", "pp_us", "f4_us", "f4_h_us", "f4/pp", "f4_h/pp"
+    );
+    println!("{}", "-".repeat(75));
+    for &n_vars in &[4usize, 5] {
+        let names: Vec<String> = (0..n_vars).map(|i| format!("u{}", i)).collect();
+        let ring = PolyRing::new(
+            PrimeField::new(BigUint::from(7919u32)),
+            names,
+            MonomialOrder::DegRevLex,
+        );
+        let polys = katsura_n(n_vars, &ring);
+        let pp_med = {
+            let mut ts = Vec::new();
+            let _ = run_one(&polys, &ring, false);
+            for _ in 0..3 { ts.push(run_one(&polys, &ring, false)); }
+            ts.sort();
+            ts[1]
+        };
+        let f4_med = {
+            let _guard = picus_core::config::ConfigGuard::with_override(|c| {
+                c.f4_hilbert_select = false;
+                c.f4_sparse_reducer_cache = false;
+            });
+            let mut ts = Vec::new();
+            let _ = run_one(&polys, &ring, true);
+            for _ in 0..3 { ts.push(run_one(&polys, &ring, true)); }
+            ts.sort();
+            ts[1]
+        };
+        let f4_h_med = {
+            let _guard = picus_core::config::ConfigGuard::with_override(|c| {
+                c.f4_hilbert_select = true;
+                c.f4_sparse_reducer_cache = true;
+            });
+            let mut ts = Vec::new();
+            let _ = run_one(&polys, &ring, true);
+            for _ in 0..3 { ts.push(run_one(&polys, &ring, true)); }
+            ts.sort();
+            ts[1]
+        };
+        let f4_ratio = f4_med as f64 / pp_med as f64;
+        let f4_h_ratio = f4_h_med as f64 / pp_med as f64;
+        println!(
+            "{:<10} | {:>10} | {:>10} | {:>10} | {:>9.2}x | {:>9.2}x",
+            format!("katsura-{}", n_vars),
+            pp_med, f4_med, f4_h_med, f4_ratio, f4_h_ratio
+        );
+        assert!(
+            f4_h_ratio <= f4_ratio * 1.20 + 0.05,
+            "katsura-{}: Hilbert+sparse F4 (ratio {:.2}x) regressed >20% vs sugar F4 (ratio {:.2}x)",
+            n_vars, f4_h_ratio, f4_ratio
+        );
+    }
 }
