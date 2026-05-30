@@ -45,6 +45,16 @@ impl FfPolyRing {
         FfPolyRing { ring: PolyRingFacade { ctx } }
     }
 
+    /// Like [`Self::new`] but with an explicit term order (the
+    /// representation still follows the thread-local `config::poly_repr`).
+    /// Used to build a ring under a non-default order — e.g. an
+    /// elimination order — so the whole order-agnostic GB pipeline reads a
+    /// consistent order from the ring.
+    pub fn new_with_order(field: PrimeField, var_names: Vec<String>, order: MonomialOrder) -> Self {
+        let ctx = FfPolyRingCtx::new(field, var_names, order);
+        FfPolyRing { ring: PolyRingFacade { ctx } }
+    }
+
     /// The prime field, read from the shared ring context.
     pub fn field(&self) -> &PrimeField { &self.ring.ctx.field }
     /// Number of indeterminates.

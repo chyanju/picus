@@ -23,41 +23,55 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 /// An integer matrix term ordering over `n_vars` indeterminates.
+///
+/// Rows are stored **sparsely** as `(column, value)` pairs, so comparison
+/// costs `O(total nonzeros)` rather than `O(rows · n_vars)`. The built-in
+/// orders are sparse (`degrevlex` is one dense degree row plus `n-1`
+/// single-entry reverse-lex rows; `elim` adds one sparse marker row), so
+/// a comparison is `O(n_vars)` — the same asymptotics as the classical
+/// enum orders, which matters because matrix rings reach `2·n_wires`
+/// indeterminates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MatrixOrder {
-    /// Weight rows; each has length `n_vars`. Comparison reads them top
-    /// to bottom and stops at the first row whose two weights differ.
-    rows: Vec<Vec<i64>>,
+    /// Weight rows as sparse `(column, value)` pairs (zeros omitted).
+    /// Comparison reads them top to bottom and stops at the first row
+    /// whose two weights differ.
+    rows: Vec<Vec<(usize, i64)>>,
     n_vars: usize,
 }
 
 impl MatrixOrder {
-    /// Build from explicit rows. Every row must have length `n_vars`.
+    /// Build from explicit dense rows. Every row must have length
+    /// `n_vars`; zero entries are dropped into the sparse representation.
     pub fn from_rows(rows: Vec<Vec<i64>>, n_vars: usize) -> Self {
         debug_assert!(
             rows.iter().all(|r| r.len() == n_vars),
             "every matrix-order row must have length n_vars"
         );
-        MatrixOrder { rows, n_vars }
+        let sparse = rows
+            .into_iter()
+            .map(|r| {
+                r.into_iter()
+                    .enumerate()
+                    .filter(|&(_, v)| v != 0)
+                    .collect::<Vec<(usize, i64)>>()
+            })
+            .collect();
+        MatrixOrder { rows: sparse, n_vars }
     }
 
     pub fn n_vars(&self) -> usize {
         self.n_vars
     }
 
-    pub fn rows(&self) -> &[Vec<i64>] {
-        &self.rows
+    pub fn n_rows(&self) -> usize {
+        self.rows.len()
     }
 
     /// Pure lexicographic order: rows are the unit vectors `e_0..e_{n-1}`.
     /// Reproduces `MonomialOrder::Lex`.
     pub fn lex(n_vars: usize) -> Self {
-        let mut rows = Vec::with_capacity(n_vars);
-        for i in 0..n_vars {
-            let mut row = vec![0i64; n_vars];
-            row[i] = 1;
-            rows.push(row);
-        }
+        let rows = (0..n_vars).map(|i| vec![(i, 1i64)]).collect();
         MatrixOrder { rows, n_vars }
     }
 
@@ -65,15 +79,13 @@ impl MatrixOrder {
     /// reverse-lex block (`-e_{n-1}, -e_{n-2}, …, -e_1`). Reproduces
     /// `MonomialOrder::DegRevLex`.
     pub fn degrevlex(n_vars: usize) -> Self {
-        let mut rows = Vec::with_capacity(n_vars);
-        rows.push(vec![1i64; n_vars]); // total degree
+        let mut rows: Vec<Vec<(usize, i64)>> = Vec::with_capacity(n_vars);
+        rows.push((0..n_vars).map(|i| (i, 1i64)).collect()); // total degree
         // Reverse-lex tiebreak: at equal degree, the monomial with the
         // smaller highest-index differing exponent is the larger — i.e.
         // negate the exponents from the last variable down to the second.
         for j in (1..n_vars).rev() {
-            let mut row = vec![0i64; n_vars];
-            row[j] = -1;
-            rows.push(row);
+            rows.push(vec![(j, -1i64)]);
         }
         MatrixOrder { rows, n_vars }
     }
@@ -85,10 +97,10 @@ impl MatrixOrder {
     /// grading row marks the eliminated variables, with `degrevlex` over
     /// all `n_vars` as the tiebreak.
     pub fn elim(elim_vars: &[usize], n_vars: usize) -> Self {
-        let mut elim_row = vec![0i64; n_vars];
+        let mut elim_row: Vec<(usize, i64)> = Vec::with_capacity(elim_vars.len());
         for &v in elim_vars {
             debug_assert!(v < n_vars, "elim var index out of range");
-            elim_row[v] = 1;
+            elim_row.push((v, 1i64));
         }
         let mut rows = Vec::with_capacity(n_vars + 1);
         rows.push(elim_row);
@@ -107,9 +119,9 @@ impl MatrixOrder {
             // i64 for any realistic ring width.
             let mut wa: i64 = 0;
             let mut wb: i64 = 0;
-            for i in 0..self.n_vars {
-                wa += row[i] * (a[i] as i64);
-                wb += row[i] * (b[i] as i64);
+            for &(c, v) in row {
+                wa += v * (a[c] as i64);
+                wb += v * (b[c] as i64);
             }
             match wa.cmp(&wb) {
                 Ordering::Equal => continue,

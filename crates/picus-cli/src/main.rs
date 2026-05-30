@@ -165,6 +165,12 @@ enum Commands {
         #[arg(long, value_parser = ["on", "off"])]
         membership_fastpath: Option<String>,
 
+        /// Compute the native split-GB under an elimination term order on
+        /// the alt-copy (y) variables instead of DegRevLex (native FF
+        /// backend only): on | off. Omit to use the built-in default.
+        #[arg(long, value_parser = ["on", "off"])]
+        matrix_elim_order: Option<String>,
+
         /// Cache the reducer's divisor index across reductions with an
         /// unchanged active basis (native FF backend only): on | off. Omit
         /// to use the built-in default.
@@ -262,6 +268,7 @@ fn main() {
             linear_elim,
             split_triangular,
             membership_fastpath,
+            matrix_elim_order,
             reducer_index_cache,
             frobenius_cache,
             branching_incremental_gb,
@@ -322,6 +329,7 @@ fn main() {
                     track_inter_reduce_deps: None,
                     split_triangular: split_triangular.as_deref().map(|s| s == "on"),
                     membership_fastpath: membership_fastpath.as_deref().map(|s| s == "on"),
+                    matrix_elim_order: matrix_elim_order.as_deref().map(|s| s == "on"),
                     reducer_index_cache: reducer_index_cache.as_deref().map(|s| s == "on"),
                     frobenius_cache: frobenius_cache.as_deref().map(|s| s == "on"),
                     branching_incremental_gb: branching_incremental_gb.as_deref().map(|s| s == "on"),

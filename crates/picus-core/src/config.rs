@@ -144,6 +144,23 @@ pub struct RuntimeConfig {
     /// circuits — the multi-output EdDSA family −0.03 to −0.37 s each — with
     /// identical verdicts and no fixture-level regression.
     pub membership_fastpath: bool,
+    /// Compute the native split-GB under an elimination term order on the
+    /// alt-copy (`y`) variables instead of DegRevLex, driving those
+    /// variables out of the leading terms first (see
+    /// [`crate::ff::matrix_order::MatrixOrder::elim`]). The split-GB engine
+    /// reads its order from the ring, so this only changes which (equally
+    /// valid) reduced GB of the same ideal is computed; SAT/UNSAT verdicts
+    /// are preserved (`verify_model` / whole-ring detection are
+    /// order-independent). Off by default: a PLDI same-binary A/B
+    /// (`chat/align-harness/elim_off.jsonl` / `elim_on.jsonl`) measured
+    /// +318% total wall-clock with five regressions to `unknown` / timeout
+    /// (MontgomeryAdd, MontgomeryDouble, BinSum, BinSub, Pedersen) and zero
+    /// wins — the elimination order's leading-term structure makes the
+    /// model search (`find_zero`) exhaust the per-query budget on those
+    /// circuits. Soundness held (every regression is an `unknown`, never a
+    /// wrong verdict). Kept as a research knob; re-evaluate if the model
+    /// search gains an elimination-aware branching strategy.
+    pub matrix_elim_order: bool,
     /// Cache the geobucket reducer's divisor index (DivMask buckets + degree
     /// order) across S-pair reductions whose active basis is unchanged,
     /// instead of rebuilding it per call. Result-preserving (same normal
@@ -242,6 +259,7 @@ impl Default for RuntimeConfig {
             track_inter_reduce_deps: true,
             split_triangular: false,
             membership_fastpath: true,
+            matrix_elim_order: false,
             reducer_index_cache: false,
             frobenius_cache: true,
             branching_incremental_gb: true,
@@ -274,6 +292,7 @@ impl RuntimeConfig {
         if let Some(v) = o.track_inter_reduce_deps { self.track_inter_reduce_deps = v; }
         if let Some(v) = o.split_triangular { self.split_triangular = v; }
         if let Some(v) = o.membership_fastpath { self.membership_fastpath = v; }
+        if let Some(v) = o.matrix_elim_order { self.matrix_elim_order = v; }
         if let Some(v) = o.reducer_index_cache { self.reducer_index_cache = v; }
         if let Some(v) = o.frobenius_cache { self.frobenius_cache = v; }
         if let Some(v) = o.branching_incremental_gb { self.branching_incremental_gb = v; }
@@ -312,6 +331,7 @@ pub struct EngineOverlay {
     pub track_inter_reduce_deps: Option<bool>,
     pub split_triangular: Option<bool>,
     pub membership_fastpath: Option<bool>,
+    pub matrix_elim_order: Option<bool>,
     pub reducer_index_cache: Option<bool>,
     pub frobenius_cache: Option<bool>,
     pub branching_incremental_gb: Option<bool>,

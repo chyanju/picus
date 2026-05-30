@@ -271,7 +271,40 @@ fn encode_impl(
     }
 
     let field = PrimeField::new(system.prime.clone());
-    let poly_ring = FfPolyRing::new(field, var_names.clone());
+    // Default DegRevLex; opt-in elimination order on the alt-copy `y`
+    // variables (`matrix_elim_order`). The split-GB pipeline is
+    // order-agnostic — it reads the order from the ring — so building the
+    // ring under an elimination order is sufficient to run the whole solve
+    // under it. The eliminated set is the `y<i>` user variables (the
+    // alt-copy of the uniqueness encoding); aux witness / bitsum vars
+    // (`__*`) are excluded. With no `y` vars (non-uniqueness producers) the
+    // elimination row would be empty, so fall back to DegRevLex.
+    let poly_ring = {
+        let use_elim = crate::config::with(|c| c.matrix_elim_order);
+        let elim: Vec<usize> = if use_elim {
+            var_names
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| {
+                    n.len() > 1 && n.starts_with('y') && n[1..].bytes().all(|b| b.is_ascii_digit())
+                })
+                .map(|(i, _)| i)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if elim.is_empty() {
+            FfPolyRing::new(field, var_names.clone())
+        } else {
+            let order = crate::ff::monomial::MonomialOrder::Matrix(
+                crate::ff::matrix_order::intern(crate::ff::matrix_order::MatrixOrder::elim(
+                    &elim,
+                    var_names.len(),
+                )),
+            );
+            FfPolyRing::new_with_order(field, var_names.clone(), order)
+        }
+    };
 
     // Build var_map for downstream callers that still consult it
     // (e.g. SUBP_CONSTANT_NAMES filtering in the picus crate).

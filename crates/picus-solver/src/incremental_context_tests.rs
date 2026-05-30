@@ -1259,6 +1259,32 @@ fn membership_fastpath_forced_diseq_unsat_matches_full_path() {
 }
 
 #[test]
+fn matrix_elim_order_wiring_is_sound_on_forced_diseq() {
+    // `x0 − y0 = 0` (forces x0 = y0) with disequality `(x0, y0)`: UNSAT.
+    // Under `matrix_elim_order` the encoder builds the ring with an
+    // elimination order on the `y0` alt-copy variable; the order-agnostic
+    // split-GB reads that order and must still report UNSAT (whole-ring
+    // detection is order-independent). Exercises the elim-ring wiring.
+    let mut b = ConstraintSystemBuilder::new(BigUint::from(7u32));
+    let x0 = b.var("x0");
+    let y0 = b.var("y0");
+    b.add_equality(vec![
+        PolyTerm { coeff: BigUint::from(1u32), vars: vec![(x0, 1)] },
+        PolyTerm { coeff: BigUint::from(6u32), vars: vec![(y0, 1)] }, // x0 − y0
+    ]);
+    b.add_disequality(x0, y0);
+    let sys = b.build();
+    let cancel = CancelToken::none();
+    let _g = crate::config::ConfigGuard::with_override(|c| c.matrix_elim_order = true);
+    let r = stateless_solve(&sys, &cancel);
+    assert!(
+        matches!(r, SolveOutcome::Unsat(_)),
+        "elim-order forced diseq must be UNSAT, got {:?}",
+        r
+    );
+}
+
+#[test]
 fn membership_fastpath_does_not_falsely_unsat_satisfiable_diseq() {
     // x = 4 (from `x + 3 = 0`), diseq `(x, __zero=0)`: SAT (4 ≠ 0). `x − 0`
     // is not in the ideal, so the fast-path must fall through to the full
