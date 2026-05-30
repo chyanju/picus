@@ -1,14 +1,13 @@
 //! Multi-prime FF theory router.
 //!
-//! Wraps one [`AtomTable`] per distinct GF(p) appearing in input and
-//! routes [`Theory::notify_fact`] / [`Theory::post_check`] to the per-prime
-//! [`check_full_with_atoms`] slot. Matches cvc5's `unordered_map<TypeNode,
-//! SubTheory>` shape in `theory_ff.cpp`.
+//! Wraps one [`AtomTable`] per distinct GF(p) and routes
+//! [`Theory::notify_fact`] / [`Theory::post_check`] to the matching
+//! per-prime [`check_full_with_atoms`] slot. Mirrors cvc5's
+//! `unordered_map<TypeNode, SubTheory>` layout in `theory_ff.cpp`.
 //!
-//! The router is additive — it does not replace [`super::ff_theory::FfTheory`]
-//! on the single-prime path. The orchestrator constructs the single-prime
-//! `FfTheory` directly; the router is exposed for callers (future SMT-LIB
-//! frontend with mixed-prime inputs) that need per-prime partitioning.
+//! Additive to [`super::ff_theory::FfTheory`]: the single-prime path is
+//! unchanged. Use the router when the input mixes primes that must be
+//! solved independently and joined.
 
 use std::collections::HashMap;
 
@@ -38,6 +37,17 @@ pub struct FfTheoryRouter<'a> {
     /// Populated by the caller via [`FfTheoryRouter::assign_var`].
     var_to_slot: HashMap<Var, usize>,
     cancel: &'a CancelToken,
+    /// Sticky flag set whenever [`Theory::notify_fact`] arrives with a
+    /// variable not [`assign_var`]'d to any slot. While set,
+    /// [`post_check`] returns [`CheckOutcome::Unknown`] unconditionally:
+    /// the per-slot trails no longer reflect the full asserted set, so
+    /// no verdict from their union is safe. Snapshotted via
+    /// `degraded_levels` for symmetric `pop` rollback.
+    degraded: bool,
+    /// Per-push snapshot of `degraded`, parallel to every slot's
+    /// `levels` stack. Length must equal each slot's `levels.len()`
+    /// after every matched [`push`] / [`pop`] pair (debug-asserted).
+    degraded_levels: Vec<bool>,
 }
 
 impl<'a> FfTheoryRouter<'a> {
@@ -62,6 +72,8 @@ impl<'a> FfTheoryRouter<'a> {
             prime_to_idx,
             var_to_slot: HashMap::new(),
             cancel,
+            degraded: false,
+            degraded_levels: Vec::new(),
         }
     }
 
@@ -79,10 +91,10 @@ impl<'a> FfTheoryRouter<'a> {
         &mut self.slots[slot_idx].atoms
     }
 
-    /// Register that the SAT variable `var` belongs to the prime at `slot_idx`.
-    /// Calls without registration are silently dropped (fact never reaches
-    /// any sub-theory) — the caller is responsible for registering every
-    /// atom variable that may arrive through [`Theory::notify_fact`].
+    /// Register that the SAT variable `var` belongs to the prime at
+    /// `slot_idx`. A [`Theory::notify_fact`] for a `var` without prior
+    /// registration trips the `degraded` flag (a per-slot mis-routing
+    /// would silently change the verdict union).
     pub fn assign_var(&mut self, var: Var, slot_idx: usize) {
         self.var_to_slot.insert(var, slot_idx);
     }
@@ -90,8 +102,9 @@ impl<'a> FfTheoryRouter<'a> {
 
 impl<'a> Theory for FfTheoryRouter<'a> {
     fn notify_fact(&mut self, atom: Var, polarity: bool) {
-        if let Some(&idx) = self.var_to_slot.get(&atom) {
-            self.slots[idx].facts.push((atom, polarity));
+        match self.var_to_slot.get(&atom) {
+            Some(&idx) => self.slots[idx].facts.push((atom, polarity)),
+            None => self.degraded = true,
         }
     }
 
@@ -100,6 +113,12 @@ impl<'a> Theory for FfTheoryRouter<'a> {
     /// slot); else if any UNKNOWN → UNKNOWN; else SAT. The combined core
     /// concatenates per-prime cores so the orchestrator learns the union.
     fn post_check(&mut self) -> CheckOutcome {
+        if self.degraded {
+            for slot in &mut self.slots {
+                slot.has_model = false;
+            }
+            return CheckOutcome::Unknown;
+        }
         let mut combined_core: Vec<Var> = Vec::new();
         let mut any_unknown = false;
         for slot in &mut self.slots {
@@ -134,6 +153,14 @@ impl<'a> Theory for FfTheoryRouter<'a> {
         for slot in &mut self.slots {
             slot.levels.push(slot.facts.len());
         }
+        self.degraded_levels.push(self.degraded);
+        if let Some(slot) = self.slots.first() {
+            debug_assert_eq!(
+                self.degraded_levels.len(),
+                slot.levels.len(),
+                "degraded_levels must stay in lockstep with per-slot levels stacks"
+            );
+        }
     }
 
     fn pop(&mut self) {
@@ -142,6 +169,16 @@ impl<'a> Theory for FfTheoryRouter<'a> {
                 slot.facts.truncate(h);
             }
             slot.has_model = false;
+        }
+        if let Some(prev) = self.degraded_levels.pop() {
+            self.degraded = prev;
+        }
+        if let Some(slot) = self.slots.first() {
+            debug_assert_eq!(
+                self.degraded_levels.len(),
+                slot.levels.len(),
+                "degraded_levels must stay in lockstep with per-slot levels stacks"
+            );
         }
     }
 
