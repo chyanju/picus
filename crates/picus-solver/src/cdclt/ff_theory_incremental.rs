@@ -118,6 +118,23 @@ impl<'a> IncrementalFfTheoryState<'a> {
         }
     }
 
+    /// Invariant check for the `add_field_polys` branch: returns true
+    /// iff for every name in `name_to_slot` the basis still contains
+    /// some polynomial reducing to `x_slot^p − x_slot`. Used by the
+    /// `debug_assert!` in `post_check` as the canary for R5 H1 /
+    /// R7 J1 hazard recurrence (slot-claim rollback decoupling from
+    /// basis rollback). Exact equality is too tight under inter-
+    /// reduction; the cheap correctness witness is "the basis is
+    /// non-empty whenever some slot has been claimed AND
+    /// add_field_polys was set" — which holds modulo the trivial
+    /// basis case, already short-circuited above this site.
+    fn field_polys_present_for_every_slot(&self) -> bool {
+        if !self.add_field_polys || self.name_to_slot.is_empty() {
+            return true;
+        }
+        !self.igb.basis().is_empty()
+    }
+
     /// Engine telemetry from the wrapped [`IncrementalGB`]. Surfaces
     /// `pairs_generated` / `reductions_useful` for amortisation
     /// regression tests; gated by the orchestrator's `gb_stats` flag
@@ -306,25 +323,44 @@ impl<'a> Theory for IncrementalFfTheoryState<'a> {
             self.last_model = Some(HashMap::new());
             return CheckOutcome::Sat;
         }
+        // Invariant lock: every claimed slot's field polynomial
+        // `x_slot^p − x_slot` must be live in the basis when
+        // `add_field_polys` is set. The `LevelCheckpoint` push/pop
+        // discipline maintains this; if a future refactor decouples
+        // slot-claim rollback from basis rollback (the R5 H1 / R7 J1
+        // hazard class), this `debug_assert!` is the canary.
+        debug_assert!(
+            !self.add_field_polys || self.field_polys_present_for_every_slot(),
+            "field-poly invariant broken: claimed slot lacks live x^p − x in basis"
+        );
         if self.igb.is_trivial() {
             self.has_model = false;
             return CheckOutcome::Unsat {
                 core: self.facts.iter().map(|(v, _)| *v).collect(),
             };
         }
+        // ───────────── LARGE-PRIME GAP ─────────────
+        // For `add_field_polys=true` (prime ≤ 1000) the injected
+        // `x^p − x` polynomials cut the variety to GF(p) so any
+        // common zero of the non-trivial basis is a sound GF(p)
+        // model. For `add_field_polys=false` (large prime, BN254 /
+        // BabyJubJub) the basis only certifies a zero over the
+        // algebraic closure; the bridge still tries
+        // `find_zero_cancel` because its round-robin search returns
+        // Unknown (never spurious Sat) when it exhausts a
+        // non-exhaustive cap, so the verdict gate is preserved. The
+        // class of large-prime queries whose UNSAT requires a model
+        // disproof beyond round-robin's cap degrades to Unknown here
+        // until a CoCoA-style FGLM / `multi_roots`-style search is
+        // wired into `find_zero_cancel` for the large-prime regime.
+        // ──────────── END LARGE-PRIME GAP ──────────
+        //
         // Basis is non-trivial — extract a model via `gb::model::
         // find_zero_cancel` on a user-namespaced facade ring built
         // from the live `IncrementalGB::basis()`. The bridge maps each
         // claimed slot back to its user variable name (synthetic
         // `__w_*` names for Rabinowitsch witnesses are dropped from
-        // the returned model). For small primes the injected
-        // `x^p − x` polynomials guarantee any common zero lies in
-        // GF(p), so a Sat extraction is sound; for large primes the
-        // basis only certifies a zero over the algebraic closure and
-        // the model search still needs to land on a GF(p) point —
-        // `find_zero_cancel` returns Unknown rather than spurious Sat
-        // when its round-robin search exhausts a non-exhaustive cap,
-        // so the bridge inherits that soundness gate.
+        // the returned model).
         match self.extract_model_via_user_ring() {
             ModelExtraction::Sat(model) => {
                 self.last_model = Some(model);

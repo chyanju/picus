@@ -1628,6 +1628,109 @@ fn audit_p4_incremental_theory_unsat_on_root_conflict() {
     );
 }
 
+/// SPEC P5: when `register_atom` returns Contradiction at orchestrator
+/// setup time, `solve_formula` short-circuits to root-level Unsat
+/// without entering the cdclt_loop. Today this path is unreachable
+/// because all atom registrations happen BEFORE any notify, so the
+/// register-time conflict scenario requires pre-asserted polarity
+/// from outside the engine — which the orchestrator's setup loop
+/// does not do. The test probes the contract directly by constructing
+/// the EE in a state where two same-canon atoms have opposite
+/// polarities, then asserting the orchestrator-equivalent
+/// `register_atom` second call returns Contradiction (which the
+/// orchestrator handler maps to SolveOutcome::Unsat).
+#[test]
+fn audit_p5_ee_polarity_conflict_at_registration_yields_root_unsat() {
+    use crate::cdclt::atoms::AtomTable;
+    use crate::cdclt::equality_engine::{EqualityEngine, RegisterOutcome};
+    use std::collections::BTreeMap;
+    let mut atoms_a = AtomTable::new(BigUint::from(7u32));
+    let mut atoms_b = AtomTable::new(BigUint::from(7u32));
+    let mut sat = crate::sat::Solver::new();
+    let mut vn_a: Vec<String> = vec!["x".into()];
+    let mut vn_b: Vec<String> = vec!["x".into()];
+    let lhs_a = vec![crate::frontend::encoder::PolyTerm {
+        coeff: BigUint::from(1u32),
+        vars: vec![(0u32, 1u16)],
+    }];
+    let rhs_a = vec![crate::frontend::encoder::PolyTerm {
+        coeff: BigUint::from(3u32),
+        vars: BTreeMap::new().into_iter().collect(),
+    }];
+    let var_a = match atoms_a.intern_eq(&lhs_a, &rhs_a, &mut vn_a, &mut sat) {
+        crate::cdclt::atoms::InternResult::Var(v) => v,
+        _ => panic!(),
+    };
+    let lhs_b = vec![crate::frontend::encoder::PolyTerm {
+        coeff: BigUint::from(1u32),
+        vars: vec![(0u32, 1u16)],
+    }];
+    let rhs_b = vec![crate::frontend::encoder::PolyTerm {
+        coeff: BigUint::from(3u32),
+        vars: BTreeMap::new().into_iter().collect(),
+    }];
+    let var_b = match atoms_b.intern_eq(&lhs_b, &rhs_b, &mut vn_b, &mut sat) {
+        crate::cdclt::atoms::InternResult::Var(v) => v,
+        _ => panic!(),
+    };
+    let key_a = atoms_a.atom(var_a).expect("a").clone();
+    let key_b = atoms_b.atom(var_b).expect("b").clone();
+
+    let mut ee = EqualityEngine::new();
+    assert_eq!(ee.register_atom(var_a, &key_a), RegisterOutcome::Ok);
+    // Pre-assert opposite polarities so the second registration
+    // surfaces the union-time contradiction the orchestrator path
+    // would convert to SolveOutcome::Unsat(vec![]).
+    assert_eq!(ee.notify(var_a, true), crate::cdclt::equality_engine::NotifyOutcome::Fresh);
+    assert_eq!(ee.notify(var_b, false), crate::cdclt::equality_engine::NotifyOutcome::Fresh);
+    assert_eq!(
+        ee.register_atom(var_b, &key_b),
+        RegisterOutcome::Contradiction,
+        "register-time union of two opposite-polarity classes must surface Contradiction"
+    );
+}
+
+/// SPEC P5: a fact asserted at level N, then SAT-backtracked past N,
+/// then re-asserted at a lower level must observe a Fresh outcome
+/// (NOT Redundant) — the EE pop must rewind the polarity table in
+/// lockstep with SAT's trail rewind so the same-canon atom is
+/// available for a new polarity assertion downstream.
+#[test]
+fn audit_p5_ee_redundant_fact_skipped_under_lockstep_pop() {
+    use crate::cdclt::atoms::AtomTable;
+    use crate::cdclt::equality_engine::{EqualityEngine, NotifyOutcome, RegisterOutcome};
+    use std::collections::BTreeMap;
+    let mut atoms = AtomTable::new(BigUint::from(7u32));
+    let mut sat = crate::sat::Solver::new();
+    let mut vn: Vec<String> = vec!["x".into()];
+    let lhs = vec![crate::frontend::encoder::PolyTerm {
+        coeff: BigUint::from(1u32),
+        vars: vec![(0u32, 1u16)],
+    }];
+    let rhs = vec![crate::frontend::encoder::PolyTerm {
+        coeff: BigUint::from(3u32),
+        vars: BTreeMap::new().into_iter().collect(),
+    }];
+    let v = match atoms.intern_eq(&lhs, &rhs, &mut vn, &mut sat) {
+        crate::cdclt::atoms::InternResult::Var(v) => v,
+        _ => panic!(),
+    };
+    let key = atoms.atom(v).expect("k").clone();
+
+    let mut ee = EqualityEngine::new();
+    assert_eq!(ee.register_atom(v, &key), RegisterOutcome::Ok);
+
+    ee.push();
+    assert_eq!(ee.notify(v, true), NotifyOutcome::Fresh);
+    // Same fact at the same level is Redundant.
+    assert_eq!(ee.notify(v, true), NotifyOutcome::Redundant);
+    // Backjump.
+    ee.pop();
+    // After lockstep pop the polarity is gone; the next notify is
+    // Fresh again.
+    assert_eq!(ee.notify(v, true), NotifyOutcome::Fresh);
+}
+
 /// SPEC P5: `cdclt_equality_engine=on` on the same `(c·x = k) ∧ (c·x ≠ j)`
 /// formula must match the default `FfTheory` path verdict + model.
 #[test]

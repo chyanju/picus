@@ -91,6 +91,25 @@ pub struct SplitGbCounters {
 pub static SPLIT_DFS: SplitDfsCounters = SplitDfsCounters::new_const();
 pub static SPLIT_GB: SplitGbCounters = SplitGbCounters::new_const();
 
+/// Counters for `gb::ideal::Ideal` introspection used by FGLM /
+/// model construction. `gb_stats`-gated like the others.
+#[derive(Default)]
+pub struct IdealCounters {
+    pub is_zero_dim_calls: AtomicU64,
+    pub quotient_dimension_calls: AtomicU64,
+}
+
+impl IdealCounters {
+    pub const fn new_const() -> Self {
+        Self {
+            is_zero_dim_calls: AtomicU64::new(0),
+            quotient_dimension_calls: AtomicU64::new(0),
+        }
+    }
+}
+
+pub static IDEAL: IdealCounters = IdealCounters::new_const();
+
 /// Counters for the native-ff SMT backend, surfaced when `gb_stats` is
 /// enabled. Reports per-call encoding vs. solving time and
 /// constraint-side digest stability across consecutive calls.

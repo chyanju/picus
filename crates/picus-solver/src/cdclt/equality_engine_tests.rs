@@ -196,6 +196,49 @@ fn bug_register_atom_merges_opposite_polarity_classes_reports_contradiction() {
 }
 
 #[test]
+fn audit_p5_prior_witness_returns_first_polarity_var() {
+    // Register two atoms whose canonical polynomials match (so they
+    // share a rep). Notify the FIRST at polarity true; the engine's
+    // `prior_witness(rep)` must return that first Var. Notify the
+    // SECOND at the same polarity (Redundant outcome); the witness
+    // does NOT change — the witness is the Var that first set the
+    // rep's polarity, not the most recent notifier.
+    let mut atoms_a = AtomTable::new(BigUint::from(7u32));
+    let mut atoms_b = AtomTable::new(BigUint::from(7u32));
+    let mut sat = Solver::new();
+    let mut vn_a: Vec<String> = Vec::new();
+    let mut vn_b: Vec<String> = Vec::new();
+    let var_a = intern_eq_var(&mut atoms_a, &mut sat, &mut vn_a, "x", 3);
+    let var_b = intern_eq_var(&mut atoms_b, &mut sat, &mut vn_b, "x", 3);
+    let key_a = atoms_a.atom(var_a).expect("a").clone();
+    let key_b = atoms_b.atom(var_b).expect("b").clone();
+
+    let mut eq = EqualityEngine::new();
+    assert_eq!(eq.register_atom(var_a, &key_a), RegisterOutcome::Ok);
+    assert_eq!(eq.register_atom(var_b, &key_b), RegisterOutcome::Ok);
+
+    let rep = eq.rep_of(var_a);
+    assert_eq!(eq.prior_witness(rep), None, "no polarity asserted yet");
+
+    assert_eq!(eq.notify(var_a, true), NotifyOutcome::Fresh);
+    assert_eq!(
+        eq.prior_witness(rep),
+        Some(var_a),
+        "witness must be the first asserting Var"
+    );
+
+    // Redundant notify on the canonical-equal var_b must NOT
+    // overwrite the witness; the witness records FIRST polarity, not
+    // most-recent.
+    assert_eq!(eq.notify(var_b, true), NotifyOutcome::Redundant);
+    assert_eq!(
+        eq.prior_witness(rep),
+        Some(var_a),
+        "redundant notify must not overwrite the witness"
+    );
+}
+
+#[test]
 fn audit_eq_term_order_canonicalisation_collapses_xy_and_yx() {
     // Build two atoms whose terms reference `[x, y]` vs `[y, x]`. Same
     // polynomial; canonicalisation must dedup.
