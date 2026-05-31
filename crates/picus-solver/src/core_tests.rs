@@ -71,6 +71,33 @@ fn nonzero_constant_among_constraints_yields_precise_singleton_core() {
 }
 
 #[test]
+fn radical_membership_whole_ring_yields_unsat() {
+    // Combined query system {a - b, (a - b)*w - 1}: the constraint a - b = 0
+    // forces a = b, so the Rabinowitsch witness (a - b)*w - 1 reduces to the
+    // nonzero constant -1 and the monolithic GB is the whole ring. The radical
+    // fast-path must decide UNSAT (the two copies are forced equal = Safe).
+    let pr = FfPolyRing::new(ff(7), vec!["a".into(), "b".into(), "w".into()]);
+    let constraint = pr.sub(pr.var(0), pr.var(1)); // a - b
+    let amb = pr.sub(pr.var(0), pr.var(1)); // a - b (re-built; mul/sub consume)
+    let witness = pr.sub(pr.mul(amb, pr.var(2)), pr.one()); // (a - b)*w - 1
+    match radical_membership_unsat(&pr, vec![constraint, witness], 1, &CancelToken::none()) {
+        Some(SolveOutcome::Unsat(_)) => {}
+        other => panic!("expected Unsat from a whole-ring system, got {:?}", other),
+    }
+}
+
+#[test]
+fn radical_membership_satisfiable_yields_none_no_false_safe() {
+    // Witness (a - b)*w - 1 with NO constraint forcing a = b is satisfiable
+    // (e.g. a=1, b=0, w=1), so the GB is not the whole ring. The fast-path must
+    // return None and never a (false) UNSAT/Safe — soundness is one-directional.
+    let pr = FfPolyRing::new(ff(7), vec!["a".into(), "b".into(), "w".into()]);
+    let amb = pr.sub(pr.var(0), pr.var(1));
+    let witness = pr.sub(pr.mul(amb, pr.var(2)), pr.one());
+    assert!(radical_membership_unsat(&pr, vec![witness], 1, &CancelToken::none()).is_none());
+}
+
+#[test]
 fn satisfiable_system_with_bitsum_shaped_linear_part_is_not_false_unsat() {
     // A single satisfiable quadratic over GF(7) whose linear part is
     // `y + 2z` — i.e. a `c, 2c` coefficient run that bitsum extraction

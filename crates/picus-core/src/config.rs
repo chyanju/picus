@@ -137,6 +137,22 @@ pub struct RuntimeConfig {
     /// completing circuits (the multi-output EdDSA family −0.03 to −0.37 s
     /// each) with identical verdicts and no fixture-level regression.
     pub membership_fastpath: bool,
+    /// Monolithic-GB radical Safe fast-path. Upgrade of `membership_fastpath`:
+    /// rather than reducing `x_a − x_b` against the union of the per-partition
+    /// bases (not a Gröbner basis of the combined ideal, so a nonzero remainder
+    /// is inconclusive), compute the *monolithic* GB of the combined query
+    /// system `constraints ∪ bitsum ∪ {(x_a−x_b)·w − 1}` (the Rabinowitsch
+    /// witness) and test `is_whole_ring`. Whole-ring ⇔ `x_a − x_b ∈ √I`, so the
+    /// system has no solution over the algebraic closure (hence none over
+    /// GF(p)) and the query is UNSAT (the output is forced unique = Safe) — the
+    /// Rabinovich radical-membership test, catching `√I \ I` cases plain ideal
+    /// membership misses. Bounded by a sub-budget so a GB-bound query falls
+    /// through to the split path. Off by default; sound one-directional
+    /// (whole-ring ⇒ UNSAT only). One-sided over GF(p): a uniqueness holding in
+    /// GF(p) but not over the closure — e.g. curve addition laws relying on a
+    /// field-specific fact such as `d` being a non-residue — is not in `√I` and
+    /// falls through. CLI: --radical-membership on|off.
+    pub radical_membership: bool,
     /// Compute the native split-GB under an elimination term order on the
     /// alt-copy (`y`) variables instead of DegRevLex, driving those
     /// variables out of the leading terms first (see
@@ -288,6 +304,7 @@ impl Default for RuntimeConfig {
             track_inter_reduce_deps: true,
             split_triangular: false,
             membership_fastpath: true,
+            radical_membership: false,
             matrix_elim_order: false,
             dynamic_order: true,
             signature_criterion: false,
@@ -324,6 +341,7 @@ impl RuntimeConfig {
         if let Some(v) = o.track_inter_reduce_deps { self.track_inter_reduce_deps = v; }
         if let Some(v) = o.split_triangular { self.split_triangular = v; }
         if let Some(v) = o.membership_fastpath { self.membership_fastpath = v; }
+        if let Some(v) = o.radical_membership { self.radical_membership = v; }
         if let Some(v) = o.matrix_elim_order { self.matrix_elim_order = v; }
         if let Some(v) = o.dynamic_order { self.dynamic_order = v; }
         if let Some(v) = o.signature_criterion { self.signature_criterion = v; }
@@ -366,6 +384,7 @@ pub struct EngineOverlay {
     pub track_inter_reduce_deps: Option<bool>,
     pub split_triangular: Option<bool>,
     pub membership_fastpath: Option<bool>,
+    pub radical_membership: Option<bool>,
     pub matrix_elim_order: Option<bool>,
     pub dynamic_order: Option<bool>,
     pub signature_criterion: Option<bool>,

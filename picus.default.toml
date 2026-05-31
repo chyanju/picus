@@ -78,6 +78,15 @@ reducer_index_cache = false
 # it; a zero remainder proves membership (Safe) and skips the extend. On by
 # default. CLI: --membership-fastpath on|off.
 membership_fastpath = true
+# Monolithic-GB radical Safe fast-path. Upgrade of membership_fastpath: tests
+# whole-ring on the monolithic GB of the combined query system (constraints +
+# bitsum + the query's Rabinowitsch witness), deciding x_a - x_b in rad(I) over
+# the algebraic closure -> Safe, catching forced-equal outputs the per-partition
+# reduction cannot see. Bounded by a sub-budget so a GB-bound query falls
+# through. Off by default: sound but one-sided over GF(p) — a uniqueness holding
+# in GF(p) but not over the closure (e.g. curve laws relying on d being a
+# non-residue) is not in rad(I) and falls through. CLI: --radical-membership on|off.
+radical_membership = false
 # Size-adaptive term order: build the solve ring under the alt-copy elimination
 # order only on rings of at least encoder::DYNAMIC_ORDER_MIN_VARS variables,
 # DegRevLex below. On by default. CLI: --dynamic-order on|off.

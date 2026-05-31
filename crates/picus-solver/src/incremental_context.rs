@@ -559,6 +559,28 @@ fn solve_with_cached(
         Err(_) => return stateless_solve(cs, cancel),
     };
 
+    // Opt-in monolithic radical-membership Safe fast-path: decide the query
+    // UNSAT by one whole-ring check on the combined system, skipping the split
+    // extend and the model search (which enumerates exponentially on
+    // forced-equal curve outputs the partition reduction cannot see).
+    if crate::config::with(|c| c.radical_membership) {
+        let combined: Vec<Poly> = cached
+            .constraint_polys
+            .iter()
+            .chain(cached.bitsum_polys.iter())
+            .chain(query_polys.iter())
+            .map(|p| poly_ring.ring.clone_el(p))
+            .collect();
+        if let Some(outcome) = crate::core::radical_membership_unsat(
+            poly_ring,
+            combined,
+            cached.constraint_polys.len() + query_polys.len(),
+            cancel,
+        ) {
+            return outcome;
+        }
+    }
+
     let starting: Vec<Ideal> = cached
         .split_gb_owned
         .iter()

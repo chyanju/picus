@@ -164,6 +164,13 @@ enum Commands {
         /// Omit to use the built-in default.
         #[arg(long, value_parser = ["on", "off"])]
         membership_fastpath: Option<String>,
+        /// Monolithic-GB radical Safe fast-path for uniqueness queries (native
+        /// FF backend only): on | off. Upgrade of --membership-fastpath:
+        /// whole-ring test on the monolithic GB of `I ∪ {(x_a−x_b)·w − 1}`,
+        /// deciding `x_a − x_b ∈ √I` and catching forced-equal outputs the
+        /// partition reduction misses. Omit to use the built-in default (off).
+        #[arg(long, value_parser = ["on", "off"])]
+        radical_membership: Option<String>,
 
         /// Compute the native split-GB under an elimination term order on
         /// the alt-copy (y) variables instead of DegRevLex (native FF
@@ -287,6 +294,7 @@ fn main() {
             linear_elim,
             split_triangular,
             membership_fastpath,
+            radical_membership,
             matrix_elim_order,
             dynamic_order,
             signature_criterion,
@@ -351,6 +359,7 @@ fn main() {
                     track_inter_reduce_deps: None,
                     split_triangular: split_triangular.as_deref().map(|s| s == "on"),
                     membership_fastpath: membership_fastpath.as_deref().map(|s| s == "on"),
+                    radical_membership: radical_membership.as_deref().map(|s| s == "on"),
                     matrix_elim_order: matrix_elim_order.as_deref().map(|s| s == "on"),
                     dynamic_order: dynamic_order.as_deref().map(|s| s == "on"),
                     signature_criterion: signature_criterion.as_deref().map(|s| s == "on"),

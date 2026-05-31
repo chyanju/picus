@@ -14,11 +14,13 @@ use num_bigint::BigUint;
 use crate::frontend::bitprop::BitProp;
 use crate::frontend::encoder::EncodedSystem;
 use crate::gb::{compute_gb_with_timeout_traced, GbResultTraced};
+use crate::gb::ideal::Ideal;
 use crate::gb::model;
 use crate::frontend::parse;
 use crate::poly::{FfPolyRing, Poly};
 use crate::split_gb::split_find_zero_cancel;
 use crate::timeout::CancelToken;
+use std::time::Duration;
 
 /// An UNSAT core: indices into the input fact list that suffice for UNSAT.
 pub type UnsatCore = Vec<usize>;
@@ -78,6 +80,39 @@ pub fn solve_split_gb<'r>(
     bitsum_polys: &[Poly],
 ) -> SolveOutcome {
     solve_split_gb_cancel(poly_ring, original_polys, bitsum_polys, &CancelToken::none())
+}
+
+/// Sub-budget for the monolithic radical-membership GB (config
+/// `radical_membership`), capping the futile cost on a GB-bound query so the
+/// split path still gets most of the solve timeout.
+const RADICAL_MEMBERSHIP_BUDGET: Duration = Duration::from_millis(3000);
+
+/// Monolithic-GB radical Safe fast-path (config `radical_membership`).
+///
+/// `gens` is the full query system: constraint generators, bitsum
+/// definitions, and the query's Rabinowitsch witness `(x_a−x_b)·w − 1`.
+/// Computes their *monolithic* Gröbner basis and returns `Some(Unsat)` iff it
+/// is the whole ring — i.e. `1 ∈ ⟨I, (x_a−x_b)·w − 1⟩`, so `x_a−x_b ∈ √I`, so
+/// the system has no solution over the algebraic closure (hence none over
+/// GF(p)) and the disequality query is UNSAT (the output is forced unique =
+/// Safe). `n_core` sizes the conservative UNSAT core.
+///
+/// Bounded by `cancel ⊕ budget`: a GB-bound query exhausts the sub-budget and
+/// returns `None`, falling through to the split path. Sound one-directional —
+/// only a fully-computed whole-ring GB yields a verdict; a non-whole-ring or
+/// cancelled GB is inconclusive.
+pub(crate) fn radical_membership_unsat(
+    poly_ring: &FfPolyRing,
+    gens: Vec<Poly>,
+    n_core: usize,
+    cancel: &CancelToken,
+) -> Option<SolveOutcome> {
+    let budget = CancelToken::with_timeout(RADICAL_MEMBERSHIP_BUDGET);
+    let tok = CancelToken::either(cancel, &budget);
+    match Ideal::new_with_cancel(poly_ring, gens, &tok) {
+        Ok(ideal) if ideal.is_whole_ring() => Some(SolveOutcome::Unsat((0..n_core).collect())),
+        _ => None,
+    }
 }
 
 /// Solve an `EncodedSystem` directly.  Convenience wrapper.
@@ -155,6 +190,24 @@ pub fn solve_split_gb_cancel<'r>(
         .position(|p| !p.is_zero() && p.is_constant())
     {
         return SolveOutcome::Unsat(vec![i]);
+    }
+
+    // Opt-in monolithic radical-membership Safe fast-path: decide the query
+    // UNSAT by one whole-ring check on the monolithic GB of the combined
+    // system, skipping partition building and the model search (which
+    // enumerates exponentially on forced-equal outputs the per-partition
+    // whole-ring check below cannot see).
+    if crate::config::with(|c| c.radical_membership) {
+        let combined: Vec<Poly> = original_polys
+            .iter()
+            .chain(bitsum_polys.iter())
+            .map(|p| poly_ring.ring.clone_el(p))
+            .collect();
+        if let Some(outcome) =
+            radical_membership_unsat(poly_ring, combined, original_polys.len(), cancel)
+        {
+            return outcome;
+        }
     }
 
     let (gens, provenance) =
