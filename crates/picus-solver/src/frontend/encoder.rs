@@ -243,12 +243,11 @@ fn elim_y_vars(var_names: &[String]) -> Vec<usize> {
 
 /// Minimum ring width for `dynamic_order` to switch to the elimination
 /// order. Below it, DegRevLex is already cheap and the elimination order
-/// only risks blowing up the model search: a PLDI A/B showed the
-/// elimination order helps only large systems (EdDSA family, thousands of
-/// variables) and regresses tiny ones (a handful of variables). Size is
-/// the predictor — a per-generator S-pair proxy was both too costly on the
-/// large systems where it would matter and a poor predictor on the small
-/// ones — so `dynamic_order` selects on ring width.
+/// only risks blowing up the model search: the elimination order helps only
+/// large systems (EdDSA family, thousands of variables) and regresses tiny
+/// ones (a handful of variables). Ring width is the predictor — a
+/// per-generator S-pair proxy was both too costly on the large systems
+/// where it would matter and a poor predictor on the small ones.
 const DYNAMIC_ORDER_MIN_VARS: usize = 1000;
 
 /// Term order for the solve ring, from config. `matrix_elim_order` forces

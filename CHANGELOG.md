@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/). Entries are telegraphic: one line per change — what changed plus the key term/API — with no narrative, mechanism explanations, or "no verdict change" boilerplate.
 
+## [1.8.20] - 2026-05-30
+- `membership_fastpath` (default on): reduce a uniqueness query's `x_a − x_b` against the cached split-GB constraint basis; a zero remainder proves membership and returns Safe without the Rabinowitsch extend (exact radical membership for primes ≤ 1000, else one-sided Safe filter). PLDI A/B −2.9% total, identical verdicts.
+- `dynamic_order` (default on): size-adaptive term order — alt-copy elimination order for rings ≥ `encoder::DYNAMIC_ORDER_MIN_VARS`, DegRevLex below. PLDI A/B −3.1% total, identical verdicts.
+- `signature_criterion` (default off): GVW signature Gröbner engine (Schreyer signatures, signature-safe reduction, syzygy / rewrite / singular criteria) replacing the per-pair run on rings ≥ `buchberger::GVW_MIN_VARS`. 300-seed differential oracle ≡ per-pair reduced GB; benchmark-neutral.
+- `matrix_elim_order` (default off): matrix-defined monomial orderings (`ff::matrix_order::MatrixOrder`, interned index) + alt-copy elimination order for the split-GB.
+- `zech_log_small_fp` (default off): Zech discrete-log multiply / inverse / power tables for prime fields ≤ `ff::field::ZECH_LOG_MAX_PRIME` (2²⁰); result-identical, opt-in for inverse-heavy small-prime arithmetic.
+- Nonzero-constant generator short-circuits to UNSAT before partition building and the split-GB fixpoint (cvc5 `postRewriteFfEq` analogue); exact one-element core.
+
 ## [1.8.19] - 2026-05-29
 - Soundness: `gb::model::compute_candidates` Case 2.5 routes zero-dimensional ideals through `fglm_to_lex_cancel` + triangular DFS before the round-robin fallback; an exhausted DFS yields the new `Brancher::ProvedUnsat`. `fglm_to_lex_cancel` adds cancel-token plumbing to the BFS staircase walk. `picus_core::profile::IDEAL` counters track `is_zero_dim` / `quotient_dimension` calls under `gb_stats`.
 - Perf: `--f4-hilbert-select` and `--f4-sparse-reducer-cache` flip default on (inert when `--use-f4` is off). PLDI corpus differential under `--use-f4` (`chat/f4_off.tsv` / `chat/f4_on.tsv`): −1.3% total wall-clock, 0 verdict regressions, EdDSAPoseidonVerifier −55% (3349 → 1500 ms), EdDSAMiMCVerifier −21%, EdDSAVerifier −24%, EdDSAMiMCSpongeVerifier −4%, no fixture-level regression > 200 ms. Cyclic-{4,5,6} flat within noise; katsura-{4,5} flat to marginal improvement.

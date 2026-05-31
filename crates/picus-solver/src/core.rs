@@ -147,8 +147,9 @@ pub fn solve_split_gb_cancel<'r>(
     // lets a trivially-contradictory input (an assertion `2 = 1`, or an
     // equality that rewrote to a nonzero constant) skip partition building
     // and the split-GB fixpoint. The `is_whole_ring` check after the
-    // fixpoint reaches the same verdict, so this changes only when (earlier),
-    // not what; it also yields the exact one-element core for this case.
+    // fixpoint reaches the same verdict; this short-circuit only moves the
+    // detection before partition building, and yields the exact one-element
+    // core for this case.
     if let Some(i) = original_polys
         .iter()
         .position(|p| !p.is_zero() && p.is_constant())

@@ -1,0 +1,15 @@
+[ground-truth]
+verdict = "safe"
+constraints = 11
+wires = 22
+pub_outputs = 2
+priv_inputs = 10
+prime = "bn254"
+
+[picus-0]
+verdict = "safe"
+time_ms = 7
+
+[picus-1]
+verdict = "safe"
+time_ms = 3

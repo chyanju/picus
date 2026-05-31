@@ -64,10 +64,10 @@ pub fn use_f4_default() -> bool {
 
 /// Minimum ring width for the GVW signature path (`signature_criterion`).
 /// Below it, GVW's recompute-from-scratch on each split-GB extend loses to
-/// the incremental per-pair engine (a PLDI A/B regressed Pedersen to a
-/// timeout), so small rings stay on the per-pair engine. Above it GVW
-/// eliminates the zero-reductions but is benchmark-neutral — the large
-/// circuits are bounded by the intrinsic GB size, not the zero-reductions.
+/// the incremental per-pair engine, so small rings stay on the per-pair
+/// engine. Above it GVW eliminates the zero-reductions but is
+/// benchmark-neutral — the large circuits are bounded by the intrinsic GB
+/// size, not by the zero-reductions.
 const GVW_MIN_VARS: usize = 1000;
 
 /// A computed Groebner basis.
@@ -868,11 +868,10 @@ impl BuchbergerState {
         }
         if self.trivial && self.cfg.abort_on_trivial { return Ok(()); }
         // GVW (signature_criterion) only on wide rings: its recompute-from-
-        // scratch loses on small ones (a PLDI A/B timed out Pedersen,
-        // recomputing per split-GB extend), so gate it on ring width like
-        // the elimination-order selection. Off by default — benchmark-neutral
-        // even above the gate (the timeouts are GB-size-bound, not
-        // zero-reduction-bound).
+        // scratch loses on small ones (per split-GB extend), so gate it on
+        // ring width like the elimination-order selection. Off by default —
+        // benchmark-neutral even above the gate (the timeouts are GB-size-
+        // bound, not zero-reduction-bound).
         if self.ring.n_vars >= GVW_MIN_VARS && crate::config::with(|c| c.signature_criterion) {
             return self.run_gvw();
         }

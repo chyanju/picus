@@ -1,0 +1,65 @@
+# Baseline configurations for the circomlib-cff5ab6 corpus.
+#
+# Each [picus-N] block is the picus setup behind the matching column in the
+# per-benchmark data files (circomlib-cff5ab6/*.toml), recorded once here
+# instead of repeated in all 68 files.
+#
+# Shared run limits: per-query timeout 10000 ms, 30 s outer wall-clock cap,
+# 6 GB RLIMIT_AS per solve, strictly sequential (one process per fixture).
+
+# picus-0 — cvc5 backend at commit 7cb6d45. This build predates both the
+# in-tree native solver and the config-file mechanism, so it was driven purely
+# from the CLI; parameters are recorded inline (no [analysis]/[engine] tables
+# existed yet):
+#   picus check --r1cs <fixture> --solver cvc5 --theory ff --timeout 10000
+[picus-0]
+ref = "7cb6d45"
+solver = "cvc5"
+theory = "ff"
+timeout_ms = 10000
+
+# picus-1 — native FF solver, version 1.8.20, run with the built-in defaults.
+# `ref` is the commit the benchmarked binary was built from (the 1.8.20
+# version bump + doc cleanup on top are non-behavioral). [picus-1.analysis] /
+# [picus-1.engine] mirror picus.default.toml in full, so to reproduce: check out
+# `ref` and drop them into picus.default.toml as [analysis] / [engine] (strip
+# the "picus-1." prefix).
+[picus-1]
+ref = "9268588"
+version = "1.8.20"
+
+[picus-1.analysis]
+solver = "native"
+theory = "ff"
+selector = "counter"
+timeout_ms = 10000
+lemmas = "all"
+
+[picus-1.engine]
+gb_strategy = "direct"
+use_f4 = false
+dnf_enabled = false
+dnf_cap = 100000
+cdclt_iter_cap = 1000000
+cache_enabled = true
+linear_elim = false
+track_inter_reduce_deps = true
+split_triangular = false
+reducer_index_cache = false
+membership_fastpath = true
+dynamic_order = true
+matrix_elim_order = false
+signature_criterion = false
+zech_log_small_fp = false
+frobenius_cache = true
+branching_incremental_gb = true
+f4_hilbert_select = true
+f4_sparse_reducer_cache = true
+cdclt_multi_prime_router = false
+cdclt_incremental_theory = false
+cdclt_equality_engine = false
+poly_repr = "sparse"
+aboz_emit_disjunctions = true
+gb_stats_enabled = false
+gb_trace_enabled = false
+profile_enabled = false

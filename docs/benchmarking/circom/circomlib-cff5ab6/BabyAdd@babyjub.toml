@@ -1,0 +1,15 @@
+[ground-truth]
+verdict = "unknown"
+constraints = 6
+wires = 11
+pub_outputs = 2
+priv_inputs = 4
+prime = "bn254"
+
+[picus-0]
+verdict = "timeout"
+time_ms = 30007
+
+[picus-1]
+verdict = "unknown"
+time_ms = 10006

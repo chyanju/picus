@@ -93,17 +93,11 @@ pub struct RuntimeConfig {
     /// a Gröbner basis of the linear subsystem, substituting out pivot
     /// variables. Off by default — split-GB already handles linear
     /// constraints in basis 0, and the substitution can densify the
-    /// nonlinear part and add per-`solve` overhead, so it is a net loss on
-    /// the general workload. Exposed as a knob for linear-heavy
-    /// conjunctive circuits where it may pay off.
-    /// Linear (Gaussian) pre-elimination before the GB solve. Off by
-    /// default: a PLDI corpus differential (`linelim_off.tsv` /
-    /// `linelim_on.tsv` under `chat/`) measured +3.3% total
-    /// wall-clock with 7 fixture-level regressions ≥200 ms (BinSum
-    /// and BinSub 80× slower; EdDSA family 1.3-1.6× slower; Pedersen
-    /// +2.9 s) and zero clean wins. Re-evaluate the default when the
-    /// corpus expands toward linear-heavy circuits the substitution
-    /// pre-pass would amortise.
+    /// nonlinear part and add per-`solve` overhead. A PLDI corpus
+    /// differential measured +3.3% total wall-clock with regressions
+    /// (BinSum/BinSub 80×, EdDSA family 1.3-1.6×, Pedersen +2.9 s) and zero
+    /// wins. Exposed as a knob for linear-heavy conjunctive circuits where
+    /// it may pay off.
     pub linear_elim: bool,
     /// Track inter-reduction reducer dependencies in the single-GB UNSAT-core
     /// tracer (`GbTracer`), so a trivial core reflects the basis elements that
@@ -139,10 +133,9 @@ pub struct RuntimeConfig {
     /// through. For primes ≤ 1000 the basis already carries the field
     /// polynomials, so the test is exact radical membership; for large
     /// primes it is a one-sided Safe filter (misses fall through). On by
-    /// default: a PLDI same-binary A/B (`chat/align-harness/memb_off.jsonl`
-    /// / `memb_on.jsonl`) measured −2.9% total wall-clock on completing
-    /// circuits — the multi-output EdDSA family −0.03 to −0.37 s each — with
-    /// identical verdicts and no fixture-level regression.
+    /// default: a PLDI same-binary A/B measured −2.9% total wall-clock on
+    /// completing circuits (the multi-output EdDSA family −0.03 to −0.37 s
+    /// each) with identical verdicts and no fixture-level regression.
     pub membership_fastpath: bool,
     /// Compute the native split-GB under an elimination term order on the
     /// alt-copy (`y`) variables instead of DegRevLex, driving those
@@ -151,8 +144,7 @@ pub struct RuntimeConfig {
     /// reads its order from the ring, so this only changes which (equally
     /// valid) reduced GB of the same ideal is computed; SAT/UNSAT verdicts
     /// are preserved (`verify_model` / whole-ring detection are
-    /// order-independent). Off by default: a PLDI same-binary A/B
-    /// (`chat/align-harness/elim_off.jsonl` / `elim_on.jsonl`) measured
+    /// order-independent). Off by default: a PLDI same-binary A/B measured
     /// +318% total wall-clock with five regressions to `unknown` / timeout
     /// (MontgomeryAdd, MontgomeryDouble, BinSum, BinSub, Pedersen) and zero
     /// wins — the elimination order's leading-term structure makes the
@@ -165,13 +157,12 @@ pub struct RuntimeConfig {
     /// set, the encoder builds the solve ring under the alt-copy
     /// elimination order only for rings of at least
     /// `frontend::encoder::DYNAMIC_ORDER_MIN_VARS` variables, and DegRevLex
-    /// below that — a PLDI A/B found the elimination order helps only large
-    /// systems (EdDSA family) and regresses tiny ones. The split-GB is
+    /// below that — the elimination order helps only large systems (EdDSA
+    /// family) and regresses tiny ones. The split-GB is
     /// order-agnostic, so this only changes which equally valid GB is
     /// computed; verdicts are guarded independently of the order. On by
-    /// default: a PLDI same-binary A/B (`chat/align-harness/dyn_off3.jsonl`
-    /// / `dyn_on3.jsonl`) measured -3.1% total wall-clock — the EdDSA
-    /// family -54..-585 ms via the elimination order on its large rings —
+    /// default: a PLDI same-binary A/B measured -3.1% total wall-clock — the
+    /// EdDSA family -54..-585 ms via the elimination order on its large rings —
     /// with identical verdicts and no regression (the size guard routes
     /// small rings, where the elimination order regressed, to DegRevLex).
     pub dynamic_order: bool,
@@ -183,8 +174,7 @@ pub struct RuntimeConfig {
     /// singular criterion proves redundant — so the zero-reductions the
     /// product / Gebauer-Möller / Buchberger criteria fail to predict are
     /// never paid for, rather than reduced-then-discarded. Off by default: a
-    /// PLDI same-binary A/B (`chat/align-harness/sig2_off.jsonl` /
-    /// `sig2_on.jsonl`) measured -0.2% total wall-clock with identical
+    /// PLDI same-binary A/B measured -0.2% total wall-clock with identical
     /// verdicts (a 300-seed differential oracle pins the GVW basis equal to
     /// the per-pair reduced GB) and no regression, but no clean fixture win —
     /// the timeout circuits are bounded by the intrinsic Gröbner-basis size,
@@ -243,27 +233,20 @@ pub struct RuntimeConfig {
     /// precise 2-literal lemma `{atom, witness}` via
     /// `EqualityEngine::prior_witness` instead of deferring to the
     /// inner GB collapse. Off by default after a PLDI corpus
-    /// differential (`chat/ee_off.tsv` / `chat/ee_on.tsv`):
-    /// −0.38% total wall-clock, 0 verdict regressions,
-    /// EdDSAMiMCVerifier −21% clean win and Pedersen@pedersen −3.6%,
-    /// but a borderline EdDSAMiMCSpongeVerifier +1.7% keeps strict
-    /// adherence to the default-flag-flip rule conservative; flip
-    /// with explicit per-release authorisation once the +1.7%
-    /// fixture is checked against a follow-up run for noise versus
-    /// systematic effect.
+    /// differential: −0.38% total wall-clock, 0 verdict regressions,
+    /// mixed fixtures (EdDSAMiMCVerifier −21% and Pedersen −3.6%, but a
+    /// borderline EdDSAMiMCSpongeVerifier +1.7%), so the default-flag-flip
+    /// rule keeps it off pending a noise-vs-systematic recheck.
     pub cdclt_equality_engine: bool,
     /// Reorder F4 S-pair batches by predicted Hilbert-function drop
     /// (Bigatti–Caboara–Robbiano selection oracle with
     /// `HilbertNum::add_generators_incremental` per candidate;
     /// `HILBERT_SELECT_BASIS_CAP=250` ceiling). Default ON when the
     /// F4 path is in use (`use_f4=true`); inert when the per-pair
-    /// path runs. PLDI corpus differential (`chat/f4_off.tsv` /
-    /// `chat/f4_on.tsv`, both with `--use-f4`):
-    ///   total wall-clock 331152 → 326928 ms (−1.3%), 0 verdict
-    ///   regressions, EdDSAPoseidonVerifier −55%
-    ///   (3349 → 1500 ms), EdDSAMiMCVerifier −21%, EdDSAVerifier
-    ///   −24%, EdDSAMiMCSpongeVerifier −3.9%, no fixture
-    ///   regression > 200 ms.
+    /// path runs. PLDI corpus differential (with `--use-f4`): −1.3% total
+    /// wall-clock, 0 verdict regressions, EdDSAPoseidonVerifier −55%
+    /// (3349 → 1500 ms), EdDSAMiMCVerifier −21%, EdDSAVerifier −24%,
+    /// EdDSAMiMCSpongeVerifier −3.9%, no fixture regression > 200 ms.
     /// Cyclic-N is homogeneous so the oracle has nothing to rank;
     /// katsura-N (heterogeneous) is flat to marginally faster.
     pub f4_hilbert_select: bool,

@@ -301,7 +301,7 @@ fn main() {
             cdclt_incremental_theory,
         } => {
             // CLI overlay — the highest-precedence config layer. Only the
-            // flags the user actually passed become `Some`; everything
+            // flags actually passed on the command line become `Some`; everything
             // else stays `None` and falls through to the config file,
             // then built-in defaults (see `resolve_config`). On/off bool
             // flags can only turn a knob *on* (or, for the `no_*` flags,

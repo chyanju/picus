@@ -1,0 +1,15 @@
+[ground-truth]
+verdict = "unsafe"
+constraints = 114
+wires = 117
+pub_outputs = 2
+priv_inputs = 2
+prime = "bn254"
+
+[picus-0]
+verdict = "timeout"
+time_ms = 30030
+
+[picus-1]
+verdict = "unsafe"
+time_ms = 6438

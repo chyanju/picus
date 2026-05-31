@@ -73,6 +73,48 @@ split_triangular = false
 # default: a growing basis makes cache misses, and the rebuild, frequent.
 # CLI: --reducer-index-cache on|off.
 reducer_index_cache = false
+# Ideal-membership Safe fast-path: before extending the cached split-GB basis
+# with a uniqueness query's Rabinowitsch polynomial, reduce x_a - x_b against
+# it; a zero remainder proves membership (Safe) and skips the extend. On by
+# default. CLI: --membership-fastpath on|off.
+membership_fastpath = true
+# Size-adaptive term order: build the solve ring under the alt-copy elimination
+# order only on rings of at least encoder::DYNAMIC_ORDER_MIN_VARS variables,
+# DegRevLex below. On by default. CLI: --dynamic-order on|off.
+dynamic_order = true
+# Always compute the split-GB under the alt-copy elimination order (overrides
+# the dynamic_order size gate). Off by default — regresses the model search on
+# most circuits. CLI: --matrix-elim-order on|off.
+matrix_elim_order = false
+# Signature-based GVW Gröbner engine in place of per-pair Buchberger on rings
+# of at least buchberger::GVW_MIN_VARS variables. Result-identical reduced GB.
+# Off by default — benchmark-neutral research knob. CLI: --signature-criterion.
+signature_criterion = false
+# Zech (discrete-log) multiply/inverse/power tables for prime fields with
+# prime <= ff::field::ZECH_LOG_MAX_PRIME (2^20). Result-identical. Off by
+# default — only the small-prime path (never BN254). CLI: --zech-log-small-fp.
+zech_log_small_fp = false
+# Memoize the Frobenius polynomial x^p mod f across distinct_linear_part calls,
+# keyed by (prime, coeffs). On by default. CLI: --frobenius-cache on|off.
+frobenius_cache = true
+# Extend the branch GB incrementally (compute_gb_incremental_with_order) per
+# DFS branch instead of a fresh full Buchberger over the merged generators.
+# Result-preserving. On by default. CLI: --branching-incremental-gb on|off.
+branching_incremental_gb = true
+# Reorder F4 S-pair batches by predicted Hilbert-function drop (Bigatti–Caboara–
+# Robbiano oracle). On by default; inert unless use_f4. CLI: --f4-hilbert-select.
+f4_hilbert_select = true
+# F4 reducer cache keyed on leading monomial (HashMap<MonoKey, usize>),
+# rematerialising the reducer on a hit. On by default; inert unless use_f4.
+# CLI: --f4-sparse-reducer-cache on|off.
+f4_sparse_reducer_cache = true
+# CDCL(T) capability wires for non-R1CS paths (SMT-LIB multi-prime routing,
+# cross-decision incremental FF theory, equality-engine atom dedup). All off by
+# default; inert on the R1CS/PLDI path. CLI: --cdclt-multi-prime-router /
+# --cdclt-incremental-theory / --cdclt-equality-engine on|off.
+cdclt_multi_prime_router = false
+cdclt_incremental_theory = false
+cdclt_equality_engine = false
 
 # --- IR / lemma layer (also affects the cvc5 path) ---
 # Polynomial representation: "sparse" (scales on wide rings) | "dense"

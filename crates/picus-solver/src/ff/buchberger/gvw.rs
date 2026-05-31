@@ -16,7 +16,7 @@
 //! output polynomials form a Gröbner basis of the input ideal in `order`;
 //! the caller interreduces to the reduced GB. Soundness is pinned by the
 //! `signature_gb_matches_per_pair_*` differential oracle (the GVW basis
-//! must equal the per-pair reduced GB) plus verify_model + the PLDI A/B.
+//! must equal the per-pair reduced GB) plus `verify_model`.
 
 use std::cmp::Ordering;
 
