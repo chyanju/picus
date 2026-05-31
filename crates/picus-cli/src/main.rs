@@ -184,6 +184,12 @@ enum Commands {
         #[arg(long, value_parser = ["on", "off"])]
         signature_criterion: Option<String>,
 
+        /// Zech (discrete-log) multiplication tables for small prime fields
+        /// (`prime <= 2^20`): on | off. Result-identical; only the small-prime
+        /// path is affected (BN254 stays on GMP). Omit for the built-in default.
+        #[arg(long, value_parser = ["on", "off"])]
+        zech_log_small_fp: Option<String>,
+
         /// Cache the reducer's divisor index across reductions with an
         /// unchanged active basis (native FF backend only): on | off. Omit
         /// to use the built-in default.
@@ -284,6 +290,7 @@ fn main() {
             matrix_elim_order,
             dynamic_order,
             signature_criterion,
+            zech_log_small_fp,
             reducer_index_cache,
             frobenius_cache,
             branching_incremental_gb,
@@ -347,6 +354,7 @@ fn main() {
                     matrix_elim_order: matrix_elim_order.as_deref().map(|s| s == "on"),
                     dynamic_order: dynamic_order.as_deref().map(|s| s == "on"),
                     signature_criterion: signature_criterion.as_deref().map(|s| s == "on"),
+                    zech_log_small_fp: zech_log_small_fp.as_deref().map(|s| s == "on"),
                     reducer_index_cache: reducer_index_cache.as_deref().map(|s| s == "on"),
                     frobenius_cache: frobenius_cache.as_deref().map(|s| s == "on"),
                     branching_incremental_gb: branching_incremental_gb.as_deref().map(|s| s == "on"),

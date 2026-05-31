@@ -1032,3 +1032,104 @@ fn prop_div_by_zero_returns_none() {
         }
     }
 }
+
+// ──────────────────────────── Zech-log small-prime backend ───────────────
+
+/// Deterministic LCG (no `rand` dependency; reproducible across runs).
+fn lcg(state: &mut u64) -> u64 {
+    *state = state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    *state >> 16
+}
+
+#[test]
+fn primitive_root_is_a_generator() {
+    // The smallest primitive root must have full multiplicative order p-1:
+    // g^k != 1 for 0 < k < p-1, and g^(p-1) == 1.
+    for &p in &[2u64, 3, 5, 7, 11, 13, 17, 101, 251, 65521] {
+        let g = primitive_root(p);
+        if p == 2 {
+            assert_eq!(g, 1);
+            continue;
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut cur = 1u64;
+        for _ in 0..(p - 1) {
+            assert!(seen.insert(cur), "GF({p}): g={g} repeats before order p-1");
+            cur = small_mul(cur, g, p);
+        }
+        assert_eq!(cur, 1, "GF({p}): g={g} must return to 1 after p-1 steps");
+    }
+}
+
+#[test]
+fn zech_tables_match_direct_small_primes_exhaustively() {
+    // For tiny primes, every mul / inv / pow pair must agree with the direct
+    // `small_*` arithmetic.
+    for &p in &[2u64, 3, 5, 7, 11, 13, 17, 101, 251] {
+        let t = ZechTables::build(p);
+        for a in 0..p {
+            for b in 0..p {
+                assert_eq!(t.mul(a, b), small_mul(a, b, p), "GF({p}): {a}*{b}");
+            }
+            assert_eq!(t.inv(a), small_inv(a, p), "GF({p}): inv({a})");
+            for e in 0..p {
+                assert_eq!(t.pow(a, e), small_pow(a, e, p), "GF({p}): {a}^{e}");
+            }
+        }
+    }
+}
+
+#[test]
+fn zech_tables_match_direct_large_prime_random() {
+    // GF(65521): too large for the exhaustive sweep — sample randomly.
+    let p = 65521u64;
+    let t = ZechTables::build(p);
+    let mut s = 0x1234_5678u64;
+    for _ in 0..200_000 {
+        let a = lcg(&mut s) % p;
+        let b = lcg(&mut s) % p;
+        assert_eq!(t.mul(a, b), small_mul(a, b, p), "{a}*{b}");
+        assert_eq!(t.inv(a), small_inv(a, p), "inv({a})");
+        let e = lcg(&mut s); // full u64 exponent — exercises the mod (p-1) reduction
+        assert_eq!(t.pow(a, e), small_pow(a, e, p), "{a}^{e}");
+    }
+}
+
+#[test]
+fn zech_field_matches_direct_field() {
+    // The `zech_log_small_fp` flag must be result-identical to the direct
+    // backend across mul / inv / div / pow on the field API.
+    for &p in &[7u64, 101, 251, 65521] {
+        let direct = {
+            let _g = crate::config::ConfigGuard::with_override(|c| c.zech_log_small_fp = false);
+            PrimeField::new(BigUint::from(p))
+        };
+        let zech = {
+            let _g = crate::config::ConfigGuard::with_override(|c| c.zech_log_small_fp = true);
+            PrimeField::new(BigUint::from(p))
+        };
+        let mut s = 0xC0FFEEu64;
+        for _ in 0..20_000 {
+            let a = direct.from_u64(lcg(&mut s) % p);
+            let b = direct.from_u64(lcg(&mut s) % p);
+            assert_eq!(direct.mul(&a, &b), zech.mul(&a, &b), "GF({p}) mul");
+            assert_eq!(direct.inv(&a), zech.inv(&a), "GF({p}) inv");
+            assert_eq!(direct.div(&a, &b), zech.div(&a, &b), "GF({p}) div");
+            let e = BigUint::from(lcg(&mut s));
+            assert_eq!(direct.pow(&a, &e), zech.pow(&a, &e), "GF({p}) pow");
+        }
+    }
+}
+
+#[test]
+fn zech_log_off_by_default_keeps_direct_backend() {
+    // Default config (flag off): a small prime must not build the tables.
+    let f = PrimeField::new(BigUint::from(101u64));
+    // Indirect check: arithmetic is still correct (the selection itself is
+    // private; the flag-on path is covered by `zech_field_matches_direct_field`).
+    let a = f.from_u64(7);
+    let b = f.from_u64(9);
+    assert_eq!(f.mul(&a, &b), f.from_u64(63));
+}

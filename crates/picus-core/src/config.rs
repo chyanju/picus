@@ -193,6 +193,20 @@ pub struct RuntimeConfig {
     /// on each split-GB extend regressed (Pedersen), to the per-pair engine.
     /// Kept as a research knob and the foundation for further signature work.
     pub signature_criterion: bool,
+    /// Use Zech (discrete-log) tables for prime fields with
+    /// `prime <= ff::field::ZECH_LOG_MAX_PRIME`, turning multiply / inverse /
+    /// power into table lookups. Result-identical (the stored element is the
+    /// plain residue either way). Off by default, for two reasons: (i) picus's
+    /// deployed workload is BN254 — the GMP backend, where the small-prime
+    /// path is never taken, so the PLDI corpus cannot gate it; (ii) the
+    /// speedup is not uniform. A 5M-op micro-benchmark: `inv` wins everywhere
+    /// (GF(101) 103→11 ms, GF(65521) 102→11 ms — a table lookup vs extended
+    /// Euclid), but `mul` regresses on mid-size primes (GF(65521) 46→81 ms:
+    /// the ~1 MB `exp` table overflows L2, and Gröbner reduction is mul-heavy)
+    /// and only marginally wins on tiny ones (GF(101) 46→40 ms). So the net is
+    /// workload-dependent; kept as an opt-in knob for inverse-heavy small-prime
+    /// arithmetic, with an `O(prime)` table build per field.
+    pub zech_log_small_fp: bool,
     /// Cache the geobucket reducer's divisor index (DivMask buckets + degree
     /// order) across S-pair reductions whose active basis is unchanged,
     /// instead of rebuilding it per call. Result-preserving (same normal
@@ -294,6 +308,7 @@ impl Default for RuntimeConfig {
             matrix_elim_order: false,
             dynamic_order: true,
             signature_criterion: false,
+            zech_log_small_fp: false,
             reducer_index_cache: false,
             frobenius_cache: true,
             branching_incremental_gb: true,
@@ -329,6 +344,7 @@ impl RuntimeConfig {
         if let Some(v) = o.matrix_elim_order { self.matrix_elim_order = v; }
         if let Some(v) = o.dynamic_order { self.dynamic_order = v; }
         if let Some(v) = o.signature_criterion { self.signature_criterion = v; }
+        if let Some(v) = o.zech_log_small_fp { self.zech_log_small_fp = v; }
         if let Some(v) = o.reducer_index_cache { self.reducer_index_cache = v; }
         if let Some(v) = o.frobenius_cache { self.frobenius_cache = v; }
         if let Some(v) = o.branching_incremental_gb { self.branching_incremental_gb = v; }
@@ -370,6 +386,7 @@ pub struct EngineOverlay {
     pub matrix_elim_order: Option<bool>,
     pub dynamic_order: Option<bool>,
     pub signature_criterion: Option<bool>,
+    pub zech_log_small_fp: Option<bool>,
     pub reducer_index_cache: Option<bool>,
     pub frobenius_cache: Option<bool>,
     pub branching_incremental_gb: Option<bool>,

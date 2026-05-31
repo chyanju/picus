@@ -242,6 +242,11 @@ enum FieldKind {
     },
     Small {
         prime: u64,
+        /// Zech-log tables when `zech_log_small_fp` selected them at
+        /// construction (and `prime <= ZECH_LOG_MAX_PRIME`); `None` uses the
+        /// direct `small_*` arithmetic. Element representation is identical
+        /// either way, so the two are interchangeable.
+        log: Option<Arc<ZechTables>>,
     },
 }
 
@@ -259,9 +264,16 @@ impl PrimeField {
         assert!(prime > BigUint::from(1u32), "prime must be > 1");
         if prime.bits() <= SMALL_PRIME_BITS {
             if let Some(p) = biguint_to_u64(&prime) {
+                let log = if p <= ZECH_LOG_MAX_PRIME
+                    && crate::config::with(|c| c.zech_log_small_fp)
+                {
+                    Some(Arc::new(ZechTables::build(p)))
+                } else {
+                    None
+                };
                 return PrimeField {
                     prime_bu: Arc::new(prime),
-                    kind: FieldKind::Small { prime: p },
+                    kind: FieldKind::Small { prime: p, log },
                 };
             }
         }
@@ -311,7 +323,7 @@ impl PrimeField {
                 val %= &**prime;
                 FieldElem::from_integer_unchecked(val)
             }
-            FieldKind::Small { prime } => FieldElem::from_u64_unchecked(v % prime),
+            FieldKind::Small { prime, .. } => FieldElem::from_u64_unchecked(v % prime),
         }
     }
 
@@ -326,7 +338,7 @@ impl PrimeField {
                 }
                 FieldElem::from_integer_unchecked(val)
             }
-            FieldKind::Small { prime } => {
+            FieldKind::Small { prime, .. } => {
                 let p = *prime;
                 let r = (v as i128).rem_euclid(p as i128) as u64;
                 FieldElem::from_u64_unchecked(r)
@@ -341,7 +353,7 @@ impl PrimeField {
                 val %= &**prime;
                 FieldElem::from_integer_unchecked(val)
             }
-            FieldKind::Small { prime } => {
+            FieldKind::Small { prime, .. } => {
                 let p_bu = BigUint::from(*prime);
                 let r = v % &p_bu;
                 FieldElem::from_u64_unchecked(
@@ -369,7 +381,7 @@ impl PrimeField {
                 }
                 out
             }
-            FieldKind::Small { prime } => {
+            FieldKind::Small { prime, .. } => {
                 FieldElem::from_u64_unchecked(small_add(a.as_small(), b.as_small(), *prime))
             }
         }
@@ -385,7 +397,7 @@ impl PrimeField {
                     *av -= &**prime;
                 }
             }
-            FieldKind::Small { prime } => {
+            FieldKind::Small { prime, .. } => {
                 let av = match &mut a.repr {
                     ElemRepr::Small(v) => v,
                     _ => unreachable!(),
@@ -413,7 +425,7 @@ impl PrimeField {
                 }
                 out
             }
-            FieldKind::Small { prime } => {
+            FieldKind::Small { prime, .. } => {
                 FieldElem::from_u64_unchecked(small_sub(a.as_small(), b.as_small(), *prime))
             }
         }
@@ -428,7 +440,7 @@ impl PrimeField {
                     *av += &**prime;
                 }
             }
-            FieldKind::Small { prime } => {
+            FieldKind::Small { prime, .. } => {
                 let av = match &mut a.repr {
                     ElemRepr::Small(v) => v,
                     _ => unreachable!(),
@@ -449,8 +461,12 @@ impl PrimeField {
                 }
                 out
             }
-            FieldKind::Small { prime } => {
-                FieldElem::from_u64_unchecked(small_mul(a.as_small(), b.as_small(), *prime))
+            FieldKind::Small { prime, log } => {
+                let v = match log {
+                    Some(t) => t.mul(a.as_small(), b.as_small()),
+                    None => small_mul(a.as_small(), b.as_small(), *prime),
+                };
+                FieldElem::from_u64_unchecked(v)
             }
         }
     }
@@ -462,12 +478,15 @@ impl PrimeField {
                 *av *= b.as_gmp();
                 *av %= &**prime;
             }
-            FieldKind::Small { prime } => {
+            FieldKind::Small { prime, log } => {
                 let av = match &mut a.repr {
                     ElemRepr::Small(v) => v,
                     _ => unreachable!(),
                 };
-                *av = small_mul(*av, b.as_small(), *prime);
+                *av = match log {
+                    Some(t) => t.mul(*av, b.as_small()),
+                    None => small_mul(*av, b.as_small(), *prime),
+                };
             }
         }
     }
@@ -486,7 +505,7 @@ impl PrimeField {
                 b.pool_return();
                 a
             }
-            FieldKind::Small { prime } => {
+            FieldKind::Small { prime, .. } => {
                 FieldElem::from_u64_unchecked(small_add(a.as_small(), b.as_small(), *prime))
             }
         }
@@ -504,7 +523,7 @@ impl PrimeField {
                 b.pool_return();
                 a
             }
-            FieldKind::Small { prime } => {
+            FieldKind::Small { prime, .. } => {
                 FieldElem::from_u64_unchecked(small_sub(a.as_small(), b.as_small(), *prime))
             }
         }
@@ -522,7 +541,7 @@ impl PrimeField {
                 }
                 a
             }
-            FieldKind::Small { prime } => {
+            FieldKind::Small { prime, .. } => {
                 FieldElem::from_u64_unchecked(small_neg(a.as_small(), *prime))
             }
         }
@@ -539,7 +558,7 @@ impl PrimeField {
                     out
                 }
             }
-            FieldKind::Small { prime } => {
+            FieldKind::Small { prime, .. } => {
                 FieldElem::from_u64_unchecked(small_neg(a.as_small(), *prime))
             }
         }
@@ -558,8 +577,12 @@ impl PrimeField {
                     Err(_) => None,
                 }
             }
-            FieldKind::Small { prime } => {
-                small_inv(a.as_small(), *prime).map(FieldElem::from_u64_unchecked)
+            FieldKind::Small { prime, log } => {
+                let v = match log {
+                    Some(t) => t.inv(a.as_small()),
+                    None => small_inv(a.as_small(), *prime),
+                };
+                v.map(FieldElem::from_u64_unchecked)
             }
         }
     }
@@ -602,7 +625,18 @@ impl PrimeField {
                 out.assign(a.as_gmp().pow_mod_ref(&exp_int, prime).unwrap());
                 FieldElem::from_integer_unchecked(out)
             }
-            FieldKind::Small { prime } => {
+            FieldKind::Small { prime, log } => {
+                if let Some(t) = log {
+                    // `exp != 0` here (handled above). 0^exp = 0; for a != 0,
+                    // a^exp = a^(exp mod (p-1)) by Fermat, so reduce the
+                    // BigUint exponent to a u64 before the single table power.
+                    let av = a.as_small();
+                    if av == 0 {
+                        return FieldElem::from_u64_unchecked(0);
+                    }
+                    let e = biguint_to_u64(&(exp % BigUint::from(*prime - 1))).unwrap_or(0);
+                    return FieldElem::from_u64_unchecked(t.pow(av, e));
+                }
                 // Repeated squaring scanning `exp`'s little-endian bit
                 // string. Base and result stay in u64; the per-step
                 // squaring uses `small_mul` (u128 intermediate). No
@@ -641,8 +675,12 @@ impl PrimeField {
                 out.assign(a.as_gmp().pow_mod_ref(&exp_int, prime).unwrap());
                 FieldElem::from_integer_unchecked(out)
             }
-            FieldKind::Small { prime } => {
-                FieldElem::from_u64_unchecked(small_pow(a.as_small(), exp, *prime))
+            FieldKind::Small { prime, log } => {
+                let v = match log {
+                    Some(t) => t.pow(a.as_small(), exp),
+                    None => small_pow(a.as_small(), exp, *prime),
+                };
+                FieldElem::from_u64_unchecked(v)
             }
         }
     }
@@ -767,6 +805,125 @@ fn small_pow(mut base: u64, mut exp: u64, p: u64) -> u64 {
         }
     }
     result
+}
+
+// ──────────────────────────── Zech-log small-prime tables ────────────────
+
+/// Largest prime for which the [`ZechTables`] backend is built. The tables
+/// are `O(p)` (`exp` holds `2(p-1)-1` u64s, `log` holds `p` u32s, ~20 bytes
+/// per residue), so this caps a single field at ~20 MB; above it the direct
+/// `small_*` path is used regardless of the `zech_log_small_fp` flag.
+const ZECH_LOG_MAX_PRIME: u64 = 1 << 20;
+
+/// Discrete-log (Zech) multiplication tables for a small prime field.
+///
+/// `g` is a primitive root mod `p`; `exp[i] = g^i mod p`, materialised to
+/// length `2(p-1)-1` so `exp[log[a] + log[b]]` reads the product without a
+/// modular reduction; `log[v]` is the discrete log of `v` base `g` for
+/// `v in 1..p` (`log[0]` is an unused sentinel). Multiplication is a pair of
+/// table lookups plus an integer add; inversion and exponentiation are `O(1)`
+/// on the logs rather than a Euclid / square-and-multiply loop. The stored
+/// element representation is unchanged (the plain residue `v`, never the
+/// log), so a Zech-backed field's `FieldElem`s are identical to and
+/// interchangeable with the direct backend's.
+struct ZechTables {
+    p_minus_1: u64,
+    exp: Vec<u64>,
+    log: Vec<u32>,
+}
+
+impl std::fmt::Debug for ZechTables {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ZechTables")
+            .field("p_minus_1", &self.p_minus_1)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ZechTables {
+    fn build(p: u64) -> ZechTables {
+        let g = primitive_root(p);
+        let n = (p - 1) as usize;
+        let mut exp = vec![0u64; 2 * n - 1];
+        let mut log = vec![0u32; p as usize];
+        let mut cur: u64 = 1;
+        for (i, slot) in exp.iter_mut().take(n).enumerate() {
+            *slot = cur;
+            log[cur as usize] = i as u32;
+            cur = small_mul(cur, g, p);
+        }
+        for i in n..(2 * n - 1) {
+            exp[i] = exp[i - n];
+        }
+        ZechTables { p_minus_1: p - 1, exp, log }
+    }
+
+    #[inline]
+    fn mul(&self, a: u64, b: u64) -> u64 {
+        if a == 0 || b == 0 {
+            return 0;
+        }
+        let i = self.log[a as usize] as usize + self.log[b as usize] as usize;
+        self.exp[i]
+    }
+
+    #[inline]
+    fn inv(&self, a: u64) -> Option<u64> {
+        if a == 0 {
+            return None;
+        }
+        let la = self.log[a as usize] as u64;
+        let idx = if la == 0 { 0 } else { (self.p_minus_1 - la) as usize };
+        Some(self.exp[idx])
+    }
+
+    #[inline]
+    fn pow(&self, a: u64, e: u64) -> u64 {
+        if e == 0 {
+            return 1;
+        }
+        if a == 0 {
+            return 0;
+        }
+        let la = self.log[a as usize] as u128;
+        let idx = (la * ((e % self.p_minus_1) as u128) % (self.p_minus_1 as u128)) as usize;
+        self.exp[idx]
+    }
+}
+
+/// Smallest primitive root mod the prime `p` (the smallest `g` whose order
+/// is `p-1`: `g^{(p-1)/q} != 1` for every prime `q | p-1`).
+fn primitive_root(p: u64) -> u64 {
+    if p == 2 {
+        return 1;
+    }
+    let phi = p - 1;
+    let factors = distinct_prime_factors(phi);
+    for g in 2..p {
+        if factors.iter().all(|&q| small_pow(g, phi / q, p) != 1) {
+            return g;
+        }
+    }
+    unreachable!("a prime field has a primitive root")
+}
+
+/// Distinct prime factors of `n` by trial division (`n < 2^20` here).
+fn distinct_prime_factors(mut n: u64) -> Vec<u64> {
+    let mut f = Vec::new();
+    let mut d = 2u64;
+    while d * d <= n {
+        if n % d == 0 {
+            f.push(d);
+            while n % d == 0 {
+                n /= d;
+            }
+        }
+        d += 1;
+    }
+    if n > 1 {
+        f.push(n);
+    }
+    f
 }
 
 // ──────────────────────────── Misc helpers ──────────────────────────────
