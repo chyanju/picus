@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/). Entries are telegraphic: one line per change — what changed plus the key term/API — with no narrative, mechanism explanations, or "no verdict change" boilerplate.
 
+## [1.8.22] - 2026-05-31
+- `tecomplete` propagation lemma (in `all`): marks both outputs of the twisted-Edwards complete-addition gadget known once its inputs are; certified by the twisted-Edwards completeness theorem (`legendre(a) = +1`, `legendre(d) = −1`; Bernstein–Lange, ASIACRYPT 2007), checked per curve at runtime.
+
 ## [1.8.21] - 2026-05-30
 - `radical_membership` (default off): monolithic-GB whole-ring Safe filter — decides `x_a − x_b ∈ √I` (Rabinovich) on the combined query system instead of reducing against the non-GB partition union; sub-budget bounded, one-sided over GF(p).
 
