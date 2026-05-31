@@ -24,7 +24,7 @@ timeout_ms = 10000
 # them into picus.default.toml as [analysis] / [engine] (strip the "picus-1."
 # prefix).
 [picus-1]
-ref = "03b387f"
+ref = "f79e892"
 version = "1.8.20"
 
 [picus-1.analysis]
