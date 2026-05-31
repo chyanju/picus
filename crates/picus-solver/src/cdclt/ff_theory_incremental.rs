@@ -121,9 +121,8 @@ impl<'a> IncrementalFfTheoryState<'a> {
     /// Invariant check for the `add_field_polys` branch: returns true
     /// iff for every name in `name_to_slot` the basis still contains
     /// some polynomial reducing to `x_slot^p − x_slot`. Used by the
-    /// `debug_assert!` in `post_check` as the canary for R5 H1 /
-    /// R7 J1 hazard recurrence (slot-claim rollback decoupling from
-    /// basis rollback). Exact equality is too tight under inter-
+    /// `debug_assert!` in `post_check` as the canary for the
+    /// slot-claim/basis rollback decoupling hazard. Exact equality is too tight under inter-
     /// reduction; the cheap correctness witness is "the basis is
     /// non-empty whenever some slot has been claimed AND
     /// add_field_polys was set" — which holds modulo the trivial
@@ -327,8 +326,8 @@ impl<'a> Theory for IncrementalFfTheoryState<'a> {
         // `x_slot^p − x_slot` must be live in the basis when
         // `add_field_polys` is set. The `LevelCheckpoint` push/pop
         // discipline maintains this; if a future refactor decouples
-        // slot-claim rollback from basis rollback (the R5 H1 / R7 J1
-        // hazard class), this `debug_assert!` is the canary.
+        // slot-claim rollback from basis rollback, this `debug_assert!`
+        // is the canary.
         debug_assert!(
             !self.add_field_polys || self.field_polys_present_for_every_slot(),
             "field-poly invariant broken: claimed slot lacks live x^p − x in basis"
