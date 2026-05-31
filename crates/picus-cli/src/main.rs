@@ -177,6 +177,13 @@ enum Commands {
         #[arg(long, value_parser = ["on", "off"])]
         dynamic_order: Option<String>,
 
+        /// Signature-based Gröbner basis (GVW, signature-safe reduction) in
+        /// place of the per-pair native GB on large rings: on | off. Skips
+        /// J-pairs a syzygy / rewrite / singular criterion proves redundant.
+        /// Omit to use the built-in default.
+        #[arg(long, value_parser = ["on", "off"])]
+        signature_criterion: Option<String>,
+
         /// Cache the reducer's divisor index across reductions with an
         /// unchanged active basis (native FF backend only): on | off. Omit
         /// to use the built-in default.
@@ -276,6 +283,7 @@ fn main() {
             membership_fastpath,
             matrix_elim_order,
             dynamic_order,
+            signature_criterion,
             reducer_index_cache,
             frobenius_cache,
             branching_incremental_gb,
@@ -338,6 +346,7 @@ fn main() {
                     membership_fastpath: membership_fastpath.as_deref().map(|s| s == "on"),
                     matrix_elim_order: matrix_elim_order.as_deref().map(|s| s == "on"),
                     dynamic_order: dynamic_order.as_deref().map(|s| s == "on"),
+                    signature_criterion: signature_criterion.as_deref().map(|s| s == "on"),
                     reducer_index_cache: reducer_index_cache.as_deref().map(|s| s == "on"),
                     frobenius_cache: frobenius_cache.as_deref().map(|s| s == "on"),
                     branching_incremental_gb: branching_incremental_gb.as_deref().map(|s| s == "on"),

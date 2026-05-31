@@ -175,6 +175,24 @@ pub struct RuntimeConfig {
     /// with identical verdicts and no regression (the size guard routes
     /// small rings, where the elimination order regressed, to DegRevLex).
     pub dynamic_order: bool,
+    /// Signature-based Gröbner basis (GVW with signature-safe reduction) in
+    /// place of the per-pair Buchberger run, for rings of at least
+    /// `ff::buchberger::GVW_MIN_VARS` variables. GVW carries a Schreyer
+    /// module signature on every labeled polynomial and J-pair, reduces
+    /// signature-safely, and skips a J-pair a recorded syzygy / rewrite /
+    /// singular criterion proves redundant — so the zero-reductions the
+    /// product / Gebauer-Möller / Buchberger criteria fail to predict are
+    /// never paid for, rather than reduced-then-discarded. Off by default: a
+    /// PLDI same-binary A/B (`chat/align-harness/sig2_off.jsonl` /
+    /// `sig2_on.jsonl`) measured -0.2% total wall-clock with identical
+    /// verdicts (a 300-seed differential oracle pins the GVW basis equal to
+    /// the per-pair reduced GB) and no regression, but no clean fixture win —
+    /// the timeout circuits are bounded by the intrinsic Gröbner-basis size,
+    /// not by the zero-reductions GVW removes, so it does not resolve them.
+    /// The size guard routes small rings, where a from-scratch GVW recompute
+    /// on each split-GB extend regressed (Pedersen), to the per-pair engine.
+    /// Kept as a research knob and the foundation for further signature work.
+    pub signature_criterion: bool,
     /// Cache the geobucket reducer's divisor index (DivMask buckets + degree
     /// order) across S-pair reductions whose active basis is unchanged,
     /// instead of rebuilding it per call. Result-preserving (same normal
@@ -275,6 +293,7 @@ impl Default for RuntimeConfig {
             membership_fastpath: true,
             matrix_elim_order: false,
             dynamic_order: true,
+            signature_criterion: false,
             reducer_index_cache: false,
             frobenius_cache: true,
             branching_incremental_gb: true,
@@ -309,6 +328,7 @@ impl RuntimeConfig {
         if let Some(v) = o.membership_fastpath { self.membership_fastpath = v; }
         if let Some(v) = o.matrix_elim_order { self.matrix_elim_order = v; }
         if let Some(v) = o.dynamic_order { self.dynamic_order = v; }
+        if let Some(v) = o.signature_criterion { self.signature_criterion = v; }
         if let Some(v) = o.reducer_index_cache { self.reducer_index_cache = v; }
         if let Some(v) = o.frobenius_cache { self.frobenius_cache = v; }
         if let Some(v) = o.branching_incremental_gb { self.branching_incremental_gb = v; }
@@ -349,6 +369,7 @@ pub struct EngineOverlay {
     pub membership_fastpath: Option<bool>,
     pub matrix_elim_order: Option<bool>,
     pub dynamic_order: Option<bool>,
+    pub signature_criterion: Option<bool>,
     pub reducer_index_cache: Option<bool>,
     pub frobenius_cache: Option<bool>,
     pub branching_incremental_gb: Option<bool>,

@@ -777,3 +777,61 @@ fn polyrepr_trait_dense() {
 fn polyrepr_trait_sparse() {
     check_polyrepr::<SparsePolynomial>(41, 2_000);
 }
+
+/// Differential oracle: the GVW signature-based GB must equal the per-pair
+/// reduced GB element-for-element on random generator sets. The reduced GB
+/// (fixed order) is unique, so any lost/spurious generator from a bad
+/// signature criterion is caught as a mismatch.
+#[test]
+fn signature_gb_matches_per_pair_random() {
+    use super::buchberger::{groebner_basis, groebner_basis_gvw, interreduce, BuchbergerConfig};
+    const GV: usize = 4;
+    const GMAX: u64 = 2;
+    let arc_r = PolyRing::new(
+        PrimeField::new(BigUint::from(PRIME)),
+        (0..GV).map(|i| format!("v{i}")).collect(),
+        MonomialOrder::DegRevLex,
+    );
+    let r: &PolyRing = &arc_r;
+    let mut rng = Rng::new(919);
+
+    for _ in 0..300 {
+        let n_gen = 2 + rng.below(3) as usize;
+        let gen_terms: Vec<Vec<(Vec<u16>, u64)>> = (0..n_gen)
+            .map(|_| {
+                let n = 1 + rng.below(3) as usize;
+                (0..n)
+                    .map(|_| {
+                        let e: Vec<u16> = (0..GV).map(|_| rng.below(GMAX + 1) as u16).collect();
+                        (e, 1 + rng.below(PRIME - 1))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let gens: Vec<DensePoly> = gen_terms
+            .iter()
+            .map(|t| build_dense(t, r))
+            .filter(|p| !p.is_zero())
+            .collect();
+        if gens.is_empty() {
+            continue;
+        }
+
+        let per_pair = BuchbergerConfig { use_f4: false, ..BuchbergerConfig::default() };
+        let gb_pp = groebner_basis(gens.clone(), &arc_r, &per_pair).expect("per-pair gb");
+        let mut canon_pp: Vec<PolyMap> =
+            interreduce(gb_pp.basis, &arc_r).iter().map(|p| dense_to_map(p, r)).collect();
+        canon_pp.sort();
+
+        let gb_gvw = groebner_basis_gvw(gens, &arc_r, MonomialOrder::DegRevLex, None).expect("gvw gb");
+        let mut canon_gvw: Vec<PolyMap> =
+            interreduce(gb_gvw, &arc_r).iter().map(|p| dense_to_map(p, r)).collect();
+        canon_gvw.sort();
+
+        assert_eq!(
+            canon_pp, canon_gvw,
+            "GVW vs per-pair reduced GB mismatch for generators {:?}",
+            gen_terms
+        );
+    }
+}

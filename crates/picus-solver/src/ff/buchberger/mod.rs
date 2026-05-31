@@ -62,6 +62,14 @@ pub fn use_f4_default() -> bool {
     crate::config::with(|c| c.use_f4)
 }
 
+/// Minimum ring width for the GVW signature path (`signature_criterion`).
+/// Below it, GVW's recompute-from-scratch on each split-GB extend loses to
+/// the incremental per-pair engine (a PLDI A/B regressed Pedersen to a
+/// timeout), so small rings stay on the per-pair engine. Above it GVW
+/// eliminates the zero-reductions but is benchmark-neutral — the large
+/// circuits are bounded by the intrinsic GB size, not the zero-reductions.
+const GVW_MIN_VARS: usize = 1000;
+
 /// A computed Groebner basis.
 #[derive(Clone, Debug)]
 pub struct GBasis {
@@ -819,11 +827,55 @@ impl BuchbergerState {
     }
 
     #[metric("buchberger::run")]
+    /// Signature-based GVW path (`signature_criterion`): recompute the
+    /// basis from scratch with the signature-safe GVW engine, which skips
+    /// the zero-reductions the per-pair product / Gebauer-Möller / Buchberger
+    /// criteria fail to predict. The current basis (seeded by
+    /// `add_generators`) is GVW's generator set; the result replaces it and
+    /// `finalize_basis` inter-reduces. The per-pair loop is untouched; this
+    /// runs only under the flag. The UNSAT-core observer is not driven here,
+    /// so a traced run falls back to the conservative (all-input) core —
+    /// sound, just not precise.
+    fn run_gvw(&mut self) -> Result<(), EngineError> {
+        let gens: Vec<DensePoly> = self
+            .basis
+            .iter()
+            .filter(|e| e.active)
+            .map(|e| e.poly.clone())
+            .collect();
+        let gb = groebner_basis_gvw(
+            gens,
+            &self.ring,
+            self.cfg.order,
+            self.cfg.cancel_token.as_ref(),
+        )?;
+        self.open.clear();
+        self.basis = gb
+            .into_iter()
+            .map(|p| {
+                let lt = p.leading_monomial(&self.ring).expect("nonzero GB element");
+                let lt_divmask = self.ring.divmask.compute(&lt);
+                let sugar = lt.total_degree();
+                BasisElement { poly: p, lt, lt_divmask, active: true, sugar, use_count: 0 }
+            })
+            .collect();
+        Ok(())
+    }
+
     pub(super) fn run<O: BuchbergerObserver>(&mut self, observer: &mut O) -> Result<(), EngineError> {
         if self.cfg.use_f4 {
             return self.run_f4(observer);
         }
         if self.trivial && self.cfg.abort_on_trivial { return Ok(()); }
+        // GVW (signature_criterion) only on wide rings: its recompute-from-
+        // scratch loses on small ones (a PLDI A/B timed out Pedersen,
+        // recomputing per split-GB extend), so gate it on ring width like
+        // the elimination-order selection. Off by default — benchmark-neutral
+        // even above the gate (the timeouts are GB-size-bound, not
+        // zero-reduction-bound).
+        if self.ring.n_vars >= GVW_MIN_VARS && crate::config::with(|c| c.signature_criterion) {
+            return self.run_gvw();
+        }
         // Granular per-phase timing for the gb-stats dump (profiling locals).
         metric::def!(t_spoly_ns);
         metric::def!(t_reduce_ns);
@@ -1451,6 +1503,10 @@ impl BuchbergerState {
 
 mod incremental;
 pub use incremental::IncrementalGB;
+
+mod signature;
+mod gvw;
+pub(crate) use gvw::groebner_basis_gvw;
 
 // ─── DensePoly coefficient lookup ─────────────────────────────────────────
 
