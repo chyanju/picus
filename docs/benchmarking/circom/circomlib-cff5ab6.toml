@@ -19,13 +19,12 @@ theory = "ff"
 timeout_ms = 10000
 
 # picus-1 — native FF solver, version 1.8.20, run with the built-in defaults.
-# `ref` is the commit the benchmarked binary was built from (the 1.8.20
-# version bump + doc cleanup on top are non-behavioral). [picus-1.analysis] /
-# [picus-1.engine] mirror picus.default.toml in full, so to reproduce: check out
-# `ref` and drop them into picus.default.toml as [analysis] / [engine] (strip
-# the "picus-1." prefix).
+# `ref` is the 1.8.20 release commit. [picus-1.analysis] / [picus-1.engine]
+# mirror picus.default.toml in full, so to reproduce: check out `ref` and drop
+# them into picus.default.toml as [analysis] / [engine] (strip the "picus-1."
+# prefix).
 [picus-1]
-ref = "9268588"
+ref = "03b387f"
 version = "1.8.20"
 
 [picus-1.analysis]
