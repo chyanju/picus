@@ -64,7 +64,7 @@ starts with everyone's facts merged. Per-lemma contribution counts
 
 ## Built-in lemmas
 
-All five built-ins operate on `PolyIR` directly; they pattern-match
+All six built-ins operate on `PolyIR` directly; they pattern-match
 on polynomial structure (via `appearing_indeterminates`,
 `poly_terms`, and direct monomial inspection) rather than on an AST.
 
@@ -139,3 +139,33 @@ system over GF(p) and the coefficient matrix has non-zero
 determinant, every wire in the system is uniquely determined and
 joins `ctx.known`. Determinant computation uses Gaussian elimination
 over the finite field with extended-Euclidean modular inverse.
+
+### `tecomplete`
+
+Recognises the twisted-Edwards complete-addition gadget (circomlib
+`BabyAdd` shape) and, when its four input coordinates are known, marks
+both output coordinates known. The cleared-denominator output
+constraints
+
+    xout · (1 + d·τ) = β + γ        yout · (1 − d·τ) = a·β − γ + δ
+
+with `τ = β·γ`, `β = x1·y2`, `γ = y1·x2`, `δ = (y1 − a·x1)(x2 + y2)`,
+express each output as a rational function `num / den`; with the inputs
+known, `num` and `den` are determined, so the output is determined as
+soon as `den ≠ 0`.
+
+**Soundness gate (certificate)**: the denominators `1 ± d·τ` vanish only
+where a solution would force a non-residue to be a square —
+`1 + d·τ = 0 ⟹ (x1·y2)² = 1/d` and `1 − d·τ = 0 ⟹ (x1·x2)² = 1/(a·d)` —
+both impossible when `a` is a square and `d` a non-square in GF(p). This
+is the twisted-Edwards completeness theorem (Bernstein & Lange, *Faster
+addition and doubling on elliptic curves*, ASIACRYPT 2007). The lemma
+checks the two Legendre symbols `legendre(a) = +1` and
+`legendre(d) = −1` at runtime — so it is sound for any prime / curve
+parameters, not pinned to one curve — and fires only on a full
+structural match (both denominator constraints, `τ = β·γ`, the input
+products `β`, `γ`, and `δ`'s form, identified by role) with both
+symbols discharged. Any deviation — a mismatched shape or a failed
+Legendre check — leaves the outputs unpromoted (a miss is slow, never
+unsound). The match runs on the `x_i` copy; promotion is wire-keyed and
+mirrored to the alt copy by copy-symmetry.

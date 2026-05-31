@@ -376,7 +376,7 @@ DPVL algorithm + propagation lemma plugins.
   `LemmaSet` is a `HashSet<String>` of enabled names; the CLI
   `--lemmas all` / `all-X` / `none+X` syntax resolves names against
   the live `inventory` registry.
-- **`propagation/`** — Five propagation lemmas plus the plugin
+- **`propagation/`** — Six propagation lemmas plus the plugin
   infrastructure. See [Propagation Lemmas](./lemmas.md).
 - **`selector.rs`** — `SelectorKind` (`First` / `Counter`) +
   `SelectorState`. The counter strategy consumes a

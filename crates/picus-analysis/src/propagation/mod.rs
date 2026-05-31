@@ -4,6 +4,7 @@ pub mod bim;
 pub mod binary01;
 pub mod lemma;
 pub mod linear;
+pub mod tecomplete;
 pub mod range;
 
 pub use lemma::{all_descriptors, all_names, LemmaDescriptor, PropagationCtx, PropagationLemma};

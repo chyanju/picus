@@ -22,7 +22,8 @@ selector = "counter"
 # Per-query solver timeout, milliseconds.
 timeout_ms = 5000
 # Propagation lemmas: "all" | "none" | "all-X,Y" (exclude X,Y) |
-# "none+X,Y" (include X,Y). Names: linear, binary01, basis2, aboz, bim.
+# "none+X,Y" (include X,Y). Names: linear, binary01, basis2, aboz, bim,
+# tecomplete.
 lemmas = "all"
 # Directory to dump SMT-LIB queries into for debugging. Unset = no dump.
 # dump_smt = "/tmp/picus-smt"
