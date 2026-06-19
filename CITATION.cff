@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using these metadata."
+title: "Picus: Automated detection of under-constrained signals in zero-knowledge circuits"
+abstract: >-
+  Automated detection of under-constrained signals in zero-knowledge
+  proof circuits. Given an R1CS constraint system, Picus verifies that
+  all output signals are uniquely determined by the public inputs, or
+  produces a concrete counter-example showing two distinct valid
+  witnesses.
+type: software
+authors:
+  - family-names: Chen
+    given-names: Yanju
+    email: chyanju@gmail.com
+version: 1.8.22
+date-released: 2026-05-31
+license: MIT
+repository-code: "https://github.com/chyanju/picus"
+url: "https://github.com/chyanju/picus"
+keywords:
+  - zero-knowledge proofs
+  - under-constrained circuits
+  - R1CS
+  - finite fields
+  - Groebner basis
+  - formal verification
