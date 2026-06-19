@@ -92,6 +92,10 @@ See `crates/picus/src/lib.rs` for the full API, including `check_r1cs_bytes()`, 
 
 ## Citation
 
+To cite the **software** itself, use the **"Cite this repository"** button in the GitHub sidebar — it is generated from [`CITATION.cff`](CITATION.cff) and provides ready-made APA and BibTeX entries pinned to a released version.
+
+To cite the **research** behind Picus, use the PLDI 2023 paper:
+
 ```bibtex
 @article{pailoor2023automated,
   author = {Pailoor, Shankara and Chen, Yanju and Wang, Franklyn and Rodr\'{i}guez, Clara and Van Geffen, Jacob and Morton, Jason and Chu, Michael and Gu, Brian and Feng, Yu and Dillig, Isil},
